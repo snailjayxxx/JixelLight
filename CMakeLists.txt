@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 Sql Test)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Quick Qml QuickControls2 Sql Test)
 find_package(libraw CONFIG REQUIRED)
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -51,13 +51,14 @@ qt_add_qml_module(JixelLight
 
 target_include_directories(JixelLight PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLight PRIVATE
-    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.2"
+    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.3"
     JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}"
 )
 
 target_link_libraries(JixelLight PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Widgets
     Qt6::Quick
     Qt6::Qml
     Qt6::QuickControls2
