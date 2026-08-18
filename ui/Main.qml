@@ -11,6 +11,20 @@ ApplicationWindow {
     color: "#0b0d10"
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }
+    function meta(key) {
+        const value = photoController.currentMetadata[key]
+        return value === undefined || value === null || value === "" ? "—" : value
+    }
+    function cameraName() {
+        const make = meta("make")
+        const model = meta("model")
+        if (make === "—") return model
+        if (model === "—") return make
+        return make + " " + model
+    }
+    function exportSpaceKey(index) {
+        return ["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"][Math.max(0, Math.min(3, index))]
+    }
 
     Shortcut { sequence: StandardKey.Open; onActivated: photoController.openImportDialog() }
 
@@ -23,13 +37,45 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: exportSettingsDialog
+        title: window.t("JPEG 导出设置", "JPEG Export Settings")
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        anchors.centerIn: parent
+        onAccepted: exportDialog.open()
+        ColumnLayout {
+            width: 430; spacing: 12
+            Label { text: window.t("输出色彩空间 / ICC", "Output Color Space / ICC"); color: "#d6dee8"; font.bold: true }
+            ComboBox {
+                id: exportSpaceBox
+                Layout.fillWidth: true
+                model: ["sRGB", "Display P3", "Adobe RGB (1998)", "ProPhoto RGB"]
+                currentIndex: 0
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: window.t("JPEG 质量", "JPEG Quality"); color: "#d6dee8" }
+                Item { Layout.fillWidth: true }
+                SpinBox { id: exportQualityBox; from: 1; to: 100; value: 92; editable: true }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: window.t(
+                    "alpha.6 会嵌入目标 ICC 配置文件。当前预览仍以 ICC sRGB 为显示基准；原生宽色域工作数据直出将在后续 RAW Pipeline 阶段接入。",
+                    "alpha.6 embeds the destination ICC profile. Preview remains ICC sRGB; native wide-gamut working-data export will be connected in a later RAW pipeline stage.")
+                wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
+            }
+        }
+    }
+
     FileDialog {
         id: exportDialog
         title: window.t("导出 JPEG", "Export JPEG")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "jpg"
         nameFilters: ["JPEG (*.jpg *.jpeg)"]
-        onAccepted: photoController.exportCurrent(selectedFile)
+        onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     Dialog {
@@ -59,7 +105,7 @@ ApplicationWindow {
             Button { text: window.t("粘贴调整", "Paste"); enabled: photoController.hasImage; onClicked: photoController.pasteAdjustments() }
             Button { text: window.t("同步全部", "Sync All"); enabled: photoController.hasImage; onClicked: photoController.syncAdjustmentsToAll() }
             ToolSeparator {}
-            Button { text: window.t("导出 JPEG", "Export JPEG"); enabled: photoController.hasImage; onClicked: exportDialog.open() }
+            Button { text: window.t("导出 JPEG", "Export JPEG"); enabled: photoController.hasImage; onClicked: exportSettingsDialog.open() }
             Item { Layout.fillWidth: true }
             ComboBox {
                 id: languageBox; Layout.preferredWidth: 105
@@ -122,7 +168,7 @@ ApplicationWindow {
                 }
                 Rectangle {
                     visible: photoController.hasImage && photoController.currentIsRaw
-                    anchors.left: parent.left; anchors.top: parent.top; width: 205; height: 30; radius: 6
+                    anchors.left: parent.left; anchors.top: parent.top; width: 225; height: 30; radius: 6
                     color: "#142f2b"; border.color: "#2d7569"
                     Text { anchors.centerIn: parent; text: "RAW · Linear ProPhoto · 16-bit"; color: "#88ead0"; font.pixelSize: 11; font.bold: true }
                 }
@@ -148,7 +194,7 @@ ApplicationWindow {
                     Button { id: rgbButton; text: "RGB"; checkable: true; checked: true; onClicked: { checked = true; lumaButton.checked = false } }
                     Button { id: lumaButton; text: window.t("亮度", "Luma"); checkable: true; onClicked: { checked = true; rgbButton.checked = false } }
                     Item { Layout.fillWidth: true }
-                    Label { text: "1024 bins · Display Result"; color: "#738293"; font.pixelSize: 10 }
+                    Label { text: "1024 bins · ICC sRGB Preview"; color: "#738293"; font.pixelSize: 10 }
                 }
                 HistogramView {
                     Layout.fillWidth: true; Layout.preferredHeight: 180
@@ -221,9 +267,37 @@ ApplicationWindow {
                     onPointEdited: function(point, value) { photoController.setCurvePoint(channel, point, value) }
                 }
 
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                Label { text: window.t("照片信息 / EXIF", "PHOTO INFO / EXIF"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                GridLayout {
+                    Layout.fillWidth: true; columns: 2; columnSpacing: 10; rowSpacing: 5
+                    Label { text: window.t("相机", "Camera"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.cameraName(); color: "#c4cfda"; elide: Text.ElideRight; Layout.fillWidth: true; font.pixelSize: 10 }
+                    Label { text: window.t("镜头", "Lens"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("lens"); color: "#c4cfda"; elide: Text.ElideRight; Layout.fillWidth: true; font.pixelSize: 10 }
+                    Label { text: window.t("快门", "Shutter"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("shutter"); color: "#c4cfda"; font.pixelSize: 10 }
+                    Label { text: window.t("光圈", "Aperture"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("aperture"); color: "#c4cfda"; font.pixelSize: 10 }
+                    Label { text: "ISO"; color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("iso"); color: "#c4cfda"; font.pixelSize: 10 }
+                    Label { text: window.t("焦距", "Focal Length"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("focalLength"); color: "#c4cfda"; font.pixelSize: 10 }
+                    Label { text: window.t("拍摄时间", "Captured"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("captureTime"); color: "#c4cfda"; elide: Text.ElideRight; Layout.fillWidth: true; font.pixelSize: 10 }
+                    Label { text: window.t("尺寸", "Dimensions"); color: "#748394"; font.pixelSize: 10 }
+                    Label { text: window.meta("pixelWidth") + " × " + window.meta("pixelHeight"); color: "#c4cfda"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.t("RAW 深度", "RAW Depth"); color: "#748394"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.meta("bitDepth") + "-bit"; color: "#88ead0"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.t("工作空间", "Working Space"); color: "#748394"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.meta("workingSpace"); color: "#88ead0"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.t("去马赛克", "Demosaic"); color: "#748394"; font.pixelSize: 10 }
+                    Label { visible: photoController.currentIsRaw; text: window.meta("demosaic"); color: "#88ead0"; font.pixelSize: 10 }
+                }
+
                 Label {
                     Layout.fillWidth: true
-                    text: window.t("处理顺序：RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → Display sRGB", "Graph: RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → Display sRGB")
+                    text: window.t("处理顺序：RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → ICC sRGB Preview", "Graph: RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → ICC sRGB Preview")
                     wrapMode: Text.WordWrap; color: "#627180"; font.pixelSize: 10; Layout.bottomMargin: 18
                 }
             }

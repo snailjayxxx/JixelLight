@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QColorSpace>
 #include <QFile>
+#include <QImageReader>
 #include <QRgba64>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -8,6 +9,8 @@
 #include <cmath>
 
 #include "app/PhotoController.h"
+#include "core/color/ColorManagement.h"
+#include "core/metadata/MetadataReader.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
@@ -118,6 +121,30 @@ private slots:
         QCOMPARE(total, qulonglong(100));
     }
 
+    void namedOutputProfilesAreValidRgbIcc() {
+        for (const QString &key : ColorManagement::keys()) {
+            const auto space = ColorManagement::fromKey(key);
+            const QByteArray profile = ColorManagement::iccProfile(space);
+            QVERIFY2(profile.size() > 100, qPrintable(QStringLiteral("ICC profile missing for %1").arg(key)));
+            QString description;
+            QVERIFY2(ColorManagement::validateIcc(profile, &description), qPrintable(QStringLiteral("LittleCMS rejected %1").arg(key)));
+        }
+    }
+
+    void colorManagedConversionAssignsDestinationProfile() {
+        QImage image(4, 4, QImage::Format_RGBA64);
+        image.fill(QColor(220, 80, 55));
+        image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+
+        const auto target = ColorManagement::OutputSpace::DisplayP3;
+        const QImage converted = ColorManagement::convertFromSrgb(image, target);
+        QVERIFY(!converted.isNull());
+        QCOMPARE(converted.format(), QImage::Format_RGBA64);
+        QCOMPARE(converted.colorSpace(), ColorManagement::colorSpace(target));
+        QCOMPARE(converted.text(QStringLiteral("JixelLightICCManaged")), QStringLiteral("true"));
+        QVERIFY(ColorManagement::validateIcc(converted.colorSpace().iccProfile()));
+    }
+
     void rawExtensionsAreRecognized() {
         QVERIFY(RawDecoder::isRawFile("DSC00001.ARW"));
         QVERIFY(RawDecoder::isRawFile("IMG_0001.CR3"));
@@ -125,6 +152,22 @@ private slots:
         QVERIFY(RawDecoder::isRawFile("FUJI0001.RAF"));
         QVERIFY(RawDecoder::isRawFile("photo.DNG"));
         QVERIFY(!RawDecoder::isRawFile("photo.jpg"));
+    }
+
+    void realRawMetadataSmoke() {
+        const QString rawPath = qEnvironmentVariable("JIXELLIGHT_TEST_RAW");
+        if (rawPath.isEmpty()) QSKIP("JIXELLIGHT_TEST_RAW is not set");
+
+        QString error;
+        const QVariantMap metadata = MetadataReader::read(rawPath, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(!metadata.isEmpty());
+        QVERIFY(metadata.contains(QStringLiteral("make")));
+        QVERIFY(metadata.contains(QStringLiteral("model")));
+        QVERIFY(!metadata.value(QStringLiteral("make")).toString().isEmpty());
+        QVERIFY(!metadata.value(QStringLiteral("model")).toString().isEmpty());
+        QVERIFY(metadata.value(QStringLiteral("pixelWidth")).toULongLong() > 1000);
+        QVERIFY(metadata.value(QStringLiteral("pixelHeight")).toULongLong() > 1000);
     }
 
     void realRawDecodeSmoke() {
@@ -159,12 +202,31 @@ private slots:
         QVERIFY(controller.currentIsRaw());
         QVERIFY(!controller.previewUrl().isEmpty());
         QVERIFY(controller.pipelineDescription().contains(QStringLiteral("Linear ProPhoto RGB")));
+        QVERIFY(controller.pipelineDescription().contains(QStringLiteral("ICC sRGB Preview")));
+        QVERIFY(controller.currentMetadata().contains(QStringLiteral("make")));
+        QVERIFY(controller.currentMetadata().contains(QStringLiteral("model")));
+        QCOMPARE(controller.currentMetadata().value(QStringLiteral("workingSpace")).toString(), QStringLiteral("Linear ProPhoto RGB"));
+        QCOMPARE(controller.currentMetadata().value(QStringLiteral("bitDepth")).toInt(), 16);
+
         controller.setSaturation(25.0);
         controller.setColorMix(5, 1, 30.0);
         controller.setCurvePoint(0, 2, 0.58);
         QCOMPARE(controller.saturation(), 25.0);
         QCOMPARE(controller.hslSaturation().at(5).toDouble(), 30.0);
         QCOMPARE(controller.masterCurve().at(2).toDouble(), 0.58);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString exportPath = dir.filePath(QStringLiteral("p3-export.jpg"));
+        QVERIFY(controller.exportCurrent(QUrl::fromLocalFile(exportPath), QStringLiteral("display-p3"), 91));
+        QVERIFY(QFile::exists(exportPath));
+
+        QImageReader reader(exportPath);
+        const QImage exported = reader.read();
+        QVERIFY2(!exported.isNull(), qPrintable(reader.errorString()));
+        QVERIFY(exported.colorSpace().isValid());
+        QCOMPARE(exported.colorSpace(), ColorManagement::colorSpace(ColorManagement::OutputSpace::DisplayP3));
+        QVERIFY(ColorManagement::validateIcc(exported.colorSpace().iccProfile()));
     }
 
     void zipWriterCreatesZipSignature() {

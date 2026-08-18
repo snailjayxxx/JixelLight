@@ -1,5 +1,7 @@
 #include "app/PhotoController.h"
+#include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
+#include "core/metadata/MetadataReader.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
@@ -9,6 +11,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QImageWriter>
 #include <QMessageBox>
 #include <QSettings>
 #include <QUrl>
@@ -62,8 +65,8 @@ bool PhotoController::currentIsRaw() const { return hasImage() && m_photos[m_cur
 QString PhotoController::pipelineDescription() const {
     if (!hasImage()) return QString();
     return currentIsRaw()
-        ? QStringLiteral("RAW → Camera WB/Matrix → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → Display sRGB")
-        : QStringLiteral("sRGB → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → Display sRGB");
+        ? QStringLiteral("RAW → Camera WB/Matrix → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview")
+        : QStringLiteral("sRGB → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview");
 }
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? m_photos[m_currentIndex].state : AdjustmentState{}; }
@@ -283,6 +286,19 @@ void PhotoController::selectPhoto(int index) {
 void PhotoController::loadCurrent() {
     if (!hasImage()) return;
     m_fullSource = {};
+    m_currentMetadata.clear();
+
+    QString metadataError;
+    m_currentMetadata = MetadataReader::read(currentFile(), &metadataError);
+    if (!metadataError.isEmpty()) {
+        qWarning() << "Metadata read warning" << currentFile() << metadataError;
+        ActionTrace::instance().record("metadata_read_warning", {{"file", currentFile()}, {"error", metadataError}});
+    } else {
+        QVariantMap trace = m_currentMetadata;
+        trace.insert(QStringLiteral("file"), currentFile());
+        ActionTrace::instance().record("metadata_read", trace);
+    }
+
     if (currentIsRaw()) {
         QString error;
         RawMetadata meta;
@@ -291,8 +307,17 @@ void PhotoController::loadCurrent() {
             setStatus(uiText(QStringLiteral("RAW 解码失败：%1").arg(error), QStringLiteral("RAW decode failed: %1").arg(error)));
             qWarning() << "RAW decode failed" << currentFile() << error;
             ActionTrace::instance().record("raw_decode_failed", {{"file", currentFile()}, {"error", error}});
+            emit currentMetadataChanged();
             return;
         }
+        if (!m_currentMetadata.contains(QStringLiteral("make")) && !meta.make.isEmpty()) m_currentMetadata.insert(QStringLiteral("make"), meta.make);
+        if (!m_currentMetadata.contains(QStringLiteral("model")) && !meta.model.isEmpty()) m_currentMetadata.insert(QStringLiteral("model"), meta.model);
+        m_currentMetadata.insert(QStringLiteral("pixelWidth"), meta.width);
+        m_currentMetadata.insert(QStringLiteral("pixelHeight"), meta.height);
+        m_currentMetadata.insert(QStringLiteral("bitDepth"), meta.bitsPerChannel);
+        m_currentMetadata.insert(QStringLiteral("workingSpace"), meta.workingSpace);
+        m_currentMetadata.insert(QStringLiteral("demosaic"), meta.demosaic);
+
         ActionTrace::instance().record("raw_decoded", {
             {"file", currentFile()}, {"make", meta.make}, {"model", meta.model},
             {"width", meta.width}, {"height", meta.height}, {"bits", meta.bitsPerChannel},
@@ -310,10 +335,14 @@ void PhotoController::loadCurrent() {
         if (m_fullSource.isNull()) {
             setStatus(uiText(QStringLiteral("图片读取失败"), QStringLiteral("Failed to load image")));
             qWarning() << reader.errorString();
+            emit currentMetadataChanged();
             return;
         }
+        if (!m_currentMetadata.contains(QStringLiteral("pixelWidth"))) m_currentMetadata.insert(QStringLiteral("pixelWidth"), m_fullSource.width());
+        if (!m_currentMetadata.contains(QStringLiteral("pixelHeight"))) m_currentMetadata.insert(QStringLiteral("pixelHeight"), m_fullSource.height());
     }
 
+    emit currentMetadataChanged();
     m_previewSource = m_fullSource;
     if (std::max(m_previewSource.width(), m_previewSource.height()) > 2048)
         m_previewSource = m_previewSource.scaled(2048, 2048, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -388,17 +417,40 @@ void PhotoController::syncAdjustmentsToAll() {
     setStatus(uiText(QStringLiteral("已同步到 %1 张照片").arg(m_photos.size()), QStringLiteral("Synced to %1 image(s)").arg(m_photos.size())));
 }
 
-bool PhotoController::exportCurrent(const QUrl &destination) {
+bool PhotoController::exportCurrent(const QUrl &destination, const QString &colorSpaceKey, int quality) {
     if (!hasImage() || m_fullSource.isNull()) return false;
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
     if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive)) path += ".jpg";
+
+    quality = std::clamp(quality, 1, 100);
     const auto encoding = currentIsRaw() ? ImagePipeline::InputEncoding::LinearProPhoto : ImagePipeline::InputEncoding::SRgb;
-    const QImage output = ImagePipeline::process(m_fullSource, currentState(), encoding);
-    const bool ok = output.save(path, "JPEG", 92);
-    ActionTrace::instance().record("export_jpeg", {{"ok", ok}, {"source", currentFile()}, {"destination", path}, {"source_raw", currentIsRaw()}, {"pipeline", pipelineDescription()}});
-    setStatus(ok ? uiText(QStringLiteral("已导出：") + path, QStringLiteral("Exported: ") + path)
-                 : uiText(QStringLiteral("JPEG 导出失败"), QStringLiteral("JPEG export failed")));
+    const QImage displayOutput = ImagePipeline::process(m_fullSource, currentState(), encoding);
+    const auto targetSpace = ColorManagement::fromKey(colorSpaceKey);
+    const QImage output = ColorManagement::convertFromSrgb(displayOutput, targetSpace);
+
+    QImageWriter writer(path, "JPEG");
+    writer.setQuality(quality);
+    writer.setOptimizedWrite(true);
+    const bool ok = writer.write(output);
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("export/colorSpace"), ColorManagement::key(targetSpace));
+    settings.setValue(QStringLiteral("export/jpegQuality"), quality);
+
+    const QByteArray icc = output.colorSpace().iccProfile();
+    ActionTrace::instance().record("export_jpeg", {
+        {"ok", ok}, {"source", currentFile()}, {"destination", path},
+        {"source_raw", currentIsRaw()}, {"pipeline", pipelineDescription()},
+        {"output_color_space", ColorManagement::displayName(targetSpace)},
+        {"icc_bytes", icc.size()}, {"quality", quality}, {"error", writer.errorString()}
+    });
+
+    setStatus(ok
+        ? uiText(QStringLiteral("已导出：%1 · %2 · JPEG %3").arg(path, ColorManagement::displayName(targetSpace)).arg(quality),
+                 QStringLiteral("Exported: %1 · %2 · JPEG %3").arg(path, ColorManagement::displayName(targetSpace)).arg(quality))
+        : uiText(QStringLiteral("JPEG 导出失败：%1").arg(writer.errorString()),
+                 QStringLiteral("JPEG export failed: %1").arg(writer.errorString())));
     return ok;
 }
 
