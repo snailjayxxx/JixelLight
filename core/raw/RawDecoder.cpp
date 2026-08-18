@@ -1,14 +1,11 @@
 #include "core/raw/RawDecoder.h"
 
-#include <QColorSpace>
 #include <QFile>
 #include <QFileInfo>
 #include <QRgba64>
 #include <QtGlobal>
 
 #include <libraw/libraw.h>
-
-#include <algorithm>
 
 namespace {
 QString libRawError(int code) {
@@ -61,12 +58,14 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     auto &params = raw.imgdata.params;
     params.use_camera_wb = 1;
     params.use_auto_wb = 0;
+    params.use_camera_matrix = 3; // Prefer embedded/built-in camera color data regardless of WB mode.
     params.no_auto_bright = 1;
     params.adjust_maximum_thr = 0.0f;
     params.bright = 1.0f;
-    params.output_color = 1;   // sRGB primaries, but with a linear transfer function below.
+    params.highlight = 2;         // LibRaw highlight blend before our scene-linear tone stage.
+    params.output_color = 4;      // ProPhoto RGB primaries (D50), kept linear with gamm below.
     params.output_bps = 16;
-    params.user_qual = 3;      // AHD demosaic in the LibRaw/dcraw reference processor.
+    params.user_qual = 3;         // AHD demosaic reference path.
     params.gamm[0] = 1.0;
     params.gamm[1] = 1.0;
 
@@ -96,7 +95,8 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         LibRaw::dcraw_clear_mem(processed);
         return {};
     }
-    image.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+    image.setText(QStringLiteral("JixelLightWorkingSpace"), QStringLiteral("Linear ProPhoto RGB"));
+    image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));
 
     const int colors = processed->colors;
     if (processed->bits == 16) {
@@ -129,7 +129,13 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         metadata->width = image.width();
         metadata->height = image.height();
         metadata->bitsPerChannel = processed->bits;
+        metadata->workingSpace = QStringLiteral("Linear ProPhoto RGB");
+        metadata->demosaic = QStringLiteral("AHD");
+        metadata->cameraMatrixEnabled = true;
+        metadata->cameraWhiteBalanceEnabled = true;
+        metadata->highlightBlendEnabled = true;
     }
+
     LibRaw::dcraw_clear_mem(processed);
     return image;
 }
