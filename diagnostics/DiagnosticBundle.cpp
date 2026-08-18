@@ -5,12 +5,12 @@
 
 #include <QBuffer>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QSysInfo>
-#include <QDir>
 
 #ifndef JIXELLIGHT_VERSION
 #define JIXELLIGHT_VERSION "dev"
@@ -21,12 +21,14 @@
 
 QString DiagnosticBundle::create(const QImage &preview, const QString &currentFile,
                                  const QString &projectPath, const AdjustmentState &state,
-                                 double shadowClip, double highlightClip) {
+                                 double shadowClip, double highlightClip,
+                                 const QString &pipelineDescription) {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QDir().mkpath(dir);
     const QString path = dir + "/JixelLight_Diagnostic_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".zip";
-    ZipStoreWriter zip(path); if (!zip.open()) return {};
+    ZipStoreWriter zip(path);
+    if (!zip.open()) return {};
 
     QJsonObject manifest{
         {"app", "JixelLight"}, {"version", JIXELLIGHT_VERSION}, {"git_commit", JIXELLIGHT_GIT_COMMIT},
@@ -34,14 +36,22 @@ QString DiagnosticBundle::create(const QImage &preview, const QString &currentFi
         {"os", QSysInfo::prettyProductName()}, {"cpu_arch", QSysInfo::currentCpuArchitecture()},
         {"kernel", QSysInfo::kernelType() + " " + QSysInfo::kernelVersion()},
         {"current_file", currentFile}, {"project_path", projectPath}, {"adjustments", state.toJson()},
-        {"scopes", QJsonObject{{"bins",1024},{"shadow_clip_percent",shadowClip},{"highlight_clip_percent",highlightClip}}}
+        {"processing_graph", pipelineDescription},
+        {"working_space", pipelineDescription.contains(QStringLiteral("RAW")) ? QStringLiteral("Linear ProPhoto RGB") : QStringLiteral("sRGB input -> Linear ProPhoto RGB")},
+        {"display_output", QStringLiteral("sRGB")},
+        {"scopes", QJsonObject{{"bins",1024},{"source",QStringLiteral("current display result")},{"shadow_clip_percent",shadowClip},{"highlight_clip_percent",highlightClip}}}
     };
     zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
     zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));
 
     if (!preview.isNull()) {
-        QByteArray png; QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly); preview.save(&buffer, "PNG"); zip.addFile("current_preview.png", png);
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        preview.save(&buffer, "PNG");
+        zip.addFile("current_preview.png", png);
     }
-    QFile log(LoggingEngine::currentLogPath()); if (log.open(QIODevice::ReadOnly)) zip.addFile("session.log", log.readAll());
+    QFile log(LoggingEngine::currentLogPath());
+    if (log.open(QIODevice::ReadOnly)) zip.addFile("session.log", log.readAll());
     return zip.close() ? path : QString{};
 }
