@@ -1,86 +1,125 @@
 # JixelLight
 
-JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心，而不是以 JPEG 小图编辑为主。
+JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
-当前开发版本：**v0.1.0-alpha.3**
+当前开发版本：**v0.1.0-alpha.5**
 
-## alpha.3 交互修复
+## alpha.5：完整 RAW Processing Graph 基础
 
-- 修复 alpha.2 中“文件选择窗口可以打开，但选完照片后没有任何动作”的问题。
-- 根因是 QML `FileDialog.selectedFiles` 直接传递给 C++ `QVariantList` 的运行时类型桥接不可靠。
-- 导入窗口现改为 C++ / Qt Widgets 原生 `QFileDialog`，选中的 `QStringList` 直接进入 `PhotoController`，不再经过 QML 列表类型转换。
-- 增加单文件 `PhotoController::importFile(QUrl)` 路径，拖放导入也逐文件走同一条明确的 C++ 调用链。
-- 增加 `Ctrl/Cmd + O` 导入快捷键和窗口拖放 RAW / 照片导入。
-- `🐞 报告当前问题` 不再只修改底部状态栏：成功会弹窗显示 Diagnostic ZIP 路径，失败会直接弹错误窗口。
-- CI 新增完整控制器导入回归测试：真实 Leica M8 DNG → `PhotoController.importFile()` → 图片库 → LibRaw 解码 → 16-bit 预览。Windows x64 / macOS ARM64 均通过。
+alpha.5 不再把“16-bit RGB”误当作 RAW 域。RAW 输入会保持在线性宽色域处理链中，直到最终显示转换：
 
-## 当前版本重点
+`RAW → Camera WB / Camera Matrix → Demosaic → Linear ProPhoto RGB → Exposure / Tonal → Hue / Saturation / Vibrance / HSL → Master / RGB Curves → Display sRGB`
 
-### RAW 优先
+### RAW 开发
 
-已接入 **LibRaw**，RAW 不再交给 Qt 普通图片读取器处理。当前支持导入/解码常见相机 RAW 扩展名，包括：
+- LibRaw 解码常见 RAW：ARW / CR2 / CR3 / CRW / NEF / NRW / RAF / RW2 / ORF / DNG / PEF / SRW / RWL / 3FR / ERF / KDC / MOS / MRW / X3F / IIQ / RAW。
+- Camera White Balance 作为 RAW baseline。
+- `use_camera_matrix = 3`，优先使用 embedded / built-in camera color data。
+- AHD demosaic reference path。
+- LibRaw highlight blend。
+- 禁止 auto-bright，禁止自动 maximum 调整。
+- gamma 明确设为 linear。
+- RAW 工作空间改为 **Linear ProPhoto RGB 16-bit**，不先渲染成 gamma-encoded sRGB 成片。
 
-- Sony：ARW
-- Canon：CR2 / CR3 / CRW
-- Nikon：NEF / NRW
-- Fujifilm：RAF
-- Panasonic：RW2
-- OM System / Olympus：ORF
-- Adobe：DNG
-- Pentax：PEF
-- Samsung：SRW
-- Leica：RWL
-- 以及 3FR / ERF / KDC / MOS / MRW / X3F / IIQ / RAW 等
+### 明暗与颜色
 
-RAW 参考解码使用相机白平衡、16-bit 输出，并进入 JixelLight 的统一非破坏处理管线。
+当前 CPU reference pipeline 已包含：
 
-> 当前 alpha 使用 LibRaw/dcraw reference processor 完成 RAW → 16-bit RGB 的第一条完整链路。后续仍会继续实现相机空间、Camera Profile、LittleCMS/ICC 和 RGBA16F GPU Processing Graph；因此这不是最终画质管线。
+- Exposure：scene-linear EV，+1 EV 在工作数据上真正 ×2。
+- Temperature / Tint：相机白平衡 baseline 之后的线性 chromatic-adaptation delta。
+- Contrast / Highlights / Shadows / Whites / Blacks。
+- Highlight Recovery。
+- Global Hue。
+- Saturation。
+- Vibrance。
+- 8 色 HSL Color Mixer：Red / Orange / Yellow / Green / Aqua / Blue / Purple / Magenta，每色独立 Hue / Saturation / Luminance。
+- 感知颜色层基于 OKLab/OKLCh 思路，避免在最终 sRGB/HSV 成片上硬拉颜色。
 
-### 16-bit 处理与 Professional Scopes
+### 曲线
 
-- CPU reference pipeline 使用 `QImage::Format_RGBA64`，即 16 bits/channel。
-- 曝光、色温、色调、对比度、高光、阴影、白色色阶、黑色色阶均在 16-bit buffer 上计算。
-- RGB / Luminance Histogram 使用 **1024 bins**，直接从 16-bit 当前调整结果统计。
-- 保留阴影 / 高光裁切检测。
+- Master Tone Curve。
+- Red Curve。
+- Green Curve。
+- Blue Curve。
+- 5 个可拖动控制点。
+- 曲线参数进入项目数据库、复制/粘贴、批量同步和 Bug Snapshot。
 
-### 中文 / English
+### Professional Scopes
 
-- **首次启动默认中文。**
-- 顶部工具栏可随时切换 `中文 / English`。
-- 语言选择使用 `QSettings` 保存在本机，下次启动继续使用上次选择。
+- RGB / Luminance Histogram：1024 bins。
+- Histogram 读取**当前最终显示结果**，所以曝光、HSL、饱和度、曲线变化都会实时反映。
+- Shadow / Highlight clipping 百分比。
+- 架构保留以后切换 RAW Source / Working / Display scopes 的能力。
 
-## 已可使用的工作流
+### Diagnostics
 
-1. 新建 JixelLight 项目。
-2. 导入 RAW / JPEG / PNG / TIFF 等照片。
-3. 选择 RAW 后由 LibRaw 解码为 16-bit 工作图像。
-4. 查看实时 RGB / Luminance Histogram。
-5. 调整曝光 / 白平衡 / 对比度 / 高光阴影 / 黑白场。
-6. Histogram 与当前调整结果实时同步。
-7. 复制 / 粘贴参数，或将当前参数同步到全部照片。
-8. 从全分辨率源图导出 JPEG。
-9. 遇到问题时点击 `🐞 报告当前问题` 生成 Diagnostic ZIP，并弹窗显示保存路径。
+Bug ZIP 现在记录：
 
-## Diagnostics
+- Source file / project。
+- 完整 AdjustmentState，包括 HSL 和曲线。
+- 当前 Processing Graph。
+- Working Space。
+- Display Output。
+- 1024-bin scopes 阶段。
+- Session Log / Action Trace / Preview。
 
-从第一版起保留：
+程序内 RAW 状态会直接显示 `RAW · Linear ProPhoto · 16-bit`，不再只显示模糊的 `RAW · 16-bit`。
 
-- Session Logging
-- 最近 1000 条 Action Trace
-- RAW 解码成功 / 失败记录
-- 当前文件、RAW 类型及解码信息
-- Crash marker
-- 一键 Bug Snapshot / Diagnostic ZIP
+## 中文 / English
+
+- 首次启动默认中文。
+- 顶部可即时切换中文 / English。
+- 语言选择通过 QSettings 持久化。
+
+## 导入与操作
+
+- C++ 原生文件选择窗口导入。
+- Ctrl/Cmd + O。
+- 可拖放照片到窗口。
+- 批量导入、复制参数、粘贴参数、同步全部。
+- JPEG 全分辨率导出。
+- `🐞 报告当前问题` 生成并明确提示 Diagnostic ZIP 路径。
 
 ## 构建依赖
 
 - CMake 3.24+
 - C++20
-- Qt 6.5+（Core / Gui / Widgets / Quick / Qml / QuickControls2 / Sql）
-- LibRaw（通过 vcpkg manifest 管理）
+- Qt 6.5+
+- LibRaw（vcpkg manifest）
 
-仓库包含 `vcpkg.json`。架构说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+### macOS Apple Silicon
 
-## 下一阶段
+```bash
+git clone https://github.com/microsoft/vcpkg.git .vcpkg
+./.vcpkg/bootstrap-vcpkg.sh -disableMetrics
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=arm64-osx-static \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/triplets"
+cmake --build build --config Release --parallel
+```
 
-RAW 是 JixelLight 的主线。后续优先级继续围绕 RAW 画质：Camera-space White Balance、Camera Profile / Color Matrix、LittleCMS / ICC、RGBA16F / Qt RHI GPU processing graph、Tone Curve / RGB Curve / HSL、RAW preview cache 与 Exiv2。
+### Windows x64
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git .vcpkg
+.\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/.vcpkg/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/triplets"
+cmake --build build --config Release --parallel
+```
+
+## 仍然明确属于后续专业化的部分
+
+alpha.5 已经把“RAW 调整基座”从 JPEG-like display RGB 改成线性宽色域 Graph，但仍是 CPU reference pipeline。后续会继续在不改变参数语义的前提下升级：
+
+1. 更完整的 Camera/DCP Profile 管理。
+2. 真正的传感器级 highlight reconstruction 与更高级 demosaic。
+3. Display ICC / LittleCMS 输出管理。
+4. RGBA16F / Qt RHI GPU Processing Graph。
+5. 更高性能 RAW preview cache / 后台解码。
+6. Exiv2 完整 EXIF 浏览与筛选。
+
+架构说明见 [`docs/RAW_PIPELINE_ALPHA5.md`](docs/RAW_PIPELINE_ALPHA5.md) 与 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
