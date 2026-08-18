@@ -1,0 +1,13 @@
+build/
+cmake-build-*/
+CMakeUserPresets.json
+.DS_Store
+*.user
+*.autosave
+.vscode/
+.idea/
+*.jlp/
+*.db
+*.db-shm
+*.db-wal
+JixelLight_Diagnostic_*.zip
