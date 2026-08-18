@@ -66,6 +66,8 @@ public:
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
     Q_INVOKABLE void setLanguage(const QString &language);
 
+    Q_INVOKABLE void openImportDialog();
+    Q_INVOKABLE bool importFile(const QUrl &url);
     Q_INVOKABLE void importFiles(const QVariantList &urls);
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool createProject(const QUrl &folder, const QString &name);
@@ -75,6 +77,7 @@ public:
     Q_INVOKABLE void syncAdjustmentsToAll();
     Q_INVOKABLE bool exportCurrent(const QUrl &destination);
     Q_INVOKABLE QString reportBug();
+    Q_INVOKABLE void reportBugWithDialog();
 
 signals:
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
@@ -96,6 +99,8 @@ private:
 
     AdjustmentState currentState() const;
     AdjustmentState *mutableCurrentState();
+    bool importPath(const QString &path, bool notifyImmediately);
+    void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();
     void setStatus(const QString &message);
