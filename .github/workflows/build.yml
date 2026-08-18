@@ -1,0 +1,74 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: JixelLight-Windows-x64
+          - os: macos-15
+            artifact: JixelLight-macOS-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qtshadertools'
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Deploy Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter JixelLight.exe | Select-Object -First 1
+          if (-not $exe) { throw "JixelLight.exe not found" }
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item $exe.FullName package/JixelLight.exe
+          windeployqt --release --qmldir ui package/JixelLight.exe
+          Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
+
+      - name: Deploy macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP=$(find build -name JixelLight.app -type d | head -1)
+          test -n "$APP"
+          macdeployqt "$APP" -qmldir=ui
+          ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: JixelLight-Windows-x64.zip
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: JixelLight-macOS-arm64.zip

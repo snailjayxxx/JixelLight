@@ -9,7 +9,11 @@ Item {
     property bool showLuma: false
 
     function requestPaint() { canvas.requestPaint() }
-    onRedDataChanged: requestPaint(); onGreenDataChanged: requestPaint(); onBlueDataChanged: requestPaint(); onLumaDataChanged: requestPaint(); onShowLumaChanged: requestPaint()
+    onRedDataChanged: requestPaint()
+    onGreenDataChanged: requestPaint()
+    onBlueDataChanged: requestPaint()
+    onLumaDataChanged: requestPaint()
+    onShowLumaChanged: requestPaint()
 
     Rectangle { anchors.fill: parent; color: "#0d1015"; border.color: "#28313b"; radius: 8 }
     Canvas {

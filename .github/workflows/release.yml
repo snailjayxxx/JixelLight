@@ -1,0 +1,60 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-2022
+            file: JixelLight-Windows-x64.zip
+          - os: macos-15
+            file: JixelLight-macOS-arm64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qtshadertools'
+          cache: true
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --config Release --parallel
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter JixelLight.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item $exe.FullName package/JixelLight.exe
+          windeployqt --release --qmldir ui package/JixelLight.exe
+          Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
+      - if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP=$(find build -name JixelLight.app -type d | head -1)
+          macdeployqt "$APP" -qmldir=ui
+          ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: ${{ matrix.file }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
