@@ -5,5 +5,11 @@
 
 class ImagePipeline {
 public:
-    static QImage process(const QImage &source, const AdjustmentState &state);
+    enum class InputEncoding {
+        SRgb,
+        Linear
+    };
+
+    static QImage process(const QImage &source, const AdjustmentState &state,
+                          InputEncoding inputEncoding = InputEncoding::SRgb);
 };
