@@ -1,7 +1,9 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QUrl>
 
+#include "app/PhotoController.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
@@ -56,6 +58,19 @@ private slots:
         QCOMPARE(metadata.bitsPerChannel, 16);
         QVERIFY(!metadata.make.isEmpty());
         QVERIFY(!metadata.model.isEmpty());
+    }
+
+    void controllerImportsRealRaw() {
+        const QString rawPath = qEnvironmentVariable("JIXELLIGHT_TEST_RAW");
+        if (rawPath.isEmpty()) QSKIP("JIXELLIGHT_TEST_RAW is not set");
+
+        PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(rawPath)));
+        QCOMPARE(controller.library().size(), 1);
+        QVERIFY(controller.hasImage());
+        QVERIFY(controller.currentIsRaw());
+        QVERIFY(!controller.previewUrl().isEmpty());
+        QVERIFY(controller.statusMessage().contains(QStringLiteral("RAW")) || controller.statusMessage().contains(QStringLiteral("导入")));
     }
 
     void zipWriterCreatesZipSignature() {
