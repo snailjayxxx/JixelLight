@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QImage>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QVector>
 #include <QUrl>
 
@@ -22,6 +23,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString currentFormat READ currentFormat NOTIFY currentIndexChanged)
     Q_PROPERTY(bool currentIsRaw READ currentIsRaw NOTIFY currentIndexChanged)
     Q_PROPERTY(QString pipelineDescription READ pipelineDescription NOTIFY currentIndexChanged)
+    Q_PROPERTY(QVariantMap currentMetadata READ currentMetadata NOTIFY currentMetadataChanged)
     Q_PROPERTY(QString projectName READ projectName NOTIFY projectChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY projectChanged)
     Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
@@ -65,6 +67,7 @@ public:
     QString currentFormat() const;
     bool currentIsRaw() const;
     QString pipelineDescription() const;
+    QVariantMap currentMetadata() const { return m_currentMetadata; }
     QString projectName() const { return m_project.projectName(); }
     QString projectPath() const { return m_project.projectPath(); }
     QString language() const { return m_language; }
@@ -99,13 +102,14 @@ public:
     Q_INVOKABLE void setColorMix(int band, int component, double value);
     Q_INVOKABLE void setCurvePoint(int channel, int point, double value);
     Q_INVOKABLE void resetCurve(int channel);
-    Q_INVOKABLE bool exportCurrent(const QUrl &destination);
+    Q_INVOKABLE bool exportCurrent(const QUrl &destination, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92);
     Q_INVOKABLE QString reportBug();
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
+    void currentMetadataChanged();
 
 private:
     struct PhotoEntry { QString path; QString name; AdjustmentState state; bool raw = false; };
@@ -120,6 +124,7 @@ private:
     bool m_hasClipboard = false;
     QString m_language = QStringLiteral("zh_CN");
     QString m_statusMessage;
+    QVariantMap m_currentMetadata;
 
     AdjustmentState currentState() const;
     AdjustmentState *mutableCurrentState();
