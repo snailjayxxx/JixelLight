@@ -5,9 +5,11 @@
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/DiagnosticBundle.h"
 
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QSettings>
 #include <QUrl>
 #include <QDebug>
@@ -68,29 +70,103 @@ void PhotoController::setTint(double v){setAdjustment("tint",v,&AdjustmentState:
 void PhotoController::setHighlights(double v){setAdjustment("highlights",v,&AdjustmentState::highlights);} void PhotoController::setShadows(double v){setAdjustment("shadows",v,&AdjustmentState::shadows);}
 void PhotoController::setWhites(double v){setAdjustment("whites",v,&AdjustmentState::whites);} void PhotoController::setBlacks(double v){setAdjustment("blacks",v,&AdjustmentState::blacks);}
 
+bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
+    if (path.isEmpty()) return false;
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        qWarning() << "Import file does not exist" << path;
+        ActionTrace::instance().record("import_rejected", {{"file", path}, {"reason", "not_found"}});
+        if (notifyImmediately) setStatus(uiText(QStringLiteral("文件不存在：%1").arg(path), QStringLiteral("File not found: %1").arg(path)));
+        return false;
+    }
+
+    for (const auto &p : m_photos) {
+        if (QFileInfo(p.path).absoluteFilePath() == info.absoluteFilePath()) {
+            if (notifyImmediately) setStatus(uiText(QStringLiteral("照片已经在图片库中：%1").arg(info.fileName()), QStringLiteral("Already in library: %1").arg(info.fileName())));
+            return false;
+        }
+    }
+
+    const bool isRaw = RawDecoder::isRawFile(path);
+    if (!isRaw) {
+        QImageReader reader(path); reader.setAutoTransform(true);
+        if (!reader.canRead()) {
+            qWarning() << "Unsupported image" << path << reader.errorString();
+            ActionTrace::instance().record("import_rejected", {{"file", path}, {"reason", reader.errorString()}});
+            if (notifyImmediately) setStatus(uiText(QStringLiteral("无法读取照片：%1").arg(info.fileName()), QStringLiteral("Cannot read image: %1").arg(info.fileName())));
+            return false;
+        }
+    }
+
+    PhotoEntry entry{info.absoluteFilePath(), info.fileName(), {}, isRaw};
+    m_photos.push_back(entry);
+    if (m_project.isOpen()) m_project.addOrUpdatePhoto(entry.path, entry.state);
+    ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
+
+    if (notifyImmediately) {
+        emit libraryChanged();
+        if (m_currentIndex < 0) selectPhoto(m_photos.size() - 1);
+        setStatus(uiText(QStringLiteral("已导入：%1").arg(entry.name), QStringLiteral("Imported: %1").arg(entry.name)));
+    }
+    return true;
+}
+
+void PhotoController::finishImportBatch(int added, int rawAdded) {
+    if (added <= 0) {
+        setStatus(uiText(QStringLiteral("没有导入新的照片"), QStringLiteral("No new photos were imported")));
+        return;
+    }
+    emit libraryChanged();
+    if (m_currentIndex < 0 && !m_photos.isEmpty()) selectPhoto(0);
+    ActionTrace::instance().record("import_files", {{"count", added}, {"raw_count", rawAdded}});
+    setStatus(uiText(QStringLiteral("已导入 %1 张照片，其中 RAW %2 张").arg(added).arg(rawAdded),
+                     QStringLiteral("Imported %1 image(s), %2 RAW").arg(added).arg(rawAdded)));
+}
+
+void PhotoController::openImportDialog() {
+    QSettings settings;
+    const QString startDir = settings.value(QStringLiteral("ui/lastImportDir")).toString();
+    const QString filter = uiText(
+        QStringLiteral("支持的照片与 RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp);;RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw);;普通图片 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp);;所有文件 (*)"),
+        QStringLiteral("Supported photos and RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp);;RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw);;Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp);;All files (*)"));
+
+    ActionTrace::instance().record("import_dialog_opened");
+    const QStringList files = QFileDialog::getOpenFileNames(nullptr,
+        uiText(QStringLiteral("导入 RAW / 照片"), QStringLiteral("Import RAW / Photos")), startDir, filter);
+
+    if (files.isEmpty()) {
+        ActionTrace::instance().record("import_dialog_cancelled");
+        setStatus(uiText(QStringLiteral("已取消导入"), QStringLiteral("Import cancelled")));
+        return;
+    }
+
+    settings.setValue(QStringLiteral("ui/lastImportDir"), QFileInfo(files.first()).absolutePath());
+    int added = 0;
+    int rawAdded = 0;
+    for (const QString &path : files) {
+        const bool raw = RawDecoder::isRawFile(path);
+        if (importPath(path, false)) {
+            ++added;
+            if (raw) ++rawAdded;
+        }
+    }
+    finishImportBatch(added, rawAdded);
+}
+
+bool PhotoController::importFile(const QUrl &url) {
+    const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    return importPath(path, true);
+}
+
 void PhotoController::importFiles(const QVariantList &urls) {
     int added = 0, rawAdded = 0;
     for (const QVariant &v : urls) {
         const QUrl u = v.canConvert<QUrl>() ? v.toUrl() : QUrl(v.toString());
         const QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
-        if (path.isEmpty()) continue;
-        const bool isRaw = RawDecoder::isRawFile(path);
-        if (!isRaw) {
-            QImageReader reader(path); reader.setAutoTransform(true);
-            if (!reader.canRead()) { qWarning() << "Unsupported image" << path << reader.errorString(); continue; }
-        }
-        bool exists=false; for(const auto &p:m_photos) if(p.path==path){exists=true;break;} if(exists) continue;
-        PhotoEntry entry{path, QFileInfo(path).fileName(), {}, isRaw}; m_photos.push_back(entry); ++added; if (isRaw) ++rawAdded;
-        if (m_project.isOpen()) m_project.addOrUpdatePhoto(path, entry.state);
+        const bool raw = RawDecoder::isRawFile(path);
+        if (importPath(path, false)) { ++added; if (raw) ++rawAdded; }
     }
-    if (added) {
-        ActionTrace::instance().record("import_files", {{"count", added}, {"raw_count", rawAdded}});
-        emit libraryChanged(); if (m_currentIndex < 0) selectPhoto(0);
-        setStatus(uiText(QStringLiteral("已导入 %1 张照片，其中 RAW %2 张").arg(added).arg(rawAdded),
-                         QStringLiteral("Imported %1 image(s), %2 RAW").arg(added).arg(rawAdded)));
-    } else {
-        setStatus(uiText(QStringLiteral("没有可导入的照片"), QStringLiteral("No supported photos were imported")));
-    }
+    finishImportBatch(added, rawAdded);
 }
 
 void PhotoController::selectPhoto(int index) {
@@ -162,6 +238,22 @@ QString PhotoController::reportBug() {
     ActionTrace::instance().record("bug_snapshot_requested", {{"file",currentFile()}});
     const QString path = DiagnosticBundle::create(m_processedPreview,currentFile(),projectPath(),currentState(),m_scopes.shadowClipPercent,m_scopes.highlightClipPercent);
     ActionTrace::instance().record("bug_snapshot_created", {{"path",path},{"ok",!path.isEmpty()}});
-    setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"),QStringLiteral("Diagnostic bundle failed")) : uiText(QStringLiteral("诊断包：")+path,QStringLiteral("Diagnostic bundle: ")+path)); return path;
+    setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"),QStringLiteral("Diagnostic bundle failed")) : uiText(QStringLiteral("诊断包：")+path,QStringLiteral("Diagnostic bundle: ")+path));
+    return path;
 }
+
+void PhotoController::reportBugWithDialog() {
+    const QString path = reportBug();
+    if (path.isEmpty()) {
+        QMessageBox::critical(nullptr,
+            uiText(QStringLiteral("JixelLight 诊断"), QStringLiteral("JixelLight Diagnostics")),
+            uiText(QStringLiteral("诊断包生成失败。请查看日志文件。"), QStringLiteral("Failed to create diagnostic bundle. Please check the log file.")));
+        return;
+    }
+    QMessageBox::information(nullptr,
+        uiText(QStringLiteral("诊断包已生成"), QStringLiteral("Diagnostic bundle created")),
+        uiText(QStringLiteral("Bug 诊断包已经保存到：\n\n%1\n\n请把这个 ZIP 发给我，我可以根据日志和操作记录定位问题。").arg(path),
+               QStringLiteral("The diagnostic ZIP was saved to:\n\n%1\n\nSend this ZIP to me so I can inspect the logs and action trace.").arg(path)));
+}
+
 void PhotoController::setStatus(const QString &message) { if(m_statusMessage==message)return;m_statusMessage=message;emit statusMessageChanged(); }
