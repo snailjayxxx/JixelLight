@@ -10,6 +10,8 @@ alpha.5 不再把“16-bit RGB”误当作 RAW 域。RAW 输入会保持在线�
 
 `RAW → Camera WB / Camera Matrix → Demosaic → Linear ProPhoto RGB → Exposure / Tonal → Hue / Saturation / Vibrance / HSL → Master / RGB Curves → Display sRGB`
 
+这版的重点是：**曝光、色温/色调、色相、饱和度、自然饱和度、HSL 和曲线都不再建立在 gamma-encoded sRGB 成片上。**
+
 ### RAW 开发
 
 - LibRaw 解码常见 RAW：ARW / CR2 / CR3 / CRW / NEF / NRW / RAF / RW2 / ORF / DNG / PEF / SRW / RWL / 3FR / ERF / KDC / MOS / MRW / X3F / IIQ / RAW。
