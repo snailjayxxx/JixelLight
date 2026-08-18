@@ -12,16 +12,22 @@ ApplicationWindow {
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }
 
-    FileDialog {
-        id: importDialog; title: window.t("导入照片 / RAW", "Import photos / RAW"); fileMode: FileDialog.OpenFiles
-        nameFilters: [
-            window.t("支持的照片与 RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp)", "Supported photos and RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp)"),
-            "RAW (*.arw *.cr2 *.cr3 *.crw *.nef *.nrw *.raf *.rw2 *.orf *.dng *.pef *.srw *.rwl *.3fr *.erf *.kdc *.mos *.mrw *.x3f *.iiq *.raw)",
-            window.t("普通图片 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp)", "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp)"),
-            window.t("所有文件 (*)", "All files (*)")
-        ]
-        onAccepted: photoController.importFiles(selectedFiles)
+    Shortcut {
+        sequence: StandardKey.Open
+        onActivated: photoController.openImportDialog()
     }
+
+    DropArea {
+        anchors.fill: parent
+        onDropped: function(drop) {
+            if (!drop.urls || drop.urls.length === 0)
+                return
+            for (let i = 0; i < drop.urls.length; ++i)
+                photoController.importFile(drop.urls[i])
+            drop.acceptProposedAction()
+        }
+    }
+
     FileDialog {
         id: exportDialog; title: window.t("导出 JPEG", "Export JPEG"); fileMode: FileDialog.SaveFile; defaultSuffix: "jpg"; nameFilters: ["JPEG (*.jpg *.jpeg)"]
         onAccepted: photoController.exportCurrent(selectedFile)
@@ -39,7 +45,7 @@ ApplicationWindow {
         RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
             Label { text: "JixelLight"; font.bold: true; font.pixelSize: 18; color: "#edf2f7"; Layout.rightMargin: 12 }
             Button { text: window.t("新建项目", "New Project"); onClicked: projectFolder.open() }
-            Button { text: window.t("导入 RAW / 照片", "Import RAW / Photos"); onClicked: importDialog.open() }
+            Button { text: window.t("导入 RAW / 照片", "Import RAW / Photos"); onClicked: photoController.openImportDialog() }
             ToolSeparator {}
             Button { text: window.t("复制调整", "Copy"); enabled: photoController.hasImage; onClicked: photoController.copyAdjustments() }
             Button { text: window.t("粘贴调整", "Paste"); enabled: photoController.hasImage; onClicked: photoController.pasteAdjustments() }
@@ -53,7 +59,7 @@ ApplicationWindow {
                 currentIndex: photoController.language === "zh_CN" ? 0 : 1
                 onActivated: photoController.setLanguage(currentIndex === 0 ? "zh_CN" : "en_US")
             }
-            Button { text: window.t("🐞 报告当前问题", "🐞 Report problem"); onClicked: photoController.reportBug() }
+            Button { text: window.t("🐞 报告当前问题", "🐞 Report problem"); onClicked: photoController.reportBugWithDialog() }
         }
     }
 
@@ -107,6 +113,7 @@ ApplicationWindow {
                     Label { anchors.horizontalCenter: parent.horizontalCenter; text: "JixelLight"; color: "#dce5ef"; font.pixelSize: 28; font.bold: true }
                     Label { text: window.t("导入 RAW 照片开始后期", "Import RAW photos to start editing"); color: "#778594"; font.pixelSize: 14 }
                     Label { text: window.t("支持 ARW / CR2 / CR3 / NEF / RAF / RW2 / ORF / DNG 等", "ARW / CR2 / CR3 / NEF / RAF / RW2 / ORF / DNG and more"); color: "#586675"; font.pixelSize: 11 }
+                    Label { text: window.t("也可以拖放照片到窗口，或使用 Ctrl/Cmd + O", "You can also drop photos here or use Ctrl/Cmd + O"); color: "#4d5966"; font.pixelSize: 10 }
                 }
             }
         }
