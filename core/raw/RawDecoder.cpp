@@ -61,9 +61,13 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.use_camera_wb = 1;
     params.use_auto_wb = 0;
     params.no_auto_bright = 1;
-    params.output_color = 1;   // sRGB display working output for the alpha pipeline.
+    params.adjust_maximum_thr = 0.0f;
+    params.bright = 1.0f;
+    params.output_color = 1;   // Linear sRGB primaries; transfer curve is applied by JixelLight later.
     params.output_bps = 16;
     params.user_qual = 3;      // AHD demosaic in the LibRaw/dcraw reference processor.
+    params.gamm[0] = 1.0;
+    params.gamm[1] = 1.0;
 
     result = raw.dcraw_process();
     if (result != LIBRAW_SUCCESS) {
