@@ -51,7 +51,7 @@ qt_add_qml_module(JixelLight
 
 target_include_directories(JixelLight PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLight PRIVATE
-    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.3"
+    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.4"
     JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}"
 )
 
