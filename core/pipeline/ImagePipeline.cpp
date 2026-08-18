@@ -1,5 +1,6 @@
 #include "core/pipeline/ImagePipeline.h"
 
+#include <QColorSpace>
 #include <QRgba64>
 #include <algorithm>
 #include <cmath>
@@ -20,8 +21,8 @@ inline float linearToSrgb(float v) {
                            : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
 }
 
-// A gentle display-referred shoulder. It is deliberately applied only after
-// RAW-domain exposure/tone work so positive exposure does not immediately
+// Gentle display-referred shoulder. It is deliberately applied only after
+// scene-linear exposure/tone work so positive exposure does not immediately
 // behave like clipping an already-rendered JPEG.
 inline float displayShoulder(float linear) {
     linear = std::max(linear, 0.0f);
@@ -50,7 +51,10 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &s, In
     const float sh = static_cast<float>(s.shadows / 100.0);
     const float wh = static_cast<float>(s.whites / 100.0);
     const float bl = static_cast<float>(s.blacks / 100.0);
-    const bool sourceIsLinear = inputEncoding == InputEncoding::Linear;
+
+    const QColorSpace linearSrgb(QColorSpace::SRgbLinear);
+    const bool sourceMarkedLinear = source.colorSpace().isValid() && source.colorSpace() == linearSrgb;
+    const bool sourceIsLinear = inputEncoding == InputEncoding::Linear || sourceMarkedLinear;
 
     for (int y = 0; y < out.height(); ++y) {
         auto *line = reinterpret_cast<QRgba64 *>(out.scanLine(y));
@@ -66,15 +70,13 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &s, In
                 b = srgbToLinear(b);
             }
 
-            // White-balance fine tuning is now performed before exposure in
-            // linear light. Camera WB is already applied by the RAW decoder;
-            // these controls are non-destructive deltas around that baseline.
+            // Camera WB is applied during RAW development. These sliders are
+            // linear-light deltas around that camera baseline.
             r *= std::max(0.05f, 1.0f + temp * 0.20f + tint * 0.06f);
             g *= std::max(0.05f, 1.0f - tint * 0.10f);
             b *= std::max(0.05f, 1.0f - temp * 0.20f + tint * 0.06f);
 
-            // Exposure is the critical RAW-domain operation: one EV doubles
-            // linear scene-referred values before any display transfer curve.
+            // One EV doubles scene-linear values before display rendering.
             r *= exposureGain;
             g *= exposureGain;
             b *= exposureGain;
@@ -109,5 +111,7 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &s, In
                 original.alpha());
         }
     }
+
+    out.setColorSpace(QColorSpace(QColorSpace::SRgb));
     return out;
 }
