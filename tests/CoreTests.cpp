@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QRgba64>
 #include <QUrl>
+#include <cmath>
 
 #include "app/PhotoController.h"
 #include "core/pipeline/ImagePipeline.h"
