@@ -8,6 +8,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 Sql Test)
+find_package(libraw CONFIG REQUIRED)
 qt_standard_project_setup(REQUIRES 6.5)
 
 execute_process(
@@ -22,8 +23,10 @@ endif()
 
 qt_add_executable(JixelLight
     app/main.cpp
+    app/PhotoController.cpp
     core/image/ProcessedImageProvider.cpp
     core/pipeline/ImagePipeline.cpp
+    core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
     core/project/ProjectDatabase.cpp
     diagnostics/ActionTrace.cpp
@@ -31,7 +34,6 @@ qt_add_executable(JixelLight
     diagnostics/CrashReporter.cpp
     diagnostics/ZipStoreWriter.cpp
     diagnostics/DiagnosticBundle.cpp
-    app/PhotoController.cpp
 )
 
 set_source_files_properties(ui/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
@@ -49,7 +51,7 @@ qt_add_qml_module(JixelLight
 
 target_include_directories(JixelLight PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLight PRIVATE
-    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.1"
+    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.2"
     JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}"
 )
 
@@ -60,6 +62,7 @@ target_link_libraries(JixelLight PRIVATE
     Qt6::Qml
     Qt6::QuickControls2
     Qt6::Sql
+    libraw::raw_r
 )
 
 if(WIN32)
@@ -79,9 +82,10 @@ enable_testing()
 qt_add_executable(JixelLightCoreTests
     tests/CoreTests.cpp
     core/pipeline/ImagePipeline.cpp
+    core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
     diagnostics/ZipStoreWriter.cpp
 )
 target_include_directories(JixelLightCoreTests PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(JixelLightCoreTests PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_link_libraries(JixelLightCoreTests PRIVATE Qt6::Core Qt6::Gui Qt6::Test libraw::raw_r)
 add_test(NAME core-tests COMMAND JixelLightCoreTests)

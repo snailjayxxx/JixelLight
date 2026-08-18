@@ -10,12 +10,15 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-2022
             file: JixelLight-Windows-x64.zip
+            triplet: x64-windows-static-md
           - os: macos-15
             file: JixelLight-macOS-arm64.zip
+            triplet: arm64-osx-static
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +28,25 @@ jobs:
           version: '6.8.3'
           modules: 'qtshadertools'
           cache: true
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          path: .vcpkg
+          fetch-depth: 1
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - if: runner.os == 'macOS'
+        shell: bash
+        run: ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - shell: bash
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"
       - run: cmake --build build --config Release --parallel
+      - run: ctest --test-dir build -C Release --output-on-failure
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |

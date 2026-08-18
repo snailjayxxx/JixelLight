@@ -19,8 +19,11 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString previewUrl READ previewUrl NOTIFY previewUrlChanged)
     Q_PROPERTY(bool hasImage READ hasImage NOTIFY currentIndexChanged)
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentIndexChanged)
+    Q_PROPERTY(QString currentFormat READ currentFormat NOTIFY currentIndexChanged)
+    Q_PROPERTY(bool currentIsRaw READ currentIsRaw NOTIFY currentIndexChanged)
     Q_PROPERTY(QString projectName READ projectName NOTIFY projectChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY projectChanged)
+    Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
     Q_PROPERTY(QVariantList redHistogram READ redHistogram NOTIFY scopesChanged)
     Q_PROPERTY(QVariantList greenHistogram READ greenHistogram NOTIFY scopesChanged)
     Q_PROPERTY(QVariantList blueHistogram READ blueHistogram NOTIFY scopesChanged)
@@ -44,8 +47,11 @@ public:
     QString previewUrl() const;
     bool hasImage() const { return m_currentIndex >= 0 && m_currentIndex < m_photos.size(); }
     QString currentFile() const;
+    QString currentFormat() const;
+    bool currentIsRaw() const;
     QString projectName() const { return m_project.projectName(); }
     QString projectPath() const { return m_project.projectPath(); }
+    QString language() const { return m_language; }
     QVariantList redHistogram() const { return m_scopes.red; }
     QVariantList greenHistogram() const { return m_scopes.green; }
     QVariantList blueHistogram() const { return m_scopes.blue; }
@@ -58,6 +64,7 @@ public:
 
     void setExposure(double v); void setTemperature(double v); void setTint(double v); void setContrast(double v);
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
+    Q_INVOKABLE void setLanguage(const QString &language);
 
     Q_INVOKABLE void importFiles(const QVariantList &urls);
     Q_INVOKABLE void selectPhoto(int index);
@@ -71,10 +78,10 @@ public:
 
 signals:
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
-    void adjustmentsChanged(); void projectChanged(); void statusMessageChanged();
+    void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
 
 private:
-    struct PhotoEntry { QString path; QString name; AdjustmentState state; };
+    struct PhotoEntry { QString path; QString name; AdjustmentState state; bool raw = false; };
     QVector<PhotoEntry> m_photos;
     int m_currentIndex = -1;
     quint64 m_previewRevision = 0;
@@ -84,12 +91,14 @@ private:
     ProjectDatabase m_project;
     AdjustmentState m_clipboard;
     bool m_hasClipboard = false;
-    QString m_statusMessage = "Ready";
+    QString m_language = QStringLiteral("zh_CN");
+    QString m_statusMessage;
 
     AdjustmentState currentState() const;
     AdjustmentState *mutableCurrentState();
     void applyCurrent();
     void loadCurrent();
     void setStatus(const QString &message);
+    QString uiText(const QString &zh, const QString &en) const;
     void setAdjustment(const char *name, double v, double AdjustmentState::*member);
 };

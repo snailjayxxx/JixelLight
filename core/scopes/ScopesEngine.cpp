@@ -1,7 +1,7 @@
 #include "core/scopes/ScopesEngine.h"
 
+#include <QRgba64>
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <vector>
 
@@ -11,18 +11,24 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins) {
     std::vector<quint64> r(bins), g(bins), b(bins), l(bins);
     if (image.isNull()) return result;
 
-    const QImage src = image.convertToFormat(QImage::Format_RGBA8888);
+    const QImage src = image.convertToFormat(QImage::Format_RGBA64);
     quint64 shadowClipped = 0, highlightClipped = 0, count = 0;
+    auto binOf = [bins](quint16 v) {
+        return std::min(bins - 1, static_cast<int>((static_cast<quint64>(v) * bins) / 65536u));
+    };
+
     for (int y = 0; y < src.height(); ++y) {
-        const auto *line = src.constScanLine(y);
+        const auto *line = reinterpret_cast<const QRgba64 *>(src.constScanLine(y));
         for (int x = 0; x < src.width(); ++x) {
-            const auto *p = line + x * 4;
-            auto bin = [bins](int v) { return std::min(bins - 1, (v * bins) / 256); };
-            ++r[bin(p[0])]; ++g[bin(p[1])]; ++b[bin(p[2])];
-            const int y709 = std::clamp(static_cast<int>(std::lround(0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2])), 0, 255);
-            ++l[bin(y709)];
-            if (p[0] <= 1 && p[1] <= 1 && p[2] <= 1) ++shadowClipped;
-            if (p[0] >= 254 || p[1] >= 254 || p[2] >= 254) ++highlightClipped;
+            const quint16 rv = line[x].red();
+            const quint16 gv = line[x].green();
+            const quint16 bv = line[x].blue();
+            ++r[binOf(rv)]; ++g[binOf(gv)]; ++b[binOf(bv)];
+            const quint16 y709 = static_cast<quint16>(std::clamp(
+                static_cast<int>(std::lround(0.2126 * rv + 0.7152 * gv + 0.0722 * bv)), 0, 65535));
+            ++l[binOf(y709)];
+            if (rv <= 257 && gv <= 257 && bv <= 257) ++shadowClipped;
+            if (rv >= 65278 || gv >= 65278 || bv >= 65278) ++highlightClipped;
             ++count;
         }
     }
