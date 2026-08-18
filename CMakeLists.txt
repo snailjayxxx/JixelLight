@@ -39,6 +39,7 @@ qt_add_executable(JixelLight
 set_source_files_properties(ui/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 set_source_files_properties(ui/HistogramView.qml PROPERTIES QT_RESOURCE_ALIAS HistogramView.qml)
 set_source_files_properties(ui/AdjustmentSlider.qml PROPERTIES QT_RESOURCE_ALIAS AdjustmentSlider.qml)
+set_source_files_properties(ui/CurveEditor.qml PROPERTIES QT_RESOURCE_ALIAS CurveEditor.qml)
 
 qt_add_qml_module(JixelLight
     URI JixelLight
@@ -47,11 +48,12 @@ qt_add_qml_module(JixelLight
         ui/Main.qml
         ui/HistogramView.qml
         ui/AdjustmentSlider.qml
+        ui/CurveEditor.qml
 )
 
 target_include_directories(JixelLight PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLight PRIVATE
-    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.4"
+    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.5"
     JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}"
 )
 
