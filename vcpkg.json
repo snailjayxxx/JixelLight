@@ -1,10 +1,15 @@
 {
   "name": "jixellight",
-  "version-string": "0.1.0-alpha.5",
+  "version-string": "0.1.0-alpha.6",
   "dependencies": [
     {
       "name": "libraw",
       "features": ["dng-lossy"]
+    },
+    "lcms",
+    {
+      "name": "exiv2",
+      "features": ["bmff"]
     }
   ]
 }
