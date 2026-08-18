@@ -60,7 +60,16 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Test
+      - name: Download real RAW test sample
+        shell: bash
+        run: >-
+          curl -L --fail --retry 3
+          "https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG"
+          -o "$RUNNER_TEMP/JixelLight-test.DNG"
+
+      - name: Test including real RAW decode
+        env:
+          JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Deploy Windows
