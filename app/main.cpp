@@ -1,4 +1,4 @@
-#include <QGuiApplication>
+#include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -17,7 +17,7 @@
 #endif
 
 int main(int argc, char *argv[]) {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     app.setApplicationName("JixelLight");
     app.setOrganizationName("JixelLight");
     app.setApplicationVersion(JIXELLIGHT_VERSION);
