@@ -42,6 +42,22 @@ private slots:
         QVERIFY(!RawDecoder::isRawFile("photo.jpg"));
     }
 
+    void realRawDecodeSmoke() {
+        const QString rawPath = qEnvironmentVariable("JIXELLIGHT_TEST_RAW");
+        if (rawPath.isEmpty()) QSKIP("JIXELLIGHT_TEST_RAW is not set");
+
+        QString error;
+        RawMetadata metadata;
+        const QImage image = RawDecoder::decode(rawPath, &error, &metadata);
+        QVERIFY2(!image.isNull(), qPrintable(error));
+        QCOMPARE(image.format(), QImage::Format_RGBA64);
+        QVERIFY(image.width() > 1000);
+        QVERIFY(image.height() > 1000);
+        QCOMPARE(metadata.bitsPerChannel, 16);
+        QVERIFY(!metadata.make.isEmpty());
+        QVERIFY(!metadata.model.isEmpty());
+    }
+
     void zipWriterCreatesZipSignature() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const QString path = dir.filePath("test.zip");
