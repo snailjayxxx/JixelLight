@@ -9,6 +9,8 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Quick Qml QuickControls2 Sql Test)
 find_package(libraw CONFIG REQUIRED)
+find_package(lcms2 CONFIG REQUIRED)
+find_package(exiv2 REQUIRED CONFIG NAMES exiv2)
 qt_standard_project_setup(REQUIRES 6.5)
 
 execute_process(
@@ -24,7 +26,9 @@ endif()
 qt_add_executable(JixelLight
     app/main.cpp
     app/PhotoController.cpp
+    core/color/ColorManagement.cpp
     core/image/ProcessedImageProvider.cpp
+    core/metadata/MetadataReader.cpp
     core/pipeline/ImagePipeline.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
@@ -53,7 +57,7 @@ qt_add_qml_module(JixelLight
 
 target_include_directories(JixelLight PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLight PRIVATE
-    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.5"
+    JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.6"
     JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}"
 )
 
@@ -66,6 +70,8 @@ target_link_libraries(JixelLight PRIVATE
     Qt6::QuickControls2
     Qt6::Sql
     libraw::raw_r
+    lcms2::lcms2
+    Exiv2::exiv2lib
 )
 
 if(WIN32)
@@ -85,7 +91,9 @@ enable_testing()
 qt_add_executable(JixelLightCoreTests
     tests/CoreTests.cpp
     app/PhotoController.cpp
+    core/color/ColorManagement.cpp
     core/image/ProcessedImageProvider.cpp
+    core/metadata/MetadataReader.cpp
     core/pipeline/ImagePipeline.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
@@ -104,5 +112,7 @@ target_link_libraries(JixelLightCoreTests PRIVATE
     Qt6::Sql
     Qt6::Test
     libraw::raw_r
+    lcms2::lcms2
+    Exiv2::exiv2lib
 )
 add_test(NAME core-tests COMMAND JixelLightCoreTests)
