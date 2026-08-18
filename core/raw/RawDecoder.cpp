@@ -1,5 +1,6 @@
 #include "core/raw/RawDecoder.h"
 
+#include <QColorSpace>
 #include <QFile>
 #include <QFileInfo>
 #include <QRgba64>
@@ -63,7 +64,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.no_auto_bright = 1;
     params.adjust_maximum_thr = 0.0f;
     params.bright = 1.0f;
-    params.output_color = 1;   // Linear sRGB primaries; transfer curve is applied by JixelLight later.
+    params.output_color = 1;   // sRGB primaries, but with a linear transfer function below.
     params.output_bps = 16;
     params.user_qual = 3;      // AHD demosaic in the LibRaw/dcraw reference processor.
     params.gamm[0] = 1.0;
@@ -95,6 +96,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         LibRaw::dcraw_clear_mem(processed);
         return {};
     }
+    image.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
 
     const int colors = processed->colors;
     if (processed->bits == 16) {
