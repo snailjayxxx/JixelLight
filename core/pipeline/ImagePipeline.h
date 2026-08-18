@@ -7,7 +7,7 @@ class ImagePipeline {
 public:
     enum class InputEncoding {
         SRgb,
-        Linear
+        LinearProPhoto
     };
 
     static QImage process(const QImage &source, const AdjustmentState &state,
