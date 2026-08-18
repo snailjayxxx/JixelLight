@@ -2,6 +2,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QString>
 #include <array>
 
 struct AdjustmentState {
@@ -42,7 +43,7 @@ struct AdjustmentState {
 
     template <std::size_t N>
     static void readJsonArray(const QJsonObject &object, const char *key, std::array<double, N> &target) {
-        const QJsonArray a = object.value(QLatin1String(key)).toArray();
+        const QJsonArray a = object.value(QString::fromLatin1(key)).toArray();
         if (a.size() != static_cast<int>(N)) return;
         for (int i = 0; i < a.size(); ++i) target[static_cast<std::size_t>(i)] = a.at(i).toDouble(target[static_cast<std::size_t>(i)]);
     }
