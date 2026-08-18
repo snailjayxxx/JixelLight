@@ -82,11 +82,25 @@ enable_testing()
 
 qt_add_executable(JixelLightCoreTests
     tests/CoreTests.cpp
+    app/PhotoController.cpp
+    core/image/ProcessedImageProvider.cpp
     core/pipeline/ImagePipeline.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
+    core/project/ProjectDatabase.cpp
+    diagnostics/ActionTrace.cpp
+    diagnostics/LoggingEngine.cpp
     diagnostics/ZipStoreWriter.cpp
+    diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCoreTests PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(JixelLightCoreTests PRIVATE Qt6::Core Qt6::Gui Qt6::Test libraw::raw_r)
+target_link_libraries(JixelLightCoreTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Quick
+    Qt6::Sql
+    Qt6::Test
+    libraw::raw_r
+)
 add_test(NAME core-tests COMMAND JixelLightCoreTests)
