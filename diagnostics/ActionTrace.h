@@ -6,14 +6,21 @@
 #include <QString>
 #include <QVariantMap>
 #include <deque>
+#include <type_traits>
 
 class ActionTrace {
 public:
     static ActionTrace &instance();
     void record(const QString &action, const QJsonObject &details = {});
-    void record(const QString &action, const QVariantMap &details) {
+
+    // Only participates in overload resolution when the caller already has a
+    // concrete QVariantMap variable. Braced initializer lists cannot deduce T,
+    // so the normal QJsonObject overload remains unambiguous everywhere else.
+    template <typename T, std::enable_if_t<std::is_same_v<T, QVariantMap>, int> = 0>
+    void record(const QString &action, const T &details) {
         record(action, QJsonObject::fromVariantMap(details));
     }
+
     [[nodiscard]] QJsonArray snapshot() const;
 
 private:
