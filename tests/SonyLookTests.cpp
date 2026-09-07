@@ -75,6 +75,12 @@ private slots:
         QString error;const auto m=MetadataReader::read(path,&error)["sonyLook"].toMap();QVERIFY2(error.isEmpty(),qPrintable(error));
         QCOMPARE(m["code"].toString(),QString("FL"));QCOMPARE(m["parameters"].toMap()["fade"].toInt(),2);
         // This is a synthetic EXIF fixture, not evidence of real Sony camera output.
+        // File identity must survive a failed/unsupported metadata reader too.
+        const auto unsupported=dir.filePath("no-metadata.bin");QFile file(unsupported);
+        QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write("not-an-image"),qint64(12));file.close();
+        const auto basic=MetadataReader::read(unsupported,&error);
+        QVERIFY(!error.isEmpty());QCOMPARE(basic["fileName"].toString(),QString("no-metadata.bin"));
+        QCOMPARE(basic["fileSizeBytes"].toLongLong(),qint64(12));QVERIFY(!basic.contains("sonyLook"));
     }
     void asShotIsPerPhotoAndNeverAutomaticOnJpeg() {
         AdjustmentState s;s.look.mode="as-shot";s.look.strength=.5;

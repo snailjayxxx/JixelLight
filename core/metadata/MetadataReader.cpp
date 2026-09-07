@@ -44,6 +44,11 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
     }
 
     const qint64 fileSize = file.size();
+    // Filesystem identity is available even when this Exiv2 build cannot parse
+    // the container (e.g. its optional PNG reader is disabled). Do not hide the
+    // selected filename or invent camera metadata on that non-fatal path.
+    result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
+    result.insert(QStringLiteral("fileSizeBytes"), fileSize);
     if (fileSize <= 0) {
         if (errorMessage) *errorMessage = QStringLiteral("Empty image file");
         return result;
@@ -84,8 +89,6 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
         putIfPresent(result,"software",firstValue(exif,{"Exif.Image.Software"}));
         putIfPresent(result,"subSecTime",firstValue(exif,{"Exif.Photo.SubSecTimeOriginal"}));
         putIfPresent(result,"imageUniqueId",firstValue(exif,{"Exif.Photo.ImageUniqueID"}));
-        result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
-        result.insert(QStringLiteral("fileSizeBytes"), fileSize);
 
         putIfPresent(result, QStringLiteral("make"), firstValue(exif, {"Exif.Image.Make", "Exif.Photo.Make"}));
         putIfPresent(result, QStringLiteral("model"), firstValue(exif, {"Exif.Image.Model", "Exif.Photo.Model"}));
