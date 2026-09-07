@@ -11,6 +11,9 @@ concurrency:
   cancel-in-progress: true
 env:
   PYTHONIOENCODING: utf-8
+  JIXELLIGHT_SONY_FIXTURES: ${{ github.workspace }}/.sony-fixtures
+  JIXELLIGHT_REQUIRE_SONY_REAL: '1'
+  JIXELLIGHT_TEST_SONY_PROFILE: ${{ github.workspace }}/build/sony-real-reports/dataset/empirical.jlook.json
 jobs:
   desktop:
     strategy:
@@ -86,6 +89,9 @@ jobs:
           curl -L --fail --retry 3
           "https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG"
           -o "$RUNNER_TEMP/JixelLight-test.DNG"
+      - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
+        shell: bash
+        run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
       - name: Test including real RAW decode and compute parity
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
@@ -159,6 +165,7 @@ jobs:
           path: |
             build/*-results.txt
             build/tests.xml
+            build/sony-real-reports/
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             gui-*.json
@@ -172,9 +179,14 @@ jobs:
           if (-not $exe) { throw 'JixelLight.exe not found' }
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item $exe.FullName package/JixelLight.exe
+          $probe = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightSonyValidation.exe | Select-Object -First 1
+          Copy-Item $probe.FullName package/JixelLightSonyValidation.exe
+          New-Item -ItemType Directory -Force -Path package/profiles | Out-Null
+          Copy-Item build/sony-real-reports/dataset/empirical.jlook.json package/profiles/Sony-ILCE7M4-ST-experimental.jlook.json
+          Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
-          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG"
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe
           if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
           Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
@@ -185,8 +197,12 @@ jobs:
         run: |
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
-          macdeployqt "$APP" -qmldir=ui
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG"
+          cp build/bin/JixelLightSonyValidation "$APP/Contents/MacOS/JixelLightSonyValidation"
+          mkdir -p "$APP/Contents/Resources/profiles"
+          cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
+          cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
+          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation"
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload packaging validation
@@ -229,6 +245,9 @@ jobs:
           cmake --build build --parallel 4
       - name: RAW fixture
         run: curl -L --fail --retry 3 https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG -o "$RUNNER_TEMP/test.DNG"
+      - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
+        shell: bash
+        run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
       - name: Tests (GPU must not be skipped)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -262,6 +281,7 @@ jobs:
           path: |
             build/*-results.txt
             build/tests.xml
+            build/sony-real-reports/
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
