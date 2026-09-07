@@ -66,6 +66,7 @@ private slots:
         e=sony("Standard");e["Exif.Image.Model"]="ILCE-7M2";m=SonyLookMetadata::read(e);QVERIFY(!m["autoEligible"].toBool());QCOMPARE(m["generation"].toString(),QString("unknown"));
         e=sony("FUTURE_LOOK");m=SonyLookMetadata::read(e);QCOMPARE(m["status"].toString(),QString("unsupported"));QVERIFY(!m["autoEligible"].toBool());
         signedTag(e,0xb029,18);m=SonyLookMetadata::read(e);QCOMPARE(m["status"].toString(),QString("unsupported"));QVERIFY(!m["autoEligible"].toBool());
+        QVERIFY(m["code"].toString().isEmpty());QVERIFY(!m["rawFields"].toMap().isEmpty());
         e["Exif.Image.Make"]="CANON";QCOMPARE(SonyLookMetadata::read(e)["status"].toString(),QString("not-sony"));
     }
     void metadataFromActualJpegContainer() {
