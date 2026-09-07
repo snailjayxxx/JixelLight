@@ -1,4 +1,5 @@
 #include "diagnostics/DiagnosticBundle.h"
+#include "diagnostics/PerformanceRecorder.h"
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/LoggingEngine.h"
 #include "diagnostics/ZipStoreWriter.h"
@@ -22,11 +23,12 @@
 QString DiagnosticBundle::create(const QImage &preview, const QString &currentFile,
                                  const QString &projectPath, const AdjustmentState &state,
                                  double shadowClip, double highlightClip,
-                                 const QString &pipelineDescription) {
+                                 const QString &pipelineDescription, const QJsonObject &scopeContext) {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QDir().mkpath(dir);
-    const QString path = dir + "/JixelLight_Diagnostic_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".zip";
+    const QString path = dir + "/JixelLight_Diagnostic_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz") + ".zip";
+    const bool logsFlushed = LoggingEngine::flush();
     ZipStoreWriter zip(path);
     if (!zip.open()) return {};
 
@@ -41,17 +43,28 @@ QString DiagnosticBundle::create(const QImage &preview, const QString &currentFi
         {"display_output", QStringLiteral("sRGB")},
         {"scopes", QJsonObject{{"bins",1024},{"source",QStringLiteral("current display result")},{"shadow_clip_percent",shadowClip},{"highlight_clip_percent",highlightClip}}}
     };
-    zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
-    zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));
+    auto scopes = manifest["scopes"].toObject();
+    scopes["source"] = QStringLiteral("sRGB output-referred; mode and revision below");
+    for (auto it=scopeContext.constBegin(); it!=scopeContext.constEnd(); ++it) scopes.insert(it.key(), it.value());
+    manifest["scopes"] = scopes;
+    manifest["logs_flushed"] = logsFlushed;
+    manifest["log_lines_dropped"] = qint64(LoggingEngine::droppedLines());
+    manifest["preview_capture"] = QStringLiteral("CPU reference of current parameters; not a GPU screen capture");
+    bool written = zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+    written &= zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));
+
+    written &= zip.addFile("performance.json", QJsonDocument(PerformanceRecorder::snapshot()).toJson(QJsonDocument::Indented));
 
     if (!preview.isNull()) {
         QByteArray png;
         QBuffer buffer(&png);
         buffer.open(QIODevice::WriteOnly);
-        preview.save(&buffer, "PNG");
-        zip.addFile("current_preview.png", png);
+        written &= preview.save(&buffer, "PNG");
+        written &= zip.addFile("current_preview.png", png);
     }
     QFile log(LoggingEngine::currentLogPath());
-    if (log.open(QIODevice::ReadOnly)) zip.addFile("session.log", log.readAll());
-    return zip.close() ? path : QString{};
+    if (log.open(QIODevice::ReadOnly)) written &= zip.addFile("session.log", log.readAll());
+    const bool closed = zip.close();
+    if (!written || !closed) { QFile::remove(path); return {}; }
+    return path;
 }

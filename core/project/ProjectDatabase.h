@@ -1,21 +1,34 @@
 #pragma once
-
-#include <QString>
 #include "core/pipeline/AdjustmentState.h"
+#include <QObject>
+#include <QHash>
+#include <QThread>
+#include <QMutex>
+#include <memory>
 
-class ProjectDatabase {
+// All SQL handles are created, queried and destroyed on one dedicated thread.
+class ProjectDatabase final : public QObject {
+    Q_OBJECT
 public:
-    ProjectDatabase();
-    ~ProjectDatabase();
+    explicit ProjectDatabase(QObject *parent = nullptr);
+    ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);
-    [[nodiscard]] bool isOpen() const;
-    [[nodiscard]] QString projectPath() const { return m_projectPath; }
-    [[nodiscard]] QString projectName() const { return m_projectName; }
-
+    bool updateBatch(const QHash<QString, AdjustmentState> &states);
+    bool flush();
+    bool isOpen() const { return m_open; }
+    QString projectPath() const { return m_projectPath; }
+    QString projectName() const { return m_projectName; }
+    QString lastError() const;
+signals:
+    void saved(int count);
+    void writeFailed(const QString &message);
 private:
-    QString m_connectionName;
-    QString m_projectPath;
-    QString m_projectName;
+    struct WorkerState { QString connectionName; QString error; QMutex mutex; };
+    std::shared_ptr<WorkerState> m_state;
+    QThread m_thread;
+    QObject *m_worker = nullptr;
+    QString m_projectPath, m_projectName;
+    bool m_open = false;
 };

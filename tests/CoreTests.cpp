@@ -200,7 +200,7 @@ private slots:
         QCOMPARE(controller.library().size(), 1);
         QVERIFY(controller.hasImage());
         QVERIFY(controller.currentIsRaw());
-        QVERIFY(!controller.previewUrl().isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.previewUrl().isEmpty(), 30000);
         QVERIFY(controller.pipelineDescription().contains(QStringLiteral("Linear ProPhoto RGB")));
         QVERIFY(controller.pipelineDescription().contains(QStringLiteral("ICC sRGB Preview")));
         QVERIFY(controller.currentMetadata().contains(QStringLiteral("make")));
@@ -218,7 +218,11 @@ private slots:
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString exportPath = dir.filePath(QStringLiteral("p3-export.jpg"));
+        QSignalSpy exportedSignal(&controller, &PhotoController::exportFinished);
         QVERIFY(controller.exportCurrent(QUrl::fromLocalFile(exportPath), QStringLiteral("display-p3"), 91));
+        QTRY_COMPARE_WITH_TIMEOUT(exportedSignal.size(), 1, 60000);
+        QCOMPARE(exportedSignal.first().at(0).toInt(), 1);
+        QCOMPARE(exportedSignal.first().at(1).toInt(), 0);
         QVERIFY(QFile::exists(exportPath));
 
         QImageReader reader(exportPath);

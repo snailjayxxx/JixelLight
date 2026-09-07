@@ -2,7 +2,27 @@
 
 JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
-当前开发版本：**v0.1.0-alpha.6**
+当前开发版本：**v0.1.0-alpha.7**
+
+## alpha.7：A—E 性能改造
+
+在保留非破坏编辑、1024-bin RGB/亮度直方图和 Bug 诊断的基础上，加入：
+
+| 模块 | 已实现 |
+|---|---|
+| A：调度 | 后台读取、预览、统计与导出；每条交互队列至多一个运行任务和一个可替换待办；照片/参数/视区版本校验；300ms 合并保存与 1s 最大等待。 |
+| B：CPU | 参数预编译、白平衡/曝光矩阵合并、中性调整旁路、仅执行启用的色带、共享行块线程池；保留 alpha.6 对照实现用于测试。 |
+| C：缓存 | 512MiB 默认开发缓存、1GiB 磁盘线性预览、源文件指纹与校验和、相邻照片预读、相机 JPEG 占位、Fit/100%/200% 视区处理。 |
+| D：GPU | Qt 6.8.3 QRhi：Metal / D3D11 / OpenGL Compute；RGBA32F 常驻纹理，当前调色步骤融合执行，直接 GPU 显示；能力不足自动回退 CPU。 |
+| E：统计 | 1024-bin GPU 分块与归并直方图，每次仅读回 16,400 字节；可选全分辨率 CPU 精确统计，明确显示统计范围和更新状态。 |
+| 导出/诊断 | 冻结参数的后台批量队列、128 行分块 JPEG、直接宽色域 ICC 输出、取消不提交半成品、保护已导入原图；批量异步日志与 performance.json。 |
+
+详细实现、测试方法、可配置预算和未覆盖范围见 [性能改造说明](docs/PERFORMANCE_ALPHA7.md)。
+
+**GPU 不是 AI 推理。** RAW 解包/去马赛克仍为 LibRaw CPU；当前 GPU 负责交互调色、显示和预览统计。导出保留经过测试的 CPU 分块路径。显示仍以 sRGB 为目标；显示器 ICC/软打样不在本次范围。
+
+以下 alpha.6/alpha.5 章节是历史设计记录，其导出、同步预览和待办状态不代表 alpha.7。
+
 
 ## alpha.6：ICC 色彩管理与 RAW 元数据基础
 
@@ -120,9 +140,10 @@ Bug ZIP / Action Trace 当前覆盖：
 
 - CMake 3.24+
 - C++20
-- Qt 6.5+
+- **Qt 6.8.3**（包含 Qt Shader Tools 和 Qt Gui private headers；QRhi 属于有限兼容 API，升级需重新验证）
 - LibRaw（vcpkg manifest）
 - LittleCMS 2（vcpkg `lcms`）
+- libjpeg-turbo（分块 JPEG 写入）
 - Exiv2（vcpkg，含 `bmff` feature）
 
 ### macOS Apple Silicon
@@ -149,14 +170,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release `
 cmake --build build --config Release --parallel
 ```
 
-## 接下来继续专业化的部分
+## alpha.7 之后的专业化方向
 
 1. Camera/DCP Profile 管理与按相机模型选择 Profile。
-2. 从 Linear ProPhoto working data 直接分叉的 native wide-gamut export。
+2. 高位深 TIFF 等更多输出格式；alpha.7 已直接分叉 JPEG 宽色域输出。
 3. 显示器 ICC / soft proof / rendering intent。
 4. 真正的传感器级 highlight reconstruction 与更高级 demosaic。
-5. **RGBA16F / Qt RHI GPU Processing Graph**。
-6. 更高性能 RAW preview cache / 后台解码。
+5. 在 RGBA32F GPU 基线之上评估 FP16 和更多空间处理节点。
+6. 更多相机 RAW 样本、低分辨率开发算法、长期缓存与峰值内存调优。
 7. Metadata 索引、筛选与批量检索。
 
 架构说明见 [`docs/RAW_PIPELINE_ALPHA5.md`](docs/RAW_PIPELINE_ALPHA5.md) 与 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。

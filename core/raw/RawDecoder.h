@@ -2,6 +2,7 @@
 
 #include <QImage>
 #include <QString>
+#include "core/async/LatestJob.h"
 
 struct RawMetadata {
     QString make;
@@ -19,5 +20,6 @@ struct RawMetadata {
 class RawDecoder final {
 public:
     static bool isRawFile(const QString &path);
-    static QImage decode(const QString &path, QString *errorMessage = nullptr, RawMetadata *metadata = nullptr);
+    static QImage decode(const QString &path, QString *errorMessage = nullptr, RawMetadata *metadata = nullptr, const CancelToken &cancel = {});
+    static QImage thumbnail(const QString &path, const CancelToken &cancel = {});
 };

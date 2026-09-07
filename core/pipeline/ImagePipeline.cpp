@@ -1,4 +1,7 @@
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/ProcessingPlan.h"
+#include "core/async/ParallelRows.h"
+#include "diagnostics/PerformanceRecorder.h"
 
 #include <QColorSpace>
 #include <QRgba64>
@@ -153,7 +156,8 @@ inline float hueBandWeight(float hue, float center) {
     return 0.5f + 0.5f * std::cos(kPi * d / 52.0f);
 }
 
-inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) {
+inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
+    const auto &state = plan.state;
     Oklab lab = linearSrgbToOklab(linearSrgb);
     float chroma = std::hypot(lab.a, lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;
@@ -173,6 +177,8 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) 
     float satDelta = 0.0f;
     float lumDelta = 0.0f;
     for (int i = 0; i < AdjustmentState::ColorBandCount; ++i) {
+        const auto &band = plan.data[ProcessingPlan::Bands + i];
+        if (band.x == 0.0f && band.y == 0.0f && band.z == 0.0f) continue;
         const float w = hueBandWeight(hue, centers[static_cast<std::size_t>(i)]);
         hueDelta += static_cast<float>(state.hslHue[static_cast<std::size_t>(i)] / 100.0) * 35.0f * w;
         satDelta += static_cast<float>(state.hslSaturation[static_cast<std::size_t>(i)] / 100.0) * w;
@@ -187,8 +193,8 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) 
     return oklabToLinearSrgb(lab);
 }
 
-inline Vec3 compressNegativeGamut(Vec3 rgb) {
-    const float y = std::max(0.0f, 0.2126f*rgb.x + 0.7152f*rgb.y + 0.0722f*rgb.z);
+inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
+    const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
         const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * 0.995f;
@@ -233,8 +239,8 @@ inline float displayShoulder(float linear, float recovery) {
     return start + span * (1.0f - std::exp(-strength * (linear - start) / span));
 }
 
-inline Vec3 applyMasterCurve(Vec3 rgb, const AdjustmentState::CurveArray &curve) {
-    const float y = std::max(0.0f, 0.2126f*rgb.x + 0.7152f*rgb.y + 0.0722f*rgb.z);
+inline Vec3 applyMasterCurve(Vec3 rgb, const AdjustmentState::CurveArray &curve, const Float4 &lum) {
+    const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     if (y <= 1.0e-6f) return rgb;
     const float mapped = curveSample(curve, y);
     return scale(rgb, mapped / y);
@@ -247,88 +253,138 @@ inline float middleGrayContrast(float y, float factor) {
 }
 }
 
-QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state, InputEncoding inputEncoding) {
-    if (source.isNull()) return {};
 
-    QImage out = source.convertToFormat(QImage::Format_RGBA64);
-    const float exposureGain = static_cast<float>(std::exp2(state.exposure));
-    const float temperature = static_cast<float>(state.temperature / 100.0);
-    const float tint = static_cast<float>(state.tint / 100.0);
-    const float contrastFactor = std::clamp(static_cast<float>(1.0 + state.contrast / 100.0), 0.05f, 2.5f);
-    const float hi = static_cast<float>(state.highlights / 100.0);
-    const float sh = static_cast<float>(state.shadows / 100.0);
-    const float wh = static_cast<float>(state.whites / 100.0);
-    const float bl = static_cast<float>(state.blacks / 100.0);
-    const float recovery = clamp01(static_cast<float>(state.highlightRecovery / 100.0));
+namespace {
+Vec3 multiply(const Float4 *rows, Vec3 v) {
+    return {rows[0].x*v.x + rows[0].y*v.y + rows[0].z*v.z,
+            rows[1].x*v.x + rows[1].y*v.y + rows[1].z*v.z,
+            rows[2].x*v.x + rows[2].y*v.y + rows[2].z*v.z};
+}
+template<class Function> std::array<Float4, 3> matrixOf(Function transform) {
+    const Vec3 a = transform(Vec3{1,0,0}), b = transform(Vec3{0,1,0}), c = transform(Vec3{0,0,1});
+    return {Float4{a.x,b.x,c.x,0}, Float4{a.y,b.y,c.y,0}, Float4{a.z,b.z,c.z,0}};
+}
+const auto InputMatrix = matrixOf(linearSrgbToProPhoto);
+const auto WorkingToSrgb = matrixOf(proPhotoToLinearSrgb);
+Vec3 toOutput(Vec3 rgb, ColorManagement::OutputSpace space) {
+    if (space == ColorManagement::OutputSpace::SRgb) return rgb;
+    if (space == ColorManagement::OutputSpace::ProPhotoRgb) return linearSrgbToProPhoto(rgb);
+    const Vec3 xyz = linearSrgbToXyzD65(rgb);
+    if (space == ColorManagement::OutputSpace::DisplayP3)
+        return {2.49349691f*xyz.x - .93138362f*xyz.y - .40271078f*xyz.z,
+                -.82948897f*xyz.x + 1.76266406f*xyz.y + .02362469f*xyz.z,
+                .03584583f*xyz.x - .07617239f*xyz.y + .95688452f*xyz.z};
+    return {2.0413690f*xyz.x - .5649464f*xyz.y - .3446944f*xyz.z,
+            -.9692660f*xyz.x + 1.8760108f*xyz.y + .0415560f*xyz.z,
+            .0134474f*xyz.x - .1183897f*xyz.y + 1.0154096f*xyz.z};
+}
+float encodeOutput(float v, ColorManagement::OutputSpace space) {
+    v = clamp01(v);
+    if (space == ColorManagement::OutputSpace::AdobeRgb) return std::pow(v, 1.0f / 2.2f);
+    if (space == ColorManagement::OutputSpace::ProPhotoRgb) return std::pow(v, 1.0f / 1.8f);
+    return linearToSrgb(v);
+}
+bool identity(const AdjustmentState::CurveArray &curve) {
+    return curve == AdjustmentState::CurveArray{0, .25, .5, .75, 1};
+}
+}
 
-    for (int y = 0; y < out.height(); ++y) {
-        auto *line = reinterpret_cast<QRgba64 *>(out.scanLine(y));
-        for (int x = 0; x < out.width(); ++x) {
-            const QRgba64 original = line[x];
-            Vec3 working{
-                original.red() / 65535.0f,
-                original.green() / 65535.0f,
-                original.blue() / 65535.0f
-            };
-
-            if (inputEncoding == InputEncoding::SRgb) {
-                Vec3 linearSrgb{srgbToLinear(working.x), srgbToLinear(working.y), srgbToLinear(working.z)};
-                working = linearSrgbToProPhoto(linearSrgb);
-            }
-
-            // RAW camera WB is the baseline from LibRaw. User WB is a scene-linear
-            // chromatic-adaptation delta in the wide-gamut working space.
-            working = applyWhiteBalanceDelta(working, temperature, tint);
-
-            // Exposure is defined in scene-linear stops. One EV always doubles values here.
-            working = scale(working, exposureGain);
-            working = applyHighlightRecovery(working, recovery);
-
-            // Tonal zones operate on scene luminance and scale RGB together to preserve hue.
-            const float sceneY = std::max(0.0f, proPhotoToXyzD50(working).y);
-            const float shadowWeight = 1.0f - smooth(sceneY / 0.32f);
-            const float highlightWeight = smooth((sceneY - 0.26f) / 0.82f);
-            const float whiteWeight = smooth((sceneY - 0.62f) / 0.70f);
-            const float blackWeight = 1.0f - smooth(sceneY / 0.16f);
-            const float localStops = sh * shadowWeight
-                                   + hi * highlightWeight
-                                   + wh * whiteWeight * 0.75f
-                                   + bl * blackWeight * 0.75f;
-            working = scale(working, std::exp2(localStops));
-
-            const float contrastY = std::max(0.0f, proPhotoToXyzD50(working).y);
-            if (contrastY > 1.0e-6f) {
-                const float mappedY = middleGrayContrast(contrastY, contrastFactor);
-                working = scale(working, mappedY / contrastY);
-            }
-
-            // Perceptual color operations run before the final display transform.
-            Vec3 displayLinear = proPhotoToLinearSrgb(working);
-            displayLinear = applyPerceptualColor(displayLinear, state);
-            displayLinear = compressNegativeGamut(displayLinear);
-
-            displayLinear.x = displayShoulder(displayLinear.x, recovery);
-            displayLinear.y = displayShoulder(displayLinear.y, recovery);
-            displayLinear.z = displayShoulder(displayLinear.z, recovery);
-
-            displayLinear = applyMasterCurve(displayLinear, state.masterCurve);
-            displayLinear.x = curveSample(state.redCurve, displayLinear.x);
-            displayLinear.y = curveSample(state.greenCurve, displayLinear.y);
-            displayLinear.z = curveSample(state.blueCurve, displayLinear.z);
-
-            const float r = linearToSrgb(clamp01(displayLinear.x));
-            const float g = linearToSrgb(clamp01(displayLinear.y));
-            const float b = linearToSrgb(clamp01(displayLinear.z));
-
-            line[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::lround(clamp01(r) * 65535.0f)),
-                static_cast<quint16>(std::lround(clamp01(g) * 65535.0f)),
-                static_cast<quint16>(std::lround(clamp01(b) * 65535.0f)),
-                original.alpha());
-        }
+ProcessingPlan ProcessingPlan::compile(const AdjustmentState &state, ImagePipeline::InputEncoding encoding,
+                                       ColorManagement::OutputSpace output) {
+    ProcessingPlan plan;
+    plan.state = state; plan.encoding = encoding; plan.output = output;
+    const float temperature = float(state.temperature / 100.0), tint = float(state.tint / 100.0);
+    const float gain = float(std::exp2(std::clamp(state.exposure, -20.0, 20.0)));
+    // Fold the WB chromatic adaptation and exposure into one 3x3 matrix.
+    const auto wb = matrixOf([&](Vec3 v) {
+        return scale(temperature == 0 && tint == 0 ? v : applyWhiteBalanceDelta(v, temperature, tint), gain);
+    });
+    for (int i=0; i<3; ++i) plan.data[Wb0+i] = wb[i];
+    plan.data[Tonal] = {float(state.highlights/100), float(state.shadows/100), float(state.whites/100), float(state.blacks/100)};
+    plan.data[Tone] = {std::clamp(float(1+state.contrast/100), .05f, 2.5f), clamp01(float(state.highlightRecovery/100)), float(state.saturation/100), float(state.vibrance/100)};
+    bool color = state.hue != 0 || state.saturation != 0 || state.vibrance != 0;
+    constexpr float centers[]{28,58,95,145,200,260,305,340};
+    for (int i=0; i<8; ++i) {
+        plan.data[Bands+i] = {float(state.hslHue[i]/100*35), float(state.hslSaturation[i]/100), float(state.hslLuminance[i]/100*.18), centers[i]};
+        color |= state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;
     }
+    plan.data[Color] = {float(state.hue), encoding == ImagePipeline::InputEncoding::SRgb ? 0.0f : 1.0f, color ? 1.0f : 0.0f,
+                       (state.highlights != 0 || state.shadows != 0 || state.whites != 0 || state.blacks != 0) ? 1.0f : 0.0f};
+    const auto out = matrixOf([&](Vec3 v) { return toOutput(v, output); });
+    for (int i=0; i<3; ++i) plan.data[Out0+i] = out[i];
+    Float4 lum{.2126f,.7152f,.0722f,float(int(output))};
+    if (output == ColorManagement::OutputSpace::DisplayP3) lum = {.2289746f,.6917385f,.0792869f,float(int(output))};
+    if (output == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
+    if (output == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
+    plan.data[Luminance] = lum;
+    plan.data[Flags] = {state.contrast == 0 ? 1.0f : 0.0f, identity(state.masterCurve) ? 1.0f : 0.0f,
+                       identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f, 0};
+    for (int i=0; i<5; ++i) plan.data[Curves+i] = {float(state.masterCurve[i]),float(state.redCurve[i]),float(state.greenCurve[i]),float(state.blueCurve[i])};
+    return plan;
+}
 
-    out.setColorSpace(QColorSpace(QColorSpace::SRgb));
-    out.setText(QStringLiteral("JixelLightPipeline"), QStringLiteral("Linear ProPhoto RGB -> Perceptual Color -> Display sRGB"));
+QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state, InputEncoding encoding,
+                             ColorManagement::OutputSpace output, const CancelToken &token, bool parallel) {
+    return processWithPlan(source, ProcessingPlan::compile(state, encoding, output), token, parallel);
+}
+
+QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
+    if (source.isNull() || cancelled(token)) return {};
+    PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()}, {"parallel",parallel}});
+    // Detach once before parallel writes; never call non-const QImage APIs in workers.
+    const QImage input = source.format() == QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    QImage out(input.size(), QImage::Format_RGBA64);
+    if (out.isNull()) return {};
+    const uchar *src = input.constBits(); const qsizetype srcStride = input.bytesPerLine();
+    uchar *dst = out.bits(); const qsizetype dstStride = out.bytesPerLine();
+    const auto tone = plan.data[ProcessingPlan::Tone];
+    const auto tonal = plan.data[ProcessingPlan::Tonal];
+    const auto color = plan.data[ProcessingPlan::Color];
+    const auto flags = plan.data[ProcessingPlan::Flags];
+    const auto lum = plan.data[ProcessingPlan::Luminance];
+    ParallelRows::run(out.height(), out.width(), token, [&](int y) {
+        const auto *in = reinterpret_cast<const QRgba64 *>(src+y*srcStride);
+        auto *line = reinterpret_cast<QRgba64 *>(dst+y*dstStride);
+        for (int x=0; x<out.width(); ++x) {
+            const QRgba64 original = in[x];
+            Vec3 v{original.red()/65535.0f, original.green()/65535.0f, original.blue()/65535.0f};
+            if (plan.encoding == InputEncoding::SRgb) {
+                v = {srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
+                v = multiply(InputMatrix.data(),v);
+            }
+            v = multiply(plan.data.data()+ProcessingPlan::Wb0,v);
+            v = applyHighlightRecovery(v,tone.y);
+            if (color.w != 0) {
+                const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
+                const float stops = tonal.y*(1-smooth(Y/.32f)) + tonal.x*smooth((Y-.26f)/.82f)
+                                  + tonal.z*smooth((Y-.62f)/.70f)*.75f + tonal.w*(1-smooth(Y/.16f))*.75f;
+                v = scale(v,std::exp2(stops));
+            }
+            if (flags.x == 0) {
+                const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
+                if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,tone.x)/Y);
+            }
+            v = multiply(WorkingToSrgb.data(),v);
+            if (color.z != 0) v = applyPerceptualColor(v,plan);
+            else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
+                // Preserve the legacy neutral-node lightness limit outside the
+                // normal domain, without doing hue/8-band work on every pixel.
+                auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,1.5f); v = oklabToLinearSrgb(lab);
+            }
+            // Branch to the destination primaries BEFORE gamut clipping/shoulder.
+            // Curves retain their existing output-referred semantics.
+            v = multiply(plan.data.data()+ProcessingPlan::Out0,v);
+            v = compressNegativeGamut(v,lum);
+            v = {displayShoulder(v.x,tone.y),displayShoulder(v.y,tone.y),displayShoulder(v.z,tone.y)};
+            if (flags.y == 0) v = applyMasterCurve(v,plan.state.masterCurve,lum);
+            if (flags.z == 0) v = {curveSample(plan.state.redCurve,v.x),curveSample(plan.state.greenCurve,v.y),curveSample(plan.state.blueCurve,v.z)};
+            const auto quantize = [&](float value) { return quint16(std::lround(clamp01(encodeOutput(value,plan.output))*65535.0f)); };
+            line[x] = QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),original.alpha());
+        }
+    }, parallel);
+    if (cancelled(token)) return {};
+    out.setColorSpace(ColorManagement::colorSpace(plan.output));
+    out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
+    out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
     return out;
 }

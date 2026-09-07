@@ -1,0 +1,12 @@
+#version 440
+layout(local_size_x=256,local_size_y=1,local_size_z=1) in;
+layout(std140,binding=0) uniform Plan { vec4 p[25]; };
+layout(std430,binding=1) readonly buffer Partials { uint partials[]; };
+layout(std430,binding=2) writeonly buffer Result { uint result[]; };
+void main() {
+    uint index=gl_GlobalInvocationID.x;
+    if(index>=4100u) return;
+    uint total=0u;
+    for(uint g=0u;g<uint(p[24].z);++g) total+=partials[g*4100u+index];
+    result[index]=total;
+}

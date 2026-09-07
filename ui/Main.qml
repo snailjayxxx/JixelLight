@@ -9,6 +9,16 @@ ApplicationWindow {
     width: 1540; height: 920; minimumWidth: 1180; minimumHeight: 720
     title: "JixelLight " + appVersion + (photoController.projectName ? " — " + photoController.projectName : "")
     color: "#0b0d10"
+    palette.window: "#11161c"
+    palette.base: "#19232e"
+    palette.text: "#d7dde6"
+    palette.windowText: "#d7dde6"
+    palette.button: "#263442"
+    palette.buttonText: "#d7dde6"
+    palette.highlight: "#507aa5"
+    palette.highlightedText: "#ffffff"
+    palette.placeholderText: "#8b98a6"
+    onClosing: function(close) { if (!photoController.flushEdits()) close.accepted=false }
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -32,7 +42,7 @@ ApplicationWindow {
         anchors.fill: parent
         onDropped: function(drop) {
             if (!drop.urls || drop.urls.length === 0) return
-            for (let i = 0; i < drop.urls.length; ++i) photoController.importFile(drop.urls[i])
+            photoController.importFiles(drop.urls)
             drop.acceptProposedAction()
         }
     }
@@ -43,7 +53,8 @@ ApplicationWindow {
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
-        onAccepted: exportDialog.open()
+        property bool batchMode: false
+        onAccepted: batchMode ? batchFolder.open() : exportDialog.open()
         ColumnLayout {
             width: 430; spacing: 12
             Label { text: window.t("输出色彩空间 / ICC", "Output Color Space / ICC"); color: "#d6dee8"; font.bold: true }
@@ -62,8 +73,8 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 text: window.t(
-                    "alpha.6 会嵌入目标 ICC 配置文件。当前预览仍以 ICC sRGB 为显示基准；原生宽色域工作数据直出将在后续 RAW Pipeline 阶段接入。",
-                    "alpha.6 embeds the destination ICC profile. Preview remains ICC sRGB; native wide-gamut working-data export will be connected in a later RAW pipeline stage.")
+                    "从线性宽色域数据直接导出，嵌入目标 ICC。导出在后台分块执行，不覆盖原始照片。",
+                    "Export directly from linear wide-gamut data with a target ICC profile. Background tiled export never overwrites the original photograph.")
                 wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
             }
         }
@@ -77,6 +88,7 @@ ApplicationWindow {
         nameFilters: ["JPEG (*.jpg *.jpeg)"]
         onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
+    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value) }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     Dialog {
         id: projectNameDialog
@@ -105,7 +117,9 @@ ApplicationWindow {
             Button { text: window.t("粘贴调整", "Paste"); enabled: photoController.hasImage; onClicked: photoController.pasteAdjustments() }
             Button { text: window.t("同步全部", "Sync All"); enabled: photoController.hasImage; onClicked: photoController.syncAdjustmentsToAll() }
             ToolSeparator {}
-            Button { text: window.t("导出 JPEG", "Export JPEG"); enabled: photoController.hasImage; onClicked: exportSettingsDialog.open() }
+            Button { text: window.t("导出 JPEG", "Export JPEG"); enabled: photoController.hasImage && !photoController.exportBusy; onClicked: { exportSettingsDialog.batchMode=false; exportSettingsDialog.open() } }
+            Button { text: window.t("批量导出", "Batch Export"); enabled: photoController.hasImage && !photoController.exportBusy; onClicked: { exportSettingsDialog.batchMode=true; exportSettingsDialog.open() } }
+            Button { visible: photoController.exportBusy; text: window.t("取消导出", "Cancel Export"); onClicked: photoController.cancelExport() }
             Item { Layout.fillWidth: true }
             ComboBox {
                 id: languageBox; Layout.preferredWidth: 105
@@ -121,6 +135,8 @@ ApplicationWindow {
         height: 34; color: "#11161c"; border.color: "#27313c"
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
+            ProgressBar { visible: photoController.exportBusy; value: photoController.exportProgress; Layout.preferredWidth: 120 }
+            CheckBox { text: "GPU"; checked: photoController.gpuEnabled; onToggled: photoController.gpuEnabled=checked }
             Label { text: photoController.statusMessage; color: "#9eabb9"; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: 11 }
             Label { visible: photoController.hasImage; text: photoController.pipelineDescription; color: "#687b8d"; elide: Text.ElideMiddle; Layout.maximumWidth: 600; font.pixelSize: 10 }
             Label { visible: photoController.hasImage; text: photoController.currentFormat; color: photoController.currentIsRaw ? "#7ee2c3" : "#8ca1b5"; font.bold: true; font.pixelSize: 11 }
@@ -142,7 +158,7 @@ ApplicationWindow {
                         required property var modelData
                         required property int index
                         width: ListView.view.width; height: 46; radius: 5
-                        color: modelData.current ? "#24364d" : ma.containsMouse ? "#1b232c" : "transparent"
+                        color: index === photoController.currentIndex ? "#24364d" : ma.containsMouse ? "#1b232c" : "transparent"
                         RowLayout {
                             anchors.fill: parent; anchors.margins: 7; spacing: 6
                             Rectangle {
@@ -150,7 +166,7 @@ ApplicationWindow {
                                 color: modelData.raw ? "#173a34" : "#25303b"
                                 Text { anchors.centerIn: parent; text: modelData.type; color: modelData.raw ? "#7ee2c3" : "#aebbc8"; font.pixelSize: 9; font.bold: true }
                             }
-                            Text { Layout.fillWidth: true; text: modelData.name; color: modelData.current ? "#ffffff" : "#c2ccd7"; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
+                            Text { Layout.fillWidth: true; text: modelData.name; color: index === photoController.currentIndex ? "#ffffff" : "#c2ccd7"; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
                         }
                         MouseArea { id: ma; anchors.fill: parent; hoverEnabled: true; onClicked: photoController.selectPhoto(index) }
                     }
@@ -162,16 +178,7 @@ ApplicationWindow {
             Layout.fillWidth: true; Layout.fillHeight: true; color: "#080a0d"
             Item {
                 anchors.fill: parent; anchors.margins: 18
-                Image {
-                    id: preview; anchors.fill: parent; source: photoController.previewUrl; cache: false; asynchronous: false
-                    fillMode: Image.PreserveAspectFit; smooth: true; visible: photoController.hasImage
-                }
-                Rectangle {
-                    visible: photoController.hasImage && photoController.currentIsRaw
-                    anchors.left: parent.left; anchors.top: parent.top; width: 225; height: 30; radius: 6
-                    color: "#142f2b"; border.color: "#2d7569"
-                    Text { anchors.centerIn: parent; text: "RAW · Linear ProPhoto · 16-bit"; color: "#88ead0"; font.pixelSize: 11; font.bold: true }
-                }
+                PhotoCanvas { objectName: "photoCanvas"; anchors.fill: parent; controller: photoController; visible: photoController.hasImage }
                 Column {
                     anchors.centerIn: parent; visible: !photoController.hasImage; spacing: 10
                     Label { anchors.horizontalCenter: parent.horizontalCenter; text: "JixelLight"; color: "#dce5ef"; font.pixelSize: 28; font.bold: true }
@@ -194,7 +201,11 @@ ApplicationWindow {
                     Button { id: rgbButton; text: "RGB"; checkable: true; checked: true; onClicked: { checked = true; lumaButton.checked = false } }
                     Button { id: lumaButton; text: window.t("亮度", "Luma"); checkable: true; onClicked: { checked = true; rgbButton.checked = false } }
                     Item { Layout.fillWidth: true }
-                    Label { text: "1024 bins · ICC sRGB Preview"; color: "#738293"; font.pixelSize: 10 }
+                    Label { text: "1024 bins · " + photoController.scopesPixelCount; color: "#738293"; font.pixelSize: 10 }
+                }
+                RowLayout {
+                    Label { text: photoController.scopesStatus; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
+                    CheckBox { text: window.t("全分辨率", "Full resolution"); checked: photoController.exactScopes; onToggled: photoController.exactScopes=checked }
                 }
                 HistogramView {
                     Layout.fillWidth: true; Layout.preferredHeight: 180

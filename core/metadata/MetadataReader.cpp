@@ -68,7 +68,7 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
 
     try {
         auto image = Exiv2::ImageFactory::open(data, size);
-        if (!image) {
+        if (!image.get()) {
             if (errorMessage) *errorMessage = QStringLiteral("Exiv2 could not identify the image format");
             if (mapped) file.unmap(mapped);
             return result;

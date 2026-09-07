@@ -6,6 +6,11 @@
 #include <QVariantMap>
 #include <QVector>
 #include <QUrl>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QSet>
+#include "core/preview/PreviewTasks.h"
+#include "core/export/ExportQueue.h"
 
 #include "core/pipeline/AdjustmentState.h"
 #include "core/project/ProjectDatabase.h"
@@ -55,11 +60,52 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantList greenCurve READ greenCurve NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList blueCurve READ blueCurve NOTIFY adjustmentsChanged)
 
+    Q_PROPERTY(bool loading READ loading NOTIFY activityChanged)
+    Q_PROPERTY(bool previewReady READ previewReady NOTIFY activityChanged)
+    Q_PROPERTY(bool rendering READ rendering NOTIFY activityChanged)
+    Q_PROPERTY(bool gpuEnabled READ gpuEnabled WRITE setGpuEnabled NOTIFY backendChanged)
+    Q_PROPERTY(bool gpuActive READ gpuActive NOTIFY backendChanged)
+    Q_PROPERTY(QString processingBackend READ processingBackend NOTIFY backendChanged)
+    Q_PROPERTY(QString scopesStatus READ scopesStatus NOTIFY scopesChanged)
+    Q_PROPERTY(bool exactScopes READ exactScopes WRITE setExactScopes NOTIFY scopesChanged)
+    Q_PROPERTY(qulonglong scopesPixelCount READ scopesPixelCount NOTIFY scopesChanged)
+    Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
+    Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
+    Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
+    Q_PROPERTY(qulonglong renderRevision READ renderRevision NOTIFY gpuFrameChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
 
 public:
     explicit PhotoController(ProcessedImageProvider *provider, QObject *parent = nullptr);
+    ~PhotoController() override;
     QVariantList library() const;
+    bool loading() const { return m_loading; }
+    bool previewReady() const { return !m_fullSource.isNull() && !m_previewSource.isNull(); }
+    bool rendering() const { return m_rendering; }
+    bool gpuEnabled() const { return m_gpuEnabled; }
+    bool gpuActive() const { return m_gpuActive; }
+    QString processingBackend() const;
+    QString scopesStatus() const;
+    bool exactScopes() const { return m_exactScopes; }
+    qulonglong scopesPixelCount() const { return m_scopes.pixelCount; }
+    bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
+    double exportProgress() const { return m_exportProgress; }
+    QSizeF previewDisplaySize() const { return m_displayPixels / m_devicePixelRatio; }
+    qulonglong renderRevision() const { return m_requestedRevision; }
+    // Called by the Qt Quick renderer ONLY during synchronize() (GUI blocked).
+    QImage gpuSource() const { return m_preparing ? QImage{} : m_gpuSource; }
+    ProcessingPlan gpuPlan() const { return ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto); }
+    // Renderer delivery enters these on the GUI thread through queued calls.
+    void gpuPresented(quint64 revision, const QString &backend);
+    void gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels);
+    void gpuFailed(const QString &message);
+    Q_INVOKABLE void setGpuEnabled(bool enabled);
+    Q_INVOKABLE void setExactScopes(bool enabled);
+    Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
+    Q_INVOKABLE void finishInteraction();
+    Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92);
+    Q_INVOKABLE void cancelExport();
+    Q_INVOKABLE bool flushEdits();
     int currentIndex() const { return m_currentIndex; }
     QString previewUrl() const;
     bool hasImage() const { return m_currentIndex >= 0 && m_currentIndex < m_photos.size(); }
@@ -110,10 +156,14 @@ signals:
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
+    void activityChanged(); void backendChanged(); void exportChanged();
+    void previewGeometryChanged(); void gpuFrameChanged();
+    void exportFinished(int succeeded, int failed, bool cancelled);
 
 private:
     struct PhotoEntry { QString path; QString name; AdjustmentState state; bool raw = false; };
     QVector<PhotoEntry> m_photos;
+    QSet<QString> m_importedPaths;
     int m_currentIndex = -1;
     quint64 m_previewRevision = 0;
     QImage m_fullSource, m_previewSource, m_processedPreview;
@@ -125,6 +175,38 @@ private:
     QString m_language = QStringLiteral("zh_CN");
     QString m_statusMessage;
     QVariantMap m_currentMetadata;
+    std::shared_ptr<SourceCache> m_sourceCache;
+    std::unique_ptr<ExportQueue> m_exportQueue;
+    QImage m_fastSource, m_gpuSource, m_loadedPreview;
+    QString m_loadedKey, m_backendName, m_scopesLabel;
+    bool m_loading = false, m_rendering = false, m_gpuEnabled = true, m_gpuActive = false;
+    bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
+    bool m_preparing = false;
+    bool m_interacting = false, m_sourceIsFull = false, m_closing = false;
+    quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;
+    int m_scopesRank = -1;
+    QSize m_viewport{1600, 1000};
+    QSizeF m_displayPixels;
+    double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
+    QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer;
+    QHash<QString, AdjustmentState> m_dirtyEdits;
+    QElapsedTimer m_renderClock;
+    std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
+    std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;
+    std::unique_ptr<LatestJob<RenderRequest, QImage>> m_render;
+    std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
+
+    void initializeJobs();
+    void acceptSource(quint64 photo, SourceData data);
+    void prepareCurrent();
+    void scheduleRender(bool fast);
+    void markDirty();
+    void enqueueEdits();
+    void requestFullScopes();
+    void acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label);
+    void completeFrame(quint64 revision);
+    void setBusy(bool busy);
+    void prefetchNeighbor();
 
     AdjustmentState currentState() const;
     AdjustmentState *mutableCurrentState();
