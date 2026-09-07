@@ -2,6 +2,7 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include <QSemaphore>
 #include <algorithm>
+#include <memory>
 
 #include <QFile>
 #include <QBuffer>
@@ -48,7 +49,10 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     if (!lease.acquired) return {};
     PerformanceSpan total(QStringLiteral("raw_total"));
     if (errorMessage) errorMessage->clear();
-    LibRaw raw;
+    // LibRaw includes large fixed tables (> 700 KiB in supported SDKs).
+    // Keep them off the limited worker stack; ownership still ends on return.
+    auto decoder = std::make_unique<LibRaw>();
+    auto &raw = *decoder;
     raw.set_progress_handler(rawProgress, const_cast<CancelToken *>(&cancel));
 
     int result = LIBRAW_SUCCESS;
@@ -173,7 +177,10 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
 QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {
     if (cancelled(cancel)) return {};
     PerformanceSpan timer(QStringLiteral("raw_embedded_preview"));
-    LibRaw raw;
+    // LibRaw includes large fixed tables (> 700 KiB in supported SDKs).
+    // Keep them off the limited worker stack; ownership still ends on return.
+    auto decoder = std::make_unique<LibRaw>();
+    auto &raw = *decoder;
     raw.set_progress_handler(rawProgress, const_cast<CancelToken *>(&cancel));
 #if defined(Q_OS_WIN)
     int result = raw.open_file(reinterpret_cast<const wchar_t *>(path.utf16()));

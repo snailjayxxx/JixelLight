@@ -66,6 +66,7 @@ jobs:
           -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"
 
       - name: Build
+        id: compile
         run: cmake --build build --config Release --parallel
 
       - name: Download real RAW test sample
@@ -81,7 +82,7 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
 
       - name: Require Direct3D compute validation (WARP)
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
         env:
           JIXELLIGHT_REQUIRE_GPU: '1'
@@ -90,7 +91,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'D3D11 compute validation failed' }
 
       - name: Capture Metal availability and parity
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.compile.outcome == 'success' }}
         shell: bash
         run: ./build/bin/JixelLightGpuTests -o gpu-validation.txt,txt
 
@@ -107,6 +108,7 @@ jobs:
         with:
           name: validation-${{ runner.os }}
           path: |
+            build/*-results.txt
             build/tests.xml
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
@@ -192,6 +194,7 @@ jobs:
         with:
           name: validation-Linux
           path: |
+            build/*-results.txt
             build/tests.xml
             build/Testing/Temporary/LastTest.log
             gui-*.json
