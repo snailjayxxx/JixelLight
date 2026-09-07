@@ -1,0 +1,68 @@
+name: sony-real-samples
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/sony-real-samples.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  samples:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Fetch bounded public review fixtures and independent metadata
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libimage-exiftool-perl
+          mkdir -p fixture-transfer
+          git bundle create fixture-transfer/source.bundle --all
+          python3 - <<'PY'
+          import hashlib, html, json, pathlib, re, subprocess, urllib.parse, urllib.request
+          root=pathlib.Path('fixture-transfer'); manifest={'purpose':'Internal compatibility validation; not redistributed in program packages','items':[],'errors':[]}
+          page='https://www.photographyblog.com/reviews/sony_a7_iv_review'
+          def get(url,cap):
+              req=urllib.request.Request(url,headers={'User-Agent':'JixelLight-compatibility-test/0.1','Referer':page})
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  data=r.read(cap+1)
+                  if len(data)>cap: raise ValueError('size limit exceeded')
+                  return data
+          try:
+              source=get(page,4000000).decode('utf-8')
+              (root/'review.html').write_text(source)
+              links=[html.unescape(u) for u in re.findall(r'(?:href|src|data-src)=[\"\']([^\"\']+)',source)]
+              urls=[]
+              # Three distinct, low/high ISO scenes. Keep selection deterministic.
+              raws=list(dict.fromkeys(u for u in links if '.arw' in u.lower() and 'sony_a7_iv' in u.lower()))
+              for i in [0,3,6]:
+                  if i<len(raws):
+                      raw=raws[i];urls.extend([raw,re.sub(r'\.arw$', '.jpg',raw,flags=re.I)])
+              # Documented camera-look JPEG examples, if the page exposes them.
+              urls+=list(dict.fromkeys(u for u in links if 'creative_style_' in u and 'sony_a7_iv' in u))[:10]
+              if not raws: raise RuntimeError('No ARW download links found')
+              for u in dict.fromkeys(urls):
+                  u=urllib.parse.urljoin(page,u)
+                  if urllib.parse.urlparse(u).hostname not in {'img.photographyblog.com','www.photographyblog.com'}:continue
+                  name=pathlib.PurePosixPath(urllib.parse.urlparse(u).path).name
+                  try:
+                      data=get(u,100000000)
+                      if data[:2] not in (b'II',b'MM',b'\xff\xd8'):raise ValueError('Not TIFF/RAW/JPEG')
+                      (root/name).write_bytes(data)
+                      manifest['items'].append({'file':name,'url':u,'sourcePage':page,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+                  except Exception as e:manifest['errors'].append({'url':u,'error':str(e)})
+          except Exception as e:manifest['errors'].append({'url':page,'error':str(e)})
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          files=[str(root/x['file']) for x in manifest['items']]
+          for suffix,opts in [('interpreted',[]),('numeric',['-n'])]:
+              if files:
+                  p=subprocess.run(['exiftool','-j','-G1','-a','-s',*opts,*files],capture_output=True,text=True)
+                  (root/('exiftool-'+suffix+'.json')).write_text(p.stdout)
+          print(json.dumps(manifest,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sony-real-file-fixtures
+          path: fixture-transfer/
+          retention-days: 1
