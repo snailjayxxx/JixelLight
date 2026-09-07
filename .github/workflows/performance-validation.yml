@@ -1,0 +1,26 @@
+name: performance-validation
+
+on:
+  push:
+    branches: ['perf/20260907-a-e']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive exact source
+        run: git archive --format=zip HEAD -o JixelLight-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JixelLight-source
+          path: JixelLight-source.zip
+          retention-days: 14
