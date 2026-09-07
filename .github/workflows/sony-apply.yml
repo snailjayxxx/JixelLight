@@ -1,0 +1,60 @@
+name: sony-apply-verified-source
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/sony-apply.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == 'snailjayxxx/JixelLight' && github.ref == 'refs/heads/feature/sony-creative-look'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply checksum-verified application source only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          expected_parent = '70636cf8ddd9474c586b4b7b815d6d75f78236ba'
+          parent = subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip()
+          if parent != expected_parent:
+              raise SystemExit('Branch changed; refusing to apply a patch to an unverified parent')
+          blobs = ['356fc9f07f16135987b553d818042a8a49b20227','4fa573dfa5b0a736b2e283d5b1beaf4deb4fdc81','ed6bf1c2ae26c0463acb94f51c2e79edc00f6d91','254fb1b3bcbfb0355f7a5bb15633393dfec407ef']
+          chunks = []
+          for sha in blobs:
+              request = urllib.request.Request('https://api.github.com/repos/snailjayxxx/JixelLight/git/blobs/' + sha, headers={'Authorization':'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  item = json.load(response)
+              if item.get('sha') != sha or item.get('encoding') != 'base64':
+                  raise SystemExit('Unexpected blob response')
+              chunks.append(base64.b64decode(item['content']))
+          patch = lzma.decompress(b''.join(chunks))
+          if hashlib.sha256(patch).hexdigest() != 'da72ac57d9a9b20d3815d5783bb2a65763d046d5f0e9d84e0ababaa4aa59ada9':
+              raise SystemExit('Patch checksum mismatch')
+          patch_path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'sony-feature.patch'
+          patch_path.write_bytes(patch)
+          subprocess.run(['git','apply','--check','--index',str(patch_path)], check=True)
+          subprocess.run(['git','apply','--index',str(patch_path)], check=True)
+          changed = subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          if len(changed) != 46 or any(not (p in ('CMakeLists.txt','README.md') or p.startswith(('app/','core/','shaders/','tests/','tools/','ui/','docs/'))) for p in changed):
+              raise SystemExit('Unexpected staged source paths')
+          print('Verified source patch applied:',len(changed),'files')
+          PY
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: implement Sony look metadata, camera references and editable matched profiles'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+          git bundle create Sony-feature-complete.bundle --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sony-feature-committed-source
+          path: |
+            SOURCE_COMMIT.txt
+            Sony-feature-complete.bundle
+          retention-days: 7
