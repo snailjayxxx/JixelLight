@@ -191,11 +191,15 @@ template<bool ContinuousBoundary> inline Vec3 compressNegativeGamut(Vec3 rgb) {
     const float y = std::max(0.0f, 0.2126f*rgb.x + 0.7152f*rgb.y + 0.0722f*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        // The original reference retains its discontinuous inset. Only the
-        // separately named corrected reference uses this documented bug fix;
-        // no optimized processing nodes are called from either reference.
-        const float t = std::clamp(-minChannel * 1000.0f, 0.0f, 1.0f);
-        const float inset = ContinuousBoundary ? 1.0f - 0.005f * t * t * (3.0f - 2.0f * t) : 0.995f;
+        // Keep historical alpha.6 behavior entirely unchanged. The separate
+        // corrected reference implements the documented scene-relative gamut
+        // policy, but retains the original unoptimized color calculations.
+        float inset = 0.995f;
+        if constexpr (ContinuousBoundary) {
+            const float width = 0.005f * std::max(1.0f, y);
+            const float t = std::clamp(-minChannel / width, 0.0f, 1.0f);
+            inset = 1.0f - 0.005f * t * t * (3.0f - 2.0f * t);
+        }
         const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
         rgb.x = y + (rgb.x - y) * factor;
         rgb.y = y + (rgb.y - y) * factor;
@@ -342,7 +346,7 @@ template<bool ContinuousBoundary> static QImage referenceProcess(const QImage &s
 QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
     return referenceProcess<false>(source,state,encoding);
 }
-// Independent baseline with ONLY the continuous-gamut bug fix enabled.
+// Independent baseline with ONLY the documented continuous-gamut policy fix.
 QImage correctedReferenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
     return referenceProcess<true>(source,state,encoding);
 }

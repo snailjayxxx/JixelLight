@@ -1,18 +1,16 @@
 name: build
-
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
-
+env:
+  PYTHONIOENCODING: utf-8
 jobs:
   desktop:
     strategy:
@@ -31,18 +29,18 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: {fetch-depth: 0}
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: 'qtshadertools'
+          modules: qtshadertools
           cache: true
       - name: Checkout vcpkg
         uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
+          ref: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
           path: .vcpkg
           fetch-depth: 1
       - name: Bootstrap vcpkg (Windows)
@@ -120,8 +118,8 @@ jobs:
           QSG_RHI_PREFER_SOFTWARE_RENDERER: '1'
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
-          & ./build/bin/Release/JixelLight.exe --smoke-report gui-gpu.json --screenshot gui-gpu.png "$env:RUNNER_TEMP/JixelLight-test.DNG"
-          if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D validation failed' }
+          $process = Start-Process -FilePath ./build/bin/Release/JixelLight.exe -ArgumentList @('--smoke-report','gui-gpu.json','--screenshot','gui-gpu.png',"$env:RUNNER_TEMP/JixelLight-test.DNG") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw 'GUI Direct3D validation failed' }
       - name: GUI Metal integration
         if: runner.os == 'macOS'
         shell: bash
@@ -144,6 +142,8 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import sys
+          sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
           paths += [Path('gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json')]
           for path in paths:
@@ -164,25 +164,38 @@ jobs:
             gui-*.json
             gui-*.png
             benchmark.json
-      - name: Deploy Windows
+      - name: Deploy and validate Windows package
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path build -Recurse -Filter JixelLight.exe | Select-Object -First 1
-          if (-not $exe) { throw "JixelLight.exe not found" }
+          if (-not $exe) { throw 'JixelLight.exe not found' }
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item $exe.FullName package/JixelLight.exe
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
+          Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
-      - name: Deploy macOS
+          Get-FileHash JixelLight-Windows-x64.zip -Algorithm SHA256 | Format-List
+      - name: Deploy and validate macOS package
         if: runner.os == 'macOS'
         shell: bash
         run: |
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           macdeployqt "$APP" -qmldir=ui
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
+          shasum -a 256 JixelLight-macOS-arm64.zip
+      - name: Upload packaging validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-validation-${{ runner.os }}
+          path: package-validation
+          if-no-files-found: ignore
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -208,7 +221,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: 'qtshadertools'
+          modules: qtshadertools
           cache: true
       - name: Build
         run: |

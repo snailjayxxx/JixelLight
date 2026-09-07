@@ -138,6 +138,22 @@ inline float hueBandWeight(float hue, float center) {
 inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     const auto &state = plan.state;
     Oklab lab = linearSrgbToOklab(linearSrgb);
+    // Without hue/band edits, saturation and vibrance only scale the a/b
+    // vector. Avoid an unnecessary atan2 -> sin/cos round trip, whose error
+    // can be amplified at a high-exposure gamut boundary on some backends.
+    bool noBands = true;
+    for (int i=0; i<8; ++i) {
+        const auto band = plan.data[ProcessingPlan::Bands+i];
+        noBands &= band.x==0 && band.y==0 && band.z==0;
+    }
+    if (state.hue==0 && noBands) {
+        const float c = std::hypot(lab.a,lab.b);
+        const float gain = std::max(0.0f,1.0f+float(state.saturation/100))
+            * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);
+        lab.L = std::clamp(lab.L,0.0f,1.5f);
+        lab.a *= gain; lab.b *= gain;
+        return oklabToLinearSrgb(lab);
+    }
     float chroma = std::hypot(lab.a, lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;
     hue = wrapHue(hue + static_cast<float>(state.hue));
@@ -170,8 +186,11 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
     const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        // Keep the inset continuous at the gamut boundary.
-        const float inset = 1.0f - 0.005f * smooth(-minChannel / 0.001f);
+        // Scale the transition with scene luminance. A fixed 0.001-wide
+        // transition amplified tiny FP32 differences at high exposure.
+        // This is an intentional gamut-rendering correction, not a claim of
+        // bit-identical alpha.6 rendering. See NUMERICAL_PARITY_20260907.md.
+        const float inset = 1.0f - 0.005f * smooth(-minChannel / (0.005f * std::max(1.0f,y)));
         const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
         rgb.x = y + (rgb.x - y) * factor;
         rgb.y = y + (rgb.y - y) * factor;

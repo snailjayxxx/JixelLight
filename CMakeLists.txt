@@ -102,3 +102,11 @@ set_tests_properties(raw-worker-stack PROPERTIES TIMEOUT 120)
 # Tests and CLI benchmarks must retain standard output on Windows.
 set_target_properties(JixelLightCoreTests JixelLightPerformanceTests JixelLightGpuTests
     JixelLightRawWorkerTests JixelLightBenchmark PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
+# Match the image kernel's arithmetic order to the shader's precise operations.
+# Other application code remains normally optimized.
+if(MSVC)
+    set_source_files_properties(core/pipeline/ImagePipeline.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+else()
+    set_source_files_properties(core/pipeline/ImagePipeline.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
