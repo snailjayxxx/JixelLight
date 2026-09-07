@@ -22,6 +22,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
+      PYTHONIOENCODING: utf-8
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
     steps:
       - uses: actions/checkout@v4
