@@ -1,0 +1,42 @@
+name: apply-validated-alpha7-source
+on:
+  push:
+    branches: ['perf/20260907-a-e']
+    paths: ['.source-transfer/**']
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == 'snailjayxxx/JixelLight' && github.ref == 'refs/heads/perf/20260907-a-e'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify and apply tested source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, lzma, subprocess
+          names = ['0','1a','1b','2a','2b','3a','3b']
+          data = b''.join(Path('.source-transfer/part'+n+'.bin').read_bytes() for n in names)
+          assert len(data) == 58188
+          assert hashlib.sha256(data).hexdigest() == '46d900e6cd628544874a2ded597b246ad66bda4847b26e67941c72dd6859ae53'
+          patch = lzma.decompress(data)
+          assert b'a/.github/' not in patch and b'b/.github/' not in patch
+          subprocess.run(['git','apply','--check','-'], input=patch, check=True)
+          subprocess.run(['git','apply','-'], input=patch, check=True)
+          PY
+          git rm -r .source-transfer
+          git add app core diagnostics docs shaders tests tools ui CMakeLists.txt README.md vcpkg.json
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'perf: implement A-E asynchronous RAW pipeline, bounded caches, RHI compute, scopes and export diagnostics'
+          CURRENT=$(git ls-remote origin refs/heads/perf/20260907-a-e | cut -f1)
+          test "$CURRENT" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/perf/20260907-a-e

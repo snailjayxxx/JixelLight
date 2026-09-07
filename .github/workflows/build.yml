@@ -6,6 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   desktop:
     strategy:
@@ -19,6 +26,7 @@ jobs:
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +75,42 @@ jobs:
           "https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG"
           -o "$RUNNER_TEMP/JixelLight-test.DNG"
 
-      - name: Test including real RAW decode
+      - name: Test including real RAW decode and compute parity
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
+
+      - name: Require Direct3D compute validation (WARP)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          & ./build/bin/Release/JixelLightGpuTests.exe -o gpu-validation.txt,txt
+          if ($LASTEXITCODE -ne 0) { throw 'D3D11 compute validation failed' }
+
+      - name: Capture Metal availability and parity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./build/bin/JixelLightGpuTests -o gpu-validation.txt,txt
+
+      - name: Synthetic CPU benchmark
+        shell: bash
+        run: |
+          BENCH=$(find build/bin -type f \( -name JixelLightBenchmark -o -name JixelLightBenchmark.exe \) | head -1)
+          test -n "$BENCH"
+          "$BENCH" > benchmark.json
+
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ runner.os }}
+          path: |
+            build/tests.xml
+            build/Testing/Temporary/LastTest.log
+            gpu-validation.txt
+            benchmark.json
 
       - name: Deploy Windows
         if: runner.os == 'Windows'
@@ -105,3 +145,54 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: JixelLight-macOS-arm64.zip
+
+  linux-gpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Native dependencies and headless GPU validation
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libraw-dev liblcms2-dev libexiv2-dev libjpeg-dev libgl-dev libegl-dev libopengl-dev libvulkan-dev libxkbcommon-dev libxcb-cursor0 xvfb mesa-utils
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qtshadertools'
+          cache: true
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 4
+      - name: RAW fixture
+        run: curl -L --fail --retry 3 https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG -o "$RUNNER_TEMP/test.DNG"
+      - name: Tests (GPU must not be skipped)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          JIXELLIGHT_REQUIRE_GPU: '1'
+          JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: GUI GPU integration
+        env:
+          QT_QPA_PLATFORM: xcb
+          QSG_RHI_BACKEND: opengl
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+      - name: GUI CPU fallback
+        env:
+          QT_QPA_PLATFORM: offscreen
+          JIXELLIGHT_FORCE_CPU: '1'
+        run: ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-Linux
+          path: |
+            build/tests.xml
+            build/Testing/Temporary/LastTest.log
+            gui-*.json
+            gui-*.png

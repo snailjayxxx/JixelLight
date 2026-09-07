@@ -20,6 +20,7 @@ jobs:
             file: JixelLight-macOS-arm64.zip
             triplet: arm64-osx-static
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -46,7 +47,12 @@ jobs:
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"
       - run: cmake --build build --config Release --parallel
+      - name: RAW fixture
+        shell: bash
+        run: curl -L --fail --retry 3 https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG -o "$RUNNER_TEMP/test.DNG"
       - run: ctest --test-dir build -C Release --output-on-failure
+        env:
+          JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
