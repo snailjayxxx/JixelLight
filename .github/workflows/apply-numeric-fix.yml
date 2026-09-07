@@ -1,0 +1,37 @@
+name: apply-checked-numeric-fix
+on:
+  push:
+    branches: ['perf/20260907-a-e']
+    paths: ['.github/workflows/apply-numeric-fix.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate and apply exact locally tested patch
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = 9e1e4ff3d79511d04124eb9d9f57d8a8bf007a97
+          python - <<'PY'
+          import base64, hashlib, pathlib, re, subprocess, zlib
+          data = zlib.decompress(base64.b64decode(pathlib.Path('.ci-transfer/numeric-fix.b64').read_text().strip(), validate=True))
+          assert hashlib.sha256(data).hexdigest() == 'bcacbeaa243158b8bffddc872fc9d0c1deb2c9ee411c76b70179aeb13725dddf'
+          expected = {'.github/workflows/build.yml','app/SmokeRun.cpp','core/pipeline/ImagePipeline.cpp','shaders/pipeline.comp','tests/GpuTests.cpp','tests/LegacyPipeline.cpp','tests/PerformanceTests.cpp','ui/PhotoCanvas.qml'}
+          headers = re.findall(rb'^diff --git a/(\S+) b/(\S+)$', data, re.M)
+          assert len(headers) == len(expected)
+          assert all(a == b for a,b in headers)
+          assert {b.decode() for a,b in headers} == expected
+          patch = pathlib.Path('/tmp/jixellight-numeric.patch')
+          patch.write_bytes(data)
+          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          PY
+          git rm .ci-transfer/numeric-fix.b64 .github/workflows/apply-numeric-fix.yml
+          test "$(git write-tree)" = bbfadfdb024eaa3139fcb3a0c340ec9efb139be0
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: make gamut boundary continuous across CPU and GPU; extend dense parity and native GUI tests'
+          git push origin HEAD:refs/heads/perf/20260907-a-e
