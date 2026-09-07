@@ -1,0 +1,27 @@
+name: sony-source-transfer
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/sony-source-transfer.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Source snapshot
+        run: |
+          git archive --format=zip -o JixelLight-source.zip HEAD
+          git bundle create JixelLight-history.bundle --all
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sony-feature-source
+          path: |
+            JixelLight-source.zip
+            JixelLight-history.bundle
+            SOURCE_COMMIT.txt
+          retention-days: 7
