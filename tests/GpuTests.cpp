@@ -74,15 +74,20 @@ private slots:
             const auto actual=render(image,state);
             QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));
             const auto reference=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
-            int maximum=0;quint64 absolute=0;
+            int maximum=0,worstX=0,worstY=0;quint64 absolute=0;
             for(int y=0;y<image.height();++y) {
                 const auto *a=reinterpret_cast<const QRgba64 *>(actual.image.constScanLine(y));
                 const auto *b=reinterpret_cast<const QRgba64 *>(reference.constScanLine(y));
                 for(int x=0;x<image.width();++x) {
-                    for(int difference:{std::abs(int(a[x].red())-int(b[x].red())),std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))}) { maximum=std::max(maximum,difference);absolute+=difference; }
+                    for(int difference:{std::abs(int(a[x].red())-int(b[x].red())),std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))}) { if(difference>maximum) { maximum=difference;worstX=x;worstY=y; } absolute+=difference; }
                 }
             }
             qInfo()<<"CPU/GPU mode"<<mode<<"max 16-bit error"<<maximum<<"mean"<<double(absolute)/(image.width()*image.height()*3);
+            const auto worstInput=image.pixelColor(worstX,worstY).rgba64();
+            const auto worstCpu=reference.pixelColor(worstX,worstY).rgba64();
+            const auto worstGpu=actual.image.pixelColor(worstX,worstY).rgba64();
+            qInfo()<<"Worst pixel"<<worstX<<worstY<<"input"<<worstInput.red()<<worstInput.green()<<worstInput.blue()
+                   <<"CPU"<<worstCpu.red()<<worstCpu.green()<<worstCpu.blue()<<"GPU"<<worstGpu.red()<<worstGpu.green()<<worstGpu.blue();
             QVERIFY2(maximum<=40,qPrintable(QString::number(maximum)));
             // Exact histogram of the pixels actually produced by the GPU, not
             // of slightly different floating-point CPU arithmetic.
