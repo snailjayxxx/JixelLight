@@ -11,24 +11,19 @@
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
-
 struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 struct Oklab { float L = 0.0f, a = 0.0f, b = 0.0f; };
-
 inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 inline float smooth(float x) { x = clamp01(x); return x * x * (3.0f - 2.0f * x); }
 inline Vec3 scale(Vec3 v, float s) { return {v.x * s, v.y * s, v.z * s}; }
-
 inline float srgbToLinear(float v) {
     v = std::max(v, 0.0f);
     return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
 }
-
 inline float linearToSrgb(float v) {
     v = std::max(v, 0.0f);
     return v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
 }
-
 inline Vec3 linearSrgbToXyzD65(Vec3 c) {
     return {
         0.4124564f*c.x + 0.3575761f*c.y + 0.1804375f*c.z,
@@ -36,7 +31,6 @@ inline Vec3 linearSrgbToXyzD65(Vec3 c) {
         0.0193339f*c.x + 0.1191920f*c.y + 0.9503041f*c.z
     };
 }
-
 inline Vec3 xyzD65ToLinearSrgb(Vec3 c) {
     return {
          3.2404542f*c.x - 1.5371385f*c.y - 0.4985314f*c.z,
@@ -44,7 +38,6 @@ inline Vec3 xyzD65ToLinearSrgb(Vec3 c) {
          0.0556434f*c.x - 0.2040259f*c.y + 1.0572252f*c.z
     };
 }
-
 inline Vec3 xyzD65ToD50(Vec3 c) {
     return {
         1.0478112f*c.x + 0.0228866f*c.y - 0.0501270f*c.z,
@@ -52,7 +45,6 @@ inline Vec3 xyzD65ToD50(Vec3 c) {
        -0.0092345f*c.x + 0.0150436f*c.y + 0.7521316f*c.z
     };
 }
-
 inline Vec3 xyzD50ToD65(Vec3 c) {
     return {
          0.9555766f*c.x - 0.0230393f*c.y + 0.0631636f*c.z,
@@ -60,7 +52,6 @@ inline Vec3 xyzD50ToD65(Vec3 c) {
          0.0122982f*c.x - 0.0204830f*c.y + 1.3299098f*c.z
     };
 }
-
 inline Vec3 proPhotoToXyzD50(Vec3 c) {
     return {
         0.7976749f*c.x + 0.1351917f*c.y + 0.0313534f*c.z,
@@ -68,7 +59,6 @@ inline Vec3 proPhotoToXyzD50(Vec3 c) {
         0.0000000f*c.x + 0.0000000f*c.y + 0.8252100f*c.z
     };
 }
-
 inline Vec3 xyzD50ToProPhoto(Vec3 c) {
     return {
          1.3459433f*c.x - 0.2556075f*c.y - 0.0511118f*c.z,
@@ -76,15 +66,12 @@ inline Vec3 xyzD50ToProPhoto(Vec3 c) {
          0.0000000f*c.x + 0.0000000f*c.y + 1.2118128f*c.z
     };
 }
-
 inline Vec3 linearSrgbToProPhoto(Vec3 c) {
     return xyzD50ToProPhoto(xyzD65ToD50(linearSrgbToXyzD65(c)));
 }
-
 inline Vec3 proPhotoToLinearSrgb(Vec3 c) {
     return xyzD65ToLinearSrgb(xyzD50ToD65(proPhotoToXyzD50(c)));
 }
-
 inline Vec3 xyzD50ToBradfordLms(Vec3 c) {
     return {
          0.8951f*c.x + 0.2664f*c.y - 0.1614f*c.z,
@@ -92,7 +79,6 @@ inline Vec3 xyzD50ToBradfordLms(Vec3 c) {
          0.0389f*c.x - 0.0685f*c.y + 1.0296f*c.z
     };
 }
-
 inline Vec3 bradfordLmsToXyzD50(Vec3 c) {
     return {
          0.9869929f*c.x - 0.1470543f*c.y + 0.1599627f*c.z,
@@ -100,7 +86,6 @@ inline Vec3 bradfordLmsToXyzD50(Vec3 c) {
         -0.0085287f*c.x + 0.0400428f*c.y + 0.9684867f*c.z
     };
 }
-
 inline Vec3 applyWhiteBalanceDelta(Vec3 proPhoto, float temperature, float tint) {
     Vec3 lms = xyzD50ToBradfordLms(proPhotoToXyzD50(proPhoto));
     const float warm = std::clamp(temperature, -1.0f, 1.0f);
@@ -110,7 +95,6 @@ inline Vec3 applyWhiteBalanceDelta(Vec3 proPhoto, float temperature, float tint)
     lms.z *= std::exp2(-0.30f * warm + 0.04f * magenta);
     return xyzD50ToProPhoto(bradfordLmsToXyzD50(lms));
 }
-
 inline Oklab linearSrgbToOklab(Vec3 c) {
     const float l = 0.4122214708f*c.x + 0.5363325363f*c.y + 0.0514459929f*c.z;
     const float m = 0.2119034982f*c.x + 0.6806995451f*c.y + 0.1073969566f*c.z;
@@ -124,7 +108,6 @@ inline Oklab linearSrgbToOklab(Vec3 c) {
         0.0259040371f*lp + 0.7827717662f*mp - 0.8086757660f*sp
     };
 }
-
 inline Vec3 oklabToLinearSrgb(Oklab c) {
     const float lp = c.L + 0.3963377774f*c.a + 0.2158037573f*c.b;
     const float mp = c.L - 0.1055613458f*c.a - 0.0638541728f*c.b;
@@ -138,41 +121,33 @@ inline Vec3 oklabToLinearSrgb(Oklab c) {
         -0.0041960863f*l - 0.7034186147f*m + 1.7076147010f*s
     };
 }
-
 inline float wrapHue(float degrees) {
     while (degrees < 0.0f) degrees += 360.0f;
     while (degrees >= 360.0f) degrees -= 360.0f;
     return degrees;
 }
-
 inline float hueDistance(float a, float b) {
     float d = std::fabs(wrapHue(a) - wrapHue(b));
     return std::min(d, 360.0f - d);
 }
-
 inline float hueBandWeight(float hue, float center) {
     const float d = hueDistance(hue, center);
     if (d >= 52.0f) return 0.0f;
     return 0.5f + 0.5f * std::cos(kPi * d / 52.0f);
 }
-
 inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     const auto &state = plan.state;
     Oklab lab = linearSrgbToOklab(linearSrgb);
     float chroma = std::hypot(lab.a, lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;
-
     hue = wrapHue(hue + static_cast<float>(state.hue));
-
     float chromaScale = std::max(0.0f, 1.0f + static_cast<float>(state.saturation / 100.0));
     const float chromaNorm = clamp01(chroma / 0.30f);
     const float vibrance = static_cast<float>(state.vibrance / 100.0);
     chromaScale *= std::max(0.0f, 1.0f + vibrance * (1.0f - chromaNorm) * 0.85f);
-
     static constexpr std::array<float, AdjustmentState::ColorBandCount> centers{
         28.0f, 58.0f, 95.0f, 145.0f, 200.0f, 260.0f, 305.0f, 340.0f
     };
-
     float hueDelta = 0.0f;
     float satDelta = 0.0f;
     float lumDelta = 0.0f;
@@ -184,7 +159,6 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
         satDelta += static_cast<float>(state.hslSaturation[static_cast<std::size_t>(i)] / 100.0) * w;
         lumDelta += static_cast<float>(state.hslLuminance[static_cast<std::size_t>(i)] / 100.0) * 0.18f * w;
     }
-
     hue = wrapHue(hue + hueDelta);
     chroma *= chromaScale * std::max(0.0f, 1.0f + satDelta);
     lab.L = std::clamp(lab.L + lumDelta, 0.0f, 1.5f);
@@ -192,15 +166,11 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     lab.b = chroma * std::sin(hue * kPi / 180.0f);
     return oklabToLinearSrgb(lab);
 }
-
 inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
     const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        // A fixed 0.995 inset jumped discontinuously as a channel crossed
-        // zero. Roundoff between CPU/D3D/Metal could then visibly change a
-        // pixel. Ramp the inset continuously over the narrow gamut boundary;
-        // retain the historical mapping for channels <= -0.001.
+        // Keep the inset continuous at the gamut boundary.
         const float inset = 1.0f - 0.005f * smooth(-minChannel / 0.001f);
         const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
         rgb.x = y + (rgb.x - y) * factor;
@@ -212,7 +182,6 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
     rgb.z = std::max(0.0f, rgb.z);
     return rgb;
 }
-
 inline Vec3 applyHighlightRecovery(Vec3 proPhoto, float amount) {
     amount = clamp01(amount);
     if (amount <= 0.0f) return proPhoto;
@@ -223,7 +192,6 @@ inline Vec3 applyHighlightRecovery(Vec3 proPhoto, float amount) {
     const float gain = maxChannel > 1.0e-6f ? targetMax / maxChannel : 1.0f;
     return scale(proPhoto, 1.0f + (gain - 1.0f) * weight);
 }
-
 inline float curveSample(const AdjustmentState::CurveArray &curve, float x) {
     x = clamp01(x);
     const float position = x * static_cast<float>(AdjustmentState::CurvePointCount - 1);
@@ -233,7 +201,6 @@ inline float curveSample(const AdjustmentState::CurveArray &curve, float x) {
     const float b = static_cast<float>(curve[static_cast<std::size_t>(segment + 1)]);
     return clamp01(a + (b - a) * t);
 }
-
 inline float displayShoulder(float linear, float recovery) {
     linear = std::max(linear, 0.0f);
     recovery = clamp01(recovery);
@@ -243,23 +210,17 @@ inline float displayShoulder(float linear, float recovery) {
     const float strength = 1.65f + 1.85f * recovery;
     return start + span * (1.0f - std::exp(-strength * (linear - start) / span));
 }
-
 inline Vec3 applyMasterCurve(Vec3 rgb, const AdjustmentState::CurveArray &curve, const Float4 &lum) {
     const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     if (y <= 1.0e-6f) return rgb;
     const float mapped = curveSample(curve, y);
     return scale(rgb, mapped / y);
 }
-
 inline float middleGrayContrast(float y, float factor) {
     constexpr float pivot = 0.18f;
     if (y <= 0.0f) return 0.0f;
     return pivot * std::pow(y / pivot, factor);
 }
-}
-
-
-namespace {
 Vec3 multiply(const Float4 *rows, Vec3 v) {
     return {rows[0].x*v.x + rows[0].y*v.y + rows[0].z*v.z,
             rows[1].x*v.x + rows[1].y*v.y + rows[1].z*v.z,
@@ -298,9 +259,14 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &state, ImagePipeli
                                        ColorManagement::OutputSpace output) {
     ProcessingPlan plan;
     plan.state = state; plan.encoding = encoding; plan.output = output;
+    // Upload the exact same precomposed rows that the CPU consumes. Evaluating
+    // three separate matrices in GLSL was not numerically the same operation.
+    for (int i=0; i<3; ++i) {
+        plan.data[Input0+i] = InputMatrix[i];
+        plan.data[Working0+i] = WorkingToSrgb[i];
+    }
     const float temperature = float(state.temperature / 100.0), tint = float(state.tint / 100.0);
     const float gain = float(std::exp2(std::clamp(state.exposure, -20.0, 20.0)));
-    // Fold the WB chromatic adaptation and exposure into one 3x3 matrix.
     const auto wb = matrixOf([&](Vec3 v) {
         return scale(temperature == 0 && tint == 0 ? v : applyWhiteBalanceDelta(v, temperature, tint), gain);
     });
@@ -327,16 +293,13 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &state, ImagePipeli
     for (int i=0; i<5; ++i) plan.data[Curves+i] = {float(state.masterCurve[i]),float(state.redCurve[i]),float(state.greenCurve[i]),float(state.blueCurve[i])};
     return plan;
 }
-
 QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state, InputEncoding encoding,
                              ColorManagement::OutputSpace output, const CancelToken &token, bool parallel) {
     return processWithPlan(source, ProcessingPlan::compile(state, encoding, output), token, parallel);
 }
-
 QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
     if (source.isNull() || cancelled(token)) return {};
     PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()}, {"parallel",parallel}});
-    // Detach once before parallel writes; never call non-const QImage APIs in workers.
     const QImage input = source.format() == QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
     QImage out(input.size(), QImage::Format_RGBA64);
     if (out.isNull()) return {};
@@ -355,7 +318,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
             Vec3 v{original.red()/65535.0f, original.green()/65535.0f, original.blue()/65535.0f};
             if (plan.encoding == InputEncoding::SRgb) {
                 v = {srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
-                v = multiply(InputMatrix.data(),v);
+                v = multiply(plan.data.data()+ProcessingPlan::Input0,v);
             }
             v = multiply(plan.data.data()+ProcessingPlan::Wb0,v);
             v = applyHighlightRecovery(v,tone.y);
@@ -369,15 +332,11 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
                 const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
                 if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,tone.x)/Y);
             }
-            v = multiply(WorkingToSrgb.data(),v);
+            v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
             if (color.z != 0) v = applyPerceptualColor(v,plan);
             else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
-                // Preserve the legacy neutral-node lightness limit outside the
-                // normal domain, without doing hue/8-band work on every pixel.
                 auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,1.5f); v = oklabToLinearSrgb(lab);
             }
-            // Branch to the destination primaries BEFORE gamut clipping/shoulder.
-            // Curves retain their existing output-referred semantics.
             v = multiply(plan.data.data()+ProcessingPlan::Out0,v);
             v = compressNegativeGamut(v,lum);
             v = {displayShoulder(v.x,tone.y),displayShoulder(v.y,tone.y),displayShoulder(v.z,tone.y)};
