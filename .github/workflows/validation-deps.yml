@@ -1,0 +1,25 @@
+name: validation-deps
+on:
+  push:
+    branches: ['perf/20260907-a-e']
+    paths: ['.github/workflows/validation-deps.yml']
+permissions:
+  contents: read
+jobs:
+  deps:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Collect native SDK dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libjpeg-dev libgl-dev libegl-dev libopengl-dev libvulkan-dev libxkbcommon-dev
+          mkdir -p sysroot/include sysroot/lib
+          cp -a /usr/include/GL /usr/include/EGL /usr/include/KHR /usr/include/vulkan /usr/include/xkbcommon sysroot/include/
+          cp -a /usr/include/jpeglib.h /usr/include/jerror.h /usr/include/jmorecfg.h /usr/include/x86_64-linux-gnu/jconfig.h sysroot/include/
+          for lib in jpeg GL EGL OpenGL GLX GLdispatch vulkan xkbcommon; do cp -a /usr/lib/x86_64-linux-gnu/lib${lib}.so* sysroot/lib/; done
+          tar -czf native-sdk.tar.gz sysroot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JixelLight-native-validation-deps
+          path: native-sdk.tar.gz
+          retention-days: 3
