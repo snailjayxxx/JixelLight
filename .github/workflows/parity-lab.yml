@@ -1,0 +1,68 @@
+name: numerical-parity-investigation
+on:
+  push:
+    branches: ['perf/20260907-a-e']
+    paths: ['tools/ParityLab.py', '.github/workflows/parity-lab.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: numeric-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  investigate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            triplet: x64-windows-static-md
+          - os: macos-15
+            triplet: arm64-osx-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: qtshadertools
+          cache: true
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          path: .vcpkg
+      - name: Bootstrap Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - name: Bootstrap macOS
+        if: runner.os == 'macOS'
+        run: ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Cache identity
+        id: deps
+        shell: bash
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          echo "vcpkg=$(git -C .vcpkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.deps.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+      - name: Configure read-only investigation
+        shell: bash
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"
+      - name: Compare numerical candidates without changing tolerances
+        run: python tools/ParityLab.py
+      - name: Preserve experiment output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: numeric-lab-${{ runner.os }}
+          path: numeric-lab
