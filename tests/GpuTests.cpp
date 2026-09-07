@@ -9,6 +9,10 @@
 #include "core/gpu/GpuEngine.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/look/LookProfiles.h"
+#include "core/raw/RawDecoder.h"
+#include <QFile>
+#include <QDir>
+#include <QJsonDocument>
 
 class GpuTests : public QObject {
     Q_OBJECT
@@ -147,6 +151,24 @@ private slots:
             lut->updateDigest();AdjustmentState s;s.look.mode="calibrated";s.look.lut=lut;s.look.strength=.7;
             s.look.parameters={{"sharpness",6},{"clarity",4}};
             verifyParity(image,s,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"LUT and details across output spaces");
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void realSonyEmpiricalProfileParity() {
+        const QString fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(fixtures.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony dataset configured; not a real-profile pass");}
+        const QString path=qEnvironmentVariable("JIXELLIGHT_TEST_SONY_PROFILE",QDir::currentPath()+"/sony-real-reports/dataset/empirical.jlook.json");
+        QFile file(path);QVERIFY2(file.open(QIODevice::ReadOnly),qPrintable(path));
+        const auto json=QJsonDocument::fromJson(file.readAll()).object();
+        const auto look=LookState::fromJson(json["look"].toObject());QVERIFY2(look.lut,qPrintable(look.error));
+        QVERIFY(look.lut->evidence["independentValidationPassed"].toBool());
+        QString error;auto source=RawDecoder::decode(fixtures+"/sony_a7_iv_07.arw",&error);
+        QVERIFY2(!source.isNull(),qPrintable(error));source=source.scaled(257,257,Qt::KeepAspectRatio,Qt::SmoothTransformation);
+        for(int space=0;space<4;++space){AdjustmentState state;state.look=look;
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"Real Sony held-out RAW + empirical LUT");
+            if(QTest::currentTestFailed())return;
+            state.look.strength=.7;state.look.parameters={{"sharpness",4},{"clarity",1}};
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"Real Sony LUT strength and details");
             if(QTest::currentTestFailed())return;
         }
     }

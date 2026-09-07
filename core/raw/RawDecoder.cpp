@@ -1,4 +1,5 @@
 #include "core/raw/RawDecoder.h"
+#include "core/raw/RawGeometry.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QSemaphore>
 #include <algorithm>
@@ -86,6 +87,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         return {};
     }
 
+    const auto decodeSizes=raw.imgdata.sizes;
     auto &params = raw.imgdata.params;
     params.use_camera_wb = 1;
     params.use_auto_wb = 0;
@@ -129,6 +131,18 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     }
     image.setText(QStringLiteral("JixelLightWorkingSpace"), QStringLiteral("Linear ProPhoto RGB"));
     image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));
+    // LibRaw's standard inset is an absolute sensor-space crop. Convert it to
+    // the developed/oriented bitmap for reference matching only. Reject bogus
+    // metadata and unexplained rescaling; never guess a centre crop.
+    if(QString::fromLatin1(raw.imgdata.idata.make).contains("SONY",Qt::CaseInsensitive)) {
+        const auto c=decodeSizes.raw_inset_crops[0];
+        if(c.cleft<65535&&c.ctop<65535&&c.cwidth>0&&c.cheight>0&&
+           quint64(c.cleft)+c.cwidth<=decodeSizes.raw_width&&quint64(c.ctop)+c.cheight<=decodeSizes.raw_height) {
+            const QRect relative(int(c.cleft)-int(decodeSizes.left_margin),int(c.ctop)-int(decodeSizes.top_margin),c.cwidth,c.cheight);
+            const auto roi=RawGeometry::orientCrop(QSize(decodeSizes.width,decodeSizes.height),relative,decodeSizes.flip,image.size());
+            if(roi.isValid())image.setText("JixelLightCameraCrop",QString("%1,%2,%3,%4").arg(roi.x()).arg(roi.y()).arg(roi.width()).arg(roi.height()));
+        }
+    }
 
     const int colors = processed->colors;
     if (processed->bits == 16) {

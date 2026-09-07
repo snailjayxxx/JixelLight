@@ -13,6 +13,8 @@
 
 bool CameraReference::matches(const QVariantMap &raw,const QVariantMap &jpeg,QString *reason){
  const auto no=[&](const char *why){if(reason)*reason=why;return false;};
+ if(raw.value("sonyLook").toMap().value("modelConflict").toBool()||jpeg.value("sonyLook").toMap().value("modelConflict").toBool())return no("camera-model-conflict");
+ if(raw.contains("sonyModelId")&&jpeg.contains("sonyModelId")&&raw["sonyModelId"]!=jpeg["sonyModelId"])return no("camera-id-mismatch");
  for(const char *key:{"make","model","captureTime"}) {
   if(raw.value(key).toString().isEmpty()||jpeg.value(key).toString().isEmpty())return no("missing-camera-or-time");
   if(raw.value(key).toString().compare(jpeg.value(key).toString(),Qt::CaseInsensitive)!=0)return no("camera-or-time-mismatch");

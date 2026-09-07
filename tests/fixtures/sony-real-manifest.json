@@ -1,0 +1,95 @@
+{
+  "purpose": "Internal compatibility validation; not redistributed in program packages",
+  "items": [
+    {
+      "file": "sony_a7_iv_01.arw",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_01.arw",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 67862528,
+      "sha256": "4e9daa5235f79733d0f60873228b8c9afe2778ac9a7ba11f0f9a67a75de674e1"
+    },
+    {
+      "file": "sony_a7_iv_01.jpg",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_01.jpg",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 16980224,
+      "sha256": "083c6f2c06cadd5ad34ec5be4f50ab9765119f43ed5432fe5b69264535fd2927"
+    },
+    {
+      "file": "sony_a7_iv_04.arw",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_04.arw",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 69636096,
+      "sha256": "a6d63b5fb66466d04a545461d9933ae76087d0aa1b1908b2af3dadd152a63f74"
+    },
+    {
+      "file": "sony_a7_iv_04.jpg",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_04.jpg",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 20265139,
+      "sha256": "ea8c4e8c52e6c5f69b39541297b099df85e0527625a2d107a8d58dae2fba2cb4"
+    },
+    {
+      "file": "sony_a7_iv_07.arw",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_07.arw",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 69120000,
+      "sha256": "aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d"
+    },
+    {
+      "file": "sony_a7_iv_07.jpg",
+      "url": "https://img.photographyblog.com/reviews/sony_a7_iv/sample_images/sony_a7_iv_07.jpg",
+      "sourcePage": "https://www.photographyblog.com/reviews/sony_a7_iv_review",
+      "bytes": 20835238,
+      "sha256": "6d5f3972af9c6ea22abf051cc90dfdcf845a22f7cfbd8db9c830de00786b86db"
+    }
+  ],
+  "schema": 1,
+  "limitations": [
+    "Preproduction Sony ILCE-7M4 samples, EXIF MODEL-NAME, firmware v0.02",
+    "Three ST scenes only; not calibration of all Creative Looks or retail firmware"
+  ],
+  "expected": {
+    "model": "ILCE-7M4",
+    "recordedModel": "MODEL-NAME",
+    "sonyModelId": 388,
+    "code": "ST",
+    "parameters": {
+      "contrast": 0,
+      "highlights": 0,
+      "shadows": 0,
+      "fade": 0,
+      "saturation": 0,
+      "sharpness": 4,
+      "sharpnessRange": 3,
+      "clarity": 1
+    },
+    "cameraDefaultCrop": [
+      12,
+      8,
+      7008,
+      4672
+    ]
+  },
+  "pairs": [
+    {
+      "id": "sony-a7-iv-01",
+      "raw": "sony_a7_iv_01.arw",
+      "jpeg": "sony_a7_iv_01.jpg",
+      "role": "train"
+    },
+    {
+      "id": "sony-a7-iv-04",
+      "raw": "sony_a7_iv_04.arw",
+      "jpeg": "sony_a7_iv_04.jpg",
+      "role": "train"
+    },
+    {
+      "id": "sony-a7-iv-07",
+      "raw": "sony_a7_iv_07.arw",
+      "jpeg": "sony_a7_iv_07.jpg",
+      "role": "validation"
+    }
+  ],
+  "independentOracle": "ExifTool numeric Sony tags from original files, acquired 2026-09-07; compare to native Exiv2 results."
+}

@@ -1,6 +1,6 @@
 {
   "name": "jixellight",
-  "version-string": "0.1.0-alpha.7",
+  "version-string": "0.1.0-alpha.9",
   "dependencies": [
     {
       "name": "libraw",

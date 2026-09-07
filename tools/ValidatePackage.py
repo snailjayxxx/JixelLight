@@ -14,6 +14,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('executable', type=Path)
     parser.add_argument('raw', type=Path)
+    parser.add_argument('--sony-probe', type=Path)
     parser.add_argument('--reports', type=Path, default=Path('package-validation'))
     args = parser.parse_args()
     executable, raw = args.executable.resolve(), args.raw.resolve()
@@ -86,6 +87,42 @@ def main() -> int:
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)
+    sony_check = None
+    if args.sony_probe:
+        probe = args.sony_probe.resolve()
+        fixtures = Path(environment.get('JIXELLIGHT_SONY_FIXTURES', '')).resolve()
+        env = environment.copy()
+        with tempfile.TemporaryDirectory(prefix='jixellight-sony-package-') as temporary:
+            for key in ('HOME', 'USERPROFILE', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME',
+                        'XDG_DATA_HOME', 'APPDATA', 'LOCALAPPDATA'):
+                env[key] = temporary
+            sony_reports = reports / 'sony-native'
+            sony_reports.mkdir(exist_ok=True)
+            with (sony_reports / 'probe.log').open('w', encoding='utf-8') as stream:
+                try:
+                    run = subprocess.run([str(probe), str(fixtures/'sony_a7_iv_07.arw'),
+                        str(fixtures/'sony_a7_iv_07.jpg'), str(sony_reports)],
+                        env=env, cwd=temporary, stdout=stream, stderr=subprocess.STDOUT, timeout=180)
+                    code = run.returncode
+                except (OSError, subprocess.TimeoutExpired):
+                    code = -1
+            data = {}
+            try:
+                data = json.loads((sony_reports/'report.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                pass
+            for photo in sony_reports.glob('*.png'):
+                photo.unlink()  # Do not publish the review photographer's images.
+            ok = (code == 0 and data.get('pairMetadataMatches') is True
+                  and data.get('automaticReference', {}).get('kind') == 'paired-jpeg'
+                  and data.get('decoderModel') == 'ILCE-7M4'
+                  and data.get('fitAccepted') is True
+                  and data.get('fit', {}).get('heldoutRmseAfter', 1) < .05)
+            sony_check = {'mode': 'sony-native-cli', 'passed': bool(ok), 'returncode': code,
+                          'probe_sha256': hashlib.sha256(probe.read_bytes()).hexdigest(),
+                          'source_commit': data.get('commit'), 'sdk_paths_removed': True,
+                          'raw_sha256': data.get('rawSha256'), 'jpeg_sha256': data.get('jpegSha256')}
+            results.append(sony_check)
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),

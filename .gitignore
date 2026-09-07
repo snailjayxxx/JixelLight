@@ -11,3 +11,8 @@ CMakeUserPresets.json
 *.db-shm
 *.db-wal
 JixelLight_Diagnostic_*.zip
+
+# Local-only copyrighted test fixtures
+.sony-fixtures/
+__pycache__/
+*.pyc

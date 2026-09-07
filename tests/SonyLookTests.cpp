@@ -17,6 +17,7 @@
 #include "core/export/JpegExporter.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/raw/RawDecoder.h"
+#include "core/raw/RawGeometry.h"
 #include "app/PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
 
@@ -68,6 +69,62 @@ private slots:
         signedTag(e,0xb029,18);m=SonyLookMetadata::read(e);QCOMPARE(m["status"].toString(),QString("unsupported"));QVERIFY(!m["autoEligible"].toBool());
         QVERIFY(m["code"].toString().isEmpty());QVERIFY(!m["rawFields"].toMap().isEmpty());
         e["Exif.Image.Make"]="CANON";QCOMPARE(SonyLookMetadata::read(e)["status"].toString(),QString("not-sony"));
+    }
+    void makerModelIdentityIsNormalizedWithoutHidingConflicts() {
+        auto e=sony("Standard");e["Exif.Image.Model"]="MODEL-NAME";signedTag(e,0xb001,388);
+        const auto m=SonyLookMetadata::read(e);
+        QCOMPARE(m["recordedModel"].toString(),QString("MODEL-NAME"));
+        QCOMPARE(m["model"].toString(),QString("ILCE-7M4"));QCOMPARE(m["sonyModelId"].toInt(),388);
+        QCOMPARE(m["modelSource"].toString(),QString("SonyModelID"));QVERIFY(m["autoEligible"].toBool());
+        e["Exif.Image.Model"]="ILCE-7M2";auto conflict=SonyLookMetadata::read(e);
+        QVERIFY(conflict["modelConflict"].toBool());QVERIFY(!conflict["autoEligible"].toBool());
+        QCOMPARE(conflict["recordedModel"].toString(),QString("ILCE-7M2"));
+        signedTag(e,0xb001,389,"Sony2");QVERIFY(SonyLookMetadata::read(e)["modelConflict"].toBool());
+        QTemporaryDir dir;const auto path=dir.filePath("sony-model.jpg");QVERIFY(fixture().save(path,"JPEG"));
+        auto image=Exiv2::ImageFactory::open(path.toStdString());image->readMetadata();
+        e=sony("Standard");e["Exif.Image.Model"]="MODEL-NAME";signedTag(e,0xb001,388);
+        image->setExifData(e);image->writeMetadata();QString error;const auto meta=MetadataReader::read(path,&error);
+        QVERIFY2(error.isEmpty(),qPrintable(error));QCOMPARE(meta["model"].toString(),QString("ILCE-7M4"));
+        QCOMPARE(meta["recordedModel"].toString(),QString("MODEL-NAME"));QCOMPARE(meta["sonyModelId"].toInt(),388);
+        auto a=meta;a["captureTime"]="2021:11:18 10:04:58";auto b=a;
+        QVERIFY(CameraReference::matches(a,b));b["sonyModelId"]=389;QVERIFY(!CameraReference::matches(a,b));
+        b=a;b["sonyLook"]=conflict;QVERIFY(!CameraReference::matches(a,b));
+    }
+    void cameraCropIsBoundedOrientedAndUsedOnlyForFitting() {
+        const QSize visible(100,80);const QRect crop(7,11,60,40);
+        QCOMPARE(RawGeometry::orientCrop(visible,crop,0,visible),crop);
+        QCOMPARE(RawGeometry::orientCrop(visible,crop,3,visible),QRect(33,29,60,40));
+        QCOMPARE(RawGeometry::orientCrop(visible,crop,5,visible.transposed()),QRect(11,33,40,60));
+        QCOMPARE(RawGeometry::orientCrop(visible,crop,6,visible.transposed()),QRect(29,7,40,60));
+        QVERIFY(!RawGeometry::orientCrop(visible,crop,1,visible).isValid());
+        QVERIFY(!RawGeometry::orientCrop(visible,crop,0,QSize(50,40)).isValid());
+        QVERIFY(!RawGeometry::orientCrop(visible,QRect(-1,0,60,40),0,visible).isValid());
+        for(const char *bad:{"1,2,3","1,2,0,4","0,0,101,80","2147483647,0,20,1","nan,0,1,1"})
+            QVERIFY(!RawGeometry::parseCrop(bad,visible).isValid());
+        auto source=fixture(100,80);source.setText("JixelLightCameraCrop","7,11,60,40");const auto original=source;
+        QVariantMap info;const auto out=calibrationSource(source,fixture(60,40),&info);
+        QCOMPARE(out,source.copy(crop));QCOMPARE(source,original);
+        QCOMPARE(info["geometryBasis"].toString(),QString("camera-metadata-default-crop"));
+        QCOMPARE(calibrationSource(source,fixture(60,60),&info),source);
+        QCOMPARE(info["geometryBasis"].toString(),QString("full-developed-frame"));
+    }
+    void independentSceneValidationDoesNotTrainOnTheAnswer() {
+        const auto a=fixture(64,64),b=fixture(65,65),c=fixture(67,67);
+        const auto target=[](const QImage &im,double shift){auto out=im.copy();
+            for(int y=0;y<out.height();++y){auto *p=reinterpret_cast<QRgba64*>(out.scanLine(y));
+                for(int x=0;x<out.width();++x)p[x]=QRgba64::fromRgba64(p[x].red()*.88+shift,p[x].green()*.88+shift,p[x].blue()*.88+shift,65535);}return out;};
+        QVector<LookCalibrationPair> pairs{{a,target(a,2000),"train-a",false},{b,target(b,2000),"train-b",false},{c,target(c,2000),"validate-c",true}};
+        const auto fit=fitLookDataset(pairs);QVERIFY2(fit.lut,qPrintable(fit.error));
+        QVERIFY(fit.report["independentValidationPassed"].toBool());QVERIFY(!fit.report["cameraCalibration"].toBool());
+        // Changing only the validation target must not change ANY fitted node.
+        pairs[2].reference=target(c,2030);const auto other=fitLookDataset(pairs);
+        QVERIFY2(other.lut,qPrintable(other.error));QCOMPARE(other.lut->rgb,fit.lut->rgb);
+        // A distinct but geometrically correlated target must be rejected, not learned.
+        pairs[2].reference=target(c,10000);const auto bad=fitLookDataset(pairs);
+        QVERIFY(!bad.lut);QVERIFY(!bad.report["independentValidationPassed"].toBool());
+        pairs[2].id=pairs[0].id;QVERIFY(!fitLookDataset(pairs).lut);
+        pairs[2].id="validate-c";pairs[2].validation=false;QVERIFY(!fitLookDataset(pairs).lut);
+        QVERIFY(!fitLookDataset(pairs,std::make_shared<std::atomic_bool>(true)).lut);
     }
     void metadataFromActualJpegContainer() {
         QTemporaryDir dir;const auto path=dir.filePath("sony.jpg");QVERIFY(fixture().save(path,"JPEG"));

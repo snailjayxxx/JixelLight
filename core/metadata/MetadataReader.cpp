@@ -92,6 +92,13 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
 
         putIfPresent(result, QStringLiteral("make"), firstValue(exif, {"Exif.Image.Make", "Exif.Photo.Make"}));
         putIfPresent(result, QStringLiteral("model"), firstValue(exif, {"Exif.Image.Model", "Exif.Photo.Model"}));
+        const auto sonyIdentity=result.value("sonyLook").toMap();
+        if(sonyIdentity.value("status").toString()!="not-sony") {
+            result["recordedModel"]=result.value("model");
+            if(!sonyIdentity.value("modelConflict").toBool()&&!sonyIdentity.value("model").toString().isEmpty())
+                result["model"]=sonyIdentity.value("model");
+            if(sonyIdentity.contains("sonyModelId"))result["sonyModelId"]=sonyIdentity["sonyModelId"];
+        }
         putIfPresent(result, QStringLiteral("lens"), firstValue(exif, {
             "Exif.Photo.LensModel", "Exif.CanonCs.LensType", "Exif.NikonLd3.LensIDNumber",
             "Exif.Sony2.LensID", "Exif.Pentax.LensType"

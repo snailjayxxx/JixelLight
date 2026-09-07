@@ -41,9 +41,35 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     QVariantMap out{{"schema",1},{"status","not-sony"},{"generation","unknown"},
         {"code",QString()},{"autoEligible",false},{"customSlotStatus","not-recorded"}};
     const QString make=standardValue(exif,"Exif.Image.Make");
-    const QString model=standardValue(exif,"Exif.Image.Model");
+    const QString recordedModel=standardValue(exif,"Exif.Image.Model");
+    QString model=recordedModel;
     if(!make.contains("SONY",Qt::CaseInsensitive))return out;
-    out["status"]="missing";out["model"]=model;
+    out["status"]="missing";
+    // Preserve the EXIF text; preproduction files can use MODEL-NAME while
+    // the MakerNote contains an authoritative numeric SonyModelID.
+    QString idModel; int modelId=-1; bool modelConflict=false;
+    for(const auto &item:exif) {
+        const auto group=item.groupName();
+        if((group!="Sony1"&&group!="Sony2")||item.tag()!=0xb001||item.count()!=1)continue;
+        bool ok=false;const int id=QString::fromStdString(item.toString()).toInt(&ok);
+        if(!ok||id<0||id>65535)continue;
+        if(modelId>=0&&modelId!=id)modelConflict=true;
+        modelId=id;
+        QString printed=QString::fromStdString(item.print(&exif)).trimmed();
+        // ExifTool SonyModelID 388 = ILCE-7M4; older Exiv2 may only print 388.
+        if(id==388)printed="ILCE-7M4";
+        for(const char *prefix:{"ILCE-","ILME-","DSC-","ZV-","NEX-","SLT-","DSLR-"})
+            if(printed.startsWith(QLatin1String(prefix))&&!printed.contains('/'))idModel=printed;
+    }
+    const bool placeholder=recordedModel.isEmpty()||recordedModel.compare("MODEL-NAME",Qt::CaseInsensitive)==0;
+    if(!idModel.isEmpty()) {
+        if(!placeholder&&recordedModel.compare(idModel,Qt::CaseInsensitive)!=0)modelConflict=true;
+        else model=idModel;
+    }
+    if(modelId>=0)out["sonyModelId"]=modelId;
+    out["recordedModel"]=recordedModel;out["model"]=model;
+    out["modelSource"]=placeholder&&!idModel.isEmpty()?"SonyModelID":"Exif.Image.Model";
+    out["modelConflict"]=modelConflict;
     QVariantMap raw,values,sources,invalid;QVariantList candidates;QStringList warnings;
     QString primary,secondary;bool conflict=false,lookFields=false,legacyEvidence=false,unknownStyle=false;
     // Numeric tag IDs also work with Exiv2 versions that expose new tags as 0x2032.
@@ -92,6 +118,7 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     if(generation=="unknown"&&!candidates.isEmpty())warnings<<"shared-name-generation-unconfirmed";
     if(subtype)warnings<<"color-mode-refines-FL-subtype";
     if(conflict)warnings<<"conflicting-maker-note-fields";
+    if(modelConflict)warnings<<"conflicting-camera-model-fields";
     if(unknownStyle)warnings<<"unknown-creative-style-not-replaced-by-color-mode";
     out["status"]=conflict?"conflict":unknownStyle?"unsupported":code.isEmpty()?(candidates.isEmpty()?"missing":"unsupported"):"recognized";
     // A known secondary mode is only a candidate when the primary name is unknown.
@@ -99,6 +126,6 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     out["generation"]=generation;out["code"]=unknownStyle?QString():code;out["rawFields"]=raw;
     out["parameters"]=values;out["parameterSources"]=sources;out["invalidParameters"]=invalid;
     out["candidates"]=candidates;out["warnings"]=warnings;
-    out["autoEligible"]=!conflict&&!unknownStyle&&!code.isEmpty()&&generation=="creative-look";
+    out["autoEligible"]=!modelConflict&&!conflict&&!unknownStyle&&!code.isEmpty()&&generation=="creative-look";
     return out;
 }

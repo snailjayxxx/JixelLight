@@ -144,6 +144,7 @@ SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken
             out.metadata["model"] = meta.model;
             out.metadata["bitDepth"] = meta.bitsPerChannel;
             out.metadata["demosaic"] = meta.demosaic;
+            if(!out.image.text("JixelLightCameraCrop").isEmpty())out.metadata["cameraDefaultCrop"]=out.image.text("JixelLightCameraCrop");
         } else {
             QImageReader reader(path); reader.setAutoTransform(true);
             out.image = reader.read();

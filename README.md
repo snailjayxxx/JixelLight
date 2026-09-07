@@ -1,8 +1,10 @@
+> alpha.9 更新：已增加三组真实 Sony ST ARW/JPEG 的兼容性验证和独立场景经验拟合；详见 [真文件验证与限制](docs/SONY_REAL_VALIDATION.md)。下文 alpha.8 的“尚无真实 Sony 样本”记录是历史状态，不代表当前测试覆盖。十二种内置近似外观仍不等于 Sony 官方标定。
+
 # JixelLight
 
 JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
-当前开发版本：**v0.1.0-alpha.8**
+当前开发版本：**v0.1.0-alpha.9**
 
 ## alpha.8：Sony 外观识别、相机参考与可编辑匹配
 

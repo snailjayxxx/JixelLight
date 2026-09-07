@@ -57,6 +57,13 @@ ColumnLayout {
               ? root.t("参考拟合 / 导入 LUT · 非索尼官方配置。显示 sRGB 域，不能恢复超出参考色域的信息。", "Reference fit / imported LUT, not a Sony profile. Display-sRGB domain; no recovery of colors outside the reference gamut.")
               : root.t("JixelLight 独立近似预设 · 未实机标定，不保证与机内 JPEG 一致。", "Independent JixelLight approximations, not camera-calibrated or guaranteed to match in-camera JPEGs.")
     }
+    Label {
+        Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 10; color: "#d6b985"
+        visible: root.applied.evidence && root.applied.evidence.kind === "multi-scene-empirical-fit"
+        text: !visible ? "" : root.t("多场景经验匹配 · 仅在记录的独立场景验证；颜色节点覆盖 ", "Empirical multi-scene fit · validated only on the recorded held-out scenes; color-node coverage ")
+              + (100*Number(root.applied.evidence.coveredNodeFraction || 0)).toFixed(1) + "%"
+              + root.t("。不是通用相机标定，换机型/光源/外观需重新验证。", ". Not universal camera calibration; revalidate on other cameras, illuminants or looks.")
+    }
     Label { Layout.fillWidth: true; wrapMode: Text.Wrap; visible: !!root.applied.error; text: root.applied.error || ""; color: "#ffb066" }
     AdjustmentSlider { Layout.fillWidth: true; label: root.t("外观强度", "Look strength"); from: 0; to: 100; value: (root.applied.strength || 0)*100; enabled: root.controller.hasImage; onEdited: root.controller.setLookStrength(newValue/100) }
     CheckBox { id: fine; text: root.t("外观微调（与拍摄记录分离）", "Fine adjustments (independent of recorded values)"); font.pixelSize: 11 }

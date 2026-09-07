@@ -63,7 +63,7 @@ add_library(JixelLightCore STATIC
     diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
-target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.8" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.9" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi)
@@ -123,3 +123,16 @@ target_link_libraries(JixelLightSonyLookTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME sony-look COMMAND JixelLightSonyLookTests -o sony-look-results.txt,txt -o -,txt)
 set_tests_properties(sony-look PROPERTIES TIMEOUT 180)
 set_target_properties(JixelLightSonyLookTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
+qt_add_executable(JixelLightSonyValidation tools/SonyValidation.cpp)
+target_link_libraries(JixelLightSonyValidation PRIVATE JixelLightCore)
+set_target_properties(JixelLightSonyValidation PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateSonyFixtures.py $<TARGET_FILE:JixelLightSonyValidation>
+    ${CMAKE_SOURCE_DIR}/tests/fixtures/sony-real-manifest.json ${CMAKE_BINARY_DIR}/sony-real-reports)
+set_tests_properties(sony-real-files PROPERTIES TIMEOUT 540 SKIP_RETURN_CODE 77)
+# The native GPU test consumes the actual profile fitted by the real-file test.
+set_tests_properties(gpu-correctness PROPERTIES DEPENDS sony-real-files
+    ENVIRONMENT "JIXELLIGHT_TEST_SONY_PROFILE=${CMAKE_BINARY_DIR}/sony-real-reports/dataset/empirical.jlook.json")
