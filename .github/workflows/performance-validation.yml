@@ -3,14 +3,11 @@ name: performance-validation
 on:
   push:
     branches: ['perf/20260907-a-e']
+    paths: ['.github/workflows/performance-validation.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: performance-validation-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   source:
@@ -24,3 +21,27 @@ jobs:
           name: JixelLight-source
           path: JixelLight-source.zip
           retention-days: 14
+  sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qtshadertools'
+          cache: true
+      - name: Collect build SDK and RAW test fixture
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libraw-dev liblcms2-dev libexiv2-dev libgl-dev libegl-dev
+          mkdir -p sdk/qt sdk/deps/include sdk/deps/lib
+          cp -a "$QT_ROOT_DIR"/. sdk/qt/
+          cp -a /usr/include/libraw /usr/include/exiv2 /usr/include/lcms2.h /usr/include/lcms2_plugin.h sdk/deps/include/
+          cp -a /usr/lib/x86_64-linux-gnu/libraw*.so* /usr/lib/x86_64-linux-gnu/liblcms2.so* /usr/lib/x86_64-linux-gnu/libexiv2.so* sdk/deps/lib/
+          curl -L --fail --retry 3 https://raw.githubusercontent.com/f-spot/raw-samples/master/DNG/RAW_LEICA_M8.DNG -o sdk/test.DNG
+          tar -czf qt-linux-sdk.tar.gz sdk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JixelLight-validation-sdk
+          path: qt-linux-sdk.tar.gz
+          retention-days: 3
