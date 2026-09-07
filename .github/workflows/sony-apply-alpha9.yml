@@ -13,14 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
-      - name: Apply checksum-verified source patch to the expected parent only
+      - name: Apply checksum-verified application source only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import base64,hashlib,json,lzma,os,pathlib,subprocess,urllib.request
           parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
-          if parent!='5eb6f145fd80055defbb10c8557638896b258690':raise SystemExit('Unexpected parent; refusing to overwrite concurrent edits')
+          if parent!='6b1755bf957f6d9344e80c73a904c64bee810128':raise SystemExit('Unexpected parent; refusing to overwrite concurrent edits')
           chunks=[]
           for sha in ['059b0cc36fc15651a45e51190aaa419f7a0152af','909221b132e6d67f6b7231ba727b007c9af01f9b','4e340cacf044865db4a74cc2a700c7f65baf2df5','df36e6263b1d206a35f27d8e89e04112e93498eb']:
               request=urllib.request.Request('https://api.github.com/repos/snailjayxxx/JixelLight/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
@@ -32,10 +32,13 @@ jobs:
           file=pathlib.Path(os.environ['RUNNER_TEMP'])/'alpha9.patch';file.write_bytes(patch)
           subprocess.run(['git','apply','--check','--index',str(file)],check=True)
           subprocess.run(['git','apply','--index',str(file)],check=True)
+          # GITHUB_TOKEN has contents permission, not workflows permission.
+          # Leave ALL workflow edits for the already-authorized GitHub connector.
+          subprocess.run(['git','restore','--source=HEAD','--staged','--worktree','.github/workflows/build.yml','.github/workflows/sony-real-samples.yml'],check=True)
           paths=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          allowed=('.gitignore','CMakeLists.txt','README.md','vcpkg.json','.github/workflows/build.yml','.github/workflows/sony-real-samples.yml')
-          if len(paths)!=26 or any(not(p in allowed or p.startswith(('core/','tests/','tools/','docs/','ui/'))) for p in paths):raise SystemExit('Unexpected staged paths')
-          print('Source patch verified:',len(paths),'paths')
+          allowed=('.gitignore','CMakeLists.txt','README.md','vcpkg.json')
+          if len(paths)!=24 or any(not(p in allowed or p.startswith(('core/','tests/','tools/','docs/','ui/'))) for p in paths):raise SystemExit('Unexpected staged paths')
+          print('Application source patch verified:',len(paths),'paths')
           PY
           git diff --cached --check
           git config user.name 'github-actions[bot]'
