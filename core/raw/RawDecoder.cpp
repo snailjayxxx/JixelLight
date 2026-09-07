@@ -197,6 +197,7 @@ QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {
         const QByteArray jpeg=QByteArray::fromRawData(reinterpret_cast<const char *>(thumb->data),int(thumb->data_size));
         QBuffer buffer;buffer.setData(jpeg);buffer.open(QIODevice::ReadOnly);
         QImageReader reader(&buffer,"JPEG");reader.setAutoTransform(true);image=reader.read();
+        image.setText("JixelLightThumbnailOrientationApplied",reader.transformation()!=QImageIOHandler::TransformationNone?"true":"false");
     }
     else if (thumb->type == LIBRAW_IMAGE_BITMAP && thumb->colors == 3 && thumb->bits == 8)
         image = QImage(thumb->data, thumb->width, thumb->height, thumb->width*3, QImage::Format_RGB888).copy();

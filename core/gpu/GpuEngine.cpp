@@ -57,6 +57,8 @@ bool GpuEngine::initialize(QSize size) {
     m_display.reset(); m_displayBindings.reset();
     m_pipeline.reset(); m_histogram.reset(); m_reduce.reset();
     m_pipelineBindings.reset(); m_histogramBindings.reset(); m_reduceBindings.reset();
+    m_detailBaseBindings.reset();m_horizontalBindings.reset();m_detailBindings.reset();
+    m_horizontalPipeline.reset();m_detailPipeline.reset();m_detailBase.reset();m_horizontal.reset();
     m_source.reset(); m_output.reset(); m_partial.reset(); m_counts.reset();
     m_size = size;
     m_groups = (size.width()*size.height()+16383)/16384;
@@ -72,10 +74,14 @@ bool GpuEngine::initialize(QSize size) {
     m_partial.reset(m_rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, m_groups*CountsBytes));
     m_counts.reset(m_rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, CountsBytes));
     if (!m_partial->create() || !m_counts->create()) return fail(QStringLiteral("GPU histogram allocation failed"));
+    if(!m_lutTexture) {
+        m_lutTexture.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,QSize(33*33,33),1,QRhiTexture::UsedWithLoadStore));
+        if(!m_lutTexture->create())return fail("LUT allocation failed");
+    }
     using B = QRhiShaderResourceBinding;
     m_pipelineBindings.reset(m_rhi->newShaderResourceBindings());
     m_pipelineBindings->setBindings({B::uniformBuffer(0, B::ComputeStage, m_uniform.get()),
-        B::imageLoad(1, B::ComputeStage, m_source.get(), 0), B::imageStore(2, B::ComputeStage, m_output.get(), 0)});
+        B::imageLoad(1, B::ComputeStage, m_source.get(), 0), B::imageStore(2, B::ComputeStage, m_output.get(), 0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
     m_histogramBindings.reset(m_rhi->newShaderResourceBindings());
     m_histogramBindings->setBindings({B::uniformBuffer(0, B::ComputeStage, m_uniform.get()),
         B::imageLoad(1, B::ComputeStage, m_output.get(), 0), B::bufferStore(2, B::ComputeStage, m_partial.get())});
@@ -98,8 +104,12 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
     if (!m_error.isEmpty()) return false;
     if (source.isNull() || source.format() != QImage::Format_RGBA32FPx4) return fail(QStringLiteral("GPU source must be linear RGBA32FPx4"));
     if (!initialize(source.size())) return false;
+    const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;
+    if(details&&!ensureDetail())return false;
+    const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
+    const bool newLut=lut&&lut->digest!=m_lutKey;
     const bool newSource = source.cacheKey() != m_sourceKey;
-    if (revision != m_revision || newSource) {
+    if (revision != m_revision || newSource || newLut) {
         PerformanceSpan timing("gpu_submit_cpu_ms", {{"pixels", qint64(source.width())*source.height()}});
         auto *updates = m_rhi->nextResourceUpdateBatch();
         if (newSource) {
@@ -111,13 +121,26 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
             PerformanceRecorder::count("gpu_source_upload_bytes", source.sizeInBytes());
             PerformanceRecorder::count("gpu_source_uploads");
         }
+        if(newLut) {
+            const QImage atlas=lut->atlas();if(atlas.isNull()) {updates->release();return fail("Invalid LUT atlas");}
+            QRhiTextureSubresourceUploadDescription upload(atlas.constBits(),quint32(atlas.sizeInBytes()));
+            upload.setSourceSize(atlas.size());upload.setDataStride(quint32(atlas.bytesPerLine()));
+            updates->uploadTexture(m_lutTexture.get(),{{0,0,upload}});m_lutKey=lut->digest;
+            PerformanceRecorder::count("look_lut_uploads");
+        }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
         cb->beginComputePass(updates);
         cb->setComputePipeline(m_pipeline.get());
-        cb->setShaderResources(m_pipelineBindings.get());
+        cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());
         cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);
         cb->endComputePass();
+        if(details) {
+            cb->beginComputePass();cb->setComputePipeline(m_horizontalPipeline.get());cb->setShaderResources(m_horizontalBindings.get());
+            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
+            cb->beginComputePass();cb->setComputePipeline(m_detailPipeline.get());cb->setShaderResources(m_detailBindings.get());
+            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
+        }
         m_revision = revision;
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision
@@ -198,4 +221,25 @@ bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
     cb->draw(6);
     cb->endPass();
     return true;
+}
+
+bool GpuEngine::ensureDetail() {
+    if(m_detailPipeline)return true;
+    m_detailBase.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+    m_horizontal.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+    if(!m_detailBase->create()||!m_horizontal->create())return fail("Look detail allocation failed");
+    using B=QRhiShaderResourceBinding;
+    m_detailBaseBindings.reset(m_rhi->newShaderResourceBindings());
+    m_detailBaseBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),
+        B::imageLoad(1,B::ComputeStage,m_source.get(),0),B::imageStore(2,B::ComputeStage,m_detailBase.get(),0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
+    m_horizontalBindings.reset(m_rhi->newShaderResourceBindings());
+    m_horizontalBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),
+        B::imageLoad(1,B::ComputeStage,m_detailBase.get(),0),B::imageStore(2,B::ComputeStage,m_horizontal.get(),0)});
+    m_detailBindings.reset(m_rhi->newShaderResourceBindings());
+    m_detailBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),
+        B::imageLoad(1,B::ComputeStage,m_detailBase.get(),0),B::imageLoad(2,B::ComputeStage,m_horizontal.get(),0),B::imageStore(3,B::ComputeStage,m_output.get(),0)});
+    if(!m_detailBaseBindings->create()||!m_horizontalBindings->create()||!m_detailBindings->create())return fail("Look detail bindings failed");
+    PerformanceRecorder::value("look_detail_extra_gpu_bytes",qint64(m_size.width())*m_size.height()*32);
+    return buildCompute(m_horizontalPipeline,m_horizontalBindings.get(),"look_horizontal.comp")
+        &&buildCompute(m_detailPipeline,m_detailBindings.get(),"look_detail.comp");
 }

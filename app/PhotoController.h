@@ -11,6 +11,8 @@
 #include <QSet>
 #include "core/preview/PreviewTasks.h"
 #include "core/export/ExportQueue.h"
+#include "core/look/CameraReference.h"
+#include "core/look/LookCalibration.h"
 
 #include "core/pipeline/AdjustmentState.h"
 #include "core/project/ProjectDatabase.h"
@@ -20,6 +22,16 @@ class ProcessedImageProvider;
 
 class PhotoController final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap sonyLook READ sonyLook NOTIFY lookChanged)
+    Q_PROPERTY(QVariantMap lookState READ lookState NOTIFY lookChanged)
+    Q_PROPERTY(QVariantList lookCatalog READ lookCatalog CONSTANT)
+    Q_PROPERTY(bool showCameraReference READ showCameraReference WRITE setShowCameraReference NOTIFY referenceChanged)
+    Q_PROPERTY(QString cameraReferenceUrl READ cameraReferenceUrl NOTIFY referenceChanged)
+    Q_PROPERTY(QVariantMap cameraReferenceInfo READ cameraReferenceInfo NOTIFY referenceChanged)
+    Q_PROPERTY(QVariantMap referenceHistogram READ referenceHistogram NOTIFY referenceChanged)
+    Q_PROPERTY(bool referenceBusy READ referenceBusy NOTIFY referenceChanged)
+    Q_PROPERTY(bool calibrationBusy READ calibrationBusy NOTIFY calibrationChanged)
+    Q_PROPERTY(QVariantMap calibrationReport READ calibrationReport NOTIFY calibrationChanged)
     Q_PROPERTY(QVariantList library READ library NOTIFY libraryChanged)
     Q_PROPERTY(int currentIndex READ currentIndex NOTIFY currentIndexChanged)
     Q_PROPERTY(QString previewUrl READ previewUrl NOTIFY previewUrlChanged)
@@ -76,6 +88,29 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
 
 public:
+    QVariantMap sonyLook() const { return m_currentMetadata.value("sonyLook").toMap(); }
+    QVariantMap lookState() const;
+    QVariantList lookCatalog() const;
+    bool showCameraReference() const { return m_showReference; }
+    QString cameraReferenceUrl() const;
+    QVariantMap cameraReferenceInfo() const { return m_referenceInfo; }
+    QVariantMap referenceHistogram() const;
+    bool referenceBusy() const { return m_referenceBusy; }
+    bool calibrationBusy() const { return m_calibrationBusy; }
+    QVariantMap calibrationReport() const { return m_calibrationReport; }
+    Q_INVOKABLE void setShowCameraReference(bool show);
+    Q_INVOKABLE void setLookMode(const QString &mode);
+    Q_INVOKABLE void setLookCode(const QString &code);
+    Q_INVOKABLE void setLookStrength(double strength);
+    Q_INVOKABLE void setLookParameter(const QString &name, double value);
+    Q_INVOKABLE void openReferenceDialog();
+    Q_INVOKABLE bool loadReference(const QUrl &url);
+    Q_INVOKABLE bool calibrateFromReference();
+    Q_INVOKABLE void cancelCalibration();
+    Q_INVOKABLE void openLookProfileDialog();
+    Q_INVOKABLE void saveLookProfileDialog();
+    Q_INVOKABLE bool loadLookProfile(const QUrl &url);
+    Q_INVOKABLE bool saveLookProfile(const QUrl &url);
     explicit PhotoController(ProcessedImageProvider *provider, QObject *parent = nullptr);
     ~PhotoController() override;
     QVariantList library() const;
@@ -153,6 +188,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
@@ -196,6 +232,19 @@ private:
     std::unique_ptr<LatestJob<RenderRequest, QImage>> m_render;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
 
+    bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;
+    QImage m_referenceImage;
+    QVariantMap m_referenceInfo, m_calibrationReport;
+    ScopesResult m_referenceScopes;
+    QString m_manualReferencePath;
+    QSet<QString> m_referenceFiles;
+    quint64 m_referenceRevision=0;
+    std::unique_ptr<LatestJob<CameraReferenceRequest,CameraReferenceResult>> m_referenceJob;
+    std::unique_ptr<LatestJob<LookCalibrationRequest,LookCalibrationResult>> m_calibrationJob;
+    void initializeLookJobs();
+    void resetReference();
+    void requestReference();
+    bool isProtectedPhoto(const QString &path) const;
     void initializeJobs();
     void acceptSource(quint64 photo, SourceData data);
     void prepareCurrent();

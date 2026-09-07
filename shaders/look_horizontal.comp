@@ -1,0 +1,13 @@
+#version 440
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[37];};
+layout(rgba32f,binding=1) readonly uniform image2D baseImage;
+layout(rgba32f,binding=2) writeonly uniform image2D horizontalImage;
+float luminanceAt(ivec2 c){vec3 v=imageLoad(baseImage,c).rgb;precise float y=(.2126*v.r+.7152*v.g)+.0722*v.b;return y;}
+void main(){
+ ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+ int a=clamp(int(p[32].z),1,12),b=clamp(int(p[32].w),1,12);precise float sa=0.0,sb=0.0;
+ if(p[32].x>0.0)for(int i=-a;i<=a;++i)sa+=luminanceAt(ivec2(clamp(c.x+i,0,size.x-1),c.y));
+ if(p[32].y>0.0)for(int i=-b;i<=b;++i)sb+=luminanceAt(ivec2(clamp(c.x+i,0,size.x-1),c.y));
+ imageStore(horizontalImage,c,vec4(sa/float(2*a+1),sb/float(2*b+1),0,1));
+}

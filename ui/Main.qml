@@ -178,7 +178,15 @@ ApplicationWindow {
             Layout.fillWidth: true; Layout.fillHeight: true; color: "#080a0d"
             Item {
                 anchors.fill: parent; anchors.margins: 18
-                PhotoCanvas { objectName: "photoCanvas"; anchors.fill: parent; controller: photoController; visible: photoController.hasImage }
+                RowLayout {
+                    anchors.fill: parent; spacing: 12; visible: photoController.hasImage
+                    ColumnLayout {
+                        Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0
+                        Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.t("当前 RAW / 编辑结果", "Current RAW / edit result"); color: "#aebccc" }
+                        PhotoCanvas { objectName: "photoCanvas"; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController }
+                    }
+                    CameraReferenceView { controller: photoController; visible: photoController.showCameraReference; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0 }
+                }
                 Column {
                     anchors.centerIn: parent; visible: !photoController.hasImage; spacing: 10
                     Label { anchors.horizontalCenter: parent.horizontalCenter; text: "JixelLight"; color: "#dce5ef"; font.pixelSize: 28; font.bold: true }
@@ -195,7 +203,8 @@ ApplicationWindow {
             ColumnLayout {
                 width: 386; x: 9; spacing: 10
 
-                Label { text: window.t("专业示波器", "SCOPES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11; Layout.topMargin: 10 }
+                SonyLookPanel { controller: photoController; Layout.fillWidth: true }
+                Label { text: window.t("当前编辑图像 · 专业示波器", "CURRENT EDIT · SCOPES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11; Layout.topMargin: 10 }
                 RowLayout {
                     Layout.fillWidth: true
                     Button { id: rgbButton; text: "RGB"; checkable: true; checked: true; onClicked: { checked = true; lumaButton.checked = false } }

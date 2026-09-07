@@ -8,6 +8,7 @@
 #include <cmath>
 #include "core/gpu/GpuEngine.h"
 #include "core/scopes/ScopesEngine.h"
+#include "core/look/LookProfiles.h"
 
 class GpuTests : public QObject {
     Q_OBJECT
@@ -126,6 +127,27 @@ private slots:
             qInfo()<<"CPU/GPU mode"<<mode;
             verifyParity(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"historical fixture");
             if(QTest::currentTestFailed()) return;
+        }
+    }
+    void sonyLooksDetailsAndLuts() {
+        QImage image(83,95,QImage::Format_RGBA64);std::mt19937 rng(81138);
+        for(int y=0;y<image.height();++y){auto *p=reinterpret_cast<QRgba64*>(image.scanLine(y));for(int x=0;x<image.width();++x){
+            const quint16 r=rng()%58000,g=rng()%58000,b=rng()%58000;p[x]=QRgba64::fromRgba64(r,g,b,65535);}}
+        for(const auto &v:LookProfiles::catalog()) {
+            AdjustmentState s;s.look.mode="manual";s.look.code=v.toMap()["code"].toString();
+            verifyParity(image,s,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"Sony approximate preset");
+            if(QTest::currentTestFailed())return;
+            s.look.parameters={{"contrast",3},{"highlights",-2},{"shadows",2},{"fade",2},{"saturation",-1},{"sharpness",8},{"sharpnessRange",5},{"clarity",7}};
+            verifyParity(image,s,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"Sony fine adjustments + detail");
+            if(QTest::currentTestFailed())return;
+        }
+        for(int n:{2,17,33})for(int space=0;space<4;++space) {
+            auto lut=std::make_shared<LookLut>(*LookLut::identity(n));
+            for(int i=0;i<lut->rgb.size();i+=3){lut->rgb[i]=.04f+.86f*lut->rgb[i];lut->rgb[i+2]=.02f+.92f*lut->rgb[i+2];}
+            lut->updateDigest();AdjustmentState s;s.look.mode="calibrated";s.look.lut=lut;s.look.strength=.7;
+            s.look.parameters={{"sharpness",6},{"clarity",4}};
+            verifyParity(image,s,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"LUT and details across output spaces");
+            if(QTest::currentTestFailed())return;
         }
     }
     void denseColorParity_data() {

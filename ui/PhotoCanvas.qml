@@ -5,6 +5,7 @@ import JixelLight.Native 1.0
 
 Item {
     id: root
+    clip: true
     property var controller
     property real zoom: 0
     property real centerX: .5
@@ -77,7 +78,8 @@ Item {
         width: 32; height: 32; running: controller.loading || controller.rendering
     }
     Label {
-        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
+        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+        elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter
         text: controller.processingBackend
         color: "#a9b5c4"; font.pixelSize: 10
         background: Rectangle { color: "#c011161c"; radius: 4 }

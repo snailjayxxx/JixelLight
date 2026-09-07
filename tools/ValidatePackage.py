@@ -69,11 +69,20 @@ def main() -> int:
                   and data.get('preview_ready') is True and data.get('scope_pixels', 0) > 0
                   and data.get('gpu_active') is (mode == 'gpu')
                   and data.get('screenshot_saved') is True and screenshot.is_file())
+            ok = (ok and data.get('look_validation_required') is True
+                  and data.get('look', {}).get('code') == 'FL'
+                  and data.get('look', {}).get('active') is True
+                  and bool(data.get('reference', {}).get('previewPixelSha256')))
             if mode == 'gpu':
                 expected = 'Direct3D 11' if sys.platform == 'win32' else 'Metal'
                 ok = ok and expected in data.get('backend', '')
             results.append({'mode': mode, 'passed': bool(ok), 'returncode': code,
-                            'backend': data.get('backend'), 'source_commit': data.get('source_commit')})
+                            'backend': data.get('backend'), 'source_commit': data.get('source_commit'),
+                            'build_version': data.get('build_version'),
+                            'look_code': data.get('look', {}).get('code'),
+                            'look_active': data.get('look', {}).get('active'),
+                            'reference_kind': data.get('reference', {}).get('kind'),
+                            'reference_pixel_sha256': data.get('reference', {}).get('previewPixelSha256')})
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)

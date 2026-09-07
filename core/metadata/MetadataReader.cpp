@@ -1,4 +1,5 @@
 #include "core/metadata/MetadataReader.h"
+#include "core/look/SonyLookMetadata.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -77,6 +78,12 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
         image->readMetadata();
         const Exiv2::ExifData &exif = image->exifData();
 
+        try { const auto i=exif.findKey(Exiv2::ExifKey("Exif.Image.Orientation"));
+            if(i!=exif.end())result["orientationCode"]=QString::fromStdString(i->toString()).toInt(); } catch (...) {}
+        result.insert(QStringLiteral("sonyLook"), SonyLookMetadata::read(exif));
+        putIfPresent(result,"software",firstValue(exif,{"Exif.Image.Software"}));
+        putIfPresent(result,"subSecTime",firstValue(exif,{"Exif.Photo.SubSecTimeOriginal"}));
+        putIfPresent(result,"imageUniqueId",firstValue(exif,{"Exif.Photo.ImageUniqueID"}));
         result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
         result.insert(QStringLiteral("fileSizeBytes"), fileSize);
 

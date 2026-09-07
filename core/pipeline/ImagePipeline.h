@@ -12,6 +12,7 @@ public:
                           InputEncoding encoding = InputEncoding::SRgb,
                           ColorManagement::OutputSpace output = ColorManagement::OutputSpace::SRgb,
                           const CancelToken &cancel = {}, bool parallel = true);
+    static QImage processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &cancel = {});
     static QImage processWithPlan(const QImage &source, const ProcessingPlan &plan,
                           const CancelToken &cancel = {}, bool parallel = true);
 };

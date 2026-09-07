@@ -112,7 +112,7 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
         while (interactive && interactive->load(std::memory_order_relaxed) && !cancelled(token)) QThread::msleep(10);
         if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
         const QImage view(input.constScanLine(y),input.width(),std::min(128,input.height()-y),input.bytesPerLine(),QImage::Format_RGBA64);
-        const QImage rendered=ImagePipeline::processWithPlan(view,plan,token);
+        const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull() || !writer.rows(rendered)) { if (error) *error=cancelled(token) ? "Cancelled" : writer.failure; return false; }
         if (progress) progress(std::min(100,(y+rendered.height())*100/input.height()));
     }

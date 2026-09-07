@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QJsonDocument>
 #include "diagnostics/PerformanceRecorder.h"
+#include "core/look/LookProfiles.h"
 
 PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *parent)
     : QObject(parent), m_provider(provider) {
@@ -30,6 +31,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *pare
     m_statusMessage = uiText(QStringLiteral("就绪"), QStringLiteral("Ready"));
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
+    initializeLookJobs();
 }
 
 QString PhotoController::uiText(const QString &zh, const QString &en) const {
@@ -76,7 +78,7 @@ QString PhotoController::pipelineDescription() const {
         : QStringLiteral("Input ICC (sRGB fallback) → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview");
 }
 
-AdjustmentState PhotoController::currentState() const { return hasImage() ? m_photos[m_currentIndex].state : AdjustmentState{}; }
+AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
 AdjustmentState *PhotoController::mutableCurrentState() { return hasImage() ? &m_photos[m_currentIndex].state : nullptr; }
 
 #define GETTER(name) double PhotoController::name() const { return currentState().name; }
@@ -210,6 +212,7 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     }
 
     PhotoEntry entry{info.absoluteFilePath(), info.fileName(), {}, isRaw};
+    if (isRaw) entry.state.look.mode = "as-shot"; // New imports only; old projects remain off.
     m_photos.push_back(entry);
     m_importedPaths.insert(identity);
     if (m_project.isOpen()) { m_dirtyEdits.insert(entry.path, entry.state); m_saveTimer.start(); if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start(); }
@@ -286,6 +289,7 @@ void PhotoController::selectPhoto(int index) {
     enqueueEdits();
     m_currentIndex = index;
     ++m_photoEpoch;
+    resetReference();
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
@@ -313,6 +317,7 @@ void PhotoController::loadCurrent() {
 }
 
 void PhotoController::applyCurrent() {
+    cancelCalibration();
     ++m_requestedRevision;
     m_scopesUpdating = true; m_scopesRank = -1;
     m_scopeJob->cancel(); m_fullScopeJob->cancel();
@@ -388,6 +393,7 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
     if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive)) path += ".jpg";
+    if (isProtectedPhoto(path)) { setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph.")); return false; }
     const auto target = ColorManagement::fromKey(colorSpaceKey);
     // Protect every imported original, not merely the current photograph.
     // canonicalFilePath also detects a symlink/alternate spelling of a source.
@@ -444,6 +450,7 @@ QString PhotoController::reportBug() {
     if (!m_previewSource.isNull())
         capture = ImagePipeline::process(m_previewSource, currentState(), ImagePipeline::InputEncoding::LinearProPhoto);
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
+    PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
     const QString path = DiagnosticBundle::create(capture, currentFile(), projectPath(), currentState(),
         m_scopes.shadowClipPercent, m_scopes.highlightClipPercent, pipelineDescription(),
         {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
@@ -477,6 +484,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
     m_exportQueue.reset();
@@ -608,6 +616,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
                          QStringLiteral("Loaded: %1 × %2 · linear wide gamut").arg(data.image.width()).arg(data.image.height())));
     }
     emit currentMetadataChanged(); emit activityChanged();
+    if (m_showReference && m_referenceImage.isNull() && !m_referenceBusy) requestReference();
     prepareCurrent();
 }
 

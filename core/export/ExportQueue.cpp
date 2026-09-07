@@ -1,3 +1,5 @@
+#include "core/look/LookProfiles.h"
+#include "core/raw/RawDecoder.h"
 #include "core/export/ExportQueue.h"
 #include "core/export/JpegExporter.h"
 #include <QtConcurrent/QtConcurrentRun>
@@ -49,7 +51,8 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                     });
                 }
                 ExportResult result{request.sourcePath,request.destination,source.error,false};
-                if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,request.state,request.destination,request.space,request.quality,token,&result.error,
+                const auto state=source.metadata.isEmpty()?request.state:LookProfiles::resolveAsShot(request.state,source.metadata,RawDecoder::isRawFile(request.sourcePath));
+                if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,request.destination,request.space,request.quality,token,&result.error,
                     [this,index,total=requests.size(),file=request.sourcePath](int percent) {
                         QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);
                     },interactive);

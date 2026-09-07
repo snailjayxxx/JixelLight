@@ -66,7 +66,7 @@ ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPla
     HistogramCounts total;
     for (int y=0; y<input.height() && !cancelled(token); y+=128) {
         const QImage view(input.constScanLine(y),input.width(),std::min(128,input.height()-y),input.bytesPerLine(),QImage::Format_RGBA64);
-        const QImage rendered=ImagePipeline::processWithPlan(view,plan,token);
+        const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull()) return {};
         countRows(rendered,0,rendered.height(),total,token);
     }

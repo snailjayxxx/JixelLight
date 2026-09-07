@@ -24,6 +24,7 @@ public:
 private:
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
+    bool ensureDetail();
     bool createDisplay(QRhiRenderTarget *target);
     bool buildCompute(std::unique_ptr<QRhiComputePipeline> &pipeline,
                       QRhiShaderResourceBindings *bindings, const QString &name);
@@ -36,11 +37,12 @@ private:
     int m_groups = 0;
     QElapsedTimer m_histogramClock;
     std::shared_ptr<ReadbackState> m_readback;
-    std::unique_ptr<QRhiTexture> m_source, m_output;
+    std::unique_ptr<QRhiTexture> m_source, m_output, m_lutTexture, m_detailBase, m_horizontal;
+    QString m_lutKey;
     std::unique_ptr<QRhiBuffer> m_uniform, m_partial, m_counts, m_vertices;
     std::unique_ptr<QRhiSampler> m_sampler;
-    std::unique_ptr<QRhiShaderResourceBindings> m_pipelineBindings, m_histogramBindings, m_reduceBindings, m_displayBindings;
-    std::unique_ptr<QRhiComputePipeline> m_pipeline, m_histogram, m_reduce;
+    std::unique_ptr<QRhiShaderResourceBindings> m_pipelineBindings, m_histogramBindings, m_reduceBindings, m_displayBindings, m_detailBaseBindings, m_horizontalBindings, m_detailBindings;
+    std::unique_ptr<QRhiComputePipeline> m_pipeline, m_histogram, m_reduce, m_horizontalPipeline, m_detailPipeline;
     std::unique_ptr<QRhiGraphicsPipeline> m_display;
     QRhiRenderPassDescriptor *m_displayPass = nullptr;
     int m_displaySamples = 0;

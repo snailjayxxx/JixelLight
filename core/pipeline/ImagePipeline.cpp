@@ -1,6 +1,8 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/async/ParallelRows.h"
+#include "core/look/LookProfiles.h"
+#include "core/look/LookDetail.h"
 #include "diagnostics/PerformanceRecorder.h"
 
 #include <QColorSpace>
@@ -274,9 +276,18 @@ bool identity(const AdjustmentState::CurveArray &curve) {
 }
 }
 
-ProcessingPlan ProcessingPlan::compile(const AdjustmentState &state, ImagePipeline::InputEncoding encoding,
+ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePipeline::InputEncoding encoding,
                                        ColorManagement::OutputSpace output) {
+    const AdjustmentState state=LookProfiles::effective(original);
     ProcessingPlan plan;
+    const auto style=LookProfiles::style(original.look),detail=LookProfiles::detail(original.look);
+    plan.data[LookStyle]={style[0],style[1],style[2],style[3]};
+    plan.data[LookDetail]={detail[0],detail[1],detail[2],detail[3]};
+    const bool lut=style[3]>0 && bool(original.look.lut);
+    plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),0};
+    const auto targetRows=matrixOf([&](Vec3 v){return toOutput(v,output);});
+    for(int i=0;i<3;++i)plan.data[LutOut0+i]=targetRows[i];
+    const auto kernelOutput=lut?ColorManagement::OutputSpace::SRgb:output;
     plan.state = state; plan.encoding = encoding; plan.output = output;
     // Upload the exact same precomposed rows that the CPU consumes. Evaluating
     // three separate matrices in GLSL was not numerically the same operation.
@@ -300,12 +311,12 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &state, ImagePipeli
     }
     plan.data[Color] = {float(state.hue), encoding == ImagePipeline::InputEncoding::SRgb ? 0.0f : 1.0f, color ? 1.0f : 0.0f,
                        (state.highlights != 0 || state.shadows != 0 || state.whites != 0 || state.blacks != 0) ? 1.0f : 0.0f};
-    const auto out = matrixOf([&](Vec3 v) { return toOutput(v, output); });
+    const auto out = matrixOf([&](Vec3 v) { return toOutput(v, kernelOutput); });
     for (int i=0; i<3; ++i) plan.data[Out0+i] = out[i];
-    Float4 lum{.2126f,.7152f,.0722f,float(int(output))};
-    if (output == ColorManagement::OutputSpace::DisplayP3) lum = {.2289746f,.6917385f,.0792869f,float(int(output))};
-    if (output == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
-    if (output == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
+    Float4 lum{.2126f,.7152f,.0722f,float(int(kernelOutput))};
+    if (kernelOutput == ColorManagement::OutputSpace::DisplayP3) lum = {.2289746f,.6917385f,.0792869f,float(int(output))};
+    if (kernelOutput == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
+    if (kernelOutput == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
     plan.data[Luminance] = lum;
     plan.data[Flags] = {state.contrast == 0 ? 1.0f : 0.0f, identity(state.masterCurve) ? 1.0f : 0.0f,
                        identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f, 0};
@@ -329,6 +340,9 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
     const auto color = plan.data[ProcessingPlan::Color];
     const auto flags = plan.data[ProcessingPlan::Flags];
     const auto lum = plan.data[ProcessingPlan::Luminance];
+    const auto style=plan.data[ProcessingPlan::LookStyle];
+    const auto kernelOutput=ColorManagement::OutputSpace(int(lum.w));
+    const auto lut=style.w>0?plan.state.look.lut:nullptr;
     ParallelRows::run(out.height(), out.width(), token, [&](int y) {
         const auto *in = reinterpret_cast<const QRgba64 *>(src+y*srcStride);
         auto *line = reinterpret_cast<QRgba64 *>(dst+y*dstStride);
@@ -356,18 +370,46 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
             else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
                 auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,1.5f); v = oklabToLinearSrgb(lab);
             }
+            if(style.x>0) {
+                const float y=(.2126f*v.x+.7152f*v.y)+.0722f*v.z;
+                v=style.x>=1 ? Vec3{y,y,y} : Vec3{v.x+(y-v.x)*style.x,v.y+(y-v.y)*style.x,v.z+(y-v.z)*style.x};
+                if(style.y>0)v={v.x*(1+.09f*style.y),v.y*(1-.01f*style.y),v.z*(1-.22f*style.y)};
+            }
             v = multiply(plan.data.data()+ProcessingPlan::Out0,v);
             v = compressNegativeGamut(v,lum);
             v = {displayShoulder(v.x,tone.y),displayShoulder(v.y,tone.y),displayShoulder(v.z,tone.y)};
             if (flags.y == 0) v = applyMasterCurve(v,plan.state.masterCurve,lum);
             if (flags.z == 0) v = {curveSample(plan.state.redCurve,v.x),curveSample(plan.state.greenCurve,v.y),curveSample(plan.state.blueCurve,v.z)};
-            const auto quantize = [&](float value) { return quint16(std::lround(clamp01(encodeOutput(value,plan.output))*65535.0f)); };
+            if(style.z>0)v={v.x*(1-style.z)+style.z,v.y*(1-style.z)+style.z,v.z*(1-style.z)+style.z};
+            v={encodeOutput(v.x,kernelOutput),encodeOutput(v.y,kernelOutput),encodeOutput(v.z,kernelOutput)};
+            if(lut) {
+                const auto mapped=lut->sample(v.x,v.y,v.z);const float w=plan.data[ProcessingPlan::LookOptions].z;
+                v={v.x+(mapped[0]-v.x)*w,v.y+(mapped[1]-v.y)*w,v.z+(mapped[2]-v.z)*w};
+                if(plan.output!=ColorManagement::OutputSpace::SRgb) {
+                    v={srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
+                    v=multiply(plan.data.data()+ProcessingPlan::LutOut0,v);
+                    v={encodeOutput(v.x,plan.output),encodeOutput(v.y,plan.output),encodeOutput(v.z,plan.output)};
+                }
+            }
+            const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
             line[x] = QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),original.alpha());
         }
     }, parallel);
     if (cancelled(token)) return {};
+    const auto d=plan.data[ProcessingPlan::LookDetail];
+    out=LookDetail::apply(out,{d.x,d.y,d.z,d.w},token);
+    if(out.isNull())return {};
     out.setColorSpace(ColorManagement::colorSpace(plan.output));
     out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
     out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
     return out;
+}
+
+QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &token) {
+    const QRect roi=region.intersected(source.rect());if(roi.isEmpty())return {};
+    const auto d=plan.data[ProcessingPlan::LookDetail];const int pad=LookDetail::halo({d.x,d.y,d.z,d.w});
+    const QRect expanded=roi.adjusted(-pad,-pad,pad,pad).intersected(source.rect());
+    const QImage result=processWithPlan(source.copy(expanded),plan,token);
+    if(result.isNull())return {};
+    return result.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));
 }

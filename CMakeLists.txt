@@ -38,10 +38,17 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/LookController.cpp
     core/cache/SourceCache.cpp
     core/color/ColorManagement.cpp
     core/image/ProcessedImageProvider.cpp
     core/metadata/MetadataReader.cpp
+    core/look/SonyLookMetadata.cpp
+    core/look/LookLut.cpp
+    core/look/LookProfiles.cpp
+    core/look/LookDetail.cpp
+    core/look/CameraReference.cpp
+    core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
@@ -56,14 +63,14 @@ add_library(JixelLightCore STATIC
     diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
-target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.7" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.8" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
@@ -71,7 +78,7 @@ endforeach()
 qt_add_qml_module(JixelLight URI JixelLight VERSION 1.0 QML_FILES ${QML_SOURCES})
 add_library(JixelLightGpu STATIC core/gpu/GpuEngine.cpp)
 target_link_libraries(JixelLightGpu PUBLIC JixelLightCore Qt6::GuiPrivate)
-qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES shaders/pipeline.comp shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
+qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightGpu)
 if(WIN32)
@@ -106,7 +113,13 @@ set_target_properties(JixelLightCoreTests JixelLightPerformanceTests JixelLightG
 # Match the image kernel's arithmetic order to the shader's precise operations.
 # Other application code remains normally optimized.
 if(MSVC)
-    set_source_files_properties(core/pipeline/ImagePipeline.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(core/pipeline/ImagePipeline.cpp core/look/LookDetail.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
-    set_source_files_properties(core/pipeline/ImagePipeline.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+    set_source_files_properties(core/pipeline/ImagePipeline.cpp core/look/LookDetail.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
+
+qt_add_executable(JixelLightSonyLookTests tests/SonyLookTests.cpp)
+target_link_libraries(JixelLightSonyLookTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME sony-look COMMAND JixelLightSonyLookTests -o sony-look-results.txt,txt -o -,txt)
+set_tests_properties(sony-look PROPERTIES TIMEOUT 180)
+set_target_properties(JixelLightSonyLookTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
