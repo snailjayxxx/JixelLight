@@ -92,7 +92,12 @@ void main() {
     else if(max(v.r,max(v.g,v.b))>3.3 || min(v.r,min(v.g,v.b))<0.0) { vec3 lab=toLab(v); lab.x=clamp(lab.x,0.0,1.5); v=fromLab(lab); }
     v=mulRows(6,v);
     float y=max(0.0,dot(p[9].xyz,v)),smallest=min(v.r,min(v.g,v.b));
-    if(smallest<0.0 && y>1e-6) v=vec3(y)+(v-vec3(y))*(clamp(y/(y-smallest),0.0,1.0)*.995);
+    // Match CPU: continuous inset near zero prevents a visible jump when
+    // backend floating-point roundoff straddles the gamut boundary.
+    if(smallest<0.0 && y>1e-6) {
+        float inset=1.0-.005*smooth01(-smallest/.001);
+        v=vec3(y)+(v-vec3(y))*(clamp(y/(y-smallest),0.0,1.0)*inset);
+    }
     v=max(v,vec3(0.0));
     v=vec3(shoulder(v.r,recovery),shoulder(v.g,recovery),shoulder(v.b,recovery));
     if(p[10].y==0.0) { y=max(0.0,dot(p[9].xyz,v)); if(y>1e-6) v*=curve(y,0)/y; }

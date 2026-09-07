@@ -95,6 +95,28 @@ jobs:
         shell: bash
         run: ./build/bin/JixelLightGpuTests -o gpu-validation.txt,txt
 
+      - name: GUI Direct3D integration (WARP)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QSG_RHI_BACKEND: d3d11
+          QSG_RHI_PREFER_SOFTWARE_RENDERER: '1'
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          & ./build/bin/Release/JixelLight.exe --smoke-report gui-gpu.json --screenshot gui-gpu.png "$env:RUNNER_TEMP/JixelLight-test.DNG"
+          if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D validation failed' }
+
+      - name: GUI Metal integration
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          QSG_RHI_BACKEND: metal
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          APP=$(find build -name JixelLight.app -type d | head -1)
+          test -n "$APP"
+          "$APP/Contents/MacOS/JixelLight" --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/JixelLight-test.DNG"
+
       - name: Synthetic CPU benchmark
         shell: bash
         run: |
@@ -112,6 +134,8 @@ jobs:
             build/tests.xml
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
+            gui-*.json
+            gui-*.png
             benchmark.json
 
       - name: Deploy Windows

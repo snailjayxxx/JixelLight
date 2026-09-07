@@ -38,10 +38,14 @@ Item {
             visible: !controller.gpuActive
             fillMode: Image.Stretch
         }
-        GpuPreview {
+        // Do not instantiate an RHI item in explicit CPU/software mode. An
+        // invisible RHI item can still receive updates and flood the log.
+        Loader {
             anchors.fill: parent
-            controller: root.controller
-            visible: root.controller.gpuEnabled && root.controller.hasImage
+            active: root.controller.gpuEnabled && root.controller.hasImage
+            sourceComponent: Component {
+                GpuPreview { controller: root.controller }
+            }
             z: 0
         }
     }

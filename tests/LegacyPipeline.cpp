@@ -187,11 +187,16 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) 
     return oklabToLinearSrgb(lab);
 }
 
-inline Vec3 compressNegativeGamut(Vec3 rgb) {
+template<bool ContinuousBoundary> inline Vec3 compressNegativeGamut(Vec3 rgb) {
     const float y = std::max(0.0f, 0.2126f*rgb.x + 0.7152f*rgb.y + 0.0722f*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * 0.995f;
+        // The original reference retains its discontinuous inset. Only the
+        // separately named corrected reference uses this documented bug fix;
+        // no optimized processing nodes are called from either reference.
+        const float t = std::clamp(-minChannel * 1000.0f, 0.0f, 1.0f);
+        const float inset = ContinuousBoundary ? 1.0f - 0.005f * t * t * (3.0f - 2.0f * t) : 0.995f;
+        const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
         rgb.x = y + (rgb.x - y) * factor;
         rgb.y = y + (rgb.y - y) * factor;
         rgb.z = y + (rgb.z - y) * factor;
@@ -247,7 +252,7 @@ inline float middleGrayContrast(float y, float factor) {
 }
 }
 
-QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding inputEncoding) {
+template<bool ContinuousBoundary> static QImage referenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding inputEncoding) {
     if (source.isNull()) return {};
 
     QImage out = source.convertToFormat(QImage::Format_RGBA64);
@@ -305,7 +310,7 @@ QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePi
             // Perceptual color operations run before the final display transform.
             Vec3 displayLinear = proPhotoToLinearSrgb(working);
             displayLinear = applyPerceptualColor(displayLinear, state);
-            displayLinear = compressNegativeGamut(displayLinear);
+            displayLinear = compressNegativeGamut<ContinuousBoundary>(displayLinear);
 
             displayLinear.x = displayShoulder(displayLinear.x, recovery);
             displayLinear.y = displayShoulder(displayLinear.y, recovery);
@@ -331,4 +336,13 @@ QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePi
     out.setColorSpace(QColorSpace(QColorSpace::SRgb));
     out.setText(QStringLiteral("JixelLightPipeline"), QStringLiteral("Linear ProPhoto RGB -> Perceptual Color -> Display sRGB"));
     return out;
+}
+
+// Historical alpha.6 behavior remains available to the benchmark and tests.
+QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
+    return referenceProcess<false>(source,state,encoding);
+}
+// Independent baseline with ONLY the continuous-gamut bug fix enabled.
+QImage correctedReferenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
+    return referenceProcess<true>(source,state,encoding);
 }

@@ -96,6 +96,41 @@ private slots:
             QCOMPARE(actual.histogram.highlightClipPercent,expectedHistogram.highlightClipPercent);
         }
     }
+    void denseColorParity() {
+        QImage image(1024,1024,QImage::Format_RGBA64);
+        std::mt19937 random(652819);
+        for (int y=0;y<image.height();++y) {
+            auto *line=reinterpret_cast<QRgba64 *>(image.scanLine(y));
+            for (int x=0;x<image.width();++x) {
+                const quint16 r=random()%60000, g=random()%60000, b=random()%60000;
+                line[x]=QRgba64::fromRgba64(r,g,b,65535);
+            }
+        }
+        AdjustmentState state;
+        state.hue=-23; state.saturation=18;state.vibrance=22;
+        state.hslHue[2]=30;state.hslSaturation[5]=-25;
+        state.masterCurve[2]=.57;state.redCurve[3]=.8;
+        const auto actual=render(image,state,false);
+        QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));
+        const auto reference=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
+        int maximum=0,worstX=0,worstY=0;quint64 overTolerance=0;
+        for(int y=0;y<image.height();++y) {
+            const auto *a=reinterpret_cast<const QRgba64 *>(actual.image.constScanLine(y));
+            const auto *b=reinterpret_cast<const QRgba64 *>(reference.constScanLine(y));
+            for(int x=0;x<image.width();++x) {
+                const int delta=std::max({std::abs(int(a[x].red())-int(b[x].red())),std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))});
+                if(delta>40) ++overTolerance;
+                if(delta>maximum) { maximum=delta;worstX=x;worstY=y; }
+            }
+        }
+        const auto original=image.pixelColor(worstX,worstY).rgba64();
+        const auto cpu=reference.pixelColor(worstX,worstY).rgba64();
+        const auto gpu=actual.image.pixelColor(worstX,worstY).rgba64();
+        qInfo()<<"Dense parity max"<<maximum<<"pixels over 40"<<overTolerance<<"at"<<worstX<<worstY
+               <<"input"<<original.red()<<original.green()<<original.blue()
+               <<"CPU"<<cpu.red()<<cpu.green()<<cpu.blue()<<"GPU"<<gpu.red()<<gpu.green()<<gpu.blue();
+        QVERIFY2(maximum<=40,qPrintable(QString::number(maximum)));
+    }
     void displayPassHasCorrectOrientation() {
         QImage source(16,16,QImage::Format_RGBA64);
         for(int y=0;y<16;++y) {

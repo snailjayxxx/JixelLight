@@ -41,6 +41,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         bool ok=complete && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
+        report["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);
+        report["build_version"]=QCoreApplication::applicationVersion();
         report["smoke_passed"]=ok;
         report["phase"]=state->phase;report["edits"]=state->edits;
         report["backend"]=controller->processingBackend();report["gpu_active"]=controller->gpuActive();

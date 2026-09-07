@@ -197,7 +197,12 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
     const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * 0.995f;
+        // A fixed 0.995 inset jumped discontinuously as a channel crossed
+        // zero. Roundoff between CPU/D3D/Metal could then visibly change a
+        // pixel. Ramp the inset continuously over the narrow gamut boundary;
+        // retain the historical mapping for channels <= -0.001.
+        const float inset = 1.0f - 0.005f * smooth(-minChannel / 0.001f);
+        const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
         rgb.x = y + (rgb.x - y) * factor;
         rgb.y = y + (rgb.y - y) * factor;
         rgb.z = y + (rgb.z - y) * factor;

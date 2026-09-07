@@ -22,6 +22,7 @@
 #include "core/export/JpegExporter.h"
 #include "core/scopes/ScopesEngine.h"
 QImage legacyProcess(const QImage &,const AdjustmentState &,ImagePipeline::InputEncoding);
+QImage correctedReferenceProcess(const QImage &,const AdjustmentState &,ImagePipeline::InputEncoding);
 namespace {
 QImage fixture(int width=512,int height=341) {
     QImage image(width,height,QImage::Format_RGBA64);
@@ -50,16 +51,41 @@ private slots:
             if (mode==1) { state.exposure=.4;state.temperature=25;state.tint=-13;state.highlights=-20;state.contrast=7; }
             if (mode==2) { state.hue=-10;state.saturation=25;state.vibrance=10;state.hslSaturation[5]=-35;state.redCurve[2]=.52; }
             const auto old=legacyProcess(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
+            const auto expected=correctedReferenceProcess(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
             const auto now=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
-            int maximum=0;
+            int maximum=0, originalMaximum=0, correctedPixels=0;
             for (int y=0;y<image.height();++y) {
-                auto *a=reinterpret_cast<const QRgba64 *>(old.constScanLine(y));
+                auto *a=reinterpret_cast<const QRgba64 *>(expected.constScanLine(y));
                 auto *b=reinterpret_cast<const QRgba64 *>(now.constScanLine(y));
-                for (int x=0;x<image.width();++x) maximum=std::max({maximum,std::abs(int(a[x].red())-int(b[x].red())),std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))});
+                auto *o=reinterpret_cast<const QRgba64 *>(old.constScanLine(y));
+                for (int x=0;x<image.width();++x) {
+                    maximum=std::max({maximum,std::abs(int(a[x].red())-int(b[x].red())),std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))});
+                    const int originalDelta=std::max({std::abs(int(o[x].red())-int(a[x].red())),std::abs(int(o[x].green())-int(a[x].green())),std::abs(int(o[x].blue())-int(a[x].blue()))});
+                    originalMaximum=std::max(originalMaximum,originalDelta);
+                    if(originalDelta>24) ++correctedPixels;
+                }
             }
-            qInfo()<<"legacy max 16-bit channel difference"<<mode<<maximum;
+            qInfo()<<"independent corrected-reference max error"<<mode<<maximum
+                   <<"intentional boundary correction versus alpha6 max"<<originalMaximum<<"pixels"<<correctedPixels;
             QVERIFY2(maximum<=24,qPrintable(QString::number(maximum)));
         }
+    }
+    void gamutBoundaryHasNoVisibleStep() {
+        QImage image(257,1,QImage::Format_RGBA64);
+        auto *source=reinterpret_cast<QRgba64 *>(image.bits());
+        for(int x=0;x<image.width();++x) source[x]=QRgba64::fromRgba64(18743+x-128,43453,32369,65535);
+        AdjustmentState state;state.hue=-23;state.saturation=18;state.vibrance=22;
+        state.hslHue[2]=30;state.hslSaturation[5]=-25;state.masterCurve[2]=.57;state.redCurve[3]=.8;
+        const auto actual=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
+        const auto *pixels=reinterpret_cast<const QRgba64 *>(actual.constBits());
+        int largestStep=0;
+        for(int x=1;x<image.width();++x)
+            largestStep=std::max({largestStep,std::abs(int(pixels[x].red())-int(pixels[x-1].red())),
+                std::abs(int(pixels[x].green())-int(pixels[x-1].green())),std::abs(int(pixels[x].blue())-int(pixels[x-1].blue()))});
+        qInfo()<<"gamut boundary ramp maximum adjacent 16-bit step"<<largestStep;
+        // Half of one 8-bit display code per one 16-bit input code on this
+        // boundary ramp; the historical discontinuity exceeded 2,000 codes.
+        QVERIFY2(largestStep<=128,qPrintable(QString::number(largestStep)));
     }
     void cancellationDoesNotPublishPartialPixels() {
         auto token=std::make_shared<std::atomic_bool>(true);
