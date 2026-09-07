@@ -9,6 +9,8 @@ ColumnLayout {
     property var applied: controller.lookState
     property var recordedParams: recorded.parameters || ({})
     property var appliedParams: applied.parameters || ({})
+    property var lookEvidence: applied.evidence || ({})
+    property bool empiricalLook: lookEvidence.kind === "multi-scene-empirical-fit"
     property var fields: ["contrast","highlights","shadows","fade","saturation","sharpness","sharpnessRange","clarity"]
     property var codes: ["ST","PT","NT","VV","VV2","FL","IN","SH","BW","SE","FL2","FL3"]
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
@@ -59,9 +61,9 @@ ColumnLayout {
     }
     Label {
         Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 10; color: "#d6b985"
-        visible: root.applied.evidence && root.applied.evidence.kind === "multi-scene-empirical-fit"
-        text: !visible ? "" : root.t("多场景经验匹配 · 仅在记录的独立场景验证；颜色节点覆盖 ", "Empirical multi-scene fit · validated only on the recorded held-out scenes; color-node coverage ")
-              + (100*Number(root.applied.evidence.coveredNodeFraction || 0)).toFixed(1) + "%"
+        visible: root.empiricalLook
+        text: !root.empiricalLook ? "" : root.t("多场景经验匹配 · 仅在记录的独立场景验证；颜色节点覆盖 ", "Empirical multi-scene fit · validated only on the recorded held-out scenes; color-node coverage ")
+              + (100*Number(root.lookEvidence.coveredNodeFraction || 0)).toFixed(1) + "%"
               + root.t("。不是通用相机标定，换机型/光源/外观需重新验证。", ". Not universal camera calibration; revalidate on other cameras, illuminants or looks.")
     }
     Label { Layout.fillWidth: true; wrapMode: Text.Wrap; visible: !!root.applied.error; text: root.applied.error || ""; color: "#ffb066" }

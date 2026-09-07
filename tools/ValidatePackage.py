@@ -10,6 +10,12 @@ import sys
 import tempfile
 
 
+def qml_runtime_errors(text: str) -> list[str]:
+    """Catch binding failures that do not necessarily change the GUI exit code."""
+    markers = ('TypeError:', 'ReferenceError:', 'Unable to assign [undefined]')
+    return [line for line in text.splitlines() if any(mark in line for mark in markers)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('executable', type=Path)
@@ -74,12 +80,15 @@ def main() -> int:
                   and data.get('look', {}).get('code') == 'FL'
                   and data.get('look', {}).get('active') is True
                   and bool(data.get('reference', {}).get('previewPixelSha256')))
+            binding_errors = qml_runtime_errors(log.read_text(encoding='utf-8', errors='replace'))
+            ok = ok and not binding_errors
             if mode == 'gpu':
                 expected = 'Direct3D 11' if sys.platform == 'win32' else 'Metal'
                 ok = ok and expected in data.get('backend', '')
             results.append({'mode': mode, 'passed': bool(ok), 'returncode': code,
                             'backend': data.get('backend'), 'source_commit': data.get('source_commit'),
                             'build_version': data.get('build_version'),
+                            'qml_runtime_error_count': len(binding_errors),
                             'look_code': data.get('look', {}).get('code'),
                             'look_active': data.get('look', {}).get('active'),
                             'reference_kind': data.get('reference', {}).get('kind'),
