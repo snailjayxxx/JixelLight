@@ -94,7 +94,9 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     if(conflict)warnings<<"conflicting-maker-note-fields";
     if(unknownStyle)warnings<<"unknown-creative-style-not-replaced-by-color-mode";
     out["status"]=conflict?"conflict":unknownStyle?"unsupported":code.isEmpty()?(candidates.isEmpty()?"missing":"unsupported"):"recognized";
-    out["generation"]=generation;out["code"]=code;out["rawFields"]=raw;
+    // A known secondary mode is only a candidate when the primary name is unknown.
+    // Do not present that fallback as a recognized as-shot look in the UI.
+    out["generation"]=generation;out["code"]=unknownStyle?QString():code;out["rawFields"]=raw;
     out["parameters"]=values;out["parameterSources"]=sources;out["invalidParameters"]=invalid;
     out["candidates"]=candidates;out["warnings"]=warnings;
     out["autoEligible"]=!conflict&&!unknownStyle&&!code.isEmpty()&&generation=="creative-look";
