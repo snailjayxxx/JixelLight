@@ -24,6 +24,19 @@ inline float chromaLength(float a, float b) {
     const float bb = b * b;
     return std::sqrt(aa + bb);
 }
+inline float stableCubeRoot(float value) {
+    // Keep the Oklab nonlinear primitive structurally identical to the
+    // compute shader. A library cbrt and a shader pow approximation can each
+    // be accurate while landing on different float results after the large
+    // alpha.10 RAW scene-placement gain. Fixed Newton refinements remove that
+    // backend-specific algorithm choice without changing the color model.
+    const float magnitude = std::fabs(value);
+    if (magnitude == 0.0f) return 0.0f;
+    float root = std::pow(magnitude, 1.0f / 3.0f);
+    root = (2.0f * root + magnitude / (root * root)) / 3.0f;
+    root = (2.0f * root + magnitude / (root * root)) / 3.0f;
+    return std::copysign(root, value);
+}
 inline float smooth(float x) { x = clamp01(x); return x * x * (3.0f - 2.0f * x); }
 inline Vec3 scale(Vec3 v, float s) { return {v.x * s, v.y * s, v.z * s}; }
 inline float srgbToLinear(float v) {
@@ -109,9 +122,9 @@ inline Oklab linearSrgbToOklab(Vec3 c) {
     const float l = 0.4122214708f*c.x + 0.5363325363f*c.y + 0.0514459929f*c.z;
     const float m = 0.2119034982f*c.x + 0.6806995451f*c.y + 0.1073969566f*c.z;
     const float s = 0.0883024619f*c.x + 0.2817188376f*c.y + 0.6299787005f*c.z;
-    const float lp = std::cbrt(l);
-    const float mp = std::cbrt(m);
-    const float sp = std::cbrt(s);
+    const float lp = stableCubeRoot(l);
+    const float mp = stableCubeRoot(m);
+    const float sp = stableCubeRoot(s);
     return {
         0.2104542553f*lp + 0.7936177850f*mp - 0.0040720468f*sp,
         1.9779984951f*lp - 2.4285922050f*mp + 0.4505937099f*sp,
