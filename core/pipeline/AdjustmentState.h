@@ -4,12 +4,15 @@
 #include <QJsonObject>
 #include <QString>
 #include <array>
+#include "core/look/LookState.h"
 
 struct AdjustmentState {
     static constexpr int ColorBandCount = 8;
     static constexpr int CurvePointCount = 5;
     using ColorBandArray = std::array<double, ColorBandCount>;
     using CurveArray = std::array<double, CurvePointCount>;
+
+    LookState look;
 
     double exposure = 0.0;
     double temperature = 0.0;
@@ -50,7 +53,7 @@ struct AdjustmentState {
 
     [[nodiscard]] QJsonObject toJson() const {
         return {
-            {"exposure", exposure}, {"temperature", temperature}, {"tint", tint},
+            {"look", look.toJson()}, {"exposure", exposure}, {"temperature", temperature}, {"tint", tint},
             {"contrast", contrast}, {"highlights", highlights}, {"shadows", shadows},
             {"whites", whites}, {"blacks", blacks}, {"highlightRecovery", highlightRecovery},
             {"hue", hue}, {"saturation", saturation}, {"vibrance", vibrance},
@@ -66,6 +69,7 @@ struct AdjustmentState {
 
     static AdjustmentState fromJson(const QJsonObject &o) {
         AdjustmentState s;
+        s.look = LookState::fromJson(o.value("look").toObject());
         s.exposure = o.value("exposure").toDouble();
         s.temperature = o.value("temperature").toDouble();
         s.tint = o.value("tint").toDouble();

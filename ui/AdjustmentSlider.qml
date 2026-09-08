@@ -16,6 +16,7 @@ RowLayout {
     Slider {
         Layout.fillWidth: true; from: root.from; to: root.to; value: root.value
         onMoved: root.edited(value)
+        onPressedChanged: if (!pressed) photoController.finishInteraction()
     }
     Label {
         text: Number(root.value).toFixed(root.decimals)

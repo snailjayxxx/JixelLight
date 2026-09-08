@@ -9,8 +9,9 @@ public:
     ProcessedImageProvider();
     QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
     void setImage(const QImage &image);
+    void setReference(const QImage &image);
 
 private:
     QMutex m_mutex;
-    QImage m_image;
+    QImage m_image, m_reference;
 };

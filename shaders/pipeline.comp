@@ -1,0 +1,197 @@
+#version 440
+layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+layout(std140, binding=0) uniform Plan { vec4 p[37]; };
+layout(rgba32f, binding=1) readonly uniform image2D sourceImage;
+layout(rgba32f, binding=2) writeonly uniform image2D outputImage;
+layout(rgba32f,binding=3) readonly uniform image2D lookLut;
+const float PI=3.14159265358979323846;
+// Rows 25..27 and 28..30 are the CPU's precomposed input and working
+// matrices. Do not expand them into separate XYZ/adaptation operations.
+float dot3(vec3 a, vec3 b) {
+    precise float result=(a.x*b.x+a.y*b.y)+a.z*b.z;
+    return result;
+}
+float cubeRoot(float value) {
+    float magnitude=abs(value);
+    if(magnitude==0.0) return 0.0;
+    // D3D11's pow approximation is visibly less accurate than Metal/OpenGL
+    // for bright RAW values after the alpha.10 scene-placement gain. Two
+    // explicitly ordered Newton refinements converge to the same cbrt root
+    // used by the CPU without changing the rendering model or test tolerance.
+    precise float root=pow(magnitude,0.3333333333333333);
+    root=(2.0*root+magnitude/(root*root))/3.0;
+    root=(2.0*root+magnitude/(root*root))/3.0;
+    return sign(value)*root;
+}
+float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }
+float chromaLength(vec2 ab) {
+    precise float aa=ab.x*ab.x;
+    precise float bb=ab.y*ab.y;
+    precise float sum=aa+bb;
+    return sqrt(sum);
+}
+vec3 mulRows(int first,vec3 v) { return vec3(dot3(p[first].xyz,v),dot3(p[first+1].xyz,v),dot3(p[first+2].xyz,v)); }
+float luminancePro(vec3 c) { return dot3(vec3(.2880402,.7118741,.0000857),c); }
+float decode(float v) { v=max(v,0.0); return v<=.04045 ? v/12.92 : pow((v+.055)/1.055,2.4); }
+float encode(float v) {
+    v=clamp(v,0.0,1.0);
+    if(p[9].w==2.0) return pow(v,1.0/2.2);
+    if(p[9].w==3.0) return pow(v,1.0/1.8);
+    return v<=.0031308 ? 12.92*v : 1.055*pow(v,1.0/2.4)-.055;
+}
+vec3 toLab(vec3 c) {
+    vec3 a=vec3(dot3(vec3(.4122214708,.5363325363,.0514459929),c),dot3(vec3(.2119034982,.6806995451,.1073969566),c),dot3(vec3(.0883024619,.2817188376,.6299787005),c));
+    a=vec3(cubeRoot(a.x),cubeRoot(a.y),cubeRoot(a.z));
+    return vec3(dot3(vec3(.2104542553,.7936177850,-.0040720468),a),dot3(vec3(1.9779984951,-2.4285922050,.4505937099),a),dot3(vec3(.0259040371,.7827717662,-.8086757660),a));
+}
+vec3 fromLab(vec3 c) {
+    precise vec3 a=vec3(c.x+.3963377774*c.y+.2158037573*c.z,c.x-.1055613458*c.y-.0638541728*c.z,c.x-.0894841775*c.y-1.2914855480*c.z);
+    a=a*a*a;
+    return vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),a),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),a),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),a));
+}
+float snapPerceptualInput(float v) {
+    if(isnan(v)||isinf(v)||v==0.0) return v;
+    return uintBitsToFloat(floatBitsToUint(v)&0xfffffffcu);
+}
+vec3 snapPerceptualInput(vec3 v) {
+    return vec3(snapPerceptualInput(v.x),snapPerceptualInput(v.y),snapPerceptualInput(v.z));
+}
+vec3 fromLabScaledChroma(vec3 c,float gain) {
+    precise vec3 d=vec3(
+        dot3(vec3(0.0,.3963377774,.2158037573),c),
+        dot3(vec3(0.0,-.1055613458,-.0638541728),c),
+        dot3(vec3(0.0,-.0894841775,-1.2914855480),c));
+    precise vec3 d2=d*d,d3=d2*d;
+    precise float L2=c.x*c.x,L3=L2*c.x;
+    precise vec3 c1=3.0*L2*vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d));
+    precise vec3 c2=3.0*c.x*vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d2),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d2),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d2));
+    precise vec3 c3=vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d3),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d3),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d3));
+    return vec3(L3)+gain*(c1+gain*(c2+gain*c3));
+}
+float wrapHue(float h) { return h-floor(h/360.0)*360.0; }
+vec3 colorAdjust(vec3 c) {
+    vec3 lab=toLab(c);
+    // Pure saturation/vibrance edits do not need polar reconstruction.
+    bool noBands=true;
+    for(int i=0;i<8;++i) noBands=noBands && all(equal(p[11+i].xyz,vec3(0.0)));
+    if(p[5].x==0.0 && noBands) {
+        lab=toLab(snapPerceptualInput(c));
+        float chroma=chromaLength(lab.yz);
+        float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(chroma/.30,0.0,1.0))*.85);
+        lab.x=clamp(lab.x,0.0,p[33].w);
+        return fromLabScaledChroma(lab,gain);
+    }
+    float chroma=chromaLength(lab.yz);
+    float hue=chroma>1e-6 ? wrapHue(atan(lab.z,lab.y)*180.0/PI) : 0.0;
+    hue=wrapHue(hue+p[5].x);
+    float scale=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(chroma/.30,0.0,1.0))*.85);
+    vec3 delta=vec3(0.0);
+    for(int i=0;i<8;++i) {
+        vec4 band=p[11+i];
+        if(any(notEqual(band.xyz,vec3(0.0)))) {
+            float d=abs(hue-band.w); d=min(d,360.0-d);
+            if(d<52.0) delta+=band.xyz*(.5+.5*cos(PI*d/52.0));
+        }
+    }
+    hue=wrapHue(hue+delta.x);
+    chroma*=scale*max(0.0,1.0+delta.y);
+    lab.x=clamp(lab.x+delta.z,0.0,p[33].w);
+    lab.yz=chroma*vec2(cos(hue*PI/180.0),sin(hue*PI/180.0));
+    return fromLab(lab);
+}
+float shoulder(float value,float recovery) {
+    value=max(value,0.0);
+    float start=.82-.18*recovery;
+    if(value<=start) return value;
+    float span=max(.01,1.0-start);
+    return start+span*(1.0-exp(-(1.65+1.85*recovery)*(value-start)/span));
+}
+float curve(float x,int channel) {
+    float position=clamp(x,0.0,1.0)*4.0;
+    int segment=min(int(position),3);
+    float a=p[19+segment][channel], b=p[20+segment][channel];
+    return clamp(a+(b-a)*(position-float(segment)),0.0,1.0);
+}
+vec3 lutSample(vec3 v) {
+    int n=int(p[33].x);vec3 coord=clamp(v,vec3(0),vec3(1))*float(n-1);
+    ivec3 start=min(ivec3(coord),ivec3(n-2));vec3 f=coord-vec3(start);precise vec3 value=vec3(0);
+    for(int b=0;b<2;++b)for(int g=0;g<2;++g)for(int r=0;r<2;++r) {
+        float w=(r==1?f.r:1.0-f.r)*(g==1?f.g:1.0-f.g)*(b==1?f.b:1.0-f.b);
+        ivec3 q=start+ivec3(r,g,b);value+=imageLoad(lookLut,ivec2(q.b*n+q.r,q.g)).rgb*w;
+    }
+    return value;
+}
+float encodeTarget(float v) {
+    v=clamp(v,0.0,1.0);
+    if(p[33].y==2.0)return pow(v,1.0/2.2);
+    if(p[33].y==3.0)return pow(v,1.0/1.8);
+    return v<=.0031308?12.92*v:1.055*pow(v,1.0/2.4)-.055;
+}
+void main() {
+    ivec2 coord=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(coord,ivec2(p[24].xy)))) return;
+    vec4 original=imageLoad(sourceImage,coord);
+    precise vec3 v=original.rgb;
+    if(p[5].y==0.0) v=mulRows(25,vec3(decode(v.r),decode(v.g),decode(v.b)));
+    v=mulRows(0,v);
+    float recovery=p[4].y;
+    float highest=max(v.r,max(v.g,v.b));
+    if(recovery>0.0 && highest>.82) {
+        float weight=smooth01((highest-.82)/1.25)*recovery;
+        float target=.82+.62*(1.0-exp(-(highest-.82)/.62));
+        v*=1.0+(target/highest-1.0)*weight;
+    }
+    if(p[5].w!=0.0) {
+        float y=max(0.0,luminancePro(v));
+        float stops=p[3].y*(1.0-smooth01(y/.32))+p[3].x*smooth01((y-.26)/.82)+p[3].z*smooth01((y-.62)/.70)*.75+p[3].w*(1.0-smooth01(y/.16))*.75;
+        v*=exp2(stops);
+    }
+    if(p[10].x==0.0) { float y=max(0.0,luminancePro(v)); if(y>1e-6) v*=.18*pow(y/.18,p[4].x)/y; }
+    // p[10].w is 1 for display-referred inputs and Jixel Neutral's fixed
+    // scene placement gain for linear RAW. User exposure stays in p[0..2].
+    v*=p[10].w;
+    v=mulRows(28,v);
+    if(p[5].z!=0.0) v=colorAdjust(v);
+    else if(max(v.r,max(v.g,v.b))>3.3 || min(v.r,min(v.g,v.b))<0.0) { vec3 lab=toLab(v); lab.x=clamp(lab.x,0.0,p[33].w); v=fromLab(lab); }
+    if(p[31].x>0.0) {
+        float gray=dot3(vec3(.2126,.7152,.0722),v);
+        v=p[31].x>=1.0 ? vec3(gray) : v+(vec3(gray)-v)*p[31].x;
+        if(p[31].y>0.0)v*=vec3(1.0+.09*p[31].y,1.0-.01*p[31].y,1.0-.22*p[31].y);
+    }
+    v=mulRows(6,v);
+    float y=max(0.0,dot3(p[9].xyz,v)),smallest=min(v.r,min(v.g,v.b));
+    if(smallest<0.0 && y>1e-6) {
+        // Scene-relative transition agrees with the CPU reference and avoids
+        // amplifying tiny FP32 differences in bright, near-boundary colors.
+        float inset=1.0-.005*smooth01(-smallest/(.005*max(1.0,y)));
+        // Same cancellation-resistant form as the CPU. The minimum-channel
+        // ratio becomes exactly -1 instead of subtracting two nearly equal
+        // positive values after the gamut intersection.
+        float denominator=y-smallest;
+        v=vec3(y)*(vec3(1.0)+((v-vec3(y))/denominator)*inset);
+    }
+    v=max(v,vec3(0.0));
+    v=vec3(shoulder(v.r,recovery),shoulder(v.g,recovery),shoulder(v.b,recovery));
+    if(p[10].y==0.0) { y=max(0.0,dot3(p[9].xyz,v)); if(y>1e-6) v*=curve(y,0)/y; }
+    if(p[10].z==0.0) v=vec3(curve(v.r,1),curve(v.g,2),curve(v.b,3));
+    if(p[31].z>0.0)v=v*(1.0-p[31].z)+vec3(p[31].z);
+    v=vec3(encode(v.r),encode(v.g),encode(v.b));
+    if(p[31].w>0.0) {
+        v=v+(lutSample(v)-v)*p[33].z;
+        if(p[33].y!=0.0) {
+            v=mulRows(34,vec3(decode(v.r),decode(v.g),decode(v.b)));
+            v=vec3(encodeTarget(v.r),encodeTarget(v.g),encodeTarget(v.b));
+        }
+    }
+    v=floor(clamp(v,vec3(0.0),vec3(1.0))*65535.0+vec3(.5))/65535.0;
+    imageStore(outputImage,coord,vec4(v,original.a));
+}

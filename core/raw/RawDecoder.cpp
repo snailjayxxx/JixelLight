@@ -1,6 +1,13 @@
 #include "core/raw/RawDecoder.h"
+#include "core/raw/RawGeometry.h"
+#include "diagnostics/PerformanceRecorder.h"
+#include <QSemaphore>
+#include <algorithm>
+#include <memory>
 
 #include <QFile>
+#include <QBuffer>
+#include <QImageReader>
 #include <QFileInfo>
 #include <QRgba64>
 #include <QtGlobal>
@@ -8,6 +15,18 @@
 #include <libraw/libraw.h>
 
 namespace {
+QSemaphore rawSlots(1);
+struct RawLease {
+    bool acquired = false;
+    explicit RawLease(const CancelToken &token) {
+        while (!cancelled(token)) if (rawSlots.tryAcquire(1, 20)) { acquired = true; break; }
+    }
+    ~RawLease() { if (acquired) rawSlots.release(); }
+};
+int rawProgress(void *context, enum LibRaw_progress, int, int) {
+    return cancelled(*static_cast<const CancelToken *>(context)) ? 1 : 0;
+}
+
 QString libRawError(int code) {
     const char *message = LibRaw::strerror(code);
     return message ? QString::fromLatin1(message) : QStringLiteral("Unknown LibRaw error");
@@ -26,9 +45,16 @@ bool RawDecoder::isRawFile(const QString &path) {
     return extensions.contains(QFileInfo(path).suffix().toLower());
 }
 
-QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadata *metadata) {
+QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadata *metadata, const CancelToken &cancel) {
+    RawLease lease(cancel);
+    if (!lease.acquired) return {};
+    PerformanceSpan total(QStringLiteral("raw_total"));
     if (errorMessage) errorMessage->clear();
-    LibRaw raw;
+    // LibRaw includes large fixed tables (> 700 KiB in supported SDKs).
+    // Keep them off the limited worker stack; ownership still ends on return.
+    auto decoder = std::make_unique<LibRaw>();
+    auto &raw = *decoder;
+    raw.set_progress_handler(rawProgress, const_cast<CancelToken *>(&cancel));
 
     int result = LIBRAW_SUCCESS;
 #if defined(Q_OS_WIN)
@@ -49,12 +75,19 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         metadata->height = raw.imgdata.sizes.height;
     }
 
-    result = raw.unpack();
+    if (cancelled(cancel)) return {};
+    const quint64 pixels = quint64(raw.imgdata.sizes.raw_width) * raw.imgdata.sizes.raw_height;
+    // Reject unreasonable allocations before unpack; this is an application resource limit, not a camera-format claim.
+    const quint64 limit = quint64(std::max(256, qEnvironmentVariableIntValue("JIXELLIGHT_RAW_MEMORY_MB"))) * 1024 * 1024;
+    const quint64 effectiveLimit = qEnvironmentVariableIsSet("JIXELLIGHT_RAW_MEMORY_MB") ? limit : 3ULL*1024*1024*1024;
+    if (pixels > effectiveLimit / 32) { if (errorMessage) *errorMessage = QStringLiteral("RAW exceeds the configured decode memory budget"); return {}; }
+    { PerformanceSpan timer(QStringLiteral("raw_unpack")); result = raw.unpack(); }
     if (result != LIBRAW_SUCCESS) {
         if (errorMessage) *errorMessage = libRawError(result);
         return {};
     }
 
+    const auto decodeSizes=raw.imgdata.sizes;
     auto &params = raw.imgdata.params;
     params.use_camera_wb = 1;
     params.use_auto_wb = 0;
@@ -69,7 +102,8 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.gamm[0] = 1.0;
     params.gamm[1] = 1.0;
 
-    result = raw.dcraw_process();
+    if (cancelled(cancel)) return {};
+    { PerformanceSpan timer(QStringLiteral("raw_develop")); result = raw.dcraw_process(); }
     if (result != LIBRAW_SUCCESS) {
         if (errorMessage) *errorMessage = libRawError(result);
         return {};
@@ -97,11 +131,24 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     }
     image.setText(QStringLiteral("JixelLightWorkingSpace"), QStringLiteral("Linear ProPhoto RGB"));
     image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));
+    // LibRaw's standard inset is an absolute sensor-space crop. Convert it to
+    // the developed/oriented bitmap for reference matching only. Reject bogus
+    // metadata and unexplained rescaling; never guess a centre crop.
+    if(QString::fromLatin1(raw.imgdata.idata.make).contains("SONY",Qt::CaseInsensitive)) {
+        const auto c=decodeSizes.raw_inset_crops[0];
+        if(c.cleft<65535&&c.ctop<65535&&c.cwidth>0&&c.cheight>0&&
+           quint64(c.cleft)+c.cwidth<=decodeSizes.raw_width&&quint64(c.ctop)+c.cheight<=decodeSizes.raw_height) {
+            const QRect relative(int(c.cleft)-int(decodeSizes.left_margin),int(c.ctop)-int(decodeSizes.top_margin),c.cwidth,c.cheight);
+            const auto roi=RawGeometry::orientCrop(QSize(decodeSizes.width,decodeSizes.height),relative,decodeSizes.flip,image.size());
+            if(roi.isValid())image.setText("JixelLightCameraCrop",QString("%1,%2,%3,%4").arg(roi.x()).arg(roi.y()).arg(roi.width()).arg(roi.height()));
+        }
+    }
 
     const int colors = processed->colors;
     if (processed->bits == 16) {
         const auto *src = reinterpret_cast<const quint16 *>(processed->data);
         for (int y = 0; y < image.height(); ++y) {
+            if (cancelled(cancel)) { LibRaw::dcraw_clear_mem(processed); return {}; }
             auto *dst = reinterpret_cast<QRgba64 *>(image.scanLine(y));
             const qsizetype rowBase = static_cast<qsizetype>(y) * image.width() * colors;
             for (int x = 0; x < image.width(); ++x) {
@@ -112,6 +159,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     } else if (processed->bits == 8) {
         const auto *src = reinterpret_cast<const quint8 *>(processed->data);
         for (int y = 0; y < image.height(); ++y) {
+            if (cancelled(cancel)) { LibRaw::dcraw_clear_mem(processed); return {}; }
             auto *dst = reinterpret_cast<QRgba64 *>(image.scanLine(y));
             const qsizetype rowBase = static_cast<qsizetype>(y) * image.width() * colors;
             for (int x = 0; x < image.width(); ++x) {
@@ -137,5 +185,39 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     }
 
     LibRaw::dcraw_clear_mem(processed);
+    return image;
+}
+
+QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {
+    if (cancelled(cancel)) return {};
+    PerformanceSpan timer(QStringLiteral("raw_embedded_preview"));
+    // LibRaw includes large fixed tables (> 700 KiB in supported SDKs).
+    // Keep them off the limited worker stack; ownership still ends on return.
+    auto decoder = std::make_unique<LibRaw>();
+    auto &raw = *decoder;
+    raw.set_progress_handler(rawProgress, const_cast<CancelToken *>(&cancel));
+#if defined(Q_OS_WIN)
+    int result = raw.open_file(reinterpret_cast<const wchar_t *>(path.utf16()));
+#else
+    const QByteArray encoded = QFile::encodeName(path);
+    int result = raw.open_file(encoded.constData());
+#endif
+    if (result != LIBRAW_SUCCESS || cancelled(cancel) || raw.unpack_thumb() != LIBRAW_SUCCESS) return {};
+    int error = LIBRAW_SUCCESS;
+    libraw_processed_image_t *thumb = raw.dcraw_make_mem_thumb(&error);
+    if (!thumb || error != LIBRAW_SUCCESS) { if (thumb) LibRaw::dcraw_clear_mem(thumb); return {}; }
+    QImage image;
+    if (thumb->type == LIBRAW_IMAGE_JPEG) {
+        const QByteArray jpeg=QByteArray::fromRawData(reinterpret_cast<const char *>(thumb->data),int(thumb->data_size));
+        QBuffer buffer;buffer.setData(jpeg);buffer.open(QIODevice::ReadOnly);
+        QImageReader reader(&buffer,"JPEG");reader.setAutoTransform(true);image=reader.read();
+        image.setText("JixelLightThumbnailOrientationApplied",reader.transformation()!=QImageIOHandler::TransformationNone?"true":"false");
+    }
+    else if (thumb->type == LIBRAW_IMAGE_BITMAP && thumb->colors == 3 && thumb->bits == 8)
+        image = QImage(thumb->data, thumb->width, thumb->height, thumb->width*3, QImage::Format_RGB888).copy();
+    LibRaw::dcraw_clear_mem(thumb);
+    if (cancelled(cancel)) return {};
+    // A placeholder only. Do not run RAW adjustments or scopes on this image.
+    if (image.width() > 2048 || image.height() > 2048) image = image.scaled(2048,2048,Qt::KeepAspectRatio,Qt::SmoothTransformation);
     return image;
 }

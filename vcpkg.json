@@ -1,15 +1,20 @@
 {
   "name": "jixellight",
-  "version-string": "0.1.0-alpha.6",
+  "version-string": "0.1.0-alpha.9",
   "dependencies": [
     {
       "name": "libraw",
-      "features": ["dng-lossy"]
+      "features": [
+        "dng-lossy"
+      ]
     },
     "lcms",
     {
       "name": "exiv2",
-      "features": ["bmff"]
-    }
+      "features": [
+        "bmff"
+      ]
+    },
+    "libjpeg-turbo"
   ]
 }

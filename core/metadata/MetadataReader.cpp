@@ -1,4 +1,5 @@
 #include "core/metadata/MetadataReader.h"
+#include "core/look/SonyLookMetadata.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -43,6 +44,11 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
     }
 
     const qint64 fileSize = file.size();
+    // Filesystem identity is available even when this Exiv2 build cannot parse
+    // the container (e.g. its optional PNG reader is disabled). Do not hide the
+    // selected filename or invent camera metadata on that non-fatal path.
+    result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
+    result.insert(QStringLiteral("fileSizeBytes"), fileSize);
     if (fileSize <= 0) {
         if (errorMessage) *errorMessage = QStringLiteral("Empty image file");
         return result;
@@ -68,7 +74,7 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
 
     try {
         auto image = Exiv2::ImageFactory::open(data, size);
-        if (!image) {
+        if (!image.get()) {
             if (errorMessage) *errorMessage = QStringLiteral("Exiv2 could not identify the image format");
             if (mapped) file.unmap(mapped);
             return result;
@@ -77,11 +83,22 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
         image->readMetadata();
         const Exiv2::ExifData &exif = image->exifData();
 
-        result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
-        result.insert(QStringLiteral("fileSizeBytes"), fileSize);
+        try { const auto i=exif.findKey(Exiv2::ExifKey("Exif.Image.Orientation"));
+            if(i!=exif.end())result["orientationCode"]=QString::fromStdString(i->toString()).toInt(); } catch (...) {}
+        result.insert(QStringLiteral("sonyLook"), SonyLookMetadata::read(exif));
+        putIfPresent(result,"software",firstValue(exif,{"Exif.Image.Software"}));
+        putIfPresent(result,"subSecTime",firstValue(exif,{"Exif.Photo.SubSecTimeOriginal"}));
+        putIfPresent(result,"imageUniqueId",firstValue(exif,{"Exif.Photo.ImageUniqueID"}));
 
         putIfPresent(result, QStringLiteral("make"), firstValue(exif, {"Exif.Image.Make", "Exif.Photo.Make"}));
         putIfPresent(result, QStringLiteral("model"), firstValue(exif, {"Exif.Image.Model", "Exif.Photo.Model"}));
+        const auto sonyIdentity=result.value("sonyLook").toMap();
+        if(sonyIdentity.value("status").toString()!="not-sony") {
+            result["recordedModel"]=result.value("model");
+            if(!sonyIdentity.value("modelConflict").toBool()&&!sonyIdentity.value("model").toString().isEmpty())
+                result["model"]=sonyIdentity.value("model");
+            if(sonyIdentity.contains("sonyModelId"))result["sonyModelId"]=sonyIdentity["sonyModelId"];
+        }
         putIfPresent(result, QStringLiteral("lens"), firstValue(exif, {
             "Exif.Photo.LensModel", "Exif.CanonCs.LensType", "Exif.NikonLd3.LensIDNumber",
             "Exif.Sony2.LensID", "Exif.Pentax.LensType"

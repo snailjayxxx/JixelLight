@@ -1,0 +1,38 @@
+#version 440
+layout(local_size_x=256,local_size_y=1,local_size_z=1) in;
+layout(std140,binding=0) uniform Plan { vec4 p[37]; };
+layout(rgba32f,binding=1) readonly uniform image2D renderedImage;
+layout(std430,binding=2) writeonly buffer Partials { uint values[]; };
+// Exactly 16 KiB shared memory. Reuse three bins for counters after publishing
+// all bins, rather than exceeding devices' 16 KiB minimum shared-memory limit.
+shared uint histogram[4096];
+void main() {
+    uint tid=gl_LocalInvocationIndex,group=gl_WorkGroupID.x;
+    for(uint i=tid;i<4096u;i+=256u) histogram[i]=0u;
+    barrier();
+    uint shadows=0u,highlights=0u,count=0u;
+    uint width=uint(p[24].x),pixels=width*uint(p[24].y);
+    uint first=group*16384u, end=min(first+16384u,pixels);
+    for(uint index=first+tid;index<end;index+=256u) {
+        vec3 c=imageLoad(renderedImage,ivec2(int(index%width),int(index/width))).rgb;
+        uvec3 q=uvec3(floor(clamp(c,vec3(0.0),vec3(1.0))*65535.0+vec3(.5)));
+        uint l=(2126u*q.r+7152u*q.g+722u*q.b+5000u)/10000u;
+        atomicAdd(histogram[q.r>>6],1u);
+        atomicAdd(histogram[1024u+(q.g>>6)],1u);
+        atomicAdd(histogram[2048u+(q.b>>6)],1u);
+        atomicAdd(histogram[3072u+(l>>6)],1u);
+        if(all(lessThanEqual(q,uvec3(257u)))) ++shadows;
+        if(any(greaterThanEqual(q,uvec3(65278u)))) ++highlights;
+        ++count;
+    }
+    barrier();
+    uint base=group*4100u;
+    for(uint i=tid;i<4096u;i+=256u) values[base+i]=histogram[i];
+    barrier();
+    if(tid<3u) histogram[tid]=0u;
+    barrier();
+    atomicAdd(histogram[0],shadows); atomicAdd(histogram[1],highlights); atomicAdd(histogram[2],count);
+    barrier();
+    if(tid<3u) values[base+4096u+tid]=histogram[tid];
+    if(tid==0u) values[base+4099u]=0u;
+}
