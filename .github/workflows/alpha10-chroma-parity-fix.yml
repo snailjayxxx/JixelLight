@@ -1,0 +1,51 @@
+name: alpha10-chroma-parity-fix
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-chroma-parity-fix.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Unify chroma magnitude arithmetic
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected='f1a2f54aa379fcdff01ffd5de4fe5ca1137dce1b'
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          if parent != expected:
+              raise SystemExit(f'Unexpected parent {parent}; refusing concurrent overwrite')
+
+          p=Path('core/pipeline/ImagePipeline.cpp'); t=p.read_text()
+          marker='''inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }\n'''
+          helper='''inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }\ninline float chromaLength(float a, float b) {\n    // Match the compute shader's explicit float sqrt path. std::hypot uses a\n    // scaled algorithm whose last-bit differences become visible after the\n    // alpha.10 RAW scene-placement gain near an sRGB gamut intersection.\n    const float aa = a * a;\n    const float bb = b * b;\n    return std::sqrt(aa + bb);\n}\n'''
+          if t.count(marker)!=1: raise SystemExit('CPU helper marker mismatch')
+          t=t.replace(marker,helper)
+          if t.count('std::hypot(lab.a,lab.b)')!=1 or t.count('std::hypot(lab.a, lab.b)')!=1:
+              raise SystemExit('Unexpected CPU hypot count')
+          t=t.replace('std::hypot(lab.a,lab.b)','chromaLength(lab.a,lab.b)')
+          t=t.replace('std::hypot(lab.a, lab.b)','chromaLength(lab.a,lab.b)')
+          p.write_text(t)
+
+          p=Path('shaders/pipeline.comp'); t=p.read_text()
+          marker='''float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }\n'''
+          helper='''float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }\nfloat chromaLength(vec2 ab) {\n    precise float aa=ab.x*ab.x;\n    precise float bb=ab.y*ab.y;\n    precise float sum=aa+bb;\n    return sqrt(sum);\n}\n'''
+          if t.count(marker)!=1: raise SystemExit('Shader helper marker mismatch')
+          t=t.replace(marker,helper)
+          if t.count('length(lab.yz)')!=2: raise SystemExit('Unexpected shader length count')
+          t=t.replace('length(lab.yz)','chromaLength(lab.yz)')
+          p.write_text(t)
+          PY
+          git diff --check
+          git diff -- core/pipeline/ImagePipeline.cpp shaders/pipeline.comp
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/pipeline/ImagePipeline.cpp shaders/pipeline.comp
+          git commit -m 'fix: share chroma magnitude arithmetic across CPU and GPU'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
