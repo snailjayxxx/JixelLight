@@ -163,19 +163,20 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     const float chromaNorm = clamp01(chroma / 0.30f);
     const float vibrance = static_cast<float>(state.vibrance / 100.0);
     chromaScale *= std::max(0.0f, 1.0f + vibrance * (1.0f - chromaNorm) * 0.85f);
-    static constexpr std::array<float, AdjustmentState::ColorBandCount> centers{
-        28.0f, 58.0f, 95.0f, 145.0f, 200.0f, 260.0f, 305.0f, 340.0f
-    };
     float hueDelta = 0.0f;
     float satDelta = 0.0f;
     float lumDelta = 0.0f;
     for (int i = 0; i < AdjustmentState::ColorBandCount; ++i) {
         const auto &band = plan.data[ProcessingPlan::Bands + i];
         if (band.x == 0.0f && band.y == 0.0f && band.z == 0.0f) continue;
-        const float w = hueBandWeight(hue, centers[static_cast<std::size_t>(i)]);
-        hueDelta += static_cast<float>(state.hslHue[static_cast<std::size_t>(i)] / 100.0) * 35.0f * w;
-        satDelta += static_cast<float>(state.hslSaturation[static_cast<std::size_t>(i)] / 100.0) * w;
-        lumDelta += static_cast<float>(state.hslLuminance[static_cast<std::size_t>(i)] / 100.0) * 0.18f * w;
+        // Consume the exact float values compiled into ProcessingPlan. The GPU
+        // reads these same vec4 values; recomputing from AdjustmentState here
+        // introduced a second rounding path that became visible after the RAW
+        // base scene-placement gain in bright, near-gamut HSL pixels.
+        const float w = hueBandWeight(hue, band.w);
+        hueDelta += band.x * w;
+        satDelta += band.y * w;
+        lumDelta += band.z * w;
     }
     hue = wrapHue(hue + hueDelta);
     chroma *= chromaScale * std::max(0.0f, 1.0f + satDelta);
