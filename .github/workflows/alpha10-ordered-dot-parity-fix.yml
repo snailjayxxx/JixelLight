@@ -1,0 +1,51 @@
+name: alpha10-ordered-dot-parity-fix
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-ordered-dot-parity-fix.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Unify ordered dot products in CPU RAW color path
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected='77d300a318719babb72cf9591935850f0cec4189'
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          if parent != expected:
+              raise SystemExit(f'Unexpected parent {parent}; refusing concurrent overwrite')
+          p=Path('core/pipeline/ImagePipeline.cpp'); t=p.read_text()
+          marker='''struct Oklab { float L = 0.0f, a = 0.0f, b = 0.0f; };\n'''
+          helper=marker+'''inline float orderedDot(float ax, float ay, float az, Vec3 v) {\n    // Match shader dot3: one explicitly ordered XY sum followed by Z. This\n    // avoids backend-specific reassociation/FMA choices from being amplified\n    // when a bright RAW color lands almost exactly on a gamut boundary.\n    const float xy = ax * v.x + ay * v.y;\n    return xy + az * v.z;\n}\n'''
+          if t.count(marker)!=1: raise SystemExit('Vec marker mismatch')
+          t=t.replace(marker,helper)
+
+          replacements={
+'''inline Vec3 proPhotoToXyzD50(Vec3 c) {\n    return {\n        0.7976749f*c.x + 0.1351917f*c.y + 0.0313534f*c.z,\n        0.2880402f*c.x + 0.7118741f*c.y + 0.0000857f*c.z,\n        0.0000000f*c.x + 0.0000000f*c.y + 0.8252100f*c.z\n    };\n}\n''':'''inline Vec3 proPhotoToXyzD50(Vec3 c) {\n    return {\n        orderedDot(0.7976749f,0.1351917f,0.0313534f,c),\n        orderedDot(0.2880402f,0.7118741f,0.0000857f,c),\n        orderedDot(0.0f,0.0f,0.8252100f,c)\n    };\n}\n''',
+'''inline Oklab linearSrgbToOklab(Vec3 c) {\n    const float l = 0.4122214708f*c.x + 0.5363325363f*c.y + 0.0514459929f*c.z;\n    const float m = 0.2119034982f*c.x + 0.6806995451f*c.y + 0.1073969566f*c.z;\n    const float s = 0.0883024619f*c.x + 0.2817188376f*c.y + 0.6299787005f*c.z;\n''':'''inline Oklab linearSrgbToOklab(Vec3 c) {\n    const float l = orderedDot(0.4122214708f,0.5363325363f,0.0514459929f,c);\n    const float m = orderedDot(0.2119034982f,0.6806995451f,0.1073969566f,c);\n    const float s = orderedDot(0.0883024619f,0.2817188376f,0.6299787005f,c);\n''',
+'''    return {\n        0.2104542553f*lp + 0.7936177850f*mp - 0.0040720468f*sp,\n        1.9779984951f*lp - 2.4285922050f*mp + 0.4505937099f*sp,\n        0.0259040371f*lp + 0.7827717662f*mp - 0.8086757660f*sp\n    };\n}\ninline Vec3 oklabToLinearSrgb(Oklab c) {\n    const float lp = c.L + 0.3963377774f*c.a + 0.2158037573f*c.b;\n    const float mp = c.L - 0.1055613458f*c.a - 0.0638541728f*c.b;\n    const float sp = c.L - 0.0894841775f*c.a - 1.2914855480f*c.b;\n''':'''    const Vec3 roots{lp,mp,sp};\n    return {\n        orderedDot(0.2104542553f,0.7936177850f,-0.0040720468f,roots),\n        orderedDot(1.9779984951f,-2.4285922050f,0.4505937099f,roots),\n        orderedDot(0.0259040371f,0.7827717662f,-0.8086757660f,roots)\n    };\n}\ninline Vec3 oklabToLinearSrgb(Oklab c) {\n    const Vec3 lab{c.L,c.a,c.b};\n    const float lp = orderedDot(1.0f,0.3963377774f,0.2158037573f,lab);\n    const float mp = orderedDot(1.0f,-0.1055613458f,-0.0638541728f,lab);\n    const float sp = orderedDot(1.0f,-0.0894841775f,-1.2914855480f,lab);\n''',
+'''    return {\n         4.0767416621f*l - 3.3077115913f*m + 0.2309699292f*s,\n        -1.2684380046f*l + 2.6097574011f*m - 0.3413193965f*s,\n        -0.0041960863f*l - 0.7034186147f*m + 1.7076147010f*s\n    };\n}\n''':'''    const Vec3 cubes{l,m,s};\n    return {\n        orderedDot(4.0767416621f,-3.3077115913f,0.2309699292f,cubes),\n        orderedDot(-1.2684380046f,2.6097574011f,-0.3413193965f,cubes),\n        orderedDot(-0.0041960863f,-0.7034186147f,1.7076147010f,cubes)\n    };\n}\n''',
+'''    const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);\n''':'''    const float y = std::max(0.0f, orderedDot(lum.x,lum.y,lum.z,rgb));\n''',
+'''Vec3 multiply(const Float4 *rows, Vec3 v) {\n    return {rows[0].x*v.x + rows[0].y*v.y + rows[0].z*v.z,\n            rows[1].x*v.x + rows[1].y*v.y + rows[1].z*v.z,\n            rows[2].x*v.x + rows[2].y*v.y + rows[2].z*v.z};\n}\n''':'''Vec3 multiply(const Float4 *rows, Vec3 v) {\n    return {orderedDot(rows[0].x,rows[0].y,rows[0].z,v),\n            orderedDot(rows[1].x,rows[1].y,rows[1].z,v),\n            orderedDot(rows[2].x,rows[2].y,rows[2].z,v)};\n}\n'''
+          }
+          for old,new in replacements.items():
+              count=t.count(old)
+              if count!=1:
+                  raise SystemExit(f'Expected block once, got {count}: {old[:60]!r}')
+              t=t.replace(old,new)
+          p.write_text(t)
+          PY
+          git diff --check
+          git diff -- core/pipeline/ImagePipeline.cpp
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/pipeline/ImagePipeline.cpp
+          git commit -m 'fix: mirror shader dot ordering in CPU RAW color path'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
