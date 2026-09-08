@@ -1,0 +1,46 @@
+name: alpha10-gamut-transition-fix
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-gamut-transition-fix.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Widen the scene-relative gamut transition without changing the final inset
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected='00897e3cccbd8e6a55ee99eb41e3e58124671225'
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          if parent != expected:
+              raise SystemExit(f'Unexpected parent {parent}; refusing concurrent overwrite')
+
+          p=Path('core/pipeline/ImagePipeline.cpp')
+          t=p.read_text()
+          old='''        const float inset = 1.0f - 0.005f * smooth(-minChannel / (0.005f * std::max(1.0f,y)));\n'''
+          new='''        // Keep the eventual 0.5% safety inset, but reach it over a 2%\n        // scene-relative negative-gamut interval. The previous 0.5% transition\n        // was so narrow that harmless backend FP differences around its steep\n        // midpoint became 40+ code-value differences after the sRGB toe.\n        // A wider transition is both visually smoother and numerically stable.\n        constexpr float gamutInset = 0.005f;\n        constexpr float gamutTransition = 0.020f;\n        const float inset = 1.0f - gamutInset * smooth(-minChannel / (gamutTransition * std::max(1.0f,y)));\n'''
+          if t.count(old)!=1: raise SystemExit('CPU gamut transition not found exactly once')
+          t=t.replace(old,new)
+          p.write_text(t)
+
+          p=Path('shaders/pipeline.comp')
+          t=p.read_text()
+          old='''        float inset=1.0-.005*smooth01(-smallest/(.005*max(1.0,y)));\n'''
+          new='''        // Same 0.5% final inset as the CPU, reached over a wider 2%\n        // scene-relative interval to avoid amplifying backend FP noise.\n        float inset=1.0-.005*smooth01(-smallest/(.020*max(1.0,y)));\n'''
+          if t.count(old)!=1: raise SystemExit('GPU gamut transition not found exactly once')
+          t=t.replace(old,new)
+          p.write_text(t)
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/pipeline/ImagePipeline.cpp shaders/pipeline.comp
+          git commit -m 'fix: smooth scene-relative gamut boundary transition'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
