@@ -14,9 +14,14 @@ float dot3(vec3 a, vec3 b) {
 float cubeRoot(float value) {
     float magnitude=abs(value);
     if(magnitude==0.0) return 0.0;
-    precise float root=pow(magnitude,1.0/3.0);
-    precise float refined=root+(magnitude/(root*root)-root)/3.0;
-    return sign(value)*refined;
+    // D3D11's pow approximation is visibly less accurate than Metal/OpenGL
+    // for bright RAW values after the alpha.10 scene-placement gain. Two
+    // explicitly ordered Newton refinements converge to the same cbrt root
+    // used by the CPU without changing the rendering model or test tolerance.
+    precise float root=pow(magnitude,0.3333333333333333);
+    root=(2.0*root+magnitude/(root*root))/3.0;
+    root=(2.0*root+magnitude/(root*root))/3.0;
+    return sign(value)*root;
 }
 float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }
 vec3 mulRows(int first,vec3 v) { return vec3(dot3(p[first].xyz,v),dot3(p[first+1].xyz,v),dot3(p[first+2].xyz,v)); }
