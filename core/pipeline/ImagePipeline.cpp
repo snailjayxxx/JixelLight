@@ -16,6 +16,14 @@ constexpr float kPi = 3.14159265358979323846f;
 struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 struct Oklab { float L = 0.0f, a = 0.0f, b = 0.0f; };
 inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+inline float chromaLength(float a, float b) {
+    // Match the compute shader's explicit float sqrt path. std::hypot uses a
+    // scaled algorithm whose last-bit differences become visible after the
+    // alpha.10 RAW scene-placement gain near an sRGB gamut intersection.
+    const float aa = a * a;
+    const float bb = b * b;
+    return std::sqrt(aa + bb);
+}
 inline float smooth(float x) { x = clamp01(x); return x * x * (3.0f - 2.0f * x); }
 inline Vec3 scale(Vec3 v, float s) { return {v.x * s, v.y * s, v.z * s}; }
 inline float srgbToLinear(float v) {
@@ -150,14 +158,14 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
         noBands &= band.x==0 && band.y==0 && band.z==0;
     }
     if (state.hue==0 && noBands) {
-        const float c = std::hypot(lab.a,lab.b);
+        const float c = chromaLength(lab.a,lab.b);
         const float gain = std::max(0.0f,1.0f+float(state.saturation/100))
             * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);
         lab.L = std::clamp(lab.L,0.0f,labLimit);
         lab.a *= gain; lab.b *= gain;
         return oklabToLinearSrgb(lab);
     }
-    float chroma = std::hypot(lab.a, lab.b);
+    float chroma = chromaLength(lab.a,lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;
     hue = wrapHue(hue + static_cast<float>(state.hue));
     float chromaScale = std::max(0.0f, 1.0f + static_cast<float>(state.saturation / 100.0));

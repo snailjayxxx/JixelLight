@@ -24,6 +24,12 @@ float cubeRoot(float value) {
     return sign(value)*root;
 }
 float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }
+float chromaLength(vec2 ab) {
+    precise float aa=ab.x*ab.x;
+    precise float bb=ab.y*ab.y;
+    precise float sum=aa+bb;
+    return sqrt(sum);
+}
 vec3 mulRows(int first,vec3 v) { return vec3(dot3(p[first].xyz,v),dot3(p[first+1].xyz,v),dot3(p[first+2].xyz,v)); }
 float luminancePro(vec3 c) { return dot3(vec3(.2880402,.7118741,.0000857),c); }
 float decode(float v) { v=max(v,0.0); return v<=.04045 ? v/12.92 : pow((v+.055)/1.055,2.4); }
@@ -50,12 +56,12 @@ vec3 colorAdjust(vec3 c) {
     bool noBands=true;
     for(int i=0;i<8;++i) noBands=noBands && all(equal(p[11+i].xyz,vec3(0.0)));
     if(p[5].x==0.0 && noBands) {
-        float c=length(lab.yz);
+        float c=chromaLength(lab.yz);
         float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(c/.30,0.0,1.0))*.85);
         lab.x=clamp(lab.x,0.0,p[33].w);lab.yz*=gain;
         return fromLab(lab);
     }
-    float chroma=length(lab.yz);
+    float chroma=chromaLength(lab.yz);
     float hue=chroma>1e-6 ? wrapHue(atan(lab.z,lab.y)*180.0/PI) : 0.0;
     hue=wrapHue(hue+p[5].x);
     float scale=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(chroma/.30,0.0,1.0))*.85);
