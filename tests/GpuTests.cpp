@@ -196,9 +196,10 @@ private slots:
         verifyParity(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,"dense parity");
     }
     void knownBoundaryNeighborhoods() {
-        constexpr quint16 seeds[][3]={{16492,36979,31231},{18743,43453,32369},{20306,54764,34044}};
-        QImage image(257,9,QImage::Format_RGBA64);
-        for(int y=0;y<9;++y) {
+        constexpr quint16 seeds[][3]={{16492,36979,31231},{18743,43453,32369},{20306,54764,34044},
+                                       {28853,59865,40358},{22323,46996,38591}};
+        QImage image(257,15,QImage::Format_RGBA64);
+        for(int y=0;y<15;++y) {
             auto *line=reinterpret_cast<QRgba64 *>(image.scanLine(y));
             for(int x=0;x<257;++x) {
                 int channels[]{seeds[y/3][0],seeds[y/3][1],seeds[y/3][2]};

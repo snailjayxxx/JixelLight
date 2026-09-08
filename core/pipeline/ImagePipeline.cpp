@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <bit>
+#include <cstdint>
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -152,6 +154,41 @@ inline Vec3 oklabToLinearSrgb(Oklab c) {
         orderedDot(-0.0041960863f,-0.7034186147f,1.7076147010f,cubes)
     };
 }
+inline float snapPerceptualInput(float v) {
+    // Clear only the two least-significant IEEE-754 mantissa bits before the
+    // pure saturation/vibrance Oklab transform. This relative adjustment is
+    // below visible precision, yet removes backend ULP noise that otherwise
+    // gets amplified when a bright RAW color lands close to an RGB gamut edge.
+    if (!std::isfinite(v) || v == 0.0f) return v;
+    const uint32_t word = std::bit_cast<uint32_t>(v) & 0xfffffffcu;
+    return std::bit_cast<float>(word);
+}
+inline Vec3 snapPerceptualInput(Vec3 v) {
+    return {snapPerceptualInput(v.x),snapPerceptualInput(v.y),snapPerceptualInput(v.z)};
+}
+inline Vec3 oklabScaledChromaToLinearSrgb(Oklab c, float gain) {
+    // For a pure saturation/vibrance edit, expand the Oklab inverse as a cubic
+    // in chroma gain. This is algebraically equivalent to scaling a/b and
+    // cubing the three LMS roots, but avoids subtracting large nearly-equal
+    // values when an output RGB channel is close to zero.
+    const Vec3 chroma{0.0f,c.a,c.b};
+    const Vec3 d{
+        orderedDot(0.0f,0.3963377774f,0.2158037573f,chroma),
+        orderedDot(0.0f,-0.1055613458f,-0.0638541728f,chroma),
+        orderedDot(0.0f,-0.0894841775f,-1.2914855480f,chroma)};
+    const Vec3 d2{d.x*d.x,d.y*d.y,d.z*d.z};
+    const Vec3 d3{d2.x*d.x,d2.y*d.y,d2.z*d.z};
+    const float L2=c.L*c.L,L3=L2*c.L;
+    auto channel=[&](float x,float y,float z) {
+        const float c1=3.0f*L2*orderedDot(x,y,z,d);
+        const float c2=3.0f*c.L*orderedDot(x,y,z,d2);
+        const float c3=orderedDot(x,y,z,d3);
+        return L3+gain*(c1+gain*(c2+gain*c3));
+    };
+    return {channel(4.0767416621f,-3.3077115913f,0.2309699292f),
+            channel(-1.2684380046f,2.6097574011f,-0.3413193965f),
+            channel(-0.0041960863f,-0.7034186147f,1.7076147010f)};
+}
 inline float wrapHue(float degrees) {
     while (degrees < 0.0f) degrees += 360.0f;
     while (degrees >= 360.0f) degrees -= 360.0f;
@@ -179,12 +216,12 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
         noBands &= band.x==0 && band.y==0 && band.z==0;
     }
     if (state.hue==0 && noBands) {
+        lab = linearSrgbToOklab(snapPerceptualInput(linearSrgb));
         const float c = chromaLength(lab.a,lab.b);
         const float gain = std::max(0.0f,1.0f+float(state.saturation/100))
             * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);
         lab.L = std::clamp(lab.L,0.0f,labLimit);
-        lab.a *= gain; lab.b *= gain;
-        return oklabToLinearSrgb(lab);
+        return oklabScaledChromaToLinearSrgb(lab,gain);
     }
     float chroma = chromaLength(lab.a,lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;

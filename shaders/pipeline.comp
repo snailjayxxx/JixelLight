@@ -49,6 +49,34 @@ vec3 fromLab(vec3 c) {
     a=a*a*a;
     return vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),a),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),a),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),a));
 }
+float snapPerceptualInput(float v) {
+    if(isnan(v)||isinf(v)||v==0.0) return v;
+    return uintBitsToFloat(floatBitsToUint(v)&0xfffffffcu);
+}
+vec3 snapPerceptualInput(vec3 v) {
+    return vec3(snapPerceptualInput(v.x),snapPerceptualInput(v.y),snapPerceptualInput(v.z));
+}
+vec3 fromLabScaledChroma(vec3 c,float gain) {
+    precise vec3 d=vec3(
+        dot3(vec3(0.0,.3963377774,.2158037573),c),
+        dot3(vec3(0.0,-.1055613458,-.0638541728),c),
+        dot3(vec3(0.0,-.0894841775,-1.2914855480),c));
+    precise vec3 d2=d*d,d3=d2*d;
+    precise float L2=c.x*c.x,L3=L2*c.x;
+    precise vec3 c1=3.0*L2*vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d));
+    precise vec3 c2=3.0*c.x*vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d2),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d2),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d2));
+    precise vec3 c3=vec3(
+        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d3),
+        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d3),
+        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d3));
+    return vec3(L3)+gain*(c1+gain*(c2+gain*c3));
+}
 float wrapHue(float h) { return h-floor(h/360.0)*360.0; }
 vec3 colorAdjust(vec3 c) {
     vec3 lab=toLab(c);
@@ -56,10 +84,11 @@ vec3 colorAdjust(vec3 c) {
     bool noBands=true;
     for(int i=0;i<8;++i) noBands=noBands && all(equal(p[11+i].xyz,vec3(0.0)));
     if(p[5].x==0.0 && noBands) {
-        float c=chromaLength(lab.yz);
-        float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(c/.30,0.0,1.0))*.85);
-        lab.x=clamp(lab.x,0.0,p[33].w);lab.yz*=gain;
-        return fromLab(lab);
+        lab=toLab(snapPerceptualInput(c));
+        float chroma=chromaLength(lab.yz);
+        float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(chroma/.30,0.0,1.0))*.85);
+        lab.x=clamp(lab.x,0.0,p[33].w);
+        return fromLabScaledChroma(lab,gain);
     }
     float chroma=chromaLength(lab.yz);
     float hue=chroma>1e-6 ? wrapHue(atan(lab.z,lab.y)*180.0/PI) : 0.0;

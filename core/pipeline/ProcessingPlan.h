@@ -5,7 +5,7 @@
 struct alignas(16) Float4 { float x = 0, y = 0, z = 0, w = 0; };
 // Exactly the std140 layout in the three compute shaders. Matrix ROWS.
 struct ProcessingPlan {
-    static constexpr const char *EngineVersion = "jixellight-linear-v4-base1-look3";
+    static constexpr const char *EngineVersion = "jixellight-linear-v4-base1-look4";
     // LibRaw stays scene-linear with no_auto_bright. Jixel Neutral v1 places
     // normal camera exposure headroom into a display-referred starting range
     // without changing the user's Exposure = 0 reference point.
