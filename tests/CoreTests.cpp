@@ -90,6 +90,21 @@ private slots:
         QVERIFY(rendered.text("JixelLightBaseRendering").contains("+2.5 EV"));
     }
 
+    void rawBaseRenderingDoesNotCrushBrightHslChromaticity() {
+        // Regression from the Windows/WARP dense fixture after introducing
+        // Jixel Neutral. The old fixed Oklab-L=1.5 ceiling turned this bright
+        // cyan/green highlight's red channel almost black after a hue edit.
+        QImage image(1,1,QImage::Format_RGBA64);
+        auto *px=reinterpret_cast<QRgba64 *>(image.scanLine(0));
+        px[0]=QRgba64::fromRgba64(23559,59073,40796,65535);
+        AdjustmentState state;state.hue=-23;state.saturation=18;state.vibrance=22;
+        state.hslHue[2]=30;state.hslSaturation[5]=-25;state.masterCurve[2]=.57;state.redCurve[3]=.8;
+        const QColor out=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto).pixelColor(0,0);
+        QVERIFY2(out.red()>80,qPrintable(QString("red=%1 green=%2 blue=%3").arg(out.red()).arg(out.green()).arg(out.blue())));
+        QVERIFY(out.green()>240);
+        QVERIFY(out.blue()>240);
+    }
+
     void saturationRunsInsideWorkingPipeline() {
         QImage image(1, 1, QImage::Format_RGBA64);
         image.fill(QColor(180, 105, 80));

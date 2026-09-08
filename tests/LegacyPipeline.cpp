@@ -154,7 +154,7 @@ inline float hueBandWeight(float hue, float center) {
     return 0.5f + 0.5f * std::cos(kPi * d / 52.0f);
 }
 
-inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) {
+inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state, float labLimit) {
     Oklab lab = linearSrgbToOklab(linearSrgb);
     float chroma = std::hypot(lab.a, lab.b);
     float hue = chroma > 1.0e-6f ? wrapHue(std::atan2(lab.b, lab.a) * 180.0f / kPi) : 0.0f;
@@ -182,7 +182,7 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) 
 
     hue = wrapHue(hue + hueDelta);
     chroma *= chromaScale * std::max(0.0f, 1.0f + satDelta);
-    lab.L = std::clamp(lab.L + lumDelta, 0.0f, 1.5f);
+    lab.L = std::clamp(lab.L + lumDelta, 0.0f, labLimit);
     lab.a = chroma * std::cos(hue * kPi / 180.0f);
     lab.b = chroma * std::sin(hue * kPi / 180.0f);
     return oklabToLinearSrgb(lab);
@@ -321,7 +321,7 @@ template<bool ContinuousBoundary, bool BaseRender> static QImage referenceProces
 
             // Perceptual color operations run before the final display transform.
             Vec3 displayLinear = proPhotoToLinearSrgb(working);
-            displayLinear = applyPerceptualColor(displayLinear, state);
+            displayLinear = applyPerceptualColor(displayLinear, state, BaseRender ? 1.5f*std::cbrt(ProcessingPlan::RawBaseGain) : 1.5f);
             displayLinear = compressNegativeGamut<ContinuousBoundary>(displayLinear);
 
             displayLinear.x = displayShoulder(displayLinear.x, recovery);

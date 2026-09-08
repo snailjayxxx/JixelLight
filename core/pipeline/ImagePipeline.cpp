@@ -140,6 +140,7 @@ inline float hueBandWeight(float hue, float center) {
 inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     const auto &state = plan.state;
     Oklab lab = linearSrgbToOklab(linearSrgb);
+    const float labLimit = plan.data[ProcessingPlan::LookOptions].w;
     // Without hue/band edits, saturation and vibrance only scale the a/b
     // vector. Avoid an unnecessary atan2 -> sin/cos round trip, whose error
     // can be amplified at a high-exposure gamut boundary on some backends.
@@ -152,7 +153,7 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
         const float c = std::hypot(lab.a,lab.b);
         const float gain = std::max(0.0f,1.0f+float(state.saturation/100))
             * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);
-        lab.L = std::clamp(lab.L,0.0f,1.5f);
+        lab.L = std::clamp(lab.L,0.0f,labLimit);
         lab.a *= gain; lab.b *= gain;
         return oklabToLinearSrgb(lab);
     }
@@ -180,7 +181,7 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     }
     hue = wrapHue(hue + hueDelta);
     chroma *= chromaScale * std::max(0.0f, 1.0f + satDelta);
-    lab.L = std::clamp(lab.L + lumDelta, 0.0f, 1.5f);
+    lab.L = std::clamp(lab.L + lumDelta, 0.0f, labLimit);
     lab.a = chroma * std::cos(hue * kPi / 180.0f);
     lab.b = chroma * std::sin(hue * kPi / 180.0f);
     return oklabToLinearSrgb(lab);
@@ -285,7 +286,14 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[LookStyle]={style[0],style[1],style[2],style[3]};
     plan.data[LookDetail]={detail[0],detail[1],detail[2],detail[3]};
     const bool lut=style[3]>0 && bool(original.look.lut);
-    plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),0};
+    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto
+        ? ProcessingPlan::RawBaseGain : 1.0f;
+    // The historical 1.5 Oklab-L guard was defined before the RAW base
+    // scene-placement gain. Scale the guard by cbrt(exposure gain), which is
+    // the exact homogeneity of Oklab, so alpha.10 does not newly crush bright
+    // chromatic highlights merely because the neutral RAW baseline moved.
+    const float perceptualLabLimit = 1.5f * std::cbrt(rawBaseGain);
+    plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),perceptualLabLimit};
     const auto targetRows=matrixOf([&](Vec3 v){return toOutput(v,output);});
     for(int i=0;i<3;++i)plan.data[LutOut0+i]=targetRows[i];
     const auto kernelOutput=lut?ColorManagement::OutputSpace::SRgb:output;
@@ -319,8 +327,6 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     if (kernelOutput == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
     if (kernelOutput == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
     plan.data[Luminance] = lum;
-    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto
-        ? ProcessingPlan::RawBaseGain : 1.0f;
     plan.data[Flags] = {state.contrast == 0 ? 1.0f : 0.0f, identity(state.masterCurve) ? 1.0f : 0.0f,
                        identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f,
                        rawBaseGain};
@@ -376,7 +382,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
             v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
             if (color.z != 0) v = applyPerceptualColor(v,plan);
             else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
-                auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,1.5f); v = oklabToLinearSrgb(lab);
+                auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,plan.data[ProcessingPlan::LookOptions].w); v = oklabToLinearSrgb(lab);
             }
             if(style.x>0) {
                 const float y=(.2126f*v.x+.7152f*v.y)+.0722f*v.z;
