@@ -223,7 +223,14 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
         // transition amplified tiny FP32 differences at high exposure.
         // This is an intentional gamut-rendering correction, not a claim of
         // bit-identical alpha.6 rendering. See NUMERICAL_PARITY_20260907.md.
-        const float inset = 1.0f - 0.005f * smooth(-minChannel / (0.005f * std::max(1.0f,y)));
+        // Keep the eventual 0.5% safety inset, but reach it over a 2%
+        // scene-relative negative-gamut interval. The previous 0.5% transition
+        // was so narrow that harmless backend FP differences around its steep
+        // midpoint became 40+ code-value differences after the sRGB toe.
+        // A wider transition is both visually smoother and numerically stable.
+        constexpr float gamutInset = 0.005f;
+        constexpr float gamutTransition = 0.020f;
+        const float inset = 1.0f - gamutInset * smooth(-minChannel / (gamutTransition * std::max(1.0f,y)));
         // Algebraically identical to y + (channel-y)*y/(y-min)*inset,
         // but written as a normalized ratio. For the minimum channel the
         // ratio is exactly -1 (same operands, reversed subtraction), avoiding
