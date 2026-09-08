@@ -15,6 +15,11 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 struct Oklab { float L = 0.0f, a = 0.0f, b = 0.0f; };
+inline float orderedDot(float ax, float ay, float az, Vec3 v) {
+    // Match shader dot3: one explicitly ordered XY sum followed by Z.
+    const float xy = ax * v.x + ay * v.y;
+    return xy + az * v.z;
+}
 inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 inline float chromaLength(float a, float b) {
     // Match the compute shader's explicit float sqrt path. std::hypot uses a
@@ -77,9 +82,9 @@ inline Vec3 xyzD50ToD65(Vec3 c) {
 }
 inline Vec3 proPhotoToXyzD50(Vec3 c) {
     return {
-        0.7976749f*c.x + 0.1351917f*c.y + 0.0313534f*c.z,
-        0.2880402f*c.x + 0.7118741f*c.y + 0.0000857f*c.z,
-        0.0000000f*c.x + 0.0000000f*c.y + 0.8252100f*c.z
+        orderedDot(0.7976749f,0.1351917f,0.0313534f,c),
+        orderedDot(0.2880402f,0.7118741f,0.0000857f,c),
+        orderedDot(0.0f,0.0f,0.8252100f,c)
     };
 }
 inline Vec3 xyzD50ToProPhoto(Vec3 c) {
@@ -119,29 +124,32 @@ inline Vec3 applyWhiteBalanceDelta(Vec3 proPhoto, float temperature, float tint)
     return xyzD50ToProPhoto(bradfordLmsToXyzD50(lms));
 }
 inline Oklab linearSrgbToOklab(Vec3 c) {
-    const float l = 0.4122214708f*c.x + 0.5363325363f*c.y + 0.0514459929f*c.z;
-    const float m = 0.2119034982f*c.x + 0.6806995451f*c.y + 0.1073969566f*c.z;
-    const float s = 0.0883024619f*c.x + 0.2817188376f*c.y + 0.6299787005f*c.z;
+    const float l = orderedDot(0.4122214708f,0.5363325363f,0.0514459929f,c);
+    const float m = orderedDot(0.2119034982f,0.6806995451f,0.1073969566f,c);
+    const float s = orderedDot(0.0883024619f,0.2817188376f,0.6299787005f,c);
     const float lp = stableCubeRoot(l);
     const float mp = stableCubeRoot(m);
     const float sp = stableCubeRoot(s);
+    const Vec3 roots{lp,mp,sp};
     return {
-        0.2104542553f*lp + 0.7936177850f*mp - 0.0040720468f*sp,
-        1.9779984951f*lp - 2.4285922050f*mp + 0.4505937099f*sp,
-        0.0259040371f*lp + 0.7827717662f*mp - 0.8086757660f*sp
+        orderedDot(0.2104542553f,0.7936177850f,-0.0040720468f,roots),
+        orderedDot(1.9779984951f,-2.4285922050f,0.4505937099f,roots),
+        orderedDot(0.0259040371f,0.7827717662f,-0.8086757660f,roots)
     };
 }
 inline Vec3 oklabToLinearSrgb(Oklab c) {
-    const float lp = c.L + 0.3963377774f*c.a + 0.2158037573f*c.b;
-    const float mp = c.L - 0.1055613458f*c.a - 0.0638541728f*c.b;
-    const float sp = c.L - 0.0894841775f*c.a - 1.2914855480f*c.b;
+    const Vec3 lab{c.L,c.a,c.b};
+    const float lp = orderedDot(1.0f,0.3963377774f,0.2158037573f,lab);
+    const float mp = orderedDot(1.0f,-0.1055613458f,-0.0638541728f,lab);
+    const float sp = orderedDot(1.0f,-0.0894841775f,-1.2914855480f,lab);
     const float l = lp*lp*lp;
     const float m = mp*mp*mp;
     const float s = sp*sp*sp;
+    const Vec3 cubes{l,m,s};
     return {
-         4.0767416621f*l - 3.3077115913f*m + 0.2309699292f*s,
-        -1.2684380046f*l + 2.6097574011f*m - 0.3413193965f*s,
-        -0.0041960863f*l - 0.7034186147f*m + 1.7076147010f*s
+        orderedDot(4.0767416621f,-3.3077115913f,0.2309699292f,cubes),
+        orderedDot(-1.2684380046f,2.6097574011f,-0.3413193965f,cubes),
+        orderedDot(-0.0041960863f,-0.7034186147f,1.7076147010f,cubes)
     };
 }
 inline float wrapHue(float degrees) {
@@ -208,7 +216,7 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     return oklabToLinearSrgb(lab);
 }
 inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
-    const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
+    const float y = std::max(0.0f, orderedDot(lum.x,lum.y,lum.z,rgb));
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
         // Scale the transition with scene luminance. A fixed 0.001-wide
@@ -261,7 +269,7 @@ inline float displayShoulder(float linear, float recovery) {
     return start + span * (1.0f - std::exp(-strength * (linear - start) / span));
 }
 inline Vec3 applyMasterCurve(Vec3 rgb, const AdjustmentState::CurveArray &curve, const Float4 &lum) {
-    const float y = std::max(0.0f, lum.x*rgb.x + lum.y*rgb.y + lum.z*rgb.z);
+    const float y = std::max(0.0f, orderedDot(lum.x,lum.y,lum.z,rgb));
     if (y <= 1.0e-6f) return rgb;
     const float mapped = curveSample(curve, y);
     return scale(rgb, mapped / y);
@@ -272,9 +280,9 @@ inline float middleGrayContrast(float y, float factor) {
     return pivot * std::pow(y / pivot, factor);
 }
 Vec3 multiply(const Float4 *rows, Vec3 v) {
-    return {rows[0].x*v.x + rows[0].y*v.y + rows[0].z*v.z,
-            rows[1].x*v.x + rows[1].y*v.y + rows[1].z*v.z,
-            rows[2].x*v.x + rows[2].y*v.y + rows[2].z*v.z};
+    return {orderedDot(rows[0].x,rows[0].y,rows[0].z,v),
+            orderedDot(rows[1].x,rows[1].y,rows[1].z,v),
+            orderedDot(rows[2].x,rows[2].y,rows[2].z,v)};
 }
 template<class Function> std::array<Float4, 3> matrixOf(Function transform) {
     const Vec3 a = transform(Vec3{1,0,0}), b = transform(Vec3{0,1,0}), c = transform(Vec3{0,0,1});
