@@ -138,7 +138,11 @@ void main() {
         // Scene-relative transition agrees with the CPU reference and avoids
         // amplifying tiny FP32 differences in bright, near-boundary colors.
         float inset=1.0-.005*smooth01(-smallest/(.005*max(1.0,y)));
-        v=vec3(y)+(v-vec3(y))*(clamp(y/(y-smallest),0.0,1.0)*inset);
+        // Same cancellation-resistant form as the CPU. The minimum-channel
+        // ratio becomes exactly -1 instead of subtracting two nearly equal
+        // positive values after the gamut intersection.
+        float denominator=y-smallest;
+        v=vec3(y)*(vec3(1.0)+((v-vec3(y))/denominator)*inset);
     }
     v=max(v,vec3(0.0));
     v=vec3(shoulder(v.r,recovery),shoulder(v.g,recovery),shoulder(v.b,recovery));

@@ -195,10 +195,16 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
         // This is an intentional gamut-rendering correction, not a claim of
         // bit-identical alpha.6 rendering. See NUMERICAL_PARITY_20260907.md.
         const float inset = 1.0f - 0.005f * smooth(-minChannel / (0.005f * std::max(1.0f,y)));
-        const float factor = std::clamp(y / (y - minChannel), 0.0f, 1.0f) * inset;
-        rgb.x = y + (rgb.x - y) * factor;
-        rgb.y = y + (rgb.y - y) * factor;
-        rgb.z = y + (rgb.z - y) * factor;
+        // Algebraically identical to y + (channel-y)*y/(y-min)*inset,
+        // but written as a normalized ratio. For the minimum channel the
+        // ratio is exactly -1 (same operands, reversed subtraction), avoiding
+        // catastrophic cancellation of two nearly equal luminance terms.
+        // This matters after sRGB encoding, where a tiny linear error near zero
+        // is amplified. Keep this arithmetic form in sync with pipeline.comp.
+        const float denominator = y - minChannel;
+        rgb.x = y * (1.0f + ((rgb.x - y) / denominator) * inset);
+        rgb.y = y * (1.0f + ((rgb.y - y) / denominator) * inset);
+        rgb.z = y * (1.0f + ((rgb.z - y) / denominator) * inset);
     }
     rgb.x = std::max(0.0f, rgb.x);
     rgb.y = std::max(0.0f, rgb.y);
