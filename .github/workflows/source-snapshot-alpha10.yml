@@ -1,0 +1,26 @@
+name: source-snapshot-alpha10
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/source-snapshot-alpha10.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - name: Archive exact source
+        run: |
+          git archive --format=zip HEAD -o JixelLight-source.zip
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+          sha256sum JixelLight-source.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alpha10-source
+          path: |
+            JixelLight-source.zip
+            SOURCE_COMMIT.txt
+            SHA256SUMS.txt
+          retention-days: 2
