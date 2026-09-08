@@ -40,6 +40,12 @@ LibRaw scene-linear ProPhoto
 
 已有软高光 shoulder 继续将经过基础放置后的亮部平滑压入输出范围，避免简单乘增益造成硬裁切。
 
+### 高亮颜色安全上限
+
+alpha.9 以前的感知色彩处理带有 `Oklab L <= 1.5` 的数值安全上限。加入固定 RAW 基础增益以后，如果仍使用绝对 `1.5`，本来只是因为基础显影整体上移的高亮颜色会更容易撞到旧上限；在 HSL/色相操作附近，这可能把某些青绿高亮的弱红通道错误压到接近黑色。
+
+alpha.10 将该安全上限按 RAW 基础增益的立方根同比放大，即 `1.5 * cbrt(rawBaseGain)`；这是利用 Oklab 对线性 RGB 整体曝光缩放的齐次关系，让安全范围继续对应原来的**场景相对范围**。sRGB/JPEG/TIFF 输入仍保持 `1.5`，不会因为 RAW 的基础显影修改扩大其处理范围。CPU、独立参考与 GPU 读取同一 ProcessingPlan 数值，Windows/WARP 回归像素也被加入自动测试。这个修改不是为了放宽 CPU/GPU 误差门槛，原有 `40/65535` 上限保持不变。
+
 ## 不受影响的输入
 
 已经是显示参考的 sRGB/JPEG/TIFF 输入不应用 Jixel Neutral RAW base gain。因此原来的 sRGB identity 与线性光曝光测试保持独立。
@@ -64,7 +70,8 @@ alpha.9 或更早版本针对旧 RAW 基线拟合的 `image-specific-fit` / `mul
 - 用户 +1 EV 仍发生在线性场景域并显著提亮；
 - 18% 传感器饱和值在固定场景放置后进入亮部并由 shoulder 平滑保护；
 - sRGB/display 输入不获得 RAW base gain；
-- CPU 独立参考、并行 CPU 与 GPU 均使用相同的基础增益；
+- RAW 基础增益不能让高亮 HSL 颜色新撞上旧的绝对 Oklab 安全上限；
+- CPU 独立参考、并行 CPU 与 GPU 均使用相同的基础增益与感知安全范围；
 - Windows / macOS / Linux 真实 Sony ARW 流程重新生成经验 profile，并继续通过 CPU/GPU、GUI、直方图、导出与部署包验证。
 
 ## 边界
