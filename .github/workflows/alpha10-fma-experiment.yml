@@ -1,4 +1,4 @@
-name: alpha10-deterministic-tonal-experiment
+name: alpha10-mantissa-normalization-experiment
 on:
   push:
     branches: [feature/sony-creative-look]
@@ -7,6 +7,10 @@ permissions:
   contents: read
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        bits: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -22,44 +26,40 @@ jobs:
           version: '6.8.3'
           modules: qtshadertools
           cache: true
-      - name: Apply deterministic tonal exp2 and stable saturation reconstruction in checkout only
+      - name: Apply mantissa normalization and cubic saturation reconstruction in checkout only
+        env:
+          SNAP_BITS: ${{ matrix.bits }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
+          bits=int(os.environ['SNAP_BITS'])
+          mask=(0xffffffff << bits) & 0xffffffff
+
           p=Path('core/pipeline/ImagePipeline.cpp')
           t=p.read_text()
-          marker='''inline float smooth(float x) { x = clamp01(x); return x * x * (3.0f - 2.0f * x); }\n'''
-          helper='''inline float deterministicExp2(float x) {\n    const int n=int(std::floor(x+0.5f));\n    const float f=x-float(n);\n    float p=0.0000152527338f;\n    p=0.000154035304f+f*p; p=0.00133335581f+f*p;\n    p=0.00961812911f+f*p; p=0.0555041087f+f*p;\n    p=0.240226507f+f*p; p=0.693147181f+f*p; p=1.0f+f*p;\n    float scale=1.0f;\n    if(n>0) for(int i=0;i<n;++i) scale*=2.0f;\n    else for(int i=0;i>n;--i) scale*=0.5f;\n    return scale*p;\n}\n'''
-          if t.count(marker)!=1: raise SystemExit('CPU exp2 marker mismatch')
-          t=t.replace(marker,marker+helper,1)
-          old='''                v = scale(v,std::exp2(stops));\n'''
-          new='''                v = scale(v,deterministicExp2(stops));\n'''
-          if t.count(old)!=1: raise SystemExit(f'CPU tonal exp2 site mismatch: {t.count(old)}')
+          old='#include <cmath>\n'
+          new='#include <cmath>\n#include <bit>\n#include <cstdint>\n'
+          if t.count(old)!=1: raise SystemExit('CPU include marker mismatch')
           t=t.replace(old,new,1)
           marker='''inline float wrapHue(float degrees) {\n'''
-          helper='''inline Vec3 oklabScaledChromaToLinearSrgb(Oklab c, float gain) {\n    const Vec3 chroma{0.0f,c.a,c.b};\n    const Vec3 d{orderedDot(0.0f,0.3963377774f,0.2158037573f,chroma),orderedDot(0.0f,-0.1055613458f,-0.0638541728f,chroma),orderedDot(0.0f,-0.0894841775f,-1.2914855480f,chroma)};\n    const Vec3 d2{d.x*d.x,d.y*d.y,d.z*d.z},d3{d2.x*d.x,d2.y*d.y,d2.z*d.z};\n    const float L2=c.L*c.L,L3=L2*c.L;\n    auto channel=[&](float x,float y,float z){const float c1=3.0f*L2*orderedDot(x,y,z,d);const float c2=3.0f*c.L*orderedDot(x,y,z,d2);const float c3=orderedDot(x,y,z,d3);return L3+gain*(c1+gain*(c2+gain*c3));};\n    return {channel(4.0767416621f,-3.3077115913f,0.2309699292f),channel(-1.2684380046f,2.6097574011f,-0.3413193965f),channel(-0.0041960863f,-0.7034186147f,1.7076147010f)};\n}\n'''
-          if t.count(marker)!=1: raise SystemExit('CPU saturation helper marker mismatch')
+          helper=f'''inline float snapMantissa(float v) {{\n    if (!std::isfinite(v) || v == 0.0f) return v;\n    const uint32_t word = std::bit_cast<uint32_t>(v) & 0x{mask:08x}u;\n    return std::bit_cast<float>(word);\n}}\ninline Vec3 snapMantissa(Vec3 v) {{ return {{snapMantissa(v.x),snapMantissa(v.y),snapMantissa(v.z)}}; }}\ninline Vec3 oklabScaledChromaToLinearSrgb(Oklab c, float gain) {{\n    const Vec3 chroma{{0.0f,c.a,c.b}};\n    const Vec3 d{{orderedDot(0.0f,0.3963377774f,0.2158037573f,chroma),orderedDot(0.0f,-0.1055613458f,-0.0638541728f,chroma),orderedDot(0.0f,-0.0894841775f,-1.2914855480f,chroma)}};\n    const Vec3 d2{{d.x*d.x,d.y*d.y,d.z*d.z}},d3{{d2.x*d.x,d2.y*d.y,d2.z*d.z}};\n    const float L2=c.L*c.L,L3=L2*c.L;\n    auto channel=[&](float x,float y,float z){{const float c1=3.0f*L2*orderedDot(x,y,z,d);const float c2=3.0f*c.L*orderedDot(x,y,z,d2);const float c3=orderedDot(x,y,z,d3);return L3+gain*(c1+gain*(c2+gain*c3));}};\n    return {{channel(4.0767416621f,-3.3077115913f,0.2309699292f),channel(-1.2684380046f,2.6097574011f,-0.3413193965f),channel(-0.0041960863f,-0.7034186147f,1.7076147010f)}};\n}}\n'''
+          if t.count(marker)!=1: raise SystemExit('CPU helper marker mismatch')
           t=t.replace(marker,helper+marker,1)
-          old='''        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        lab.a *= gain; lab.b *= gain;\n        return oklabToLinearSrgb(lab);\n'''
-          new='''        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        return oklabScaledChromaToLinearSrgb(lab,gain);\n'''
-          if t.count(old)!=1: raise SystemExit('CPU saturation branch mismatch')
+          old='''    if (state.hue==0 && noBands) {\n        const float c = chromaLength(lab.a,lab.b);\n        const float gain = std::max(0.0f,1.0f+float(state.saturation/100))\n            * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);\n        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        lab.a *= gain; lab.b *= gain;\n        return oklabToLinearSrgb(lab);\n    }\n'''
+          new='''    if (state.hue==0 && noBands) {\n        lab = linearSrgbToOklab(snapMantissa(linearSrgb));\n        const float c = chromaLength(lab.a,lab.b);\n        const float gain = std::max(0.0f,1.0f+float(state.saturation/100))\n            * std::max(0.0f,1.0f+float(state.vibrance/100)*(1.0f-clamp01(c/.30f))*.85f);\n        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        return oklabScaledChromaToLinearSrgb(lab,gain);\n    }\n'''
+          if t.count(old)!=1: raise SystemExit('CPU branch mismatch')
           p.write_text(t.replace(old,new,1))
 
           p=Path('shaders/pipeline.comp')
           t=p.read_text()
-          marker='''float smooth01(float x) { x=clamp(x,0.0,1.0); return x*x*(3.0-2.0*x); }\n'''
-          helper='''float deterministicExp2(float x) {\n    int n=int(floor(x+0.5)); float f=x-float(n);\n    precise float q=0.0000152527338;\n    q=0.000154035304+f*q; q=0.00133335581+f*q; q=0.00961812911+f*q;\n    q=0.0555041087+f*q; q=0.240226507+f*q; q=0.693147181+f*q; q=1.0+f*q;\n    float scale=1.0; if(n>0) for(int i=0;i<n;++i) scale*=2.0; else for(int i=0;i>n;--i) scale*=0.5; return scale*q;\n}\n'''
-          if t.count(marker)!=1: raise SystemExit('GPU exp2 marker mismatch')
-          t=t.replace(marker,marker+helper,1)
-          old='''        v*=exp2(stops);\n'''; new='''        v*=deterministicExp2(stops);\n'''
-          if t.count(old)!=1: raise SystemExit('GPU tonal exp2 site mismatch')
-          t=t.replace(old,new,1)
           marker='''float wrapHue(float h) { return h-floor(h/360.0)*360.0; }\n'''
-          helper='''vec3 fromLabScaledChroma(vec3 c,float gain) {\n    precise vec3 d=vec3(dot3(vec3(0.0,.3963377774,.2158037573),c),dot3(vec3(0.0,-.1055613458,-.0638541728),c),dot3(vec3(0.0,-.0894841775,-1.2914855480),c));\n    precise vec3 d2=d*d,d3=d2*d; precise float L2=c.x*c.x,L3=L2*c.x;\n    precise vec3 c1=3.0*L2*vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d));\n    precise vec3 c2=3.0*c.x*vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d2),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d2),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d2));\n    precise vec3 c3=vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d3),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d3),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d3));\n    return vec3(L3)+gain*(c1+gain*(c2+gain*c3));\n}\n'''
-          if t.count(marker)!=1: raise SystemExit('GPU saturation helper marker mismatch')
+          helper=f'''float snapMantissa(float v) {{\n    if(isnan(v)||isinf(v)||v==0.0) return v;\n    return uintBitsToFloat(floatBitsToUint(v)&0x{mask:08x}u);\n}}\nvec3 snapMantissa(vec3 v) {{ return vec3(snapMantissa(v.x),snapMantissa(v.y),snapMantissa(v.z)); }}\nvec3 fromLabScaledChroma(vec3 c,float gain) {{\n    precise vec3 d=vec3(dot3(vec3(0.0,.3963377774,.2158037573),c),dot3(vec3(0.0,-.1055613458,-.0638541728),c),dot3(vec3(0.0,-.0894841775,-1.2914855480),c));\n    precise vec3 d2=d*d,d3=d2*d; precise float L2=c.x*c.x,L3=L2*c.x;\n    precise vec3 c1=3.0*L2*vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d));\n    precise vec3 c2=3.0*c.x*vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d2),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d2),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d2));\n    precise vec3 c3=vec3(dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d3),dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d3),dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d3));\n    return vec3(L3)+gain*(c1+gain*(c2+gain*c3));\n}}\n'''
+          if t.count(marker)!=1: raise SystemExit('GPU helper marker mismatch')
           t=t.replace(marker,helper+marker,1)
-          old='''        lab.x=clamp(lab.x,0.0,p[33].w);lab.yz*=gain;\n        return fromLab(lab);\n'''; new='''        lab.x=clamp(lab.x,0.0,p[33].w);\n        return fromLabScaledChroma(lab,gain);\n'''
-          if t.count(old)!=1: raise SystemExit('GPU saturation branch mismatch')
+          old='''    if(p[5].x==0.0 && noBands) {\n        float c=chromaLength(lab.yz);\n        float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(c/.30,0.0,1.0))*.85);\n        lab.x=clamp(lab.x,0.0,p[33].w);lab.yz*=gain;\n        return fromLab(lab);\n    }\n'''
+          new='''    if(p[5].x==0.0 && noBands) {\n        lab=toLab(snapMantissa(c));\n        float chroma=chromaLength(lab.yz);\n        float gain=max(0.0,1.0+p[4].z)*max(0.0,1.0+p[4].w*(1.0-clamp(chroma/.30,0.0,1.0))*.85);\n        lab.x=clamp(lab.x,0.0,p[33].w);\n        return fromLabScaledChroma(lab,gain);\n    }\n'''
+          if t.count(old)!=1: raise SystemExit('GPU branch mismatch')
           p.write_text(t.replace(old,new,1))
           PY
           git diff --check
@@ -74,16 +74,17 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
           set +e
-          xvfb-run -a ./build/bin/JixelLightGpuTests -o gpu.txt,txt; gpu=$?
-          ./build/bin/JixelLightPerformanceTests -o perf.txt,txt; perf=$?
-          cat gpu.txt; cat perf.txt
+          xvfb-run -a ./build/bin/JixelLightGpuTests -o gpu-${{ matrix.bits }}.txt,txt; gpu=$?
+          ./build/bin/JixelLightPerformanceTests -o perf-${{ matrix.bits }}.txt,txt; perf=$?
+          cat gpu-${{ matrix.bits }}.txt
+          cat perf-${{ matrix.bits }}.txt
           test $gpu -eq 0 -a $perf -eq 0
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alpha10-deterministic-tonal-results
+          name: alpha10-mantissa-${{ matrix.bits }}
           path: |
-            gpu.txt
-            perf.txt
+            gpu-${{ matrix.bits }}.txt
+            perf-${{ matrix.bits }}.txt
           if-no-files-found: warn
