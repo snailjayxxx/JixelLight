@@ -143,9 +143,7 @@ void main() {
     if(smallest<0.0 && y>1e-6) {
         // Scene-relative transition agrees with the CPU reference and avoids
         // amplifying tiny FP32 differences in bright, near-boundary colors.
-        // Same 0.5% final inset as the CPU, reached over a wider 2%
-        // scene-relative interval to avoid amplifying backend FP noise.
-        float inset=1.0-.005*smooth01(-smallest/(.020*max(1.0,y)));
+        float inset=1.0-.005*smooth01(-smallest/(.005*max(1.0,y)));
         // Same cancellation-resistant form as the CPU. The minimum-channel
         // ratio becomes exactly -1 instead of subtracting two nearly equal
         // positive values after the gamut intersection.
