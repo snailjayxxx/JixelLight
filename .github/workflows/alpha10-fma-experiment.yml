@@ -1,4 +1,4 @@
-name: alpha10-oklab-inverse-order-experiment
+name: alpha10-stable-oklab-saturation-experiment
 on:
   push:
     branches: [feature/sony-creative-look]
@@ -22,22 +22,37 @@ jobs:
           version: '6.8.3'
           modules: qtshadertools
           cache: true
-      - name: Match shader Oklab inverse root ordering to CPU
+      - name: Apply stable pure-saturation reconstruction in checkout only
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          p=Path('core/pipeline/ImagePipeline.cpp')
+          t=p.read_text()
+          marker='''inline float wrapHue(float degrees) {\n'''
+          helper='''inline Vec3 oklabScaledChromaToLinearSrgb(Oklab c, float gain) {\n    // Expand (L + gain*d)^3 before the RGB matrix. The neutral L^3 term is\n    // exactly shared by all three channels, so this avoids constructing three\n    // large LMS cubes and then subtracting them to obtain a near-zero gamut\n    // boundary channel. It is algebraically the same Oklab saturation model.\n    const Vec3 chroma{0.0f,c.a,c.b};\n    const Vec3 d{\n        orderedDot(0.0f,0.3963377774f,0.2158037573f,chroma),\n        orderedDot(0.0f,-0.1055613458f,-0.0638541728f,chroma),\n        orderedDot(0.0f,-0.0894841775f,-1.2914855480f,chroma)};\n    const Vec3 d2{d.x*d.x,d.y*d.y,d.z*d.z};\n    const Vec3 d3{d2.x*d.x,d2.y*d.y,d2.z*d.z};\n    const float L2=c.L*c.L, L3=L2*c.L;\n    const float g2=gain*gain, g3=g2*gain;\n    auto channel=[&](float x,float y,float z) {\n        const float first=3.0f*L2*gain*orderedDot(x,y,z,d);\n        const float second=3.0f*c.L*g2*orderedDot(x,y,z,d2);\n        const float third=g3*orderedDot(x,y,z,d3);\n        return ((L3+first)+second)+third;\n    };\n    return {channel(4.0767416621f,-3.3077115913f,0.2309699292f),\n            channel(-1.2684380046f,2.6097574011f,-0.3413193965f),\n            channel(-0.0041960863f,-0.7034186147f,1.7076147010f)};\n}\n'''
+          if t.count(marker)!=1: raise SystemExit('CPU helper marker mismatch')
+          t=t.replace(marker,helper+marker,1)
+          old='''        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        lab.a *= gain; lab.b *= gain;\n        return oklabToLinearSrgb(lab);\n'''
+          new='''        lab.L = std::clamp(lab.L,0.0f,labLimit);\n        return oklabScaledChromaToLinearSrgb(lab,gain);\n'''
+          if t.count(old)!=1: raise SystemExit('CPU pure saturation branch mismatch')
+          p.write_text(t.replace(old,new,1))
+
           p=Path('shaders/pipeline.comp')
           t=p.read_text()
-          old='''vec3 fromLab(vec3 c) {\n    precise vec3 a=vec3(c.x+.3963377774*c.y+.2158037573*c.z,c.x-.1055613458*c.y-.0638541728*c.z,c.x-.0894841775*c.y-1.2914855480*c.z);\n    a=a*a*a;\n'''
-          new='''vec3 fromLab(vec3 c) {\n    precise vec3 a=vec3(\n        dot3(vec3(1.0,.3963377774,.2158037573),c),\n        dot3(vec3(1.0,-.1055613458,-.0638541728),c),\n        dot3(vec3(1.0,-.0894841775,-1.2914855480),c));\n    a=a*a*a;\n'''
-          if t.count(old)!=1: raise SystemExit('fromLab root marker mismatch')
-          p.write_text(t.replace(old,new))
+          marker='''float wrapHue(float h) { return h-floor(h/360.0)*360.0; }\n'''
+          helper='''vec3 fromLabScaledChroma(vec3 c,float gain) {\n    precise vec3 d=vec3(\n        dot3(vec3(0.0,.3963377774,.2158037573),c),\n        dot3(vec3(0.0,-.1055613458,-.0638541728),c),\n        dot3(vec3(0.0,-.0894841775,-1.2914855480),c));\n    precise vec3 d2=d*d;\n    precise vec3 d3=d2*d;\n    precise float L2=c.x*c.x, L3=L2*c.x;\n    precise float g2=gain*gain, g3=g2*gain;\n    precise vec3 first=3.0*L2*gain*vec3(\n        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d),\n        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d),\n        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d));\n    precise vec3 second=3.0*c.x*g2*vec3(\n        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d2),\n        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d2),\n        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d2));\n    precise vec3 third=g3*vec3(\n        dot3(vec3(4.0767416621,-3.3077115913,.2309699292),d3),\n        dot3(vec3(-1.2684380046,2.6097574011,-.3413193965),d3),\n        dot3(vec3(-.0041960863,-.7034186147,1.7076147010),d3));\n    return ((vec3(L3)+first)+second)+third;\n}\n'''
+          if t.count(marker)!=1: raise SystemExit('GPU helper marker mismatch')
+          t=t.replace(marker,helper+marker,1)
+          old='''        lab.x=clamp(lab.x,0.0,p[33].w);lab.yz*=gain;\n        return fromLab(lab);\n'''
+          new='''        lab.x=clamp(lab.x,0.0,p[33].w);\n        return fromLabScaledChroma(lab,gain);\n'''
+          if t.count(old)!=1: raise SystemExit('GPU pure saturation branch mismatch')
+          p.write_text(t.replace(old,new,1))
           PY
           git diff --check
-      - name: Build GPU tests
+      - name: Build GPU and performance tests
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target JixelLightGpuTests --parallel 4
+          cmake --build build --target JixelLightGpuTests JixelLightPerformanceTests --parallel 4
       - name: Run GPU correctness
         env:
           QT_QPA_PLATFORM: offscreen
@@ -45,14 +60,19 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
           set +e
-          xvfb-run -a ./build/bin/JixelLightGpuTests -o inverse-results.txt,txt
-          status=$?
-          cat inverse-results.txt
-          exit $status
+          xvfb-run -a ./build/bin/JixelLightGpuTests -o stable-gpu.txt,txt
+          gpu=$?
+          ./build/bin/JixelLightPerformanceTests -o stable-performance.txt,txt
+          perf=$?
+          cat stable-gpu.txt
+          cat stable-performance.txt
+          test $gpu -eq 0 -a $perf -eq 0
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alpha10-oklab-inverse-results
-          path: inverse-results.txt
+          name: alpha10-stable-oklab-results
+          path: |
+            stable-gpu.txt
+            stable-performance.txt
           if-no-files-found: error
