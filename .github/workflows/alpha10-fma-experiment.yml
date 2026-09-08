@@ -1,4 +1,4 @@
-name: alpha10-fma-experiment
+name: alpha10-oklab-inverse-order-experiment
 on:
   push:
     branches: [feature/sony-creative-look]
@@ -22,21 +22,15 @@ jobs:
           version: '6.8.3'
           modules: qtshadertools
           cache: true
-      - name: Apply explicit FMA experiment in checkout only
+      - name: Match shader Oklab inverse root ordering to CPU
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('core/pipeline/ImagePipeline.cpp')
-          t=p.read_text()
-          old='''inline float orderedDot(float ax, float ay, float az, Vec3 v) {\n    // Match shader dot3: one explicitly ordered XY sum followed by Z.\n    const float xy = ax * v.x + ay * v.y;\n    return xy + az * v.z;\n}\n'''
-          new='''inline float orderedDot(float ax, float ay, float az, Vec3 v) {\n    // Explicitly fused in the same order as the compute shader.\n    return std::fma(az, v.z, std::fma(ax, v.x, ay * v.y));\n}\n'''
-          if t.count(old)!=1: raise SystemExit('CPU orderedDot marker mismatch')
-          p.write_text(t.replace(old,new))
           p=Path('shaders/pipeline.comp')
           t=p.read_text()
-          old='''float dot3(vec3 a, vec3 b) {\n    precise float result=(a.x*b.x+a.y*b.y)+a.z*b.z;\n    return result;\n}\n'''
-          new='''float dot3(vec3 a, vec3 b) {\n    precise float result=fma(a.z,b.z,fma(a.x,b.x,a.y*b.y));\n    return result;\n}\n'''
-          if t.count(old)!=1: raise SystemExit('GPU dot3 marker mismatch')
+          old='''vec3 fromLab(vec3 c) {\n    precise vec3 a=vec3(c.x+.3963377774*c.y+.2158037573*c.z,c.x-.1055613458*c.y-.0638541728*c.z,c.x-.0894841775*c.y-1.2914855480*c.z);\n    a=a*a*a;\n'''
+          new='''vec3 fromLab(vec3 c) {\n    precise vec3 a=vec3(\n        dot3(vec3(1.0,.3963377774,.2158037573),c),\n        dot3(vec3(1.0,-.1055613458,-.0638541728),c),\n        dot3(vec3(1.0,-.0894841775,-1.2914855480),c));\n    a=a*a*a;\n'''
+          if t.count(old)!=1: raise SystemExit('fromLab root marker mismatch')
           p.write_text(t.replace(old,new))
           PY
           git diff --check
@@ -51,14 +45,14 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
           set +e
-          xvfb-run -a ./build/bin/JixelLightGpuTests -o fma-results.txt,txt
+          xvfb-run -a ./build/bin/JixelLightGpuTests -o inverse-results.txt,txt
           status=$?
-          cat fma-results.txt
+          cat inverse-results.txt
           exit $status
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alpha10-fma-results
-          path: fma-results.txt
+          name: alpha10-oklab-inverse-results
+          path: inverse-results.txt
           if-no-files-found: error
