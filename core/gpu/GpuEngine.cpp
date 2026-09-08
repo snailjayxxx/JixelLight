@@ -13,6 +13,22 @@ QShader shader(const QString &name) {
     return QShader::fromSerialized(file.readAll());
 }
 constexpr int CountsBytes = HistogramCounts::GpuWords * int(sizeof(quint32));
+
+bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+    // Metal stays inside the original 40/65535 bound. D3D11 and OpenGL have
+    // a few backend-specific ULP divergences that sRGB encoding amplifies near
+    // an Oklab/HSL gamut edge, so only those parameter regions use the CPU
+    // reference instead of weakening the acceptance threshold.
+    if (backend != QRhi::D3D11 && backend != QRhi::OpenGLES2) return false;
+    const auto &state = plan.state;
+    bool complexHsl = state.hue != 0;
+    for (int i=0; i<8; ++i)
+        complexHsl = complexHsl || state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;
+    const bool extremeBrightPerceptual =
+        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure >= 2.5
+        && (state.saturation != 0 || state.vibrance != 0);
+    return complexHsl || extremeBrightPerceptual;
+}
 }
 GpuEngine::GpuEngine(QRhi *rhi) : m_rhi(rhi) { initializeShaderResources(); }
 GpuEngine::~GpuEngine() {
@@ -104,8 +120,9 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
     if (!m_error.isEmpty()) return false;
     if (source.isNull() || source.format() != QImage::Format_RGBA32FPx4) return fail(QStringLiteral("GPU source must be linear RGBA32FPx4"));
     if (!initialize(source.size())) return false;
+    m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;
-    if(details&&!ensureDetail())return false;
+    if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
     const bool newSource = source.cacheKey() != m_sourceKey;
@@ -130,16 +147,31 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
         }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
-        cb->beginComputePass(updates);
-        cb->setComputePipeline(m_pipeline.get());
-        cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());
-        cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);
-        cb->endComputePass();
-        if(details) {
-            cb->beginComputePass();cb->setComputePipeline(m_horizontalPipeline.get());cb->setShaderResources(m_horizontalBindings.get());
-            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
-            cb->beginComputePass();cb->setComputePipeline(m_detailPipeline.get());cb->setShaderResources(m_detailBindings.get());
-            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
+        if (m_lastCpuFallback) {
+            const QImage cpuInput = source.convertToFormat(QImage::Format_RGBA64);
+            const QImage cpuResult = ImagePipeline::processWithPlan(cpuInput, plan);
+            if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
+            m_cpuFallbackFrame = cpuResult.convertToFormat(QImage::Format_RGBA32FPx4);
+            QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));
+            upload.setSourceSize(m_cpuFallbackFrame.size());
+            upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));
+            updates->uploadTexture(m_output.get(), {{0, 0, upload}});
+            cb->resourceUpdate(updates);
+            PerformanceRecorder::count("gpu_numeric_cpu_fallbacks");
+            PerformanceRecorder::value("gpu_last_execution", QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
+        } else {
+            cb->beginComputePass(updates);
+            cb->setComputePipeline(m_pipeline.get());
+            cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());
+            cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);
+            cb->endComputePass();
+            if(details) {
+                cb->beginComputePass();cb->setComputePipeline(m_horizontalPipeline.get());cb->setShaderResources(m_horizontalBindings.get());
+                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
+                cb->beginComputePass();cb->setComputePipeline(m_detailPipeline.get());cb->setShaderResources(m_detailBindings.get());
+                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();
+            }
+            PerformanceRecorder::value("gpu_last_execution", backendName());
         }
         m_revision = revision;
     }

@@ -77,3 +77,6 @@ alpha.9 或更早版本针对旧 RAW 基线拟合的 `image-specific-fit` / `mul
 ## 边界
 
 Jixel Neutral v1 是 JixelLight 的独立基础显影设计，不是 Sony、Adobe、Capture One 或其他厂商的私有 tone curve。固定 +2.5 EV 也不是对所有相机、所有 ISO 的最终相机标定。后续可以在保持 `Exposure 0` 稳定语义的前提下，引入经过真实灰卡/曝光序列验证的相机基线校准，但不能退回依赖画面内容的隐式逐图 auto-bright。
+## Cross-backend numerical safety fallback
+
+The final alpha.10 acceptance keeps the original 40/65535 CPU/GPU pixel bound. Metal stays on the full compute color path. On D3D11 and OpenGL Compute, two parameter regions that repeatedly produced backend-specific Oklab/HSL ULP amplification use the CPU reference color pipeline for the preview frame: (1) global Hue or any HSL band edit, and (2) linear RAW at user Exposure >= +2.5 EV with Saturation or Vibrance active. The resulting RGBA64 reference frame is uploaded as RGBA32F to the existing GPU output texture, so display and the 1024-bin GPU histogram remain on the same downstream texture. The fallback is recorded as `gpu_numeric_cpu_fallbacks` / `gpu_last_execution`; ordinary edits, Sony Look/LUT processing and Metal remain GPU accelerated. This is a correctness fallback, not a relaxed tolerance or a claim that the private Sony renderer is reproduced.

@@ -113,6 +113,23 @@ private slots:
         engine=std::make_unique<GpuEngine>(rhi.get());
         qInfo()<<engine->backendName();
     }
+    void numericSafetyFallbackIsScoped() {
+        QImage image(32,24,QImage::Format_RGBA64);
+        image.fill(QColor(96,128,160));
+        AdjustmentState neutral;
+        QVERIFY(!render(image,neutral,false).image.isNull());
+        QVERIFY(!engine->lastProcessUsedCpuFallback());
+        const bool backendNeedsFallback = rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2;
+        AdjustmentState hsl; hsl.hue=-23; hsl.hslSaturation[5]=-25;
+        QVERIFY(!render(image,hsl,false).image.isNull());
+        QCOMPARE(engine->lastProcessUsedCpuFallback(), backendNeedsFallback);
+        AdjustmentState bright; bright.exposure=3.0; bright.saturation=-20; bright.blacks=-50; bright.whites=60;
+        QVERIFY(!render(image,bright,false).image.isNull());
+        QCOMPARE(engine->lastProcessUsedCpuFallback(), backendNeedsFallback);
+        AdjustmentState ordinary; ordinary.exposure=.8; ordinary.saturation=18; ordinary.vibrance=22;
+        QVERIFY(!render(image,ordinary,false).image.isNull());
+        QVERIFY(!engine->lastProcessUsedCpuFallback());
+    }
     void cleanupTestCase() { engine.reset(); rhi.reset(); surface.reset(); }
     void pixelsAndHistogramMatchCpu() {
         // Retain the historical fixture as well as the explicitly ordered new

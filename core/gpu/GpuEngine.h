@@ -21,6 +21,7 @@ public:
     bool hasPendingReadback() const;
     quint64 sourceUploads() const { return m_uploads; }
     quint64 renderedRevision() const { return m_revision; }
+    bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }
 private:
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
@@ -47,4 +48,7 @@ private:
     QRhiRenderPassDescriptor *m_displayPass = nullptr;
     int m_displaySamples = 0;
     bool m_uploadVertices = true;
+    bool m_lastCpuFallback = false;
+    // Keeps CPU safety-fallback upload bytes alive until the following frame.
+    QImage m_cpuFallbackFrame;
 };
