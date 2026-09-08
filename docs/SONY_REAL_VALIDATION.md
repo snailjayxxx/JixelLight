@@ -1,5 +1,12 @@
 # Sony 真文件验证与多场景经验配置 — alpha.9
 
+## alpha.10 基础显影兼容性
+
+alpha.9 的 ST 经验 LUT 拟合的是“旧 JixelLight RAW 基线 → 相机 JPEG”的总差异，其中包含了旧版基础显影偏暗。alpha.10 新增 Jixel Neutral v1 后，处理引擎变为 `jixellight-linear-v4-base1-look3`；旧拟合 profile 不再兼容，程序会拒绝带旧 `engineVersion`（或旧拟合证据缺少版本）的图片专用/多场景 profile。
+
+正常构建会在新的基础显影上重新运行三组固定哈希 Sony ARW/JPEG，并重新生成包内 `Sony-ILCE7M4-ST-experimental.jlook.json`。因此 alpha.9 文档中的误差数字只能代表旧引擎历史测量；alpha.10 的最终数值必须从对应新构建报告读取。
+
+
 ## 本版完成的工作
 
 在 alpha.8 的功能上补上真实 Sony ARW＋同次拍摄 JPEG 测试、机型身份修正、拟合几何修正，以及独立场景检验的可复用经验 LUT。照片不上传至 AI 服务，主程序不联网下载标定数据。

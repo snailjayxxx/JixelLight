@@ -1,4 +1,5 @@
 #include "core/look/LookCalibration.h"
+#include "core/pipeline/ProcessingPlan.h"
 #include "core/raw/RawGeometry.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "diagnostics/PerformanceRecorder.h"
@@ -107,6 +108,7 @@ static LookCalibrationResult fitPairs(const QVector<LookCalibrationPair> &pairs,
  if(dataset&&!independentPassed)return reject("Independent scene validation failed; no reusable profile was created");
  if(!std::isfinite(after)||after>.15||after>before+.003||(before>.003&&after>=before*.98))return reject("Held-out validation did not improve sufficiently; no profile was applied");
  lut->evidence=QJsonObject::fromVariantMap(out.report);lut->evidence["kind"]=dataset?"multi-scene-empirical-fit":"image-specific-fit";
+ lut->evidence["engineVersion"]=ProcessingPlan::EngineVersion;
  lut->updateDigest();out.lut=lut;return out;
 }
 LookCalibrationResult fitLookImages(const QImage &baseline,const QImage &reference,const CancelToken &cancel){
@@ -135,6 +137,7 @@ LookCalibrationResult calibrateLook(const LookCalibrationRequest &request,const 
   auto out=fitLookImages(baseline,request.reference,cancel);
   for(auto i=geometry.cbegin();i!=geometry.cend();++i)out.report[i.key()]=i.value();
   if(out.lut){auto l=std::make_shared<LookLut>(*out.lut);l->evidence=QJsonObject::fromVariantMap(out.report);l->evidence["kind"]="image-specific-fit";l->evidence["provenance"]=QJsonObject::fromVariantMap(request.provenance);
+    l->evidence["engineVersion"]=ProcessingPlan::EngineVersion;
     l->evidence["createdUtc"]=QDateTime::currentDateTimeUtc().toString(Qt::ISODate);out.lut=l;}
   return out;
  }catch(const std::exception &e){return {{},{},QString::fromUtf8(e.what())};}catch(...){return {{},{},"Calibration failed"};}

@@ -63,7 +63,7 @@ add_library(JixelLightCore STATIC
     diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
-target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.9" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.10" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi)

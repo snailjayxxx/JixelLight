@@ -12,6 +12,7 @@
 #include "core/color/ColorManagement.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/ProcessingPlan.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/ZipStoreWriter.h"
@@ -51,10 +52,13 @@ private slots:
     }
 
     void rawExposureUsesLinearProPhotoStops() {
+        // With camera headroom, a normal scene middle gray is commonly well
+        // below 18% of sensor saturation. Jixel Neutral v1 places 3% scene
+        // linear near display middle gray while keeping user Exposure=0.
         QImage image(1, 1, QImage::Format_RGBA64);
         auto *px = reinterpret_cast<QRgba64 *>(image.scanLine(0));
-        const quint16 middleGray = static_cast<quint16>(std::lround(0.18 * 65535.0));
-        px[0] = QRgba64::fromRgba64(middleGray, middleGray, middleGray, 65535);
+        const quint16 sceneGray = static_cast<quint16>(std::lround(0.03 * 65535.0));
+        px[0] = QRgba64::fromRgba64(sceneGray, sceneGray, sceneGray, 65535);
 
         const QImage baseline = ImagePipeline::process(image, {}, ImagePipeline::InputEncoding::LinearProPhoto);
         AdjustmentState plusOne;
@@ -63,9 +67,27 @@ private slots:
 
         const int baseline8 = baseline.pixelColor(0,0).red();
         const int plusOne8 = brighter.pixelColor(0,0).red();
-        QVERIFY(baseline8 >= 114 && baseline8 <= 122);
-        QVERIFY(plusOne8 >= 157 && plusOne8 <= 167);
+        QVERIFY2(baseline8 >= 110 && baseline8 <= 120, qPrintable(QString::number(baseline8)));
+        QVERIFY2(plusOne8 >= 153 && plusOne8 <= 164, qPrintable(QString::number(plusOne8)));
+        QVERIFY(plusOne8 > baseline8 + 35);
         QVERIFY(plusOne8 < baseline8 * 2);
+    }
+
+    void rawBaseRenderingIsSeparateFromDisplayInputs() {
+        const auto rawPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::LinearProPhoto);
+        const auto displayPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::SRgb);
+        QVERIFY(std::abs(rawPlan.data[ProcessingPlan::Flags].w - ProcessingPlan::RawBaseGain) < 1.0e-6f);
+        QCOMPARE(displayPlan.data[ProcessingPlan::Flags].w, 1.0f);
+
+        QImage raw(1,1,QImage::Format_RGBA64);
+        auto *p = reinterpret_cast<QRgba64 *>(raw.scanLine(0));
+        const quint16 headroomWhite = static_cast<quint16>(std::lround(0.18 * 65535.0));
+        p[0] = QRgba64::fromRgba64(headroomWhite,headroomWhite,headroomWhite,65535);
+        const auto rendered=ImagePipeline::process(raw,{},ImagePipeline::InputEncoding::LinearProPhoto);
+        const int v=rendered.pixelColor(0,0).red();
+        QVERIFY2(v >= 247 && v <= 254,qPrintable(QString::number(v)));
+        QCOMPARE(rendered.text("JixelLightPipeline"),QString::fromLatin1(ProcessingPlan::EngineVersion));
+        QVERIFY(rendered.text("JixelLightBaseRendering").contains("+2.5 EV"));
     }
 
     void saturationRunsInsideWorkingPipeline() {

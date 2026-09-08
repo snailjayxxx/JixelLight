@@ -227,10 +227,36 @@ private slots:
         QTest::qWait(400);QTRY_VERIFY_WITH_TIMEOUT(!c.rendering(),5000);
         QVERIFY(c.calibrateFromReference());QTRY_VERIFY_WITH_TIMEOUT(!c.calibrationBusy(),10000);
         QVERIFY2(c.lookState()["mode"].toString()=="calibrated",qPrintable(QJsonDocument::fromVariant(c.calibrationReport()).toJson()));
+        QCOMPARE(c.lookState()["evidence"].toMap()["engineVersion"].toString(),QString::fromLatin1(ProcessingPlan::EngineVersion));
         QCOMPARE(c.exposure(),.3);const auto digest=c.lookState()["lutDigest"].toString();QVERIFY(!digest.isEmpty());
         c.finishInteraction();QTest::qWait(300);QVERIFY(c.calibrateFromReference());c.setExposure(.6);
         QTest::qWait(600);QVERIFY(!c.calibrationBusy());QCOMPARE(c.exposure(),.6);QCOMPARE(c.lookState()["lutDigest"].toString(),digest);
     }
+    void controllerRejectsFittedProfilesFromOldRawEngine() {
+        QTemporaryDir dir;const auto imagePath=dir.filePath("source.png");
+        QVERIFY(fixture().save(imagePath));
+        ProcessedImageProvider provider;PhotoController controller(&provider);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(imagePath)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady(),10000);
+
+        auto makeProfile=[&](const QString &engine,const QString &fileName){
+            auto lut=std::make_shared<LookLut>(*LookLut::identity(2));
+            lut->evidence["kind"]="image-specific-fit";
+            lut->evidence["engineVersion"]=engine;
+            lut->updateDigest();
+            LookState look;look.mode="calibrated";look.code="ST";look.lut=lut;
+            const auto bytes=QJsonDocument(QJsonObject{{"format","JixelLightLook"},{"version",1},{"look",look.toJson()}}).toJson();
+            QFile f(dir.filePath(fileName));
+            if(!f.open(QIODevice::WriteOnly)||f.write(bytes)!=bytes.size())return QUrl();
+            f.close();return QUrl::fromLocalFile(f.fileName());
+        };
+        const auto oldProfile=makeProfile("jixellight-linear-v3-look2","old.jlook.json");
+        const auto currentProfile=makeProfile(ProcessingPlan::EngineVersion,"current.jlook.json");
+        QVERIFY(oldProfile.isValid()&&currentProfile.isValid());
+        QVERIFY(!controller.loadLookProfile(oldProfile));
+        QVERIFY(controller.loadLookProfile(currentProfile));
+    }
+
     void controllerReferenceProfileAndProtectedSource() {
         QTemporaryDir dir;const auto first=dir.filePath("first.png"),second=dir.filePath("second.png"),ref=dir.filePath("reference.jpg");
         QVERIFY(fixture().save(first));QVERIFY(fixture(147,141).save(second));QVERIFY(fixture().save(ref,"JPEG"));

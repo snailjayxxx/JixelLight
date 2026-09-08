@@ -318,8 +318,11 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     if (kernelOutput == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
     if (kernelOutput == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
     plan.data[Luminance] = lum;
+    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto
+        ? ProcessingPlan::RawBaseGain : 1.0f;
     plan.data[Flags] = {state.contrast == 0 ? 1.0f : 0.0f, identity(state.masterCurve) ? 1.0f : 0.0f,
-                       identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f, 0};
+                       identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f,
+                       rawBaseGain};
     for (int i=0; i<5; ++i) plan.data[Curves+i] = {float(state.masterCurve[i]),float(state.redCurve[i]),float(state.greenCurve[i]),float(state.blueCurve[i])};
     return plan;
 }
@@ -365,6 +368,10 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
                 const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
                 if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,tone.x)/Y);
             }
+            // RAW decoding remains scene-linear. Apply the deterministic
+            // Jixel Neutral base scene placement separately from user Exposure
+            // so Exposure=0 remains a meaningful edit reference.
+            if (flags.w != 1.0f) v = scale(v, flags.w);
             v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
             if (color.z != 0) v = applyPerceptualColor(v,plan);
             else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
@@ -402,6 +409,10 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
     out.setColorSpace(ColorManagement::colorSpace(plan.output));
     out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
     out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
+    out.setText(QStringLiteral("JixelLightBaseRendering"),
+                plan.encoding == InputEncoding::LinearProPhoto
+                    ? QStringLiteral("Jixel Neutral v1 / +2.5 EV scene placement / soft display shoulder")
+                    : QStringLiteral("none"));
     return out;
 }
 

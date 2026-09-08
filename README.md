@@ -4,7 +4,18 @@
 
 JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
-当前开发版本：**v0.1.0-alpha.9**
+当前开发版本：**v0.1.0-alpha.10**
+
+## alpha.10：RAW 基础显影修正
+
+alpha.9 仍把 LibRaw 的无自动提亮、线性 ProPhoto 输出过于直接地送入显示链。实拍 RAW 与同次机内 JPEG 对照暴露出默认画面明显偏暗：这不是 Bayer 解码失败，而是缺少稳定的 scene-linear → display-referred 基础显影。
+
+alpha.10 保持 LibRaw `no_auto_bright=1` 和线性输出，不启用逐照片自动亮度；新增 **Jixel Neutral v1** 基础显影。在 RAW 专用路径中，用户曝光/白平衡/明暗调整之后、显示色彩变换之前加入固定 **+2.5 EV 场景基准放置**，再沿用软高光肩部压缩。JPEG/TIFF 等已显示编码输入不应用这一步，所以用户的“曝光 0.00”仍表示相对于稳定 RAW 基准的 0 EV，而不是把传感器线性数值直接显示。
+
+处理引擎版本升级为 `jixellight-linear-v4-base1-look3`，旧缓存自动失效。基于旧 RAW 基础显影拟合出的图片专用/多场景 `.jlook.json` 会被拒绝并要求重新拟合；普通用户导入的 `.cube` 不受此限制。Sony ST 实验配置会在新引擎的真实 ARW/JPEG CI 中重新生成，避免继续吸收 alpha.9 的基础显影偏差。
+
+这次是有意的画面基准修正，旧项目打开后的 RAW 默认亮度可能发生明显变化；原始 RAW 与编辑参数不会被改写。详见 `docs/RAW_BASE_RENDERING_ALPHA10.md`。
+
 
 ## alpha.8：Sony 外观识别、相机参考与可编辑匹配
 

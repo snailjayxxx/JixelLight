@@ -1,4 +1,5 @@
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/ProcessingPlan.h"
 
 #include <QColorSpace>
 #include <QRgba64>
@@ -256,7 +257,7 @@ inline float middleGrayContrast(float y, float factor) {
 }
 }
 
-template<bool ContinuousBoundary> static QImage referenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding inputEncoding) {
+template<bool ContinuousBoundary, bool BaseRender> static QImage referenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding inputEncoding) {
     if (source.isNull()) return {};
 
     QImage out = source.convertToFormat(QImage::Format_RGBA64);
@@ -311,6 +312,13 @@ template<bool ContinuousBoundary> static QImage referenceProcess(const QImage &s
                 working = scale(working, mappedY / contrastY);
             }
 
+            // Jixel Neutral v1 is a deterministic base rendering step, not
+            // part of the user's Exposure slider.
+            if constexpr (BaseRender) {
+                if (inputEncoding == ImagePipeline::InputEncoding::LinearProPhoto)
+                    working = scale(working, ProcessingPlan::RawBaseGain);
+            }
+
             // Perceptual color operations run before the final display transform.
             Vec3 displayLinear = proPhotoToLinearSrgb(working);
             displayLinear = applyPerceptualColor(displayLinear, state);
@@ -344,9 +352,10 @@ template<bool ContinuousBoundary> static QImage referenceProcess(const QImage &s
 
 // Historical alpha.6 behavior remains available to the benchmark and tests.
 QImage legacyProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
-    return referenceProcess<false>(source,state,encoding);
+    return referenceProcess<false,false>(source,state,encoding);
 }
-// Independent baseline with ONLY the documented continuous-gamut policy fix.
+// Independent alpha.10 reference: continuous-gamut correction plus Jixel
+// Neutral v1 base rendering. Historical alpha.6 remains untouched above.
 QImage correctedReferenceProcess(const QImage &source, const AdjustmentState &state, ImagePipeline::InputEncoding encoding) {
-    return referenceProcess<true>(source,state,encoding);
+    return referenceProcess<true,true>(source,state,encoding);
 }
