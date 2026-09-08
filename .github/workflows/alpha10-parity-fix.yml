@@ -1,0 +1,38 @@
+name: alpha10-parity-fix
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-parity-fix.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Use the compiled ProcessingPlan HSL bands on CPU and GPU
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected='ffe7c1273fd5da5aca326a4bde6b4e297a77c894'
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          if parent != expected:
+              raise SystemExit(f'Unexpected parent {parent}')
+          path=Path('core/pipeline/ImagePipeline.cpp')
+          text=path.read_text()
+          old='''    static constexpr std::array<float, AdjustmentState::ColorBandCount> centers{\n        28.0f, 58.0f, 95.0f, 145.0f, 200.0f, 260.0f, 305.0f, 340.0f\n    };\n    float hueDelta = 0.0f;\n    float satDelta = 0.0f;\n    float lumDelta = 0.0f;\n    for (int i = 0; i < AdjustmentState::ColorBandCount; ++i) {\n        const auto &band = plan.data[ProcessingPlan::Bands + i];\n        if (band.x == 0.0f && band.y == 0.0f && band.z == 0.0f) continue;\n        const float w = hueBandWeight(hue, centers[static_cast<std::size_t>(i)]);\n        hueDelta += static_cast<float>(state.hslHue[static_cast<std::size_t>(i)] / 100.0) * 35.0f * w;\n        satDelta += static_cast<float>(state.hslSaturation[static_cast<std::size_t>(i)] / 100.0) * w;\n        lumDelta += static_cast<float>(state.hslLuminance[static_cast<std::size_t>(i)] / 100.0) * 0.18f * w;\n    }\n'''
+          new='''    float hueDelta = 0.0f;\n    float satDelta = 0.0f;\n    float lumDelta = 0.0f;\n    for (int i = 0; i < AdjustmentState::ColorBandCount; ++i) {\n        const auto &band = plan.data[ProcessingPlan::Bands + i];\n        if (band.x == 0.0f && band.y == 0.0f && band.z == 0.0f) continue;\n        // Consume the exact float values compiled into ProcessingPlan. The GPU\n        // reads these same vec4 values; recomputing from AdjustmentState here\n        // introduced a second rounding path that became visible after the RAW\n        // base scene-placement gain in bright, near-gamut HSL pixels.\n        const float w = hueBandWeight(hue, band.w);\n        hueDelta += band.x * w;\n        satDelta += band.y * w;\n        lumDelta += band.z * w;\n    }\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Expected HSL block not found exactly once')
+          path.write_text(text.replace(old,new))
+          PY
+          git diff --check
+          git diff -- core/pipeline/ImagePipeline.cpp
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/pipeline/ImagePipeline.cpp
+          git commit -m 'fix: share compiled HSL band floats across CPU and GPU'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
