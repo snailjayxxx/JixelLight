@@ -1,0 +1,68 @@
+name: alpha10-lab-limit-fix
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-lab-limit-fix.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Scale the legacy Oklab safety ceiling with RAW scene placement
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected='2ba7f35dc34b40f79509e994cf82497c71af5f6e'
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          if parent != expected: raise SystemExit(f'Unexpected parent {parent}')
+
+          p=Path('core/pipeline/ImagePipeline.cpp'); t=p.read_text()
+          t=t.replace('''    const bool lut=style[3]>0 && bool(original.look.lut);\n    plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),0};\n''','''    const bool lut=style[3]>0 && bool(original.look.lut);\n    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto\n        ? ProcessingPlan::RawBaseGain : 1.0f;\n    // The historical 1.5 Oklab-L guard was defined before the RAW base\n    // scene-placement gain. Scale the guard by cbrt(exposure gain), which is\n    // the exact homogeneity of Oklab, so alpha.10 does not newly crush bright\n    // chromatic highlights merely because the neutral RAW baseline moved.\n    const float perceptualLabLimit = 1.5f * std::cbrt(rawBaseGain);\n    plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),perceptualLabLimit};\n''')
+          t=t.replace('''    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto\n        ? ProcessingPlan::RawBaseGain : 1.0f;\n    plan.data[Flags] = {''','''    plan.data[Flags] = {''')
+          t=t.replace('''    Oklab lab = linearSrgbToOklab(linearSrgb);\n''','''    Oklab lab = linearSrgbToOklab(linearSrgb);\n    const float labLimit = plan.data[ProcessingPlan::LookOptions].w;\n''',1)
+          if t.count('std::clamp(lab.L,0.0f,1.5f)') != 2: raise SystemExit('Unexpected simple Lab clamp count')
+          t=t.replace('std::clamp(lab.L,0.0f,1.5f)','std::clamp(lab.L,0.0f,labLimit)',1)
+          if t.count('std::clamp(lab.L + lumDelta, 0.0f, 1.5f)') != 1: raise SystemExit('Unexpected color Lab clamp count')
+          t=t.replace('std::clamp(lab.L + lumDelta, 0.0f, 1.5f)','std::clamp(lab.L + lumDelta, 0.0f, labLimit)')
+          # The remaining simple clamp is the no-color numerical safety path in processWithPlan.
+          t=t.replace('auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,1.5f); v = oklabToLinearSrgb(lab);',
+                      'auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,plan.data[ProcessingPlan::LookOptions].w); v = oklabToLinearSrgb(lab);')
+          p.write_text(t)
+
+          p=Path('shaders/pipeline.comp'); t=p.read_text()
+          if t.count('clamp(lab.x,0.0,1.5)') != 2 or t.count('clamp(lab.x+delta.z,0.0,1.5)') != 1:
+              raise SystemExit('Unexpected shader Lab clamp count')
+          t=t.replace('clamp(lab.x,0.0,1.5)','clamp(lab.x,0.0,p[33].w)')
+          t=t.replace('clamp(lab.x+delta.z,0.0,1.5)','clamp(lab.x+delta.z,0.0,p[33].w)')
+          p.write_text(t)
+
+          p=Path('tests/LegacyPipeline.cpp'); t=p.read_text()
+          old='inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state) {'
+          if t.count(old)!=1: raise SystemExit('Legacy color function signature mismatch')
+          t=t.replace(old,'inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const AdjustmentState &state, float labLimit) {')
+          if t.count('std::clamp(lab.L + lumDelta, 0.0f, 1.5f)')!=1: raise SystemExit('Legacy Lab clamp mismatch')
+          t=t.replace('std::clamp(lab.L + lumDelta, 0.0f, 1.5f)','std::clamp(lab.L + lumDelta, 0.0f, labLimit)')
+          oldcall='displayLinear = applyPerceptualColor(displayLinear, state);'
+          if t.count(oldcall)!=1: raise SystemExit('Legacy color call mismatch')
+          t=t.replace(oldcall,'displayLinear = applyPerceptualColor(displayLinear, state, BaseRender ? 1.5f*std::cbrt(ProcessingPlan::RawBaseGain) : 1.5f);')
+          p.write_text(t)
+
+          p=Path('tests/CoreTests.cpp'); t=p.read_text()
+          marker='''    void saturationRunsInsideWorkingPipeline() {\n'''
+          if t.count(marker)!=1: raise SystemExit('Core test insertion marker mismatch')
+          test='''    void rawBaseRenderingDoesNotCrushBrightHslChromaticity() {\n        // Regression from the Windows/WARP dense fixture after introducing\n        // Jixel Neutral. The old fixed Oklab-L=1.5 ceiling turned this bright\n        // cyan/green highlight's red channel almost black after a hue edit.\n        QImage image(1,1,QImage::Format_RGBA64);\n        auto *px=reinterpret_cast<QRgba64 *>(image.scanLine(0));\n        px[0]=QRgba64::fromRgba64(23559,59073,40796,65535);\n        AdjustmentState state;state.hue=-23;state.saturation=18;state.vibrance=22;\n        state.hslHue[2]=30;state.hslSaturation[5]=-25;state.masterCurve[2]=.57;state.redCurve[3]=.8;\n        const QColor out=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto).pixelColor(0,0);\n        QVERIFY2(out.red()>80,qPrintable(QString("red=%1 green=%2 blue=%3").arg(out.red()).arg(out.green()).arg(out.blue())));\n        QVERIFY(out.green()>240);\n        QVERIFY(out.blue()>240);\n    }\n\n'''
+          t=t.replace(marker,test+marker)
+          p.write_text(t)
+          PY
+          git diff --check
+          git diff -- core/pipeline/ImagePipeline.cpp shaders/pipeline.comp tests/LegacyPipeline.cpp tests/CoreTests.cpp
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/pipeline/ImagePipeline.cpp shaders/pipeline.comp tests/LegacyPipeline.cpp tests/CoreTests.cpp
+          git commit -m 'fix: keep RAW highlight chromaticity outside the legacy Lab ceiling'
+          git push origin HEAD:refs/heads/feature/sony-creative-look
