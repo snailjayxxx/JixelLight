@@ -1,0 +1,81 @@
+name: alpha10-finalize-source
+on:
+  push:
+    branches: [feature/sony-creative-look]
+    paths: [.github/workflows/alpha10-finalize-source.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sony-creative-look
+          fetch-depth: 0
+      - name: Restore documentation and apply scoped numeric safety fallback
+        shell: bash
+        run: |
+          git show 11929abac3f3e0e2f3a1e143d2f22a1f2b23ee75:README.md > README.md
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # README: restore accidental truncation, bring engine id current, and document the scoped fallback.
+          p=Path('README.md'); t=p.read_text()
+          t=t.replace('jixellight-linear-v4-base1-look3','jixellight-linear-v4-base1-look4')
+          marker='Sony ST 实验配置会在新引擎的真实 ARW/JPEG CI 中重新生成，避免继续吸收 alpha.9 的基础显影偏差。\n'
+          note='\n为保证跨平台颜色正确性，Metal 继续使用完整 GPU 感知颜色路径；D3D11 / OpenGL Compute 在两类已验证为数值敏感的情况——复杂 Hue/HSL 混合，以及 RAW 用户曝光达到 +2.5 EV 以上同时调整 Saturation/Vibrance——会自动切换到 CPU reference 颜色计算，再将结果上传 GPU 继续显示与 1024-bin 直方图。这个安全回退不会放宽 CPU/GPU 40/65535 验收门槛，并会写入 performance 诊断。普通曝光、基础颜色、Sony Look/LUT、显示和直方图仍保持 GPU 路径。\n'
+          if note.strip() not in t:
+              if marker not in t: raise SystemExit('README alpha10 marker not found')
+              t=t.replace(marker,marker+note,1)
+          p.write_text(t)
+
+          # GpuEngine public state + persistent upload backing store.
+          p=Path('core/gpu/GpuEngine.h'); t=p.read_text()
+          old='''    quint64 sourceUploads() const { return m_uploads; }\n    quint64 renderedRevision() const { return m_revision; }\nprivate:\n'''
+          new='''    quint64 sourceUploads() const { return m_uploads; }\n    quint64 renderedRevision() const { return m_revision; }\n    bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }\nprivate:\n'''
+          if old not in t: raise SystemExit('GpuEngine.h public marker mismatch')
+          t=t.replace(old,new,1)
+          old='''    int m_displaySamples = 0;\n    bool m_uploadVertices = true;\n};\n'''
+          new='''    int m_displaySamples = 0;\n    bool m_uploadVertices = true;\n    bool m_lastCpuFallback = false;\n    // Keeps CPU safety-fallback upload bytes alive until the following frame.\n    QImage m_cpuFallbackFrame;\n};\n'''
+          if old not in t: raise SystemExit('GpuEngine.h member marker mismatch')
+          p.write_text(t.replace(old,new,1))
+
+          # GpuEngine implementation.
+          p=Path('core/gpu/GpuEngine.cpp'); t=p.read_text()
+          marker='''constexpr int CountsBytes = HistogramCounts::GpuWords * int(sizeof(quint32));\n}\n'''
+          helper='''constexpr int CountsBytes = HistogramCounts::GpuWords * int(sizeof(quint32));\n\nbool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {\n    // Metal has remained inside the original 40/65535 bound. D3D11 and\n    // OpenGL have a few backend-specific ULP divergences that sRGB encoding\n    // amplifies when an Oklab/HSL result lies almost exactly on a gamut edge.\n    // Prefer the tested CPU reference for only those parameter regions rather\n    // than weakening the acceptance threshold or perturbing every image.\n    if (backend != QRhi::D3D11 && backend != QRhi::OpenGLES2) return false;\n    const auto &state = plan.state;\n    bool complexHsl = state.hue != 0;\n    for (int i=0; i<8; ++i)\n        complexHsl = complexHsl || state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;\n    const bool extremeBrightPerceptual =\n        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure >= 2.5\n        && (state.saturation != 0 || state.vibrance != 0);\n    return complexHsl || extremeBrightPerceptual;\n}\n}\n'''
+          if marker not in t: raise SystemExit('GpuEngine.cpp namespace marker mismatch')
+          t=t.replace(marker,helper,1)
+          old='''    if (!initialize(source.size())) return false;\n    const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;\n    if(details&&!ensureDetail())return false;\n    const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;\n'''
+          new='''    if (!initialize(source.size())) return false;\n    m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);\n    const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;\n    if(details&&!m_lastCpuFallback&&!ensureDetail())return false;\n    const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;\n'''
+          if old not in t: raise SystemExit('GpuEngine.cpp process intro mismatch')
+          t=t.replace(old,new,1)
+          old='''        plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};\n        updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());\n        cb->beginComputePass(updates);\n        cb->setComputePipeline(m_pipeline.get());\n        cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());\n        cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);\n        cb->endComputePass();\n        if(details) {\n            cb->beginComputePass();cb->setComputePipeline(m_horizontalPipeline.get());cb->setShaderResources(m_horizontalBindings.get());\n            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();\n            cb->beginComputePass();cb->setComputePipeline(m_detailPipeline.get());cb->setShaderResources(m_detailBindings.get());\n            cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();\n        }\n        m_revision = revision;\n'''
+          new='''        plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};\n        updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());\n        if (m_lastCpuFallback) {\n            const QImage cpuInput = source.convertToFormat(QImage::Format_RGBA64);\n            const QImage cpuResult = ImagePipeline::processWithPlan(cpuInput, plan);\n            if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }\n            m_cpuFallbackFrame = cpuResult.convertToFormat(QImage::Format_RGBA32FPx4);\n            QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));\n            upload.setSourceSize(m_cpuFallbackFrame.size());\n            upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));\n            updates->uploadTexture(m_output.get(), {{0, 0, upload}});\n            cb->resourceUpdate(updates);\n            PerformanceRecorder::count("gpu_numeric_cpu_fallbacks");\n            PerformanceRecorder::value("gpu_last_execution", QStringLiteral("CPU numeric safety fallback → GPU display/scopes"));\n        } else {\n            cb->beginComputePass(updates);\n            cb->setComputePipeline(m_pipeline.get());\n            cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());\n            cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);\n            cb->endComputePass();\n            if(details) {\n                cb->beginComputePass();cb->setComputePipeline(m_horizontalPipeline.get());cb->setShaderResources(m_horizontalBindings.get());\n                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();\n                cb->beginComputePass();cb->setComputePipeline(m_detailPipeline.get());cb->setShaderResources(m_detailBindings.get());\n                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();\n            }\n            PerformanceRecorder::value("gpu_last_execution", backendName());\n        }\n        m_revision = revision;\n'''
+          if old not in t: raise SystemExit('GpuEngine.cpp dispatch block mismatch')
+          p.write_text(t.replace(old,new,1))
+
+          # Make the fallback explicit and test its narrow scope rather than hiding it behind parity tests.
+          p=Path('tests/GpuTests.cpp'); t=p.read_text()
+          marker='''    void cleanupTestCase() { engine.reset(); rhi.reset(); surface.reset(); }\n    void pixelsAndHistogramMatchCpu() {\n'''
+          test='''    void numericSafetyFallbackIsScoped() {\n        QImage image(32,24,QImage::Format_RGBA64);\n        image.fill(QColor(96,128,160));\n        AdjustmentState neutral;\n        QVERIFY(!render(image,neutral,false).image.isNull());\n        QVERIFY(!engine->lastProcessUsedCpuFallback());\n\n        const bool backendNeedsFallback = rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2;\n        AdjustmentState hsl; hsl.hue=-23; hsl.hslSaturation[5]=-25;\n        QVERIFY(!render(image,hsl,false).image.isNull());\n        QCOMPARE(engine->lastProcessUsedCpuFallback(), backendNeedsFallback);\n\n        AdjustmentState bright; bright.exposure=3.0; bright.saturation=-20; bright.blacks=-50; bright.whites=60;\n        QVERIFY(!render(image,bright,false).image.isNull());\n        QCOMPARE(engine->lastProcessUsedCpuFallback(), backendNeedsFallback);\n\n        AdjustmentState ordinary; ordinary.exposure=.8; ordinary.saturation=18; ordinary.vibrance=22;\n        QVERIFY(!render(image,ordinary,false).image.isNull());\n        QVERIFY(!engine->lastProcessUsedCpuFallback());\n    }\n    void cleanupTestCase() { engine.reset(); rhi.reset(); surface.reset(); }\n    void pixelsAndHistogramMatchCpu() {\n'''
+          if marker not in t: raise SystemExit('GpuTests marker mismatch')
+          p.write_text(t.replace(marker,test,1))
+
+          # Document the policy in the alpha.10 technical note.
+          p=Path('docs/RAW_BASE_RENDERING_ALPHA10.md'); t=p.read_text()
+          note='''\n## Cross-backend numerical safety fallback\n\nThe final alpha.10 acceptance keeps the original 40/65535 CPU/GPU pixel bound. Metal stays on the full compute color path. On D3D11 and OpenGL Compute, two parameter regions that repeatedly produced backend-specific Oklab/HSL ULP amplification use the CPU reference color pipeline for the preview frame: (1) global Hue or any HSL band edit, and (2) linear RAW at user Exposure >= +2.5 EV with Saturation or Vibrance active. The resulting RGBA64 reference frame is uploaded as RGBA32F to the existing GPU output texture, so display and the 1024-bin GPU histogram remain on the same downstream texture. The fallback is recorded as `gpu_numeric_cpu_fallbacks` / `gpu_last_execution`; ordinary edits, Sony Look/LUT processing and Metal remain GPU accelerated. This is a correctness fallback, not a relaxed tolerance or a claim that the private Sony renderer is reproduced.\n'''
+          if '## Cross-backend numerical safety fallback' not in t:
+              t=t.rstrip()+note+'\n'
+          p.write_text(t)
+          PY
+          git diff --check
+      - name: Commit source-only finalization
+        shell: bash
+        run: |
+          git config user.name "snailjayxxx"
+          git config user.email "42602200+snailjayxxx@users.noreply.github.com"
+          git add README.md core/gpu/GpuEngine.h core/gpu/GpuEngine.cpp tests/GpuTests.cpp docs/RAW_BASE_RENDERING_ALPHA10.md
+          git commit -m "fix: add scoped GPU numeric safety fallback and restore alpha10 docs"
+          git push origin HEAD:feature/sony-creative-look
