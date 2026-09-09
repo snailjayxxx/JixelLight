@@ -1,8 +1,10 @@
 #include "core/color/MonitorColorTransform.h"
 #include "core/color/ColorManagement.h"
 
+#include <QColorSpace>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QRgba64>
 #include <QScreen>
 #include <QVector>
 #include <QtGlobal>
@@ -36,6 +38,33 @@ QImage makeAtlas(const QVector<float> &rgb, int n) {
         }
     }
     return out;
+}
+
+struct Rgb { float r=0,g=0,b=0; };
+Rgb lutFetch(const QImage &atlas,int n,int r,int g,int b) {
+    const auto *row=reinterpret_cast<const float *>(atlas.constScanLine(g));
+    const int x=b*n+r;
+    return {row[x*4+0],row[x*4+1],row[x*4+2]};
+}
+Rgb mixRgb(Rgb a,Rgb b,float t) {
+    return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};
+}
+Rgb sampleLut(const QImage &atlas,int n,float r,float g,float b) {
+    const float limit=float(n-1);
+    const float pr=std::clamp(r,0.0f,1.0f)*limit;
+    const float pg=std::clamp(g,0.0f,1.0f)*limit;
+    const float pb=std::clamp(b,0.0f,1.0f)*limit;
+    const int r0=std::min(int(std::floor(pr)),n-1),r1=std::min(r0+1,n-1);
+    const int g0=std::min(int(std::floor(pg)),n-1),g1=std::min(g0+1,n-1);
+    const int b0=std::min(int(std::floor(pb)),n-1),b1=std::min(b0+1,n-1);
+    const float fr=pr-r0,fg=pg-g0,fb=pb-b0;
+    const Rgb c000=lutFetch(atlas,n,r0,g0,b0),c100=lutFetch(atlas,n,r1,g0,b0);
+    const Rgb c010=lutFetch(atlas,n,r0,g1,b0),c110=lutFetch(atlas,n,r1,g1,b0);
+    const Rgb c001=lutFetch(atlas,n,r0,g0,b1),c101=lutFetch(atlas,n,r1,g0,b1);
+    const Rgb c011=lutFetch(atlas,n,r0,g1,b1),c111=lutFetch(atlas,n,r1,g1,b1);
+    const Rgb z0=mixRgb(mixRgb(c000,c100,fr),mixRgb(c010,c110,fr),fg);
+    const Rgb z1=mixRgb(mixRgb(c001,c101,fr),mixRgb(c011,c111,fr),fg);
+    return mixRgb(z0,z1,fb);
 }
 }
 
@@ -154,5 +183,41 @@ QImage srgbToMonitorLut(const QByteArray &monitorIcc, int size, QString *errorMe
         value = std::clamp(value, 0.0f, 1.0f);
     }
     return makeAtlas(output, n);
+}
+
+QImage applyLut(const QImage &encodedImage,const QImage &atlas,int size) {
+    if(encodedImage.isNull())return {};
+    const int n=std::clamp(size,2,65);
+    if(atlas.isNull()||atlas.format()!=QImage::Format_RGBA32FPx4||atlas.size()!=QSize(n*n,n))return {};
+
+    const QColorSpace srgb(QColorSpace::SRgb);
+    QImage input=encodedImage;
+    if(input.colorSpace().isValid()&&input.colorSpace()!=srgb) {
+        const QImage converted=input.convertedToColorSpace(srgb,QImage::Format_RGBA64);
+        if(!converted.isNull())input=converted;
+        else input=input.convertToFormat(QImage::Format_RGBA64);
+    } else {
+        input=input.convertToFormat(QImage::Format_RGBA64);
+    }
+    if(input.isNull())return {};
+
+    QImage out(input.size(),QImage::Format_RGBA64);
+    if(out.isNull())return {};
+    for(int y=0;y<input.height();++y) {
+        const auto *src=reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
+        auto *dst=reinterpret_cast<QRgba64 *>(out.scanLine(y));
+        for(int x=0;x<input.width();++x) {
+            const auto p=src[x];
+            const Rgb mapped=sampleLut(atlas,n,p.red()/65535.0f,p.green()/65535.0f,p.blue()/65535.0f);
+            const auto q=[](float v){return quint16(std::lround(std::clamp(v,0.0f,1.0f)*65535.0f));};
+            dst[x]=QRgba64::fromRgba64(q(mapped.r),q(mapped.g),q(mapped.b),p.alpha());
+        }
+    }
+    // The pixels are already in monitor-device RGB. Leaving the image untagged
+    // prevents a second image-profile conversion in presentation layers.
+    out.setColorSpace(QColorSpace());
+    out.setText(QStringLiteral("JixelLightDisplayManaged"),QStringLiteral("true"));
+    out.setText(QStringLiteral("JixelLightDisplayTransform"),QStringLiteral("shared 33^3 sRGB-to-monitor LUT"));
+    return out;
 }
 }
