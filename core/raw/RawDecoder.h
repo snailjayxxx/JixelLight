@@ -14,8 +14,11 @@ struct RawMetadata {
     QString demosaic = QStringLiteral("AHD");
     bool cameraMatrixEnabled = true;
     bool cameraWhiteBalanceEnabled = true;
-    bool highlightBlendEnabled = false;
-    int highlightMode = 1;
+    // LibRaw mode 2 reconstructs/blends clipped channel relationships during
+    // RAW development. JixelLight's later highlightRecovery/displayShoulder
+    // are tonal controls, not a second clipped-channel reconstruction pass.
+    bool highlightBlendEnabled = true;
+    int highlightMode = 2;
     float adjustMaximumThreshold = 0.75f;
 };
 
