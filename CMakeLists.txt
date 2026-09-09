@@ -41,6 +41,7 @@ add_library(JixelLightCore STATIC
     app/LookController.cpp
     core/cache/SourceCache.cpp
     core/color/ColorManagement.cpp
+    core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
     core/metadata/MetadataReader.cpp
     core/look/SonyLookMetadata.cpp
@@ -66,7 +67,7 @@ target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.11" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
-    target_link_libraries(JixelLightCore PRIVATE psapi)
+    target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
