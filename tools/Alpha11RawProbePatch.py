@@ -37,4 +37,11 @@ pipeline = pipeline.replace(
 )
 pipeline_path.write_text(pipeline, encoding="utf-8")
 
+cmake_path = Path("CMakeLists.txt")
+cmake = cmake_path.read_text(encoding="utf-8")
+probe_target = """\nqt_add_executable(JixelLightRawEmbeddedProbe tools/RawEmbeddedProbe.cpp)\ntarget_link_libraries(JixelLightRawEmbeddedProbe PRIVATE JixelLightCore)\nset_target_properties(JixelLightRawEmbeddedProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)\n"""
+if "JixelLightRawEmbeddedProbe" not in cmake:
+    cmake += probe_target
+    cmake_path.write_text(cmake, encoding="utf-8")
+
 print("alpha11 RAW A/B probe patch applied")
