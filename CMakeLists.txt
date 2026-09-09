@@ -39,6 +39,7 @@ endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
     app/LookController.cpp
+    app/DisplayColorController.cpp
     core/cache/SourceCache.cpp
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
