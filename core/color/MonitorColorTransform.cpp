@@ -49,7 +49,7 @@ MonitorColorProfile profileForScreen(QScreen *screen) {
 
     MONITORINFOEXW info{};
     info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(native->handle(), &info)) return result;
+    if (!GetMonitorInfoW(native->handle(), reinterpret_cast<LPMONITORINFO>(&info))) return result;
 
     // MONITORINFOEX::szDevice is the native display-device name. Using a
     // monitor-specific DC is important: CreateDC("DISPLAY", nullptr, ...) spans
