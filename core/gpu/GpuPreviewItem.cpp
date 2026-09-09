@@ -1,8 +1,10 @@
 #include "core/gpu/GpuPreviewItem.h"
 #include "core/gpu/GpuEngine.h"
+#include "core/color/MonitorColorTransform.h"
 #include "app/PhotoController.h"
 #include <QQuickWindow>
 #include <QPointer>
+#include <QScreen>
 #include "diagnostics/PerformanceRecorder.h"
 
 namespace {
@@ -16,8 +18,12 @@ public:
         const auto *view=static_cast<GpuPreviewItem *>(item);
         m_controller=qobject_cast<PhotoController *>(view->controller());
         m_source={};
+        if (m_engine) m_engine->setDisplayColorLut(view->displayColorLut(), view->displayColorLutKey(), view->displayColorProfileName());
         if (m_controller && m_controller->gpuEnabled()) {
-            if (m_failed && m_rhi) { m_engine=std::make_unique<GpuEngine>(m_rhi);m_failed=false;m_notified=0; }
+            if (m_failed && m_rhi) {
+                m_engine=std::make_unique<GpuEngine>(m_rhi);m_failed=false;m_notified=0;
+                m_engine->setDisplayColorLut(view->displayColorLut(), view->displayColorLutKey(), view->displayColorProfileName());
+            }
             m_source=m_controller->gpuSource();
             m_plan=m_controller->gpuPlan();
             m_revision=m_controller->renderRevision();
@@ -73,7 +79,12 @@ GpuPreviewItem::GpuPreviewItem(QQuickItem *parent):QQuickRhiItem(parent) {
     connect(this,&QQuickItem::windowChanged,this,[this](QQuickWindow *window) {
         if (!window) return;
         connect(window,&QQuickWindow::sceneGraphInitialized,this,&GpuPreviewItem::checkBackend,Qt::QueuedConnection);
+        connect(window,&QWindow::screenChanged,this,[this](QScreen *) { refreshDisplayColorManagement(); });
+        connect(window,&QWindow::activeChanged,this,[this] {
+            if (this->window() && this->window()->isActive()) refreshDisplayColorManagement();
+        });
         QTimer::singleShot(0,this,&GpuPreviewItem::checkBackend);
+        QTimer::singleShot(0,this,&GpuPreviewItem::refreshDisplayColorManagement);
     });
 }
 QObject *GpuPreviewItem::controller() const { return m_controller; }
@@ -88,10 +99,42 @@ void GpuPreviewItem::setController(QObject *object) {
     }
     emit controllerChanged(); update();
     QTimer::singleShot(0,this,&GpuPreviewItem::checkBackend);
+    QTimer::singleShot(0,this,&GpuPreviewItem::refreshDisplayColorManagement);
 }
 QQuickRhiItemRenderer *GpuPreviewItem::createRenderer() { return new Renderer; }
 
 void GpuPreviewItem::checkBackend() {
     if (window() && m_controller && window()->rendererInterface()->graphicsApi()==QSGRendererInterface::Software)
         m_controller->gpuFailed(QStringLiteral("Qt Quick software scene graph"));
+}
+
+void GpuPreviewItem::refreshDisplayColorManagement() {
+    constexpr int LutSize = 33;
+    const MonitorColorProfile profile=MonitorColorTransform::profileForScreen(window()?window()->screen():nullptr);
+    const QString requestedKey=profile.valid ? QStringLiteral("icc:")+profile.key : QStringLiteral("identity-srgb");
+    if (requestedKey==m_displayColorLutKey && !m_displayColorLut.isNull()) return;
+
+    QString error;
+    QImage lut=profile.valid ? MonitorColorTransform::srgbToMonitorLut(profile.icc,LutSize,&error)
+                             : MonitorColorTransform::identityLut(LutSize);
+    QString effectiveKey=requestedKey;
+    QString name=profile.valid ? profile.description : QStringLiteral("sRGB identity fallback");
+    if (lut.isNull()) {
+        lut=MonitorColorTransform::identityLut(LutSize);
+        effectiveKey=QStringLiteral("identity-after-icc-error:")+profile.key;
+        name=QStringLiteral("sRGB identity fallback (%1)").arg(error);
+        PerformanceRecorder::value("display_monitor_icc_error",error);
+    }
+    if (lut.isNull()) return;
+
+    m_displayColorLut=std::move(lut);
+    m_displayColorLutKey=effectiveKey;
+    m_displayColorProfileName=name;
+    PerformanceRecorder::value("display_color_management",
+        profile.valid && error.isEmpty()
+            ? QStringLiteral("GPU display-only sRGB -> monitor ICC 33^3 LUT")
+            : QStringLiteral("GPU display-only identity LUT"));
+    PerformanceRecorder::value("display_monitor_profile",name);
+    if (profile.valid) PerformanceRecorder::value("display_monitor_profile_path",profile.sourcePath);
+    update();
 }
