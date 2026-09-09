@@ -14,7 +14,6 @@
 #include <lcms2.h>
 
 #if defined(Q_OS_WIN)
-#include <QWindowsScreen>
 #include <windows.h>
 #include <vector>
 #endif
@@ -73,18 +72,14 @@ MonitorColorProfile profileForScreen(QScreen *screen) {
     MonitorColorProfile result;
 #if defined(Q_OS_WIN)
     if (!screen) return result;
-    const auto *native = screen->nativeInterface<QNativeInterface::QWindowsScreen>();
-    if (!native || !native->handle()) return result;
-
-    MONITORINFOEXW info{};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(native->handle(), reinterpret_cast<LPMONITORINFO>(&info))) return result;
-
-    // MONITORINFOEX::szDevice is the native display-device name. Using a
-    // monitor-specific DC is important: CreateDC("DISPLAY", nullptr, ...) spans
-    // the virtual desktop and cannot identify the correct per-monitor profile.
-    HDC dc = CreateDCW(info.szDevice, info.szDevice, nullptr, nullptr);
-    if (!dc) dc = CreateDCW(L"DISPLAY", info.szDevice, nullptr, nullptr);
+    // On Windows QScreen::name() is the display device identifier exposed by
+    // the platform plugin (normally \\.\DISPLAYn). Using that device name for
+    // the DC avoids any Qt private/native-interface header dependency while
+    // still selecting the ICC profile of the screen that contains the window.
+    const std::wstring device = screen->name().toStdWString();
+    if (device.empty()) return result;
+    HDC dc = CreateDCW(device.c_str(), device.c_str(), nullptr, nullptr);
+    if (!dc) dc = CreateDCW(L"DISPLAY", device.c_str(), nullptr, nullptr);
     if (!dc) return result;
     SetICMMode(dc, ICM_ON);
 
