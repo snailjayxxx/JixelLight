@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     if (!raw.isNull()) reference = CameraReference::load({rawPath, {}, metadata, 1});
 
     QJsonObject report{
-        {"schema", 1},
+        {"schema", 2},
         {"commit", JIXELLIGHT_GIT_COMMIT},
         {"engineVersion", ProcessingPlan::EngineVersion},
         {"metadataError", metadataError},
@@ -54,6 +54,12 @@ int main(int argc, char **argv) {
         {"height", raw.height()},
         {"probeAdjustMaximumThr", raw.text("JixelLightProbeAdjustMaximumThr")},
         {"probeLibRawHighlight", raw.text("JixelLightProbeLibRawHighlight")},
+        {"maximum", raw.text("JixelLightProbeMaximum")},
+        {"dataMaximum", raw.text("JixelLightProbeDataMaximum")},
+        {"linearMax", raw.text("JixelLightProbeLinearMax")},
+        {"camMul", raw.text("JixelLightProbeCamMul")},
+        {"preMul", raw.text("JixelLightProbePreMul")},
+        {"dngBaselineExposure", raw.text("JixelLightProbeDngBaselineExposure")},
         {"reference", QJsonObject::fromVariantMap(reference.info)},
         {"referenceError", reference.error}
     };
