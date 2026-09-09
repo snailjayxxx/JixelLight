@@ -14,7 +14,9 @@ struct RawMetadata {
     QString demosaic = QStringLiteral("AHD");
     bool cameraMatrixEnabled = true;
     bool cameraWhiteBalanceEnabled = true;
-    bool highlightBlendEnabled = true;
+    bool highlightBlendEnabled = false;
+    int highlightMode = 1;
+    float adjustMaximumThreshold = 0.75f;
 };
 
 class RawDecoder final {
