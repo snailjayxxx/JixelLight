@@ -23,6 +23,13 @@ int channelSpread(const QColor &c) {
     const int lo = std::min({c.red(), c.green(), c.blue()});
     return hi - lo;
 }
+QImage sceneGrayImage(double value) {
+    QImage image(1, 1, QImage::Format_RGBA64);
+    auto *px = reinterpret_cast<QRgba64 *>(image.scanLine(0));
+    const quint16 code = static_cast<quint16>(std::lround(value * 65535.0));
+    px[0] = QRgba64::fromRgba64(code, code, code, 65535);
+    return image;
+}
 }
 
 class CoreTests : public QObject {
@@ -52,14 +59,10 @@ private slots:
     }
 
     void rawExposureUsesLinearProPhotoStops() {
-        // With camera headroom, a normal scene middle gray is commonly well
-        // below 18% of sensor saturation. Jixel Neutral v1 places 3% scene
-        // linear near display middle gray while keeping user Exposure=0.
-        QImage image(1, 1, QImage::Format_RGBA64);
-        auto *px = reinterpret_cast<QRgba64 *>(image.scanLine(0));
-        const quint16 sceneGray = static_cast<quint16>(std::lround(0.03 * 65535.0));
-        px[0] = QRgba64::fromRgba64(sceneGray, sceneGray, sceneGray, 65535);
-
+        // Neutral v2 maps the scene anchor to display middle gray without a
+        // global exposure multiplier. User Exposure remains an independent
+        // scene-linear stop adjustment before the base tone placement.
+        const QImage image = sceneGrayImage(ProcessingPlan::RawNeutralSceneGray);
         const QImage baseline = ImagePipeline::process(image, {}, ImagePipeline::InputEncoding::LinearProPhoto);
         AdjustmentState plusOne;
         plusOne.exposure = 1.0;
@@ -67,33 +70,51 @@ private slots:
 
         const int baseline8 = baseline.pixelColor(0,0).red();
         const int plusOne8 = brighter.pixelColor(0,0).red();
-        QVERIFY2(baseline8 >= 110 && baseline8 <= 120, qPrintable(QString::number(baseline8)));
-        QVERIFY2(plusOne8 >= 153 && plusOne8 <= 164, qPrintable(QString::number(plusOne8)));
-        QVERIFY(plusOne8 > baseline8 + 35);
+        QVERIFY2(baseline8 >= 114 && baseline8 <= 121, qPrintable(QString::number(baseline8)));
+        QVERIFY2(plusOne8 >= 148 && plusOne8 <= 155, qPrintable(QString::number(plusOne8)));
+        QVERIFY(plusOne8 > baseline8 + 28);
         QVERIFY(plusOne8 < baseline8 * 2);
     }
 
-    void rawBaseRenderingIsSeparateFromDisplayInputs() {
-        const auto rawPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::LinearProPhoto);
-        const auto displayPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::SRgb);
-        QVERIFY(std::abs(rawPlan.data[ProcessingPlan::Flags].w - ProcessingPlan::RawBaseGain) < 1.0e-6f);
-        QCOMPARE(displayPlan.data[ProcessingPlan::Flags].w, 1.0f);
+    void rawBaseRenderingIsSeparateFromLinearRepresentation() {
+        const auto rawPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::LinearProPhoto,
+            ColorManagement::OutputSpace::SRgb, true, 0.0f);
+        const auto nonRawLinearPlan = ProcessingPlan::compile({}, ImagePipeline::InputEncoding::LinearProPhoto,
+            ColorManagement::OutputSpace::SRgb, false, 0.0f);
+        QVERIFY(rawPlan.rawSource);
+        QVERIFY(!nonRawLinearPlan.rawSource);
+        QCOMPARE(rawPlan.data[ProcessingPlan::Flags].w, 1.0f);
+        QCOMPARE(nonRawLinearPlan.data[ProcessingPlan::Flags].w, 0.0f);
 
-        QImage raw(1,1,QImage::Format_RGBA64);
-        auto *p = reinterpret_cast<QRgba64 *>(raw.scanLine(0));
-        const quint16 headroomWhite = static_cast<quint16>(std::lround(0.18 * 65535.0));
-        p[0] = QRgba64::fromRgba64(headroomWhite,headroomWhite,headroomWhite,65535);
-        const auto rendered=ImagePipeline::process(raw,{},ImagePipeline::InputEncoding::LinearProPhoto);
-        const int v=rendered.pixelColor(0,0).red();
-        QVERIFY2(v >= 247 && v <= 254,qPrintable(QString::number(v)));
-        QCOMPARE(rendered.text("JixelLightPipeline"),QString::fromLatin1(ProcessingPlan::EngineVersion));
-        QVERIFY(rendered.text("JixelLightBaseRendering").contains("+2.5 EV"));
+        const QImage linear = sceneGrayImage(0.18);
+        const auto rawRendered=ImagePipeline::processWithPlan(linear,rawPlan);
+        const auto nonRawRendered=ImagePipeline::processWithPlan(linear,nonRawLinearPlan);
+        const int rawV=rawRendered.pixelColor(0,0).red();
+        const int nonRawV=nonRawRendered.pixelColor(0,0).red();
+        QVERIFY2(rawV >= 200 && rawV <= 210,qPrintable(QString::number(rawV)));
+        QVERIFY2(nonRawV >= 115 && nonRawV <= 122,qPrintable(QString::number(nonRawV)));
+        QVERIFY(rawV > nonRawV + 70);
+        QCOMPARE(rawRendered.text("JixelLightPipeline"),QString::fromLatin1(ProcessingPlan::EngineVersion));
+        QVERIFY(rawRendered.text("JixelLightBaseRendering").contains("Jixel Neutral v2"));
+        QVERIFY(!rawRendered.text("JixelLightBaseRendering").contains("+2.5 EV"));
+        QCOMPARE(nonRawRendered.text("JixelLightBaseRendering"),QStringLiteral("none"));
+    }
+
+    void rawCameraBaselineIsSeparateFromUserExposure() {
+        const QImage image=sceneGrayImage(ProcessingPlan::RawNeutralSceneGray);
+        const auto basePlusOne=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
+            ColorManagement::OutputSpace::SRgb,true,1.0f);
+        const auto cameraRendered=ImagePipeline::processWithPlan(image,basePlusOne);
+        AdjustmentState userPlusOne; userPlusOne.exposure=1.0;
+        const auto userPlan=ProcessingPlan::compile(userPlusOne,ImagePipeline::InputEncoding::LinearProPhoto,
+            ColorManagement::OutputSpace::SRgb,true,0.0f);
+        const auto userRendered=ImagePipeline::processWithPlan(image,userPlan);
+        QCOMPARE(basePlusOne.state.exposure,0.0);
+        QVERIFY(std::abs(cameraRendered.pixelColor(0,0).red()-userRendered.pixelColor(0,0).red())<=1);
+        QVERIFY(cameraRendered.text("JixelLightBaseRendering").contains("1.000 EV"));
     }
 
     void rawBaseRenderingDoesNotCrushBrightHslChromaticity() {
-        // Regression from the Windows/WARP dense fixture after introducing
-        // Jixel Neutral. The old fixed Oklab-L=1.5 ceiling turned this bright
-        // cyan/green highlight's red channel almost black after a hue edit.
         QImage image(1,1,QImage::Format_RGBA64);
         auto *px=reinterpret_cast<QRgba64 *>(image.scanLine(0));
         px[0]=QRgba64::fromRgba64(23559,59073,40796,65535);
@@ -101,8 +122,8 @@ private slots:
         state.hslHue[2]=30;state.hslSaturation[5]=-25;state.masterCurve[2]=.57;state.redCurve[3]=.8;
         const QColor out=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto).pixelColor(0,0);
         QVERIFY2(out.red()>80,qPrintable(QString("red=%1 green=%2 blue=%3").arg(out.red()).arg(out.green()).arg(out.blue())));
-        QVERIFY(out.green()>240);
-        QVERIFY(out.blue()>240);
+        QVERIFY(out.green()>220);
+        QVERIFY(out.blue()>220);
     }
 
     void saturationRunsInsideWorkingPipeline() {
@@ -223,7 +244,11 @@ private slots:
         QCOMPARE(metadata.workingSpace, QStringLiteral("Linear ProPhoto RGB"));
         QVERIFY(metadata.cameraMatrixEnabled);
         QVERIFY(metadata.cameraWhiteBalanceEnabled);
-        QVERIFY(metadata.highlightBlendEnabled);
+        QVERIFY(!metadata.highlightBlendEnabled);
+        QCOMPARE(metadata.highlightMode,1);
+        QVERIFY(std::abs(metadata.adjustMaximumThreshold-0.75f)<1.0e-6f);
+        QCOMPARE(image.text(QStringLiteral("JixelLightLibRawHighlightMode")),QStringLiteral("1 / unclip"));
+        QCOMPARE(image.text(QStringLiteral("JixelLightAdjustMaximumThreshold")),QStringLiteral("0.75"));
         QVERIFY(!metadata.make.isEmpty());
         QVERIFY(!metadata.model.isEmpty());
     }
@@ -244,6 +269,8 @@ private slots:
         QVERIFY(controller.currentMetadata().contains(QStringLiteral("model")));
         QCOMPARE(controller.currentMetadata().value(QStringLiteral("workingSpace")).toString(), QStringLiteral("Linear ProPhoto RGB"));
         QCOMPARE(controller.currentMetadata().value(QStringLiteral("bitDepth")).toInt(), 16);
+        QVERIFY(controller.currentMetadata().contains(QStringLiteral("rawBaseExposureStops")));
+        QCOMPARE(controller.currentMetadata().value(QStringLiteral("libRawHighlightMode")).toInt(),1);
 
         controller.setSaturation(25.0);
         controller.setColorMix(5, 1, 30.0);
