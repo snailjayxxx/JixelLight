@@ -143,6 +143,7 @@ public:
     void gpuPresented(quint64 revision, const QString &backend);
     void gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels);
     void gpuFailed(const QString &message);
+    void setDisplayColorLut(const QImage &atlas, const QString &key);
     Q_INVOKABLE void setGpuEnabled(bool enabled);
     Q_INVOKABLE void setExactScopes(bool enabled);
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
@@ -224,6 +225,7 @@ private:
     std::unique_ptr<ExportQueue> m_exportQueue;
     QImage m_fastSource, m_gpuSource, m_loadedPreview;
     QString m_loadedKey, m_backendName, m_scopesLabel;
+    QString m_displayColorLutKey = QStringLiteral("identity-srgb");
     bool m_loading = false, m_rendering = false, m_gpuEnabled = true, m_gpuActive = false;
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
     bool m_preparing = false;
