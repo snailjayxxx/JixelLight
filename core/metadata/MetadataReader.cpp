@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStringList>
+#include <cmath>
+#include <optional>
 
 #include <exiv2/exiv2.hpp>
 
@@ -17,6 +19,18 @@ QString valueFor(const Exiv2::ExifData &data, const char *key) {
         return QString::fromStdString(it->toString()).trimmed();
     } catch (...) {
         return {};
+    }
+}
+
+std::optional<double> numericValueFor(const Exiv2::ExifData &data, const char *key) {
+    try {
+        const auto it = data.findKey(Exiv2::ExifKey(key));
+        if (it == data.end() || it->count() < 1) return std::nullopt;
+        const double value = it->value().toFloat(0);
+        if (!std::isfinite(value)) return std::nullopt;
+        return value;
+    } catch (...) {
+        return std::nullopt;
     }
 }
 
@@ -44,9 +58,6 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
     }
 
     const qint64 fileSize = file.size();
-    // Filesystem identity is available even when this Exiv2 build cannot parse
-    // the container (e.g. its optional PNG reader is disabled). Do not hide the
-    // selected filename or invent camera metadata on that non-fatal path.
     result.insert(QStringLiteral("fileName"), QFileInfo(path).fileName());
     result.insert(QStringLiteral("fileSizeBytes"), fileSize);
     if (fileSize <= 0) {
@@ -113,6 +124,17 @@ QVariantMap MetadataReader::read(const QString &path, QString *errorMessage) {
         putIfPresent(result, QStringLiteral("flash"), firstValue(exif, {"Exif.Photo.Flash"}));
         putIfPresent(result, QStringLiteral("orientation"), firstValue(exif, {"Exif.Image.Orientation"}));
         putIfPresent(result, QStringLiteral("colorSpace"), firstValue(exif, {"Exif.Photo.ColorSpace"}));
+
+        // DNG BaselineExposure is explicitly a camera/model exposure zero-point
+        // offset, expressed in EV. Preserve the numeric value; the RAW pipeline
+        // decides whether/how to use it. Do not synthesize an offset when a
+        // proprietary RAW format has no equivalent calibrated metadata.
+        if (const auto baseline = numericValueFor(exif, "Exif.Image.BaselineExposure")) {
+            if (*baseline >= -8.0 && *baseline <= 8.0) {
+                result.insert(QStringLiteral("rawBaselineExposure"), *baseline);
+                result.insert(QStringLiteral("rawBaselineExposureSource"), QStringLiteral("DNG BaselineExposure"));
+            }
+        }
 
         if (image->pixelWidth() > 0) result.insert(QStringLiteral("pixelWidth"), static_cast<qulonglong>(image->pixelWidth()));
         if (image->pixelHeight() > 0) result.insert(QStringLiteral("pixelHeight"), static_cast<qulonglong>(image->pixelHeight()));
