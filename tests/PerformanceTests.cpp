@@ -33,6 +33,9 @@ QImage fixture(int width=512,int height=341) {
     }
     return image;
 }
+ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) {
+    return ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0.0f);
+}
 }
 class PerformanceTests:public QObject {
     Q_OBJECT
@@ -40,8 +43,9 @@ private slots:
     void parallelIsDeterministic() {
         const QImage image=fixture(800,512);
         AdjustmentState state; state.exposure=.6; state.temperature=30;state.tint=-15;state.saturation=12;state.hslHue[0]=28;state.masterCurve[2]=.56;
-        const auto serial=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,{},false);
-        const auto parallel=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto);
+        const auto serial=ImagePipeline::processWithPlan(image,plan,{},false);
+        const auto parallel=ImagePipeline::processWithPlan(image,plan);
         QCOMPARE(serial,parallel);
     }
     void legacyReferenceBounds() {
@@ -52,7 +56,7 @@ private slots:
             if (mode==2) { state.hue=-10;state.saturation=25;state.vibrance=10;state.hslSaturation[5]=-35;state.redCurve[2]=.52; }
             const auto old=legacyProcess(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
             const auto expected=correctedReferenceProcess(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
-            const auto now=ImagePipeline::process(image,state,ImagePipeline::InputEncoding::LinearProPhoto);
+            const auto now=ImagePipeline::processWithPlan(image,nonRawLinearPlan(state));
             int maximum=0, originalMaximum=0, correctedPixels=0;
             for (int y=0;y<image.height();++y) {
                 auto *a=reinterpret_cast<const QRgba64 *>(expected.constScanLine(y));
@@ -83,8 +87,6 @@ private slots:
             largestStep=std::max({largestStep,std::abs(int(pixels[x].red())-int(pixels[x-1].red())),
                 std::abs(int(pixels[x].green())-int(pixels[x-1].green())),std::abs(int(pixels[x].blue())-int(pixels[x-1].blue()))});
         qInfo()<<"gamut boundary ramp maximum adjacent 16-bit step"<<largestStep;
-        // Half of one 8-bit display code per one 16-bit input code on this
-        // boundary ramp; the historical discontinuity exceeded 2,000 codes.
         QVERIFY2(largestStep<=128,qPrintable(QString::number(largestStep)));
     }
     void cancellationDoesNotPublishPartialPixels() {
@@ -120,6 +122,7 @@ private slots:
         QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
         QFile corrupt(dir.filePath(source.key+".jlpv"));QVERIFY(corrupt.open(QIODevice::WriteOnly|QIODevice::Append));corrupt.write("x");corrupt.close();
         QVERIFY(cache.diskPreview(source.key).image.isNull());
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
     }
     void fileCacheKeyInvalidation() {
         QTemporaryDir dir;
@@ -168,7 +171,6 @@ private slots:
         SourceData source;source.image=fixture(128,80);source.key=QString(64,'c');source.fullResolution=true;
         cache.storeDiskPreview(source);
         QFile file(dir.filePath(source.key+".jlpv"));QVERIFY(file.open(QIODevice::ReadWrite));
-        // Swap equal-area dimensions; length checks alone cannot detect this.
         QVERIFY(file.seek(4));QDataStream data(&file);data<<quint32(80)<<quint32(128);file.close();
         QVERIFY(cache.diskPreview(source.key).image.isNull());
     }
@@ -185,7 +187,6 @@ private slots:
         QCOMPARE(controller.currentFile(),bluePath);QCOMPARE(controller.exposure(),.25);
         QSize size;auto result=provider.requestImage("current",&size,{});
         QVERIFY(!result.isNull());QVERIFY(result.pixelColor(0,0).blue()>result.pixelColor(0,0).red());
-        // Other imported photographs are also protected from single export.
         QVERIFY(!controller.exportCurrent(QUrl::fromLocalFile(redPath)));
         QVERIFY(!controller.exportCurrent(QUrl::fromLocalFile(bluePath)));
         QSignalSpy exported(&controller,&PhotoController::exportFinished);
@@ -214,8 +215,9 @@ private slots:
         QImage image(1,1,QImage::Format_RGBA64); image.fill(QColor::fromRgbF(.94,.12,.12));
         image.setColorSpace(QColorSpace(QColorSpace::DisplayP3));
         auto linear=image.convertedToColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear),QImage::Format_RGBA64);
-        const auto direct=ImagePipeline::process(linear,{},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3);
-        const auto limited=ColorManagement::convertFromSrgb(ImagePipeline::process(linear,{},ImagePipeline::InputEncoding::LinearProPhoto),ColorManagement::OutputSpace::DisplayP3);
+        const auto direct=ImagePipeline::processWithPlan(linear,nonRawLinearPlan({},ColorManagement::OutputSpace::DisplayP3));
+        const auto limitedSrgb=ImagePipeline::processWithPlan(linear,nonRawLinearPlan());
+        const auto limited=ColorManagement::convertFromSrgb(limitedSrgb,ColorManagement::OutputSpace::DisplayP3);
         QVERIFY(std::abs(direct.pixelColor(0,0).greenF()-limited.pixelColor(0,0).greenF())>.02);
     }
 };
