@@ -1,0 +1,115 @@
+name: alpha11-raw-color-probe
+on:
+  push:
+    branches: ['fix/alpha11-raw-color-rendering']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alpha11-raw-color-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FIXTURES: ${{ github.workspace }}/.sony-fixtures
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libraw-dev liblcms2-dev libexiv2-dev libjpeg-dev libgl-dev libegl-dev libopengl-dev libvulkan-dev libxkbcommon-dev libxcb-cursor0
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: qtshadertools
+          cache: true
+      - name: Apply probe-only runtime parameter hooks
+        run: |
+          python tools/Alpha11RawProbePatch.py
+          git diff --check
+          git diff -- core/raw/RawDecoder.cpp core/pipeline/ImagePipeline.cpp
+      - name: Build Sony validation probe
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target JixelLightSonyValidation --parallel 4
+      - name: Fetch checksum-pinned Sony RAW/JPEG fixtures
+        run: |
+          python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$FIXTURES"
+          cp tests/fixtures/sony-real-manifest.json "$FIXTURES/manifest.json"
+      - name: Run RAW decoder/base-rendering matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe-results
+          run_variant() {
+            name="$1"; thr="$2"; highlight="$3"; ev="$4"
+            echo "=== $name : adjust_maximum_thr=$thr highlight=$highlight baseEV=$ev ==="
+            mkdir -p "probe-results/$name/scene01" "probe-results/$name/dataset"
+            env JIXELLIGHT_PROBE_ADJUST_MAXIMUM_THR="$thr" \
+                JIXELLIGHT_PROBE_LIBRAW_HIGHLIGHT="$highlight" \
+                JIXELLIGHT_PROBE_RAW_BASE_EV="$ev" \
+                ./build/bin/JixelLightSonyValidation \
+                "$FIXTURES/sony_a7_iv_01.arw" "$FIXTURES/sony_a7_iv_01.jpg" \
+                "probe-results/$name/scene01" >"probe-results/$name/scene01/stdout.log" 2>&1 || true
+            env JIXELLIGHT_PROBE_ADJUST_MAXIMUM_THR="$thr" \
+                JIXELLIGHT_PROBE_LIBRAW_HIGHLIGHT="$highlight" \
+                JIXELLIGHT_PROBE_RAW_BASE_EV="$ev" \
+                ./build/bin/JixelLightSonyValidation --dataset \
+                "$FIXTURES/manifest.json" "probe-results/$name/dataset" \
+                >"probe-results/$name/dataset/stdout.log" 2>&1 || true
+          }
+          run_variant current       0.00 2 2.50
+          run_variant max075_h2     0.75 2 2.50
+          run_variant max0_h1       0.00 1 2.50
+          run_variant max075_h1     0.75 1 2.50
+          run_variant max075_h0     0.75 0 2.50
+          run_variant ev0p00        0.75 1 0.00
+          run_variant ev0p50        0.75 1 0.50
+          run_variant ev1p00        0.75 1 1.00
+          run_variant ev1p50        0.75 1 1.50
+          run_variant ev2p00        0.75 1 2.00
+          run_variant ev2p50        0.75 1 2.50
+          run_variant ev3p00        0.75 1 3.00
+      - name: Summarize probe metrics
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          root=pathlib.Path('probe-results')
+          rows=[]
+          for d in sorted(root.iterdir()):
+              p=d/'dataset'/'dataset-report.json'
+              s=d/'scene01'/'report.json'
+              row={'variant':d.name}
+              if p.exists():
+                  doc=json.loads(p.read_text(encoding='utf-8'))
+                  m=doc.get('metrics',{})
+                  row.update({
+                      'datasetAccepted':doc.get('accepted'),
+                      'rmseBefore':m.get('heldoutRmseBefore'),
+                      'rmseAfter':m.get('heldoutRmseAfter'),
+                      'gradientAlignment':m.get('gradientAlignment'),
+                      'scenes':m.get('scenes',[]),
+                  })
+              if s.exists():
+                  doc=json.loads(s.read_text(encoding='utf-8'))
+                  row.update({
+                      'scene01FitBefore':doc.get('fit',{}).get('heldoutRmseBefore'),
+                      'scene01FitAfter':doc.get('fit',{}).get('heldoutRmseAfter'),
+                      'decodeMs':doc.get('decodeMs'),
+                  })
+              rows.append(row)
+          rows.sort(key=lambda r: (r.get('rmseBefore') is None, r.get('rmseBefore', 99)))
+          out={'schema':1,'note':'Probe-only comparison; lower pre-fit RMSE means neutral RAW baseline is closer to the paired camera JPEG, not proof of camera-authentic rendering.','results':rows}
+          pathlib.Path('probe-results/summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Upload A/B probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha11-raw-color-probe
+          path: probe-results/
+          retention-days: 14
