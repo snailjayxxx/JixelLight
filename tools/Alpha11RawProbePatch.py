@@ -12,7 +12,13 @@ raw = raw.replace(
     '    image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));\n',
     '    image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));\n'
     '    image.setText(QStringLiteral("JixelLightProbeAdjustMaximumThr"), QString::number(params.adjust_maximum_thr, \'f\', 3));\n'
-    '    image.setText(QStringLiteral("JixelLightProbeLibRawHighlight"), QString::number(params.highlight));\n',
+    '    image.setText(QStringLiteral("JixelLightProbeLibRawHighlight"), QString::number(params.highlight));\n'
+    '    image.setText(QStringLiteral("JixelLightProbeMaximum"), QString::number(raw.imgdata.color.maximum));\n'
+    '    image.setText(QStringLiteral("JixelLightProbeDataMaximum"), QString::number(raw.imgdata.color.data_maximum));\n'
+    '    image.setText(QStringLiteral("JixelLightProbeDngBaselineExposure"), QString::number(raw.imgdata.color.dng_levels.baseline_exposure, \'f\', 6));\n'
+    '    image.setText(QStringLiteral("JixelLightProbeCamMul"), QStringLiteral("%1,%2,%3,%4").arg(raw.imgdata.color.cam_mul[0],0,\'g\',9).arg(raw.imgdata.color.cam_mul[1],0,\'g\',9).arg(raw.imgdata.color.cam_mul[2],0,\'g\',9).arg(raw.imgdata.color.cam_mul[3],0,\'g\',9));\n'
+    '    image.setText(QStringLiteral("JixelLightProbePreMul"), QStringLiteral("%1,%2,%3,%4").arg(raw.imgdata.color.pre_mul[0],0,\'g\',9).arg(raw.imgdata.color.pre_mul[1],0,\'g\',9).arg(raw.imgdata.color.pre_mul[2],0,\'g\',9).arg(raw.imgdata.color.pre_mul[3],0,\'g\',9));\n'
+    '    image.setText(QStringLiteral("JixelLightProbeLinearMax"), QStringLiteral("%1,%2,%3,%4").arg(raw.imgdata.color.linear_max[0]).arg(raw.imgdata.color.linear_max[1]).arg(raw.imgdata.color.linear_max[2]).arg(raw.imgdata.color.linear_max[3]));\n',
     1,
 )
 raw_path.write_text(raw, encoding="utf-8")
