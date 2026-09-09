@@ -21,4 +21,8 @@ MonitorColorProfile profileForScreen(QScreen *screen);
 QImage identityLut(int size = 33);
 QImage srgbToMonitorLut(const QByteArray &monitorIcc, int size = 33,
                         QString *errorMessage = nullptr);
+// Apply the same packed 3D LUT used by display.frag to an encoded display image.
+// The source is normalized to encoded sRGB first; the returned pixels are
+// monitor-device RGB and intentionally carry no image color-space tag.
+QImage applyLut(const QImage &encodedImage, const QImage &atlas, int size = 33);
 }
