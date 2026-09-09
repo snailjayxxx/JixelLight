@@ -15,6 +15,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <algorithm>
+#include <cmath>
 #include <libraw/libraw.h>
 
 SourceCache::SourceCache(qint64 memoryBytes, QString directory) {
@@ -24,7 +25,7 @@ SourceCache::SourceCache(qint64 memoryBytes, QString directory) {
     }
     m_budgetKiB = int(std::clamp(memoryBytes/1024, qint64(1024), qint64(4)*1024*1024));
     m_memory.setMaxCost(m_budgetKiB);
-    m_diskDirectory = directory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)+"/linear-preview-v3" : directory;
+    m_diskDirectory = directory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)+"/linear-preview-v4" : directory;
     QDir().mkpath(m_diskDirectory);
 }
 QString SourceCache::fileKey(const QString &path) {
@@ -33,12 +34,12 @@ QString SourceCache::fileKey(const QString &path) {
     QCryptographicHash hash(QCryptographicHash::Sha256);
     const auto field = [&](const QByteArray &value) { hash.addData(value); hash.addData(QByteArrayView("\0",1)); };
     field(QByteArray(ProcessingPlan::EngineVersion));
-    field(QByteArrayLiteral("disk-schema-3:RGBA64-native-endian"));
+    field(QByteArrayLiteral("disk-schema-4:RGBA64-native-endian"));
     field(QByteArray(LibRaw::version()));
     field(info.canonicalFilePath().toUtf8());
     field(QByteArray::number(info.size()));
     field(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
-    field(QByteArrayLiteral("LibRaw:AHD:WBcamera:highlight2:ProPhoto:16:linear"));
+    field(QByteArrayLiteral("LibRaw:AHD:WBcamera:highlight1:adjustmax0.75:ProPhoto:16:linear"));
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
         hash.addData(file.read(65536));
@@ -69,7 +70,7 @@ SourceData SourceCache::diskPreview(const QString &key) {
     QDataStream stream(&file); stream.setVersion(QDataStream::Qt_6_8);
     quint32 magic=0,w=0,h=0,metaSize=0; quint64 bytes=0;
     stream >> magic >> w >> h >> metaSize >> bytes;
-    if (magic!=0x4a4c5033u || !w || !h || w>2048 || h>2048 || metaSize>65536 || bytes!=quint64(w)*h*8 || file.size()!=qint64(24+metaSize+bytes+32)) return {};
+    if (magic!=0x4a4c5034u || !w || !h || w>2048 || h>2048 || metaSize>65536 || bytes!=quint64(w)*h*8 || file.size()!=qint64(24+metaSize+bytes+32)) return {};
     file.seek(0);
     const QByteArray header = file.read(24);
     QByteArray metadata = file.read(metaSize);
@@ -97,7 +98,7 @@ void SourceCache::storeDiskPreview(const SourceData &source, const CancelToken &
     if (!file.open(QIODevice::WriteOnly)) return;
     QByteArray header;
     QDataStream stream(&header, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
-    stream << quint32(0x4a4c5033) << quint32(preview.width()) << quint32(preview.height()) << quint32(metadata.size()) << quint64(preview.sizeInBytes());
+    stream << quint32(0x4a4c5034) << quint32(preview.width()) << quint32(preview.height()) << quint32(metadata.size()) << quint64(preview.sizeInBytes());
     QCryptographicHash hash(QCryptographicHash::Sha256);
     hash.addData(header); hash.addData(metadata); hash.addData(QByteArrayView(reinterpret_cast<const char *>(preview.constBits()),preview.sizeInBytes()));
     bool ok = file.write(header)==header.size();
@@ -144,6 +145,14 @@ SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken
             out.metadata["model"] = meta.model;
             out.metadata["bitDepth"] = meta.bitsPerChannel;
             out.metadata["demosaic"] = meta.demosaic;
+            out.metadata["libRawHighlightMode"] = meta.highlightMode;
+            out.metadata["libRawHighlightBlend"] = meta.highlightBlendEnabled;
+            out.metadata["libRawAdjustMaximumThreshold"] = meta.adjustMaximumThreshold;
+            double baseExposure = out.metadata.value("rawBaselineExposure", 0.0).toDouble();
+            if (!std::isfinite(baseExposure) || baseExposure < -8.0 || baseExposure > 8.0) baseExposure = 0.0;
+            out.metadata["rawBaseExposureStops"] = baseExposure;
+            if (!out.metadata.contains("rawBaselineExposureSource"))
+                out.metadata["rawBaselineExposureSource"] = QStringLiteral("none / 0 EV camera offset");
             if(!out.image.text("JixelLightCameraCrop").isEmpty())out.metadata["cameraDefaultCrop"]=out.image.text("JixelLightCameraCrop");
         } else {
             QImageReader reader(path); reader.setAutoTransform(true);
@@ -163,7 +172,6 @@ SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken
         out.metadata["workingSpace"] = "Linear ProPhoto RGB";
         out.image.setText("JixelLightWorkingSpace","Linear ProPhoto RGB");
         cache.put(out);
-        // Deliver full-resolution source before optional disk compression/I/O.
         if (partial && !cancelled(token)) partial(out);
         cache.storeDiskPreview(out,token);
     } catch (const std::exception &e) { out.image={}; out.error=QString::fromUtf8(e.what()); }
