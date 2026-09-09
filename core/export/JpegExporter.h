@@ -7,4 +7,4 @@ bool exportJpegTiled(const QImage &linearSource, const AdjustmentState &state, c
                      ColorManagement::OutputSpace space, int quality, const CancelToken &cancel,
                      QString *error, const std::function<void(int)> &progress = {},
                      const std::shared_ptr<std::atomic_bool> &interactive = {},
-                     bool rawSource = true, float rawBaseExposureStops = 0.0f);
+                     bool rawSource = false, float rawBaseExposureStops = 0.0f);
