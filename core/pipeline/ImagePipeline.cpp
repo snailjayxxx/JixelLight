@@ -18,25 +18,16 @@ constexpr float kPi = 3.14159265358979323846f;
 struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 struct Oklab { float L = 0.0f, a = 0.0f, b = 0.0f; };
 inline float orderedDot(float ax, float ay, float az, Vec3 v) {
-    // Match shader dot3: one explicitly ordered XY sum followed by Z.
     const float xy = ax * v.x + ay * v.y;
     return xy + az * v.z;
 }
 inline float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 inline float chromaLength(float a, float b) {
-    // Match the compute shader's explicit float sqrt path. std::hypot uses a
-    // scaled algorithm whose last-bit differences become visible after the
-    // alpha.10 RAW scene-placement gain near an sRGB gamut intersection.
     const float aa = a * a;
     const float bb = b * b;
     return std::sqrt(aa + bb);
 }
 inline float stableCubeRoot(float value) {
-    // Keep the Oklab nonlinear primitive structurally identical to the
-    // compute shader. A library cbrt and a shader pow approximation can each
-    // be accurate while landing on different float results after the large
-    // alpha.10 RAW scene-placement gain. Fixed Newton refinements remove that
-    // backend-specific algorithm choice without changing the color model.
     const float magnitude = std::fabs(value);
     if (magnitude == 0.0f) return 0.0f;
     float root = std::pow(magnitude, 1.0f / 3.0f);
@@ -155,10 +146,6 @@ inline Vec3 oklabToLinearSrgb(Oklab c) {
     };
 }
 inline float snapPerceptualInput(float v) {
-    // Clear only the two least-significant IEEE-754 mantissa bits before the
-    // pure saturation/vibrance Oklab transform. This relative adjustment is
-    // below visible precision, yet removes backend ULP noise that otherwise
-    // gets amplified when a bright RAW color lands close to an RGB gamut edge.
     if (!std::isfinite(v) || v == 0.0f) return v;
     const uint32_t word = std::bit_cast<uint32_t>(v) & 0xfffffffcu;
     return std::bit_cast<float>(word);
@@ -167,10 +154,6 @@ inline Vec3 snapPerceptualInput(Vec3 v) {
     return {snapPerceptualInput(v.x),snapPerceptualInput(v.y),snapPerceptualInput(v.z)};
 }
 inline Vec3 oklabScaledChromaToLinearSrgb(Oklab c, float gain) {
-    // For a pure saturation/vibrance edit, expand the Oklab inverse as a cubic
-    // in chroma gain. This is algebraically equivalent to scaling a/b and
-    // cubing the three LMS roots, but avoids subtracting large nearly-equal
-    // values when an output RGB channel is close to zero.
     const Vec3 chroma{0.0f,c.a,c.b};
     const Vec3 d{
         orderedDot(0.0f,0.3963377774f,0.2158037573f,chroma),
@@ -207,9 +190,6 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     const auto &state = plan.state;
     Oklab lab = linearSrgbToOklab(linearSrgb);
     const float labLimit = plan.data[ProcessingPlan::LookOptions].w;
-    // Without hue/band edits, saturation and vibrance only scale the a/b
-    // vector. Avoid an unnecessary atan2 -> sin/cos round trip, whose error
-    // can be amplified at a high-exposure gamut boundary on some backends.
     bool noBands = true;
     for (int i=0; i<8; ++i) {
         const auto band = plan.data[ProcessingPlan::Bands+i];
@@ -236,10 +216,6 @@ inline Vec3 applyPerceptualColor(Vec3 linearSrgb, const ProcessingPlan &plan) {
     for (int i = 0; i < AdjustmentState::ColorBandCount; ++i) {
         const auto &band = plan.data[ProcessingPlan::Bands + i];
         if (band.x == 0.0f && band.y == 0.0f && band.z == 0.0f) continue;
-        // Consume the exact float values compiled into ProcessingPlan. The GPU
-        // reads these same vec4 values; recomputing from AdjustmentState here
-        // introduced a second rounding path that became visible after the RAW
-        // base scene-placement gain in bright, near-gamut HSL pixels.
         const float w = hueBandWeight(hue, band.w);
         hueDelta += band.x * w;
         satDelta += band.y * w;
@@ -256,17 +232,7 @@ inline Vec3 compressNegativeGamut(Vec3 rgb, const Float4 &lum) {
     const float y = std::max(0.0f, orderedDot(lum.x,lum.y,lum.z,rgb));
     const float minChannel = std::min({rgb.x, rgb.y, rgb.z});
     if (minChannel < 0.0f && y > 1.0e-6f) {
-        // Scale the transition with scene luminance. A fixed 0.001-wide
-        // transition amplified tiny FP32 differences at high exposure.
-        // This is an intentional gamut-rendering correction, not a claim of
-        // bit-identical alpha.6 rendering. See NUMERICAL_PARITY_20260907.md.
         const float inset = 1.0f - 0.005f * smooth(-minChannel / (0.005f * std::max(1.0f,y)));
-        // Algebraically identical to y + (channel-y)*y/(y-min)*inset,
-        // but written as a normalized ratio. For the minimum channel the
-        // ratio is exactly -1 (same operands, reversed subtraction), avoiding
-        // catastrophic cancellation of two nearly equal luminance terms.
-        // This matters after sRGB encoding, where a tiny linear error near zero
-        // is amplified. Keep this arithmetic form in sync with pipeline.comp.
         const float denominator = y - minChannel;
         rgb.x = y * (1.0f + ((rgb.x - y) / denominator) * inset);
         rgb.y = y * (1.0f + ((rgb.y - y) / denominator) * inset);
@@ -286,6 +252,18 @@ inline Vec3 applyHighlightRecovery(Vec3 proPhoto, float amount) {
     const float targetMax = 0.82f + 0.62f * (1.0f - std::exp(-(maxChannel - 0.82f) / 0.62f));
     const float gain = maxChannel > 1.0e-6f ? targetMax / maxChannel : 1.0f;
     return scale(proPhoto, 1.0f + (gain - 1.0f) * weight);
+}
+inline Vec3 applyRawNeutralTone(Vec3 proPhoto) {
+    // Preserve chromaticity and map the scene-linear neutral anchor to display
+    // middle gray with a rational shoulder. Unlike alpha.10's fixed x5.6569,
+    // the curve is exactly 1.0 at scene white and remains bounded above it.
+    const float y = std::max(0.0f, proPhotoToXyzD50(proPhoto).y);
+    if (y <= 1.0e-6f) return proPhoto;
+    constexpr float sg = ProcessingPlan::RawNeutralSceneGray;
+    constexpr float dg = ProcessingPlan::RawNeutralDisplayGray;
+    constexpr float g = dg * (1.0f - sg) / (sg * (1.0f - dg));
+    const float mapped = (g * y) / (1.0f + (g - 1.0f) * y);
+    return scale(proPhoto, mapped / y);
 }
 inline float curveSample(const AdjustmentState::CurveArray &curve, float x) {
     x = clamp01(x);
@@ -352,26 +330,32 @@ bool identity(const AdjustmentState::CurveArray &curve) {
 
 ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePipeline::InputEncoding encoding,
                                        ColorManagement::OutputSpace output) {
+    // Backwards-compatible interpretation for low-level tests/tools. The app
+    // uses the explicit overload because linear ProPhoto is a representation,
+    // not proof that the source was RAW.
+    return compile(original, encoding, output,
+                   encoding == ImagePipeline::InputEncoding::LinearProPhoto, 0.0f);
+}
+
+ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePipeline::InputEncoding encoding,
+                                       ColorManagement::OutputSpace output, bool rawSource,
+                                       float baseExposureStops) {
     const AdjustmentState state=LookProfiles::effective(original);
     ProcessingPlan plan;
+    plan.rawSource = rawSource;
+    plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;
     const auto style=LookProfiles::style(original.look),detail=LookProfiles::detail(original.look);
     plan.data[LookStyle]={style[0],style[1],style[2],style[3]};
     plan.data[LookDetail]={detail[0],detail[1],detail[2],detail[3]};
     const bool lut=style[3]>0 && bool(original.look.lut);
-    const float rawBaseGain = encoding == ImagePipeline::InputEncoding::LinearProPhoto
-        ? ProcessingPlan::RawBaseGain : 1.0f;
-    // The historical 1.5 Oklab-L guard was defined before the RAW base
-    // scene-placement gain. Scale the guard by cbrt(exposure gain), which is
-    // the exact homogeneity of Oklab, so alpha.10 does not newly crush bright
-    // chromatic highlights merely because the neutral RAW baseline moved.
-    const float perceptualLabLimit = 1.5f * std::cbrt(rawBaseGain);
+    // Neutral v2 keeps values near display range before Oklab, so the old
+    // alpha.10 cbrt(+2.5 EV) expansion is no longer needed.
+    constexpr float perceptualLabLimit = 1.5f;
     plan.data[LookOptions]={lut?float(original.look.lut->size):0,float(int(output)),float(original.look.strength),perceptualLabLimit};
     const auto targetRows=matrixOf([&](Vec3 v){return toOutput(v,output);});
     for(int i=0;i<3;++i)plan.data[LutOut0+i]=targetRows[i];
     const auto kernelOutput=lut?ColorManagement::OutputSpace::SRgb:output;
     plan.state = state; plan.encoding = encoding; plan.output = output;
-    // Upload the exact same precomposed rows that the CPU consumes. Evaluating
-    // three separate matrices in GLSL was not numerically the same operation.
     for (int i=0; i<3; ++i) {
         plan.data[Input0+i] = InputMatrix[i];
         plan.data[Working0+i] = WorkingToSrgb[i];
@@ -399,9 +383,13 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     if (kernelOutput == ColorManagement::OutputSpace::AdobeRgb) lum = {.2973769f,.6273491f,.0752741f,float(int(output))};
     if (kernelOutput == ColorManagement::OutputSpace::ProPhotoRgb) lum = {.2880402f,.7118741f,.0000857f,float(int(output))};
     plan.data[Luminance] = lum;
+    // Flags.w: 0 = not RAW, >0 = RAW camera baseline gain. A RAW with a 0 EV
+    // camera offset therefore carries 1.0, while non-RAW linear ProPhoto does
+    // not accidentally enter the RAW base-rendering path.
+    const float cameraBaseGain = rawSource ? std::exp2(plan.baseExposureStops) : 0.0f;
     plan.data[Flags] = {state.contrast == 0 ? 1.0f : 0.0f, identity(state.masterCurve) ? 1.0f : 0.0f,
                        identity(state.redCurve) && identity(state.greenCurve) && identity(state.blueCurve) ? 1.0f : 0.0f,
-                       rawBaseGain};
+                       cameraBaseGain};
     for (int i=0; i<5; ++i) plan.data[Curves+i] = {float(state.masterCurve[i]),float(state.redCurve[i]),float(state.greenCurve[i]),float(state.blueCurve[i])};
     return plan;
 }
@@ -436,6 +424,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
                 v = multiply(plan.data.data()+ProcessingPlan::Input0,v);
             }
             v = multiply(plan.data.data()+ProcessingPlan::Wb0,v);
+            if (flags.w > 0.0f) v = scale(v, flags.w); // camera/model exposure zero-point only
             v = applyHighlightRecovery(v,tone.y);
             if (color.w != 0) {
                 const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
@@ -447,10 +436,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
                 const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
                 if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,tone.x)/Y);
             }
-            // RAW decoding remains scene-linear. Apply the deterministic
-            // Jixel Neutral base scene placement separately from user Exposure
-            // so Exposure=0 remains a meaningful edit reference.
-            if (flags.w != 1.0f) v = scale(v, flags.w);
+            if (flags.w > 0.0f) v = applyRawNeutralTone(v);
             v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
             if (color.z != 0) v = applyPerceptualColor(v,plan);
             else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
@@ -489,8 +475,9 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
     out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
     out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
     out.setText(QStringLiteral("JixelLightBaseRendering"),
-                plan.encoding == InputEncoding::LinearProPhoto
-                    ? QStringLiteral("Jixel Neutral v1 / +2.5 EV scene placement / soft display shoulder")
+                plan.rawSource
+                    ? QStringLiteral("Jixel Neutral v2 / camera baseline %1 EV / luminance tone placement / soft display shoulder")
+                          .arg(QString::number(plan.baseExposureStops, 'f', 3))
                     : QStringLiteral("none"));
     return out;
 }
