@@ -112,7 +112,10 @@ void GpuPreviewItem::refreshDisplayColorManagement() {
     constexpr int LutSize = 33;
     const MonitorColorProfile profile=MonitorColorTransform::profileForScreen(window()?window()->screen():nullptr);
     const QString requestedKey=profile.valid ? QStringLiteral("icc:")+profile.key : QStringLiteral("identity-srgb");
-    if (requestedKey==m_displayColorLutKey && !m_displayColorLut.isNull()) return;
+    if (requestedKey==m_displayColorLutKey && !m_displayColorLut.isNull()) {
+        if(m_controller)m_controller->setDisplayColorLut(m_displayColorLut,m_displayColorLutKey);
+        return;
+    }
 
     QString error;
     QImage lut=profile.valid ? MonitorColorTransform::srgbToMonitorLut(profile.icc,LutSize,&error)
@@ -130,10 +133,11 @@ void GpuPreviewItem::refreshDisplayColorManagement() {
     m_displayColorLut=std::move(lut);
     m_displayColorLutKey=effectiveKey;
     m_displayColorProfileName=name;
+    if(m_controller)m_controller->setDisplayColorLut(m_displayColorLut,m_displayColorLutKey);
     PerformanceRecorder::value("display_color_management",
         profile.valid && error.isEmpty()
-            ? QStringLiteral("GPU display-only sRGB -> monitor ICC 33^3 LUT")
-            : QStringLiteral("GPU display-only identity LUT"));
+            ? QStringLiteral("shared sRGB -> monitor ICC 33^3 LUT for GPU and QML image-provider display")
+            : QStringLiteral("shared identity-sRGB display LUT"));
     PerformanceRecorder::value("display_monitor_profile",name);
     if (profile.valid) PerformanceRecorder::value("display_monitor_profile_path",profile.sourcePath);
     update();
