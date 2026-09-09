@@ -135,6 +135,9 @@ set_target_properties(JixelLightSonyLookTests PROPERTIES WIN32_EXECUTABLE FALSE 
 qt_add_executable(JixelLightSonyValidation tools/SonyValidation.cpp)
 target_link_libraries(JixelLightSonyValidation PRIVATE JixelLightCore)
 set_target_properties(JixelLightSonyValidation PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightRawRenderMatrix tools/RawRenderMatrix.cpp)
+target_link_libraries(JixelLightRawRenderMatrix PRIVATE JixelLightGpu)
+set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}
