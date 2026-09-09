@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QColorSpace>
 #include <QImage>
+#include <QRgba64>
 #include <array>
 #include <cmath>
 
@@ -13,6 +14,18 @@ std::array<float,3> atlasGridSample(const QImage &atlas,int n,int r,int g,int b)
     const auto *row=reinterpret_cast<const float *>(atlas.constScanLine(g));
     const int x=b*n+r;
     return {row[x*4+0],row[x*4+1],row[x*4+2]};
+}
+QImage inverseLut(int n=33) {
+    QImage lut=MonitorColorTransform::identityLut(n);
+    for(int y=0;y<lut.height();++y) {
+        auto *row=reinterpret_cast<float *>(lut.scanLine(y));
+        for(int x=0;x<lut.width();++x) {
+            row[x*4+0]=1.0f-row[x*4+0];
+            row[x*4+1]=1.0f-row[x*4+1];
+            row[x*4+2]=1.0f-row[x*4+2];
+        }
+    }
+    return lut;
 }
 }
 
@@ -62,6 +75,54 @@ private slots:
         QVERIFY2(red[0]>0.85f&&red[0]<0.98f,qPrintable(QString::number(red[0])));
         QVERIFY2(red[1]>0.08f&&red[1]<0.35f,qPrintable(QString::number(red[1])));
         QVERIFY2(red[2]>0.04f&&red[2]<0.28f,qPrintable(QString::number(red[2])));
+    }
+
+    void cpuIdentityLutPreservesEncodedSrgb() {
+        QImage image(2,1,QImage::Format_RGBA64);
+        auto *row=reinterpret_cast<QRgba64 *>(image.scanLine(0));
+        row[0]=QRgba64::fromRgba64(12345,34567,54321,50000);
+        row[1]=QRgba64::fromRgba64(65535,0,32768,65535);
+        image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+        const QImage out=MonitorColorTransform::applyLut(image,MonitorColorTransform::identityLut(),33);
+        QVERIFY(!out.isNull());
+        QVERIFY(!out.colorSpace().isValid());
+        const auto *actual=reinterpret_cast<const QRgba64 *>(out.constScanLine(0));
+        for(int i=0;i<2;++i) {
+            QVERIFY(std::abs(int(actual[i].red())-int(row[i].red()))<=1);
+            QVERIFY(std::abs(int(actual[i].green())-int(row[i].green()))<=1);
+            QVERIFY(std::abs(int(actual[i].blue())-int(row[i].blue()))<=1);
+            QCOMPARE(actual[i].alpha(),row[i].alpha());
+        }
+    }
+
+    void cpuDisplayPathUsesSameLutConventionAsShader() {
+        QImage image(1,1,QImage::Format_RGBA64);
+        auto *pixel=reinterpret_cast<QRgba64 *>(image.scanLine(0));
+        pixel[0]=QRgba64::fromRgba64(16384,32768,49151,60000);
+        image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+        const QImage out=MonitorColorTransform::applyLut(image,inverseLut(),33);
+        QVERIFY(!out.isNull());
+        const auto p=reinterpret_cast<const QRgba64 *>(out.constScanLine(0))[0];
+        QVERIFY(std::abs(int(p.red())-(65535-16384))<=2);
+        QVERIFY(std::abs(int(p.green())-(65535-32768))<=2);
+        QVERIFY(std::abs(int(p.blue())-(65535-49151))<=2);
+        QCOMPARE(p.alpha(),quint16(60000));
+    }
+
+    void cpuDisplayNormalizesTaggedInputToSrgbBeforeMonitorLut() {
+        QImage p3(1,1,QImage::Format_RGBA64);
+        auto *pixel=reinterpret_cast<QRgba64 *>(p3.scanLine(0));
+        pixel[0]=QRgba64::fromRgba64(50000,18000,9000,65535);
+        p3.setColorSpace(QColorSpace(QColorSpace::DisplayP3));
+        const QImage expected=p3.convertedToColorSpace(QColorSpace(QColorSpace::SRgb),QImage::Format_RGBA64);
+        QVERIFY(!expected.isNull());
+        const QImage out=MonitorColorTransform::applyLut(p3,MonitorColorTransform::identityLut(),33);
+        QVERIFY(!out.isNull());
+        const auto a=reinterpret_cast<const QRgba64 *>(expected.constScanLine(0))[0];
+        const auto b=reinterpret_cast<const QRgba64 *>(out.constScanLine(0))[0];
+        QVERIFY(std::abs(int(a.red())-int(b.red()))<=2);
+        QVERIFY(std::abs(int(a.green())-int(b.green()))<=2);
+        QVERIFY(std::abs(int(a.blue())-int(b.blue()))<=2);
     }
 
     void invalidProfileFailsClosed() {
