@@ -96,17 +96,30 @@ jobs:
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
-      - name: Require Direct3D compute validation (WARP)
+      - name: Real RAW JPEG CPU GPU render matrix
+        shell: bash
+        env:
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          MATRIX=$(find build/bin -type f \( -name JixelLightRawRenderMatrix -o -name JixelLightRawRenderMatrix.exe \) | head -1)
+          test -n "$MATRIX"
+          rm -rf build/raw-render-matrix
+          "$MATRIX" "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
         env:
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
           & ./build/bin/Release/JixelLightGpuTests.exe -o gpu-validation.txt,txt
-          $result = $LASTEXITCODE
+          $gpuResult = $LASTEXITCODE
           if (Test-Path gpu-validation.txt) { Get-Content gpu-validation.txt }
-          if ($result -ne 0) { throw 'D3D11 compute validation failed' }
-      - name: Require Metal compute validation
+          if ($gpuResult -ne 0) { throw 'D3D11 compute validation failed' }
+          & ./build/bin/Release/JixelLightDisplayColorGpuTests.exe -o display-color-gpu-validation.txt,txt
+          $displayResult = $LASTEXITCODE
+          if (Test-Path display-color-gpu-validation.txt) { Get-Content display-color-gpu-validation.txt }
+          if ($displayResult -ne 0) { throw 'D3D11 display ICC validation failed' }
+      - name: Require Metal compute and display-ICC validation
         if: ${{ !cancelled() && runner.os == 'macOS' && steps.compile.outcome == 'success' }}
         shell: bash
         env:
@@ -115,6 +128,9 @@ jobs:
           status=0
           ./build/bin/JixelLightGpuTests -o gpu-validation.txt,txt || status=$?
           cat gpu-validation.txt
+          test "$status" -eq 0 || exit "$status"
+          ./build/bin/JixelLightDisplayColorGpuTests -o display-color-gpu-validation.txt,txt || status=$?
+          cat display-color-gpu-validation.txt
           exit "$status"
       - name: GUI Direct3D integration (WARP)
         if: runner.os == 'Windows'
@@ -151,7 +167,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -166,11 +182,14 @@ jobs:
             build/*-results.txt
             build/tests.xml
             build/sony-real-reports/
+            build/raw-render-matrix/
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
+            display-color-gpu-validation.txt
             gui-*.json
             gui-*.png
             benchmark.json
+            raw-render-matrix.log
       - name: Deploy and validate Windows package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -255,6 +274,14 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
         run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: Real RAW JPEG CPU GPU render matrix
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          rm -rf build/raw-render-matrix
+          xvfb-run -a ./build/bin/JixelLightRawRenderMatrix "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
@@ -270,7 +297,7 @@ jobs:
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -282,6 +309,8 @@ jobs:
             build/*-results.txt
             build/tests.xml
             build/sony-real-reports/
+            build/raw-render-matrix/
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
+            raw-render-matrix.log

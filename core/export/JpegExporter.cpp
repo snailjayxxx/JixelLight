@@ -45,8 +45,6 @@ public:
     bool begin(int width,int height,int quality,const QByteArray &profile) {
         if (width<=0 || height<=0 || width>JPEG_MAX_DIMENSION || height>JPEG_MAX_DIMENSION) { failure="Image exceeds JPEG dimension limit"; return false; }
         if (!file.open(QIODevice::WriteOnly)) { failure=file.errorString(); return false; }
-        // Construct all owning C++ objects BEFORE setjmp. No longjmp is allowed
-        // across a nontrivial C++ automatic object's initialization/destruction.
         std::vector<QByteArray> markers;
         const int count=(int(profile.size())+65518)/65519;
         for (int i=0;i<count;++i) {
@@ -64,8 +62,6 @@ public:
         info.image_width=JDIMENSION(width); info.image_height=JDIMENSION(height);
         info.input_components=3; info.in_color_space=JCS_RGB;
         jpeg_set_defaults(&info); jpeg_set_quality(&info,std::clamp(quality,1,100),TRUE);
-        // Optimized Huffman coding retains whole-image DCT coefficients. Keep
-        // the encoder genuinely streaming: this changes size, not JPEG samples.
         info.optimize_coding=FALSE;
         if (quality>=90) for (int i=0;i<3;++i) { info.comp_info[i].h_samp_factor=1; info.comp_info[i].v_samp_factor=1; }
         jpeg_start_compress(&info,TRUE);
@@ -100,18 +96,19 @@ private:
 bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QString &path,
                      ColorManagement::OutputSpace space,int quality,const CancelToken &token,
                      QString *error,const std::function<void(int)> &progress,
-                     const std::shared_ptr<std::atomic_bool> &interactive) {
+                     const std::shared_ptr<std::atomic_bool> &interactive,
+                     bool rawSource,float rawBaseExposureStops) {
     if (error) error->clear();
     if (source.isNull() || cancelled(token)) { if (error) *error="Cancelled or no source image"; return false; }
-    PerformanceSpan timing("jpeg_export",{{"pixels",qint64(source.width())*source.height()},{"space",ColorManagement::key(space)}});
+    PerformanceSpan timing("jpeg_export",{{"pixels",qint64(source.width())*source.height()},{"space",ColorManagement::key(space)},
+                                           {"raw",rawSource},{"raw_base_ev",rawBaseExposureStops}});
     Writer writer(path);
     if (!writer.begin(source.width(),source.height(),quality,ColorManagement::iccProfile(space))) { if (error) *error=writer.failure; return false; }
-    const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space);
+    const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
     const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
     for (int y=0;y<input.height();y+=128) {
         while (interactive && interactive->load(std::memory_order_relaxed) && !cancelled(token)) QThread::msleep(10);
         if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
-        const QImage view(input.constScanLine(y),input.width(),std::min(128,input.height()-y),input.bytesPerLine(),QImage::Format_RGBA64);
         const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull() || !writer.rows(rendered)) { if (error) *error=cancelled(token) ? "Cancelled" : writer.failure; return false; }
         if (progress) progress(std::min(100,(y+rendered.height())*100/input.height()));

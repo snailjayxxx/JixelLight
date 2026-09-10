@@ -1,4 +1,5 @@
 #include "core/gpu/GpuEngine.h"
+#include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
@@ -13,6 +14,8 @@ QShader shader(const QString &name) {
     return QShader::fromSerialized(file.readAll());
 }
 constexpr int CountsBytes = HistogramCounts::GpuWords * int(sizeof(quint32));
+constexpr int DisplayLutSize = 33;
+constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
     // Metal stays inside the original 40/65535 bound. D3D11 and OpenGL have
@@ -30,11 +33,28 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
     return complexHsl || extremeBrightPerceptual;
 }
 }
-GpuEngine::GpuEngine(QRhi *rhi) : m_rhi(rhi) { initializeShaderResources(); }
+GpuEngine::GpuEngine(QRhi *rhi) : m_rhi(rhi) {
+    initializeShaderResources();
+    m_displayColorLut=MonitorColorTransform::identityLut(DisplayLutSize);
+    m_displayColorLutKey=QStringLiteral("identity-srgb");
+    m_displayColorProfileName=QStringLiteral("sRGB identity fallback");
+}
 GpuEngine::~GpuEngine() {
     // No frame-by-frame finish/wait. The only wait is teardown while a callback
     // still references a readback object, so it cannot outlive its QRhi owner.
     if (hasPendingReadback()) m_rhi->finish();
+}
+void GpuEngine::setDisplayColorLut(const QImage &atlas, const QString &key, const QString &profileName) {
+    if (atlas.isNull()) return;
+    if (atlas.size()!=displayLutAtlasSize() || atlas.format()!=QImage::Format_RGBA32FPx4) {
+        PerformanceRecorder::value("display_monitor_icc_error",QStringLiteral("Rejected invalid display LUT atlas"));
+        return;
+    }
+    const QString normalizedKey=key.isEmpty()?QStringLiteral("identity-srgb"):key;
+    if (normalizedKey==m_displayColorLutKey) return;
+    m_displayColorLut=atlas;
+    m_displayColorLutKey=normalizedKey;
+    m_displayColorProfileName=profileName;
 }
 bool GpuEngine::fail(const QString &message) { m_error = message; return false; }
 QString GpuEngine::backendName() const {
@@ -111,7 +131,8 @@ bool GpuEngine::initialize(QSize size) {
         || !buildCompute(m_reduce, m_reduceBindings.get(), "histogram_reduce.comp")) return false;
     PerformanceRecorder::value("gpu_backend", backendName());
     PerformanceRecorder::value("gpu_working_format", QStringLiteral("RGBA32F; CPU input RGBA64; no FP16 approximation"));
-    PerformanceRecorder::value("gpu_estimated_bytes", qint64(size.width())*size.height()*32 + m_groups*CountsBytes + CountsBytes);
+    PerformanceRecorder::value("gpu_estimated_bytes", qint64(size.width())*size.height()*32 + m_groups*CountsBytes + CountsBytes
+                               + qint64(DisplayLutSize)*DisplayLutSize*DisplayLutSize*16);
     return true;
 }
 
@@ -202,7 +223,22 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
     return true;
 }
 
+bool GpuEngine::ensureDisplayColorResources() {
+    if (!m_displayLutTexture) {
+        m_displayLutTexture.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,displayLutAtlasSize(),1));
+        if (!m_displayLutTexture->create()) return fail(QStringLiteral("Display ICC LUT texture allocation failed"));
+        m_uploadedDisplayColorLutKey.clear();
+    }
+    if (!m_displayLutSampler) {
+        m_displayLutSampler.reset(m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
+                                                    QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+        if (!m_displayLutSampler->create()) return fail(QStringLiteral("Display ICC LUT sampler failed"));
+    }
+    return true;
+}
+
 bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
+    if (!ensureDisplayColorResources()) return false;
     if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount()) return true;
     m_display.reset(); m_displayBindings.reset();
     if (!m_sampler) {
@@ -216,7 +252,10 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
     }
     m_uploadVertices = true;
     m_displayBindings.reset(m_rhi->newShaderResourceBindings());
-    m_displayBindings->setBindings({QRhiShaderResourceBinding::sampledTexture(0, QRhiShaderResourceBinding::FragmentStage, m_output.get(), m_sampler.get())});
+    m_displayBindings->setBindings({
+        QRhiShaderResourceBinding::sampledTexture(0, QRhiShaderResourceBinding::FragmentStage, m_output.get(), m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, m_displayLutTexture.get(), m_displayLutSampler.get())
+    });
     if (!m_displayBindings->create()) return fail(QStringLiteral("GPU display bindings failed"));
     m_display.reset(m_rhi->newGraphicsPipeline());
     m_display->setShaderStages({{QRhiShaderStage::Vertex, shader("display.vert")}, {QRhiShaderStage::Fragment, shader("display.frag")}});
@@ -234,15 +273,31 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
 bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
     if (!m_output || !createDisplay(target)) return false;
     QRhiResourceUpdateBatch *updates = nullptr;
+    const auto ensureUpdates=[&]() {
+        if (!updates) updates=m_rhi->nextResourceUpdateBatch();
+        return updates;
+    };
     if (m_uploadVertices) {
         // Top-left data convention on every backend. QQuickRhiItem handles the
         // render-target texture's framebuffer orientation when compositing it.
         const float top = m_rhi->isYUpInNDC() ? 1.f : -1.f, bottom = -top;
         const float vertices[]{-1,top,0,0, -1,bottom,0,1, 1,top,1,0,
                                 1,top,1,0, -1,bottom,0,1, 1,bottom,1,1};
-        updates = m_rhi->nextResourceUpdateBatch();
-        updates->uploadStaticBuffer(m_vertices.get(), vertices);
+        ensureUpdates()->uploadStaticBuffer(m_vertices.get(), vertices);
         m_uploadVertices = false;
+    }
+    if (m_uploadedDisplayColorLutKey!=m_displayColorLutKey) {
+        if (m_displayColorLut.isNull() || m_displayColorLut.size()!=displayLutAtlasSize()
+            || m_displayColorLut.format()!=QImage::Format_RGBA32FPx4)
+            return fail(QStringLiteral("Display ICC LUT is missing or invalid"));
+        QRhiTextureSubresourceUploadDescription upload(m_displayColorLut.constBits(),quint32(m_displayColorLut.sizeInBytes()));
+        upload.setSourceSize(m_displayColorLut.size());
+        upload.setDataStride(quint32(m_displayColorLut.bytesPerLine()));
+        ensureUpdates()->uploadTexture(m_displayLutTexture.get(),{{0,0,upload}});
+        m_uploadedDisplayColorLutKey=m_displayColorLutKey;
+        PerformanceRecorder::count("display_monitor_lut_uploads");
+        PerformanceRecorder::count("display_monitor_lut_upload_bytes",m_displayColorLut.sizeInBytes());
+        PerformanceRecorder::value("display_monitor_profile_gpu",m_displayColorProfileName);
     }
     cb->beginPass(target, Qt::black, {1.0f,0}, updates);
     cb->setGraphicsPipeline(m_display.get());

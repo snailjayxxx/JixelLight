@@ -93,9 +93,15 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.use_auto_wb = 0;
     params.use_camera_matrix = 3; // Prefer embedded/built-in camera color data regardless of WB mode.
     params.no_auto_bright = 1;
-    params.adjust_maximum_thr = 0.0f;
+    // Keep LibRaw's documented channel-maximum correction enabled. Disabling
+    // it restores dcraw-style coloured highlight failures when the nominal
+    // white level does not match the photographed channel maximum.
+    params.adjust_maximum_thr = 0.75f;
     params.bright = 1.0f;
-    params.highlight = 2;         // LibRaw highlight blend before our scene-linear tone stage.
+    // Do not blend highlights inside LibRaw and then recover/compress them a
+    // second time in JixelLight. Mode 1 preserves unclipped channel data; the
+    // editor owns the visible highlight rendering policy downstream.
+    params.highlight = 1;
     params.output_color = 4;      // ProPhoto RGB primaries (D50), kept linear with gamm below.
     params.output_bps = 16;
     params.user_qual = 3;         // AHD demosaic reference path.
@@ -131,6 +137,8 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     }
     image.setText(QStringLiteral("JixelLightWorkingSpace"), QStringLiteral("Linear ProPhoto RGB"));
     image.setText(QStringLiteral("JixelLightSource"), QStringLiteral("RAW"));
+    image.setText(QStringLiteral("JixelLightLibRawHighlightMode"), QStringLiteral("1 / unclip"));
+    image.setText(QStringLiteral("JixelLightAdjustMaximumThreshold"), QStringLiteral("0.75"));
     // LibRaw's standard inset is an absolute sensor-space crop. Convert it to
     // the developed/oriented bitmap for reference matching only. Reject bogus
     // metadata and unexplained rescaling; never guess a centre crop.
@@ -181,7 +189,9 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         metadata->demosaic = QStringLiteral("AHD");
         metadata->cameraMatrixEnabled = true;
         metadata->cameraWhiteBalanceEnabled = true;
-        metadata->highlightBlendEnabled = true;
+        metadata->highlightBlendEnabled = false;
+        metadata->highlightMode = 1;
+        metadata->adjustMaximumThreshold = 0.75f;
     }
 
     LibRaw::dcraw_clear_mem(processed);

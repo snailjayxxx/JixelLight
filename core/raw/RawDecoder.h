@@ -14,7 +14,12 @@ struct RawMetadata {
     QString demosaic = QStringLiteral("AHD");
     bool cameraMatrixEnabled = true;
     bool cameraWhiteBalanceEnabled = true;
-    bool highlightBlendEnabled = true;
+    // Decoder policy is LibRaw highlight mode 1 (unclip). JixelLight keeps
+    // clipped-channel reconstruction out of LibRaw so downstream highlight
+    // recovery/tone controls have one clearly owned rendering stage.
+    bool highlightBlendEnabled = false;
+    int highlightMode = 1;
+    float adjustMaximumThreshold = 0.75f;
 };
 
 class RawDecoder final {

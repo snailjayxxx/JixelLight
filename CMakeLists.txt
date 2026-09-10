@@ -39,8 +39,10 @@ endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
     app/LookController.cpp
+    app/DisplayColorController.cpp
     core/cache/SourceCache.cpp
     core/color/ColorManagement.cpp
+    core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
     core/metadata/MetadataReader.cpp
     core/look/SonyLookMetadata.cpp
@@ -63,10 +65,10 @@ add_library(JixelLightCore STATIC
     diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
-target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.10" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.11" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
-    target_link_libraries(JixelLightCore PRIVATE psapi)
+    target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
@@ -99,8 +101,14 @@ target_link_libraries(JixelLightBenchmark PRIVATE JixelLightCore)
 qt_add_executable(JixelLightGpuTests tests/GpuTests.cpp)
 target_link_libraries(JixelLightGpuTests PRIVATE JixelLightGpu Qt6::Test)
 add_test(NAME gpu-correctness COMMAND JixelLightGpuTests -o gpu-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightMonitorColorTests tests/MonitorColorTests.cpp)
+target_link_libraries(JixelLightMonitorColorTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME monitor-color COMMAND JixelLightMonitorColorTests -o monitor-color-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightDisplayColorGpuTests tests/DisplayColorGpuTests.cpp)
+target_link_libraries(JixelLightDisplayColorGpuTests PRIVATE JixelLightGpu Qt6::Test)
+add_test(NAME display-color-gpu COMMAND JixelLightDisplayColorGpuTests -o display-color-gpu-results.txt,txt -o -,txt)
 
-set_tests_properties(core-tests performance-correctness gpu-correctness PROPERTIES TIMEOUT 120)
+set_tests_properties(core-tests performance-correctness gpu-correctness monitor-color display-color-gpu PROPERTIES TIMEOUT 120)
 
 qt_add_executable(JixelLightRawWorkerTests tests/RawWorkerTests.cpp)
 target_link_libraries(JixelLightRawWorkerTests PRIVATE JixelLightCore Qt6::Test)
@@ -108,7 +116,8 @@ add_test(NAME raw-worker-stack COMMAND JixelLightRawWorkerTests -o raw-worker-re
 set_tests_properties(raw-worker-stack PROPERTIES TIMEOUT 120)
 # Tests and CLI benchmarks must retain standard output on Windows.
 set_target_properties(JixelLightCoreTests JixelLightPerformanceTests JixelLightGpuTests
-    JixelLightRawWorkerTests JixelLightBenchmark PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+    JixelLightMonitorColorTests JixelLightDisplayColorGpuTests JixelLightRawWorkerTests JixelLightBenchmark
+    PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 # Match the image kernel's arithmetic order to the shader's precise operations.
 # Other application code remains normally optimized.
@@ -127,6 +136,9 @@ set_target_properties(JixelLightSonyLookTests PROPERTIES WIN32_EXECUTABLE FALSE 
 qt_add_executable(JixelLightSonyValidation tools/SonyValidation.cpp)
 target_link_libraries(JixelLightSonyValidation PRIVATE JixelLightCore)
 set_target_properties(JixelLightSonyValidation PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightRawRenderMatrix tools/RawRenderMatrix.cpp)
+target_link_libraries(JixelLightRawRenderMatrix PRIVATE JixelLightGpu)
+set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}

@@ -1,9 +1,12 @@
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
+#include "core/metadata/MetadataReader.h"
 #include "core/export/ExportQueue.h"
 #include "core/export/JpegExporter.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
+#include <algorithm>
+#include <cmath>
 
 ExportQueue::ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent) : QObject(parent),m_cache(std::move(cache)) {
     m_pool.setMaxThreadCount(1);
@@ -40,9 +43,6 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                 else if (!request.source.isNull()) source.image=request.source;
                 else source=loadSource(*cache,request.sourcePath,token);
                 if (cancelled(token)) break;
-                // At most one next source in flight, and only when the estimated
-                // pair fits the decoded-source budget. The RAW decoder also has
-                // a process-wide single-decode lease.
                 if (index+1<requests.size() && !source.image.isNull() && source.image.sizeInBytes()*2<=cache->budgetBytes()) {
                     const auto following=requests[index+1];
                     next=std::async(std::launch::async,[cache,following,token] {
@@ -51,11 +51,21 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                     });
                 }
                 ExportResult result{request.sourcePath,request.destination,source.error,false};
-                const auto state=source.metadata.isEmpty()?request.state:LookProfiles::resolveAsShot(request.state,source.metadata,RawDecoder::isRawFile(request.sourcePath));
+                const bool rawSource=RawDecoder::isRawFile(request.sourcePath);
+                QVariantMap metadata=source.metadata;
+                // exportCurrent can supply the already-decoded full image, so
+                // recover only the small metadata context instead of decoding
+                // RAW a second time.
+                if(rawSource && metadata.isEmpty()) metadata=MetadataReader::read(request.sourcePath);
+                const auto state=metadata.isEmpty()?request.state:LookProfiles::resolveAsShot(request.state,metadata,rawSource);
+                double rawBaseExposure=metadata.value("rawBaseExposureStops",
+                    metadata.value("rawBaselineExposure",0.0)).toDouble();
+                if(!std::isfinite(rawBaseExposure))rawBaseExposure=0.0;
+                rawBaseExposure=std::clamp(rawBaseExposure,-8.0,8.0);
                 if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,request.destination,request.space,request.quality,token,&result.error,
                     [this,index,total=requests.size(),file=request.sourcePath](int percent) {
                         QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);
-                    },interactive);
+                    },interactive,rawSource,float(rawBaseExposure));
                 results.push_back(result);
             }
             if (next.valid()) next.get();

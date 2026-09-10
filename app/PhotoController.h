@@ -9,6 +9,8 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QSet>
+#include <algorithm>
+#include <cmath>
 #include "core/preview/PreviewTasks.h"
 #include "core/export/ExportQueue.h"
 #include "core/look/CameraReference.h"
@@ -127,13 +129,21 @@ public:
     double exportProgress() const { return m_exportProgress; }
     QSizeF previewDisplaySize() const { return m_displayPixels / m_devicePixelRatio; }
     qulonglong renderRevision() const { return m_requestedRevision; }
-    // Called by the Qt Quick renderer ONLY during synchronize() (GUI blocked).
     QImage gpuSource() const { return m_preparing ? QImage{} : m_gpuSource; }
-    ProcessingPlan gpuPlan() const { return ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto); }
-    // Renderer delivery enters these on the GUI thread through queued calls.
+    float rawBaseExposureStops() const {
+        if (!currentIsRaw()) return 0.0f;
+        bool ok = false;
+        const double value = m_currentMetadata.value(QStringLiteral("rawBaseExposureStops"), 0.0).toDouble(&ok);
+        return ok && std::isfinite(value) ? float(std::clamp(value, -8.0, 8.0)) : 0.0f;
+    }
+    ProcessingPlan gpuPlan() const {
+        return ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
+                                       ColorManagement::OutputSpace::SRgb, currentIsRaw(), rawBaseExposureStops());
+    }
     void gpuPresented(quint64 revision, const QString &backend);
     void gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels);
     void gpuFailed(const QString &message);
+    void setDisplayColorLut(const QImage &atlas, const QString &key);
     Q_INVOKABLE void setGpuEnabled(bool enabled);
     Q_INVOKABLE void setExactScopes(bool enabled);
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
@@ -215,6 +225,7 @@ private:
     std::unique_ptr<ExportQueue> m_exportQueue;
     QImage m_fastSource, m_gpuSource, m_loadedPreview;
     QString m_loadedKey, m_backendName, m_scopesLabel;
+    QString m_displayColorLutKey = QStringLiteral("identity-srgb");
     bool m_loading = false, m_rendering = false, m_gpuEnabled = true, m_gpuActive = false;
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
     bool m_preparing = false;
