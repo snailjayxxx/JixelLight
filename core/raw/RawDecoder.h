@@ -14,11 +14,11 @@ struct RawMetadata {
     QString demosaic = QStringLiteral("AHD");
     bool cameraMatrixEnabled = true;
     bool cameraWhiteBalanceEnabled = true;
-    // LibRaw mode 2 reconstructs/blends clipped channel relationships during
-    // RAW development. JixelLight's later highlightRecovery/displayShoulder
-    // are tonal controls, not a second clipped-channel reconstruction pass.
-    bool highlightBlendEnabled = true;
-    int highlightMode = 2;
+    // Decoder policy is LibRaw highlight mode 1 (unclip). JixelLight keeps
+    // clipped-channel reconstruction out of LibRaw so downstream highlight
+    // recovery/tone controls have one clearly owned rendering stage.
+    bool highlightBlendEnabled = false;
+    int highlightMode = 1;
     float adjustMaximumThreshold = 0.75f;
 };
 
