@@ -21,6 +21,12 @@ ApplicationWindow {
     onClosing: function(close) { if (!photoController.flushEdits()) close.accepted=false }
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }
+    function localizeDialogButtons(dialog) {
+        const ok = dialog.standardButton(Dialog.Ok)
+        const cancel = dialog.standardButton(Dialog.Cancel)
+        if (ok) ok.text = t("确定", "OK")
+        if (cancel) cancel.text = t("取消", "Cancel")
+    }
     function meta(key) {
         const value = photoController.currentMetadata[key]
         return value === undefined || value === null || value === "" ? "—" : value
@@ -54,6 +60,7 @@ ApplicationWindow {
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
         property bool batchMode: false
+        onOpened: window.localizeDialogButtons(exportSettingsDialog)
         onAccepted: batchMode ? batchFolder.open() : exportDialog.open()
         ColumnLayout {
             width: 430; spacing: 12
@@ -68,7 +75,12 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Label { text: window.t("JPEG 质量", "JPEG Quality"); color: "#d6dee8" }
                 Item { Layout.fillWidth: true }
-                SpinBox { id: exportQualityBox; from: 1; to: 100; value: 92; editable: true }
+                SpinBox {
+                    id: exportQualityBox
+                    from: 1; to: 100; value: 92; editable: true
+                    Layout.preferredWidth: 132
+                    Layout.minimumWidth: 132
+                }
             }
             Label {
                 Layout.fillWidth: true
@@ -96,6 +108,7 @@ ApplicationWindow {
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
+        onOpened: window.localizeDialogButtons(projectNameDialog)
         ColumnLayout {
             width: 360
             Label { text: window.t("项目名称", "Project name") }
