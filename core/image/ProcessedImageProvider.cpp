@@ -15,10 +15,19 @@ QImage ProcessedImageProvider::displayCopy(const QImage &source,const QImage &at
             const QImage converted=out.convertedToColorSpace(srgb,QImage::Format_RGBA64);
             if(!converted.isNull())out=converted;
         }
-        // Presentation pixels are device values. Keep the provider path aligned
-        // with display.frag and do not invite a second image-profile transform.
+#if defined(Q_OS_WIN)
+        // Windows uses an explicit display-device transform in alpha.11. With
+        // an identity/sRGB monitor the pixels are already the device values;
+        // keep them untagged so no second image-profile conversion is invited.
         out.setColorSpace(QColorSpace());
         out.setText(QStringLiteral("JixelLightDisplayManaged"),QStringLiteral("identity-srgb"));
+#else
+        // On platforms where alpha.11 does not install an explicit monitor ICC
+        // LUT, preserve the sRGB tag and let the platform/Qt presentation path
+        // perform its native color management instead of stripping metadata.
+        if(!out.colorSpace().isValid())out.setColorSpace(srgb);
+        out.setText(QStringLiteral("JixelLightDisplayManaged"),QStringLiteral("platform-srgb"));
+#endif
         return out;
     }
     const QImage transformed=MonitorColorTransform::applyLut(source,atlas,33);
