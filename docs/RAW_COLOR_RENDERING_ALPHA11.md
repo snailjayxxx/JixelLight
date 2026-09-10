@@ -17,7 +17,9 @@ LibRaw is configured as follows:
 - `gamm = 1, 1` (linear output)
 - 16-bit output
 
-JixelLight therefore owns the visible highlight rendering after LibRaw instead of blending highlights in both libraries.
+JixelLight therefore keeps clipped-channel reconstruction out of LibRaw and owns visible highlight/tone rendering downstream. The current JixelLight `highlightRecovery` implementation scales RGB together and the display shoulder is a tonal transform; neither is treated as a reason to silently change the RAW decoder policy.
+
+A previous alpha.11 probe compared LibRaw highlight modes 1 and 2 on the pinned Sony set. Before any fitted look, held-out RAW-to-camera-JPEG RMSE changed only from approximately `0.0507661` (mode 1) to `0.0507528` (mode 2), about a 0.026% relative difference. That is not sufficient evidence to change the production decoder to mode 2. Decoder code, `RawMetadata`, cache metadata and diagnostics therefore remain consistently on mode 1.
 
 ## Exposure semantics
 
@@ -29,7 +31,7 @@ Three concepts must remain separate:
 
 alpha.10's universal `+2.5 EV / ×5.656854` RAW multiplier is no longer used. `RawBaseExposureStops` and `RawBaseGain` remain source-compatibility constants at 0 EV / 1× only.
 
-The current Neutral v2 anchor (`scene gray 0.03 -> display gray 0.18`) is intentionally treated as a hypothesis under real-file regression, not as a proven camera constant. The RAW render matrix records a per-scene exposure sweep against checksum-pinned camera JPEG pairs so this anchor can be changed only from evidence.
+The current Neutral v2 anchor is `scene gray 0.03 -> display gray 0.18`. It is not treated as a universal camera constant. The checksum-pinned Sony A7 IV/ST render matrix swept an additional camera-base offset from -1.5 to +1.5 EV on three independent scenes. Per-scene minima occurred at `+0.5 / 0 / -0.5 EV`, while the three-scene mean RMSE was lowest at **0 EV** (`0.07073`; +0.5 EV was `0.08050`). Therefore no additional universal exposure offset is added. The anchor remains a provisional neutral rendering center for the current evidence set and must be re-evaluated as more camera/scene fixtures are added.
 
 ## RAW identity is not pixel encoding
 
@@ -44,17 +46,21 @@ Image processing ends in encoded sRGB for the interactive preview. Monitor calib
 ```
 Linear RAW
   -> JixelLight processing
-  -> encoded sRGB output texture
+  -> encoded sRGB preview pixels
        |-> histogram / regression / CPU-GPU parity
        |-> export path (with requested output profile)
+       |-> CPU/placeholder/reference provider display copy
+       |      -> shared sRGB-to-monitor ICC 33^3 LUT
        `-> GPU display pass
-             -> sRGB-to-monitor ICC 33^3 LUT
-             -> framebuffer
+              -> same sRGB-to-monitor ICC 33^3 LUT
+              -> framebuffer
 ```
 
-On Windows, JixelLight resolves the ICC profile for the `QScreen`'s native `HMONITOR`, obtains the current profile through the monitor-specific device context, validates it with LittleCMS, and builds a 33^3 float LUT. The LUT is uploaded separately from the processed image.
+On Windows, JixelLight uses the current `QScreen` display-device name to create a monitor-specific Windows display DC, obtains its ICC profile through `GetICMProfileW`, validates it with LittleCMS, and builds a 33^3 float LUT. `NOMINMAX` is defined before including `windows.h` so Windows SDK `min/max` macros cannot corrupt standard-library calls.
 
-When no usable monitor profile is available, the display layer uses an identity sRGB LUT. A bad ICC profile must fail closed to identity; it must never alter the processing output.
+The same LUT is used by the CPU/image-provider presentation copy and by `display.frag`. Embedded JPEG placeholders, reference JPEGs, CPU fallback previews and GPU RAW previews therefore share one monitor transform instead of switching between unrelated Windows/Qt color paths.
+
+When no usable monitor profile is available, the display layer uses an identity sRGB LUT. A bad ICC profile fails closed to identity; it must never alter the processing output.
 
 The monitor LUT is **display-only**. It must not affect:
 
@@ -68,7 +74,7 @@ The monitor LUT is **display-only**. It must not affect:
 
 alpha.11 adds:
 
-- `monitor-color` — LittleCMS LUT generation, identity behavior, P3 transform, invalid-profile rejection.
+- `monitor-color` — LittleCMS LUT generation, identity behavior, P3 transform, invalid-profile rejection, and CPU/provider LUT application.
 - `display-color-gpu` — applies a synthetic inverse monitor LUT and proves that presentation changes while the processed GPU output remains byte-identical.
 - existing `gpu-correctness` — CPU/GPU processing parity across D3D11, Metal and OpenGL.
 - `JixelLightRawRenderMatrix` — real checksum-pinned Sony RAW/JPEG matrix.
@@ -88,6 +94,8 @@ The pinned Sony A7 IV dataset is ST, not FL3. FL3 rows therefore validate CPU/GP
 
 For each comparable route the matrix records mean RGB, mean/median/p95/p99 linear luminance, mean CIE Lab (D65), highlight hue, p99 white chromaticity, shadow/highlight clipping and image deltas. It also records CPU/GPU deltas and a neutral exposure sweep from -1.5 to +1.5 EV.
 
+Current pinned-set CPU/GPU parity is substantially tighter than the normal acceptance bound: Neutral is at most 1 code value in 16-bit RGB, As-shot at most 2 code values, and the current FL3 diagnostic is byte-identical on the Linux matrix run used for the alpha.11 review.
+
 ## Merge gate
 
 Do not merge alpha.11 merely because it builds. The merge gate is:
@@ -99,4 +107,6 @@ Do not merge alpha.11 merely because it builds. The merge gate is:
 - display-only GPU LUT test passes
 - real RAW render matrix is generated without decode/reference errors
 - CPU/GPU matrix deltas remain within the established numerical parity bounds
-- Neutral v2 exposure sweep results are reviewed before treating the 0.03 scene-gray anchor as stable
+- Neutral v2 exposure sweep is reviewed and does not justify another universal base exposure
+
+The current pinned Sony review satisfies the final Neutral-tone criterion. Merge still requires the complete three-platform CI run to be green at the final branch HEAD.
