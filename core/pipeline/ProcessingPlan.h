@@ -5,7 +5,7 @@
 struct alignas(16) Float4 { float x = 0, y = 0, z = 0, w = 0; };
 // Exactly the std140 layout in the three compute shaders. Matrix ROWS.
 struct ProcessingPlan {
-    static constexpr const char *EngineVersion = "jixellight-linear-v6-base3-look5";
+    static constexpr const char *EngineVersion = "jixellight-linear-v6-base4-look5";
     // Jixel Neutral v2 keeps camera exposure calibration separate from the
     // universal scene-to-display tone placement. These are rendering anchors,
     // not a hidden user Exposure adjustment.
