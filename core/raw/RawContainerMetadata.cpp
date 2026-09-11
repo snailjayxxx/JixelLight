@@ -4,9 +4,9 @@
 #include <QPoint>
 #include <QSet>
 #include <QSize>
-#include <QtEndian>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace {
@@ -36,7 +36,7 @@ public:
         if (header[0] == 'I' && header[1] == 'I') little = true;
         else if (header[0] == 'M' && header[1] == 'M') little = false;
         else return {};
-        if (u16(header.constData() + 2) != kTiffMagic) return {}; // BigTIFF/other containers fail closed.
+        if (u16(header.constData() + 2) != kTiffMagic) return {};
         const quint32 root = u32(header.constData() + 4);
         scanIfd(root, 0);
         if (cropOrigin && cropSize) {
@@ -163,7 +163,6 @@ private:
             }
         } else if (entry.tag == kTagActiveArea) {
             const auto values = numbers(entry);
-            // ActiveArea = top, left, bottom, right. DefaultCropOrigin is relative to its top-left.
             if (values.size() >= 4) {
                 const qint64 top = std::llround(values[0]), left = std::llround(values[1]);
                 if (top >= 0 && left >= 0 && top <= std::numeric_limits<int>::max() && left <= std::numeric_limits<int>::max())
