@@ -76,6 +76,11 @@ void PhotoController::maybeStartAutoAsShotCalibration() {
 void PhotoController::initializeLookJobs() {
     connect(this,&PhotoController::adjustmentsChanged,this,&PhotoController::lookChanged);
     connect(this,&PhotoController::currentMetadataChanged,this,&PhotoController::lookChanged);
+    // Full-resolution RAW acceptance publishes metadata after m_fullSource is
+    // installed. The eligibility guard below therefore stays false for disk/
+    // embedded placeholders and becomes true exactly when an unresolved A7R VI
+    // as-shot RAW is ready for an image-specific camera-rendering match.
+    connect(this,&PhotoController::currentMetadataChanged,this,[this]{requestAutoAsShotReference();});
     m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>(
         CameraReference::load,[this](const CameraReferenceRequest &request,CameraReferenceResult result){
             if(m_closing||request.photo!=m_photoEpoch)return;
