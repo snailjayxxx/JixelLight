@@ -56,8 +56,6 @@ static LookCalibrationResult fitPairs(const QVector<LookCalibrationPair> &pairs,
   sceneReports<<QVariantMap{{"id",pair.id},{"role",pair.validation?"independent-validation":"training-with-spatial-holdout"},{"gradientAlignment",alignment}};
   for(int y=1;y<size.height()-1;++y)for(int x=1;x<size.width()-1;++x){
    if(cancelled(cancel))return reject("Cancelled");Sample sample;sample.src=pixel(a,x,y);sample.dst=pixel(b,x,y);sample.scene=scene;
-   // Validation scenes contribute NO optimizer samples. Training images also
-   // reserve spatial blocks: evaluating only fitted pixels would hide overfit.
    sample.holdout=pair.validation||((x/16)+3*(y/16))%5==0;
    std::array<int,3> base{};std::array<float,3> f{};
    for(int c=0;c<3;++c){float q=sample.src[c]*(n-1);base[c]=std::min(int(q),n-2);f[c]=q-base[c];}
@@ -70,8 +68,6 @@ static LookCalibrationResult fitPairs(const QVector<LookCalibrationPair> &pairs,
   }
  }
  const auto initial=lut->rgb;const double before=rmse(nullptr,samples);
- // Damped Jacobi/preconditioned least-squares updates; smooth residuals, with
- // identity anchoring for unobserved colors. No ML runtime or model download.
  for(int iteration=0;iteration<70;++iteration){
   if(cancelled(cancel))return reject("Cancelled");std::fill(gradient.begin(),gradient.end(),std::array<float,3>{});
   for(const auto &s:samples)if(!s.holdout){std::array<float,3> p{};
@@ -130,12 +126,18 @@ LookCalibrationResult calibrateLook(const LookCalibrationRequest &request,const 
  PerformanceSpan timer("look_reference_fit");
  try{
   if(request.linearSource.isNull()||cancelled(cancel))return {{}, {}, "Missing RAW or cancelled"};
-  // Match the unedited baseline; subsequent user edits are independent from the LUT.
   QVariantMap geometry;const QImage source=calibrationSource(request.linearSource,request.reference,&geometry);
   const QImage small=source.scaled(512,512,Qt::KeepAspectRatio,Qt::SmoothTransformation);
-  const auto baseline=ImagePipeline::process(small,{},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,cancel);
+  // Use the exact RAW base-rendering semantics seen by the editor. The fitted
+  // LUT must describe the camera rendering/look delta, not accidentally absorb
+  // JixelLight's Neutral tone placement or camera base exposure.
+  const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
+      ColorManagement::OutputSpace::SRgb,true,request.baseExposureStops);
+  const auto baseline=ImagePipeline::processWithPlan(small,plan,cancel);
   auto out=fitLookImages(baseline,request.reference,cancel);
   for(auto i=geometry.cbegin();i!=geometry.cend();++i)out.report[i.key()]=i.value();
+  out.report["rawBaseExposureStops"]=request.baseExposureStops;
+  out.report["automaticAsShot"]=request.automaticAsShot;
   if(out.lut){auto l=std::make_shared<LookLut>(*out.lut);l->evidence=QJsonObject::fromVariantMap(out.report);l->evidence["kind"]="image-specific-fit";l->evidence["provenance"]=QJsonObject::fromVariantMap(request.provenance);
     l->evidence["engineVersion"]=ProcessingPlan::EngineVersion;
     l->evidence["createdUtc"]=QDateTime::currentDateTimeUtc().toString(Qt::ISODate);out.lut=l;}

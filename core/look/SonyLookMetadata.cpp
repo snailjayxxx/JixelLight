@@ -45,8 +45,6 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     QString model=recordedModel;
     if(!make.contains("SONY",Qt::CaseInsensitive))return out;
     out["status"]="missing";
-    // Preserve the EXIF text; preproduction files can use MODEL-NAME while
-    // the MakerNote contains an authoritative numeric SonyModelID.
     QString idModel; int modelId=-1; bool modelConflict=false;
     for(const auto &item:exif) {
         const auto group=item.groupName();
@@ -56,8 +54,10 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
         if(modelId>=0&&modelId!=id)modelConflict=true;
         modelId=id;
         QString printed=QString::fromStdString(item.print(&exif)).trimmed();
-        // ExifTool SonyModelID 388 = ILCE-7M4; older Exiv2 may only print 388.
+        // Keep new-model IDs usable with the pinned Exiv2 even before its name
+        // table catches up. 388 = A7 IV; 410 = A7R VI.
         if(id==388)printed="ILCE-7M4";
+        else if(id==410)printed="ILCE-7RM6";
         for(const char *prefix:{"ILCE-","ILME-","DSC-","ZV-","NEX-","SLT-","DSLR-"})
             if(printed.startsWith(QLatin1String(prefix))&&!printed.contains('/'))idModel=printed;
     }
@@ -72,8 +72,6 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     out["modelConflict"]=modelConflict;
     QVariantMap raw,values,sources,invalid;QVariantList candidates;QStringList warnings;
     QString primary,secondary;bool conflict=false,lookFields=false,legacyEvidence=false,unknownStyle=false;
-    // Numeric tag IDs also work with Exiv2 versions that expose new tags as 0x2032.
-    // Sony1/Sony2 are alternative IFDs; do not mix Minolta camera-setting encodings.
     for(const auto &item:exif) {
         const auto group=item.groupName();
         if(group.rfind("Sony",0)==0 && group!="Sony1" && group!="Sony2") {
@@ -106,14 +104,12 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
             if(tag>=0x2032&&tag<=0x2036)lookFields=true;
         }
     }
-    // Some files name the family FL in the string but carry its subtype in ColorMode.
     const bool subtype=primary=="FL"&&(secondary=="FL2"||secondary=="FL3");
     if(!primary.isEmpty()&&!secondary.isEmpty()&&primary!=secondary&&!subtype)conflict=true;
     QString code=subtype?secondary:!primary.isEmpty()?primary:secondary;
     const bool unique=QStringList{"VV2","FL","FL2","FL3","IN","SH"}.contains(code);
-    // Only an explicitly documented model is used as fallback for shared names.
-    // Other models require Look-only fields/codes; no guessed release-date cutoff.
-    const bool documentedModel=model.compare("ILCE-7M4",Qt::CaseInsensitive)==0;
+    const bool documentedModel=model.compare("ILCE-7M4",Qt::CaseInsensitive)==0
+        || model.compare("ILCE-7RM6",Qt::CaseInsensitive)==0;
     QString generation=(unique||lookFields||documentedModel)?"creative-look":legacyEvidence?"creative-style":"unknown";
     if(generation=="unknown"&&!candidates.isEmpty())warnings<<"shared-name-generation-unconfirmed";
     if(subtype)warnings<<"color-mode-refines-FL-subtype";
@@ -121,8 +117,6 @@ QVariantMap SonyLookMetadata::read(const Exiv2::ExifData &exif) {
     if(modelConflict)warnings<<"conflicting-camera-model-fields";
     if(unknownStyle)warnings<<"unknown-creative-style-not-replaced-by-color-mode";
     out["status"]=conflict?"conflict":unknownStyle?"unsupported":code.isEmpty()?(candidates.isEmpty()?"missing":"unsupported"):"recognized";
-    // A known secondary mode is only a candidate when the primary name is unknown.
-    // Do not present that fallback as a recognized as-shot look in the UI.
     out["generation"]=generation;out["code"]=unknownStyle?QString():code;out["rawFields"]=raw;
     out["parameters"]=values;out["parameterSources"]=sources;out["invalidParameters"]=invalid;
     out["candidates"]=candidates;out["warnings"]=warnings;

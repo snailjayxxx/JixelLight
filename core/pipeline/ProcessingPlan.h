@@ -5,13 +5,13 @@
 struct alignas(16) Float4 { float x = 0, y = 0, z = 0, w = 0; };
 // Exactly the std140 layout in the three compute shaders. Matrix ROWS.
 struct ProcessingPlan {
-    static constexpr const char *EngineVersion = "jixellight-linear-v5-base2-look4";
+    static constexpr const char *EngineVersion = "jixellight-linear-v6-base4-look5";
     // Jixel Neutral v2 keeps camera exposure calibration separate from the
     // universal scene-to-display tone placement. These are rendering anchors,
     // not a hidden user Exposure adjustment.
     static constexpr float RawNeutralSceneGray = 0.03f;
     static constexpr float RawNeutralDisplayGray = 0.18f;
-    // Source-compatibility only: alpha.11 no longer applies a fixed RAW gain.
+    // Source-compatibility only: alpha.11+ no longer applies a fixed RAW gain.
     static constexpr float RawBaseExposureStops = 0.0f;
     static constexpr float RawBaseGain = 1.0f;
     enum Slot { Wb0=0, Wb1=1, Wb2=2, Tonal=3, Tone=4, Color=5,

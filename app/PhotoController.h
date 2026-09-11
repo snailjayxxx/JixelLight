@@ -244,6 +244,7 @@ private:
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
 
     bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;
+    bool m_autoAsShotReferencePending=false;
     QImage m_referenceImage;
     QVariantMap m_referenceInfo, m_calibrationReport;
     ScopesResult m_referenceScopes;
@@ -255,6 +256,9 @@ private:
     void initializeLookJobs();
     void resetReference();
     void requestReference();
+    bool autoAsShotEligible() const;
+    void requestAutoAsShotReference();
+    void maybeStartAutoAsShotCalibration();
     bool isProtectedPhoto(const QString &path) const;
     void initializeJobs();
     void acceptSource(quint64 photo, SourceData data);

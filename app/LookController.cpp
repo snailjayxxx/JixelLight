@@ -18,7 +18,7 @@ QVariantMap PhotoController::lookState() const {
     QVariantMap p; for(auto i=look.parameters.cbegin();i!=look.parameters.cend();++i)p[i.key()]=i.value();
     QVariantMap out{{"mode",look.mode},{"code",look.code},{"strength",look.strength},{"parameters",p},
         {"active",LookProfiles::active(look)},{"error",look.error},
-        {"quality",look.lut?"reference-or-imported-LUT":"uncalibrated-approximation"}};
+        {"quality",look.lut?"camera-reference-image-fit":"uncalibrated-approximation"}};
     if(look.lut){out["lutDigest"]=look.lut->digest;out["lutTitle"]=look.lut->title;out["evidence"]=look.lut->evidence.toVariantMap();}
     return out;
 }
@@ -30,9 +30,57 @@ QVariantMap PhotoController::referenceHistogram() const {
     return {{"red",m_referenceScopes.red},{"green",m_referenceScopes.green},{"blue",m_referenceScopes.blue},
         {"luma",m_referenceScopes.luma},{"pixels",qulonglong(m_referenceScopes.pixelCount)}};
 }
+
+bool PhotoController::autoAsShotEligible() const {
+    if(!hasImage()||!currentIsRaw()||m_fullSource.isNull())return false;
+    const auto &stored=m_photos[m_currentIndex].state.look;
+    if(stored.mode!="as-shot"||stored.lut)return false;
+    const auto sony=sonyLook();
+    // Auto-fitting every supported Sony RAW would add latency unnecessarily.
+    // For now it is the correctness path for cameras whose base rendering had
+    // to be supplied by JixelLight because the pinned LibRaw has no model entry.
+    return m_currentMetadata.value("cameraProfileApplied").toBool()
+        && sony.value("autoEligible").toBool()
+        && !sony.value("code").toString().isEmpty();
+}
+
+void PhotoController::requestAutoAsShotReference() {
+    if(!autoAsShotEligible())return;
+    m_autoAsShotReferencePending=true;
+    if(!m_referenceImage.isNull()){maybeStartAutoAsShotCalibration();return;}
+    if(!m_referenceBusy)requestReference();
+}
+
+void PhotoController::maybeStartAutoAsShotCalibration() {
+    if(!m_autoAsShotReferencePending||!autoAsShotEligible()||m_referenceBusy||m_referenceImage.isNull()||m_calibrationBusy)return;
+    const QString kind=m_referenceInfo.value("kind").toString();
+    if(kind!="embedded-preview"&&kind!="paired-jpeg"){
+        m_autoAsShotReferencePending=false;return;
+    }
+    m_autoAsShotReferencePending=false;
+    m_calibrationBusy=true;m_calibrationReport.clear();emit calibrationChanged();
+    auto provenance=m_referenceInfo;
+    provenance["sourceIdentity"]=m_loadedKey;
+    provenance["camera"]=m_currentMetadata.value("model");
+    provenance["cameraProfileSource"]=m_currentMetadata.value("cameraProfileSource");
+    provenance["asShot"]=sonyLook();
+    provenance["purpose"]="automatic-as-shot-camera-rendering-match";
+    LookCalibrationRequest request;
+    request.linearSource=m_fullSource;request.reference=m_referenceImage;
+    request.photo=m_photoEpoch;request.revision=m_requestedRevision;request.provenance=provenance;
+    request.baseExposureStops=rawBaseExposureStops();request.automaticAsShot=true;
+    m_calibrationJob->submit(std::move(request));
+    setStatus(uiText("正在根据 RAW 内的机内 JPEG 重建拍摄时外观…", "Matching the as-shot camera rendering from the RAW preview…"));
+}
+
 void PhotoController::initializeLookJobs() {
     connect(this,&PhotoController::adjustmentsChanged,this,&PhotoController::lookChanged);
     connect(this,&PhotoController::currentMetadataChanged,this,&PhotoController::lookChanged);
+    // Full-resolution RAW acceptance publishes metadata after m_fullSource is
+    // installed. The eligibility guard below therefore stays false for disk/
+    // embedded placeholders and becomes true exactly when an unresolved A7R VI
+    // as-shot RAW is ready for an image-specific camera-rendering match.
+    connect(this,&PhotoController::currentMetadataChanged,this,[this]{requestAutoAsShotReference();});
     m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>(
         CameraReference::load,[this](const CameraReferenceRequest &request,CameraReferenceResult result){
             if(m_closing||request.photo!=m_photoEpoch)return;
@@ -41,21 +89,45 @@ void PhotoController::initializeLookJobs() {
             if(!result.info.value("file").toString().isEmpty()) m_referenceFiles.insert(QFileInfo(result.info["file"].toString()).absoluteFilePath());
             if(m_provider)m_provider->setReference(m_referenceImage);
             ++m_referenceRevision;emit referenceChanged();
-            if(!result.error.isEmpty())setStatus(uiText("参考图：", "Reference: ")+result.error);
+            if(!result.error.isEmpty()){
+                if(m_autoAsShotReferencePending)m_autoAsShotReferencePending=false;
+                setStatus(uiText("参考图：", "Reference: ")+result.error);
+                return;
+            }
+            maybeStartAutoAsShotCalibration();
         });
     m_calibrationJob=std::make_unique<LatestJob<LookCalibrationRequest,LookCalibrationResult>>(
         calibrateLook,[this](const LookCalibrationRequest &request,LookCalibrationResult result){
             if(m_closing)return;
             m_calibrationBusy=false;
-            if(request.photo!=m_photoEpoch||request.revision!=m_requestedRevision){emit calibrationChanged();return;}
+            if(request.photo!=m_photoEpoch){emit calibrationChanged();return;}
+            auto *state=mutableCurrentState();
+            if(request.automaticAsShot) {
+                // Rendering revisions also change for zoom/prepare operations;
+                // those must not cancel a color fit. The ownership guard for an
+                // automatic result is instead the photo epoch plus unresolved
+                // as-shot mode. A user changing the look makes this false.
+                if(!state||state->look.mode!="as-shot"){emit calibrationChanged();return;}
+            } else if(request.revision!=m_requestedRevision){emit calibrationChanged();return;}
             m_calibrationReport=result.report;m_calibrationReport["error"]=result.error;
             emit calibrationChanged();
-            if(!result.lut){setStatus(uiText("外观拟合未应用：", "Match not applied: ")+result.error);return;}
-            auto *state=mutableCurrentState();if(!state)return;
-            LookState look;look.mode="calibrated";look.code=sonyLook().value("code").toString();look.lut=result.lut;
+            if(!result.lut){
+                if(request.automaticAsShot) {
+                    const QVariantMap details{{"error",result.error},{"camera",m_currentMetadata.value("model")}};
+                    ActionTrace::instance().record("automatic_as_shot_match_rejected",details);
+                    setStatus(uiText("机内外观自动匹配未通过质量检查，暂时使用近似外观。", "Automatic camera-look match failed validation; using the approximation for now."));
+                } else setStatus(uiText("外观拟合未应用：", "Match not applied: ")+result.error);
+                return;
+            }
+            if(!state)return;
+            LookState look;look.mode="calibrated";look.code=sonyLook().value("code").toString();look.lut=result.lut;look.strength=1.0;
             state->look=look;
-            persistAndApply("reference_look_applied",{{"sha256",result.lut->digest},{"scope","this-image-only"}});
-            setStatus(uiText("已应用本照片参考拟合，可继续编辑；不是索尼官方显影或通用相机配置。", "Applied image-specific reference match; editable, not Sony rendering or a universal camera profile."));
+            persistAndApply(request.automaticAsShot?"automatic_as_shot_camera_match_applied":"reference_look_applied",
+                {{"sha256",result.lut->digest},{"scope","this-image-only"},{"referenceKind",m_referenceInfo.value("kind")}});
+            if(request.automaticAsShot)
+                setStatus(uiText("已根据机内 JPEG 重建本照片的拍摄时外观，可继续无损编辑。", "Matched this photo to its in-camera rendering; RAW edits remain non-destructive."));
+            else
+                setStatus(uiText("已应用本照片参考拟合，可继续编辑；不是索尼官方显影或通用相机配置。", "Applied image-specific reference match; editable, not Sony rendering or a universal camera profile."));
         });
 }
 void PhotoController::cancelCalibration() {
@@ -63,6 +135,7 @@ void PhotoController::cancelCalibration() {
     if(m_calibrationBusy){m_calibrationBusy=false;emit calibrationChanged();}
 }
 void PhotoController::resetReference() {
+    m_autoAsShotReferencePending=false;
     cancelCalibration();if(m_referenceJob)m_referenceJob->cancel();
     m_referenceImage={};m_referenceInfo.clear();m_referenceScopes={};m_manualReferencePath.clear();
     m_calibrationReport.clear();m_referenceBusy=false;++m_referenceRevision;
@@ -79,6 +152,7 @@ void PhotoController::setShowCameraReference(bool show) {
 }
 void PhotoController::setLookMode(const QString &mode) {
     auto *state=mutableCurrentState();if(!state)return;
+    m_autoAsShotReferencePending=false;
     if(mode=="as-shot") {
         if(!currentIsRaw()){setStatus(uiText("JPEG/TIFF 已包含外观，不会自动重复套用。", "JPEG/TIFF already contains rendered color; no automatic double application."));return;}
         state->look=LookState{};state->look.mode="as-shot";
@@ -89,19 +163,23 @@ void PhotoController::setLookMode(const QString &mode) {
         if(!state->look.lut&&SonyLookMetadata::normalize(state->look.code).isEmpty())state->look.code="ST";
     } else return;
     persistAndApply("look_mode",{{"mode",mode}});
+    if(mode=="as-shot")requestAutoAsShotReference();
 }
 void PhotoController::setLookCode(const QString &code) {
     auto *state=mutableCurrentState();const auto normalized=SonyLookMetadata::normalize(code);
     if(!state||normalized.isEmpty())return;
+    m_autoAsShotReferencePending=false;
     state->look={};state->look.mode="manual";state->look.code=normalized;
     persistAndApply("look_preset",{{"code",normalized},{"quality","approximation"}});
 }
 void PhotoController::setLookStrength(double strength) {
     auto *state=mutableCurrentState();if(!state||!std::isfinite(strength))return;
+    if(state->look.mode=="as-shot")m_autoAsShotReferencePending=false;
     state->look.strength=std::clamp(strength,0.0,1.0);persistAndApply("look_strength");
 }
 void PhotoController::setLookParameter(const QString &name,double value) {
     auto *state=mutableCurrentState();if(!state||!std::isfinite(value)||!SonyLookMetadata::parameterNames().contains(name))return;
+    m_autoAsShotReferencePending=false;
     if(state->look.mode=="as-shot")state->look=currentState().look;
     state->look.mode=state->look.lut?"calibrated":"manual";
     if(!state->look.lut&&state->look.code.isEmpty())state->look.code="ST";
@@ -111,6 +189,7 @@ void PhotoController::setLookParameter(const QString &name,double value) {
 }
 bool PhotoController::loadReference(const QUrl &url) {
     if(!hasImage()||!url.isLocalFile()||!QFileInfo(url.toLocalFile()).isFile())return false;
+    m_autoAsShotReferencePending=false;
     m_manualReferencePath=url.toLocalFile();m_referenceFiles.insert(QFileInfo(m_manualReferencePath).absoluteFilePath());
     m_referenceImage={};if(m_provider)m_provider->setReference({});m_showReference=true;requestReference();return true;
 }
@@ -120,11 +199,15 @@ void PhotoController::openReferenceDialog() {
 }
 bool PhotoController::calibrateFromReference() {
     if(!currentIsRaw()||m_fullSource.isNull()||m_referenceImage.isNull()||m_referenceBusy||m_calibrationBusy)return false;
-    // Retain immutable pixel snapshots. Never mutate the RAW or overwrite user edits.
+    m_autoAsShotReferencePending=false;
     m_calibrationBusy=true;m_calibrationReport.clear();emit calibrationChanged();
     auto provenance=m_referenceInfo;provenance["sourceIdentity"]=m_loadedKey;
     provenance["camera"]=m_currentMetadata.value("model");provenance["asShot"]=sonyLook();
-    m_calibrationJob->submit({m_fullSource,m_referenceImage,m_photoEpoch,m_requestedRevision,provenance});return true;
+    LookCalibrationRequest request;
+    request.linearSource=m_fullSource;request.reference=m_referenceImage;
+    request.photo=m_photoEpoch;request.revision=m_requestedRevision;request.provenance=provenance;
+    request.baseExposureStops=rawBaseExposureStops();request.automaticAsShot=false;
+    m_calibrationJob->submit(std::move(request));return true;
 }
 bool PhotoController::isProtectedPhoto(const QString &path) const {
     const QFileInfo destination(path);auto protectedPath=[&](const QString &p){const QFileInfo src(p);
@@ -135,6 +218,7 @@ bool PhotoController::isProtectedPhoto(const QString &path) const {
 }
 bool PhotoController::loadLookProfile(const QUrl &url) {
     if(!hasImage()||!url.isLocalFile())return false;
+    m_autoAsShotReferencePending=false;
     QFile file(url.toLocalFile());if(!file.open(QIODevice::ReadOnly)||file.size()>4*1024*1024||file.size()<=0){setStatus(uiText("外观文件不可读或超过 4 MB。", "Look file is unreadable or exceeds 4 MB."));return false;}
     const QByteArray bytes=file.readAll();LookState look;QString error;
     if(QFileInfo(file).suffix().compare("cube",Qt::CaseInsensitive)==0){look.lut=LookLut::fromCube(bytes,&error);look.mode="calibrated";}

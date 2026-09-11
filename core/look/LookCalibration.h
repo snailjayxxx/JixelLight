@@ -2,7 +2,13 @@
 #include "core/look/LookLut.h"
 #include "core/async/LatestJob.h"
 #include <QVariantMap>
-struct LookCalibrationRequest {QImage linearSource,reference;quint64 photo=0,revision=0;QVariantMap provenance;};
+struct LookCalibrationRequest {
+    QImage linearSource, reference;
+    quint64 photo = 0, revision = 0;
+    QVariantMap provenance;
+    float baseExposureStops = 0.0f;
+    bool automaticAsShot = false;
+};
 struct LookCalibrationResult {std::shared_ptr<const LookLut> lut;QVariantMap report;QString error;};
 // Fits an image-specific sRGB color transform. No claim of universal camera calibration.
 LookCalibrationResult calibrateLook(const LookCalibrationRequest &request,const CancelToken &cancel={});

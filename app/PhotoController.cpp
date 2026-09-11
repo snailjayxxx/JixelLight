@@ -347,11 +347,15 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
         *state = {};
+        // New RAW imports start in as-shot mode. Reset All should return to the
+        // same camera-rendered baseline instead of silently disabling it.
+        if (currentIsRaw()) state->look.mode = "as-shot";
         markDirty();
         ActionTrace::instance().record("reset_adjustments", {{"file", currentFile()}});
         emit adjustmentsChanged();
         applyCurrent();
         setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
+        if (currentIsRaw()) requestAutoAsShotReference();
     }
 }
 
@@ -365,23 +369,43 @@ void PhotoController::copyAdjustments() {
 
 void PhotoController::pasteAdjustments() {
     if (!hasImage() || !m_hasClipboard) return;
-    *mutableCurrentState() = m_clipboard;
+    auto *destination = mutableCurrentState();
+    if (!destination) return;
+    const LookState destinationLook = destination->look;
+    const bool imageSpecificLook = m_clipboard.look.lut
+        && m_clipboard.look.lut->evidence.value("kind").toString() == QStringLiteral("image-specific-fit");
+    *destination = m_clipboard;
+    // A camera-JPEG fit describes the source photograph, not a reusable Sony
+    // look. Copy the user's ordinary adjustments but retain the destination's
+    // own as-shot/look state rather than leaking the fitted LUT across photos.
+    if (imageSpecificLook) destination->look = destinationLook;
     markDirty();
-    ActionTrace::instance().record("paste_adjustments", {{"file", currentFile()}});
+    const QVariantMap details{{"file", currentFile()}, {"image_specific_look_skipped", imageSpecificLook}};
+    ActionTrace::instance().record("paste_adjustments", details);
     emit adjustmentsChanged();
     applyCurrent();
+    if (imageSpecificLook) requestAutoAsShotReference();
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
 }
 
 void PhotoController::syncAdjustmentsToAll() {
     if (!hasImage()) return;
     const auto state = currentState();
-    for (auto &photo : m_photos) {
-        photo.state = state;
-        if (m_project.isOpen()) m_dirtyEdits.insert(photo.path, photo.state);
+    const bool imageSpecificLook = state.look.lut
+        && state.look.lut->evidence.value("kind").toString() == QStringLiteral("image-specific-fit");
+    int skippedLookCount = 0;
+    for (int i = 0; i < m_photos.size(); ++i) {
+        const LookState destinationLook = m_photos[i].state.look;
+        m_photos[i].state = state;
+        if (imageSpecificLook && i != m_currentIndex) {
+            m_photos[i].state.look = destinationLook;
+            ++skippedLookCount;
+        }
+        if (m_project.isOpen()) m_dirtyEdits.insert(m_photos[i].path, m_photos[i].state);
     }
     enqueueEdits();
-    ActionTrace::instance().record("sync_adjustments", {{"count", m_photos.size()}});
+    const QVariantMap details{{"count", m_photos.size()}, {"image_specific_look_skipped", skippedLookCount}};
+    ActionTrace::instance().record("sync_adjustments", details);
     emit libraryChanged();
     emit adjustmentsChanged();
     applyCurrent();

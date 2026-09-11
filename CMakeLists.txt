@@ -54,6 +54,8 @@ add_library(JixelLightCore STATIC
     core/pipeline/ImagePipeline.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
+    core/raw/RawCameraProfiles.cpp
+    core/raw/RawContainerMetadata.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
     core/export/JpegExporter.cpp
@@ -65,7 +67,7 @@ add_library(JixelLightCore STATIC
     diagnostics/DiagnosticBundle.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
-target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.11" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.12" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::Sql libraw::raw_r lcms2::lcms2 Exiv2::exiv2lib JPEG::JPEG)
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
@@ -107,8 +109,11 @@ add_test(NAME monitor-color COMMAND JixelLightMonitorColorTests -o monitor-color
 qt_add_executable(JixelLightDisplayColorGpuTests tests/DisplayColorGpuTests.cpp)
 target_link_libraries(JixelLightDisplayColorGpuTests PRIVATE JixelLightGpu Qt6::Test)
 add_test(NAME display-color-gpu COMMAND JixelLightDisplayColorGpuTests -o display-color-gpu-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightRawCameraProfileTests tests/RawCameraProfileTests.cpp)
+target_link_libraries(JixelLightRawCameraProfileTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME raw-camera-profile COMMAND JixelLightRawCameraProfileTests -o raw-camera-profile-results.txt,txt -o -,txt)
 
-set_tests_properties(core-tests performance-correctness gpu-correctness monitor-color display-color-gpu PROPERTIES TIMEOUT 120)
+set_tests_properties(core-tests performance-correctness gpu-correctness monitor-color display-color-gpu raw-camera-profile PROPERTIES TIMEOUT 120)
 
 qt_add_executable(JixelLightRawWorkerTests tests/RawWorkerTests.cpp)
 target_link_libraries(JixelLightRawWorkerTests PRIVATE JixelLightCore Qt6::Test)
@@ -116,7 +121,8 @@ add_test(NAME raw-worker-stack COMMAND JixelLightRawWorkerTests -o raw-worker-re
 set_tests_properties(raw-worker-stack PROPERTIES TIMEOUT 120)
 # Tests and CLI benchmarks must retain standard output on Windows.
 set_target_properties(JixelLightCoreTests JixelLightPerformanceTests JixelLightGpuTests
-    JixelLightMonitorColorTests JixelLightDisplayColorGpuTests JixelLightRawWorkerTests JixelLightBenchmark
+    JixelLightMonitorColorTests JixelLightDisplayColorGpuTests JixelLightRawCameraProfileTests
+    JixelLightRawWorkerTests JixelLightBenchmark
     PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 # Match the image kernel's arithmetic order to the shader's precise operations.

@@ -11,6 +11,9 @@ ColumnLayout {
     property var appliedParams: applied.parameters || ({})
     property var lookEvidence: applied.evidence || ({})
     property bool empiricalLook: lookEvidence.kind === "multi-scene-empirical-fit"
+    property bool autoAsShotFit: lookEvidence.kind === "image-specific-fit"
+        && lookEvidence.provenance
+        && lookEvidence.provenance.purpose === "automatic-as-shot-camera-rendering-match"
     property var fields: ["contrast","highlights","shadows","fade","saturation","sharpness","sharpnessRange","clarity"]
     property var codes: ["ST","PT","NT","VV","VV2","FL","IN","SH","BW","SE","FL2","FL3"]
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
@@ -43,8 +46,10 @@ ColumnLayout {
         Layout.fillWidth: true; enabled: root.controller.hasImage
         ComboBox {
             objectName: "lookMode"; Layout.fillWidth: true
-            model: [root.t("关闭", "Off"), root.t("按拍摄设置（近似）", "As shot (approximate)"), root.t("手动 / 导入", "Manual / imported")]
-            currentIndex: root.applied.mode === "off" ? 0 : root.applied.mode === "as-shot" ? 1 : 2
+            model: [root.t("关闭", "Off"),
+                    root.autoAsShotFit ? root.t("按拍摄设置（机内匹配）", "As shot (camera matched)") : root.t("按拍摄设置（近似）", "As shot (approximate)"),
+                    root.t("手动 / 导入", "Manual / imported")]
+            currentIndex: root.applied.mode === "off" ? 0 : (root.applied.mode === "as-shot" || root.autoAsShotFit) ? 1 : 2
             onActivated: root.controller.setLookMode(["off","as-shot","manual"][currentIndex])
         }
         ComboBox {
@@ -55,7 +60,9 @@ ColumnLayout {
     }
     Label {
         Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#d6b985"; font.pixelSize: 11
-        text: root.applied.mode === "calibrated"
+        text: root.autoAsShotFit
+              ? root.t("已使用本 RAW 内的机内 JPEG 匹配拍摄时外观；仅绑定本照片，RAW 调整仍为无损。", "Matched the as-shot rendering from this RAW's in-camera JPEG; bound to this image only and RAW edits remain non-destructive.")
+              : root.applied.mode === "calibrated"
               ? root.t("参考拟合 / 导入 LUT · 非索尼官方配置。显示 sRGB 域，不能恢复超出参考色域的信息。", "Reference fit / imported LUT, not a Sony profile. Display-sRGB domain; no recovery of colors outside the reference gamut.")
               : root.t("JixelLight 独立近似预设 · 未实机标定，不保证与机内 JPEG 一致。", "Independent JixelLight approximations, not camera-calibrated or guaranteed to match in-camera JPEGs.")
     }
