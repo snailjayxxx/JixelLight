@@ -113,7 +113,8 @@ void PhotoController::initializeLookJobs() {
             emit calibrationChanged();
             if(!result.lut){
                 if(request.automaticAsShot) {
-                    ActionTrace::instance().record("automatic_as_shot_match_rejected",{{"error",result.error},{"camera",m_currentMetadata.value("model")}});
+                    const QVariantMap details{{"error",result.error},{"camera",m_currentMetadata.value("model")}};
+                    ActionTrace::instance().record("automatic_as_shot_match_rejected",details);
                     setStatus(uiText("机内外观自动匹配未通过质量检查，暂时使用近似外观。", "Automatic camera-look match failed validation; using the approximation for now."));
                 } else setStatus(uiText("外观拟合未应用：", "Match not applied: ")+result.error);
                 return;
