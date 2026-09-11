@@ -94,7 +94,7 @@ void SourceCache::storeDiskPreview(const SourceData &source, const CancelToken &
     if (cancelled(token)) return;
     const auto metadata = QJsonDocument(QJsonObject::fromVariantMap(source.metadata)).toJson(QJsonDocument::Compact);
     QMutexLocker lock(&m_diskMutex);
-    QSaveFile file(QDir(m_diskDirectory).filePath(key+".jlpv"));
+    QSaveFile file(QDir(m_diskDirectory).filePath(source.key+".jlpv"));
     if (!file.open(QIODevice::WriteOnly)) return;
     QByteArray header;
     QDataStream stream(&header, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
