@@ -140,8 +140,19 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         applyCameraProfile(raw, *cameraProfile);
         calibratedBlack = containerInfo.blackLevel >= 0 ? containerInfo.blackLevel : cameraProfile->blackLevel;
         calibratedWhite = containerInfo.whiteLevel > 0 ? containerInfo.whiteLevel : cameraProfile->whiteLevel;
-        if (calibratedBlack >= 0) params.user_black = calibratedBlack;
-        if (calibratedWhite > calibratedBlack) params.user_sat = calibratedWhite;
+        if (calibratedBlack >= 0) {
+            params.user_black = calibratedBlack;
+            // A model profile supplies one common black level. Clear any stale
+            // per-channel/pattern corrections from an unsupported-camera parse
+            // so LibRaw subtracts exactly that characterized black point.
+            for (int c = 0; c < 4; ++c) params.user_cblack[c] = 0;
+        }
+        if (calibratedWhite > calibratedBlack) {
+            // LibRaw's raw2image path subtracts C.black and reduces C.maximum
+            // before dcraw_process applies user_sat. Therefore -S/user_sat is
+            // expressed in the post-black domain, not the original sensor code.
+            params.user_sat = calibratedBlack >= 0 ? calibratedWhite - calibratedBlack : calibratedWhite;
+        }
         profileApplied = true;
         profileSource = cameraProfile->provenance;
 
