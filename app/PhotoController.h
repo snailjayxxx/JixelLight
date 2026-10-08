@@ -20,6 +20,7 @@
 #include "core/commands/EditHistory.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/scopes/ScopesEngine.h"
+#include "core/scopes/ScopePlot.h"
 
 class ProcessedImageProvider;
 
@@ -99,6 +100,11 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString scopesStatus READ scopesStatus NOTIFY scopesChanged)
     Q_PROPERTY(bool exactScopes READ exactScopes WRITE setExactScopes NOTIFY scopesChanged)
     Q_PROPERTY(qulonglong scopesPixelCount READ scopesPixelCount NOTIFY scopesChanged)
+    Q_PROPERTY(QString scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopePlotChanged)
+    Q_PROPERTY(QString scopePlotUrl READ scopePlotUrl NOTIFY scopePlotChanged)
+    Q_PROPERTY(QString scopePlotStatus READ scopePlotStatus NOTIFY scopePlotChanged)
+    Q_PROPERTY(bool scopePlotCurrent READ scopePlotCurrent NOTIFY scopePlotChanged)
+    Q_PROPERTY(qulonglong scopePlotPixels READ scopePlotPixels NOTIFY scopePlotChanged)
     Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
     Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
@@ -141,6 +147,12 @@ public:
     QString scopesStatus() const;
     bool exactScopes() const { return m_exactScopes; }
     qulonglong scopesPixelCount() const { return m_scopes.pixelCount; }
+    QString scopeMode() const { return m_scopeMode; }
+    Q_INVOKABLE void setScopeMode(const QString &mode);
+    QString scopePlotUrl() const;
+    QString scopePlotStatus() const;
+    bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes; }
+    qulonglong scopePlotPixels() const { return m_scopePlot.pixels; }
     bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
     double exportProgress() const { return m_exportProgress; }
     QSizeF previewDisplaySize() const { return m_displayPixels / m_devicePixelRatio; }
@@ -265,6 +277,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void scopePlotChanged();
     void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
@@ -333,6 +346,13 @@ private:
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;
     std::unique_ptr<LatestJob<RenderRequest, QImage>> m_render;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
+    std::unique_ptr<LatestJob<ScopePlotRequest, ScopePlotResult>> m_plotJob;
+    ScopePlotResult m_scopePlot;
+    QString m_scopeMode = "histogram";
+    QTimer m_plotTimer;
+    quint64 m_plotRevision = 0, m_plotImageId = 0, m_plotSubmittedRevision = 0;
+    bool m_plotFull = false;
+    void requestScopePlot();
 
     bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;
     QImage m_referenceImage;

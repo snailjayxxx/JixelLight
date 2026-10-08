@@ -123,6 +123,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - RGB / Luminance Histogram：1024 bins。
 - Histogram 读取**当前最终显示结果**，所以曝光、HSL、饱和度、曲线变化都会实时反映。
 - Shadow / Highlight clipping 百分比。
+- 可选亮度波形 / RGB Parade / 矢量示波器：异步 CPU 参考计算，支持当前视区预览和全分辨率；波形/Parade 保留 1024 级，矢量图统计编码 sRGB 的 Cb/Cr，均在 monitor ICC 之前。旧结果变暗并标记更新中，默认 GPU 直方图保持不变。
 - 架构保留以后切换 RAW Source / Working / Display scopes 的能力。
 
 ### Diagnostics

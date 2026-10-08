@@ -36,11 +36,11 @@ QImage ProcessedImageProvider::displayCopy(const QImage &source,const QImage &at
 
 QImage ProcessedImageProvider::requestImage(const QString &id, QSize *size, const QSize &requestedSize) {
     QMutexLocker lock(&m_mutex);
-    QImage result = id.startsWith("reference/") ? m_reference : m_image;
+    QImage result = id.startsWith("scopes/") ? m_scopePlot : id.startsWith("reference/") ? m_reference : m_image;
     lock.unlock();
     if (size) *size = result.size();
     if (requestedSize.isValid() && !result.isNull())
-        result = result.scaled(requestedSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        result = result.scaled(requestedSize, id.startsWith("scopes/") ? Qt::IgnoreAspectRatio : Qt::KeepAspectRatio, Qt::SmoothTransformation);
     return result;
 }
 
@@ -53,6 +53,10 @@ void ProcessedImageProvider::setImage(const QImage &image) {
     const QImage display=displayCopy(image,lut,key);
     QMutexLocker lock(&m_mutex);
     if(m_imageSource.cacheKey()==image.cacheKey())m_image=display;
+}
+
+void ProcessedImageProvider::setScopePlot(const QImage &image) {
+    QMutexLocker lock(&m_mutex); m_scopePlot=image;
 }
 
 void ProcessedImageProvider::setReference(const QImage &image) {

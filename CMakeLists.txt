@@ -72,6 +72,7 @@ add_library(JixelLightCore STATIC
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
+    core/scopes/ScopePlot.cpp
     core/export/PngExporter.cpp
     core/export/RasterExporter.cpp
     core/export/JpegExporter.cpp
@@ -90,7 +91,7 @@ if(WIN32)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})

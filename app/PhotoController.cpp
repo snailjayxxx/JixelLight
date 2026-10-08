@@ -685,6 +685,9 @@ void PhotoController::selectPhoto(int index) {
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
+    emit scopePlotChanged();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_centerX = m_centerY = .5;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
@@ -713,6 +716,7 @@ void PhotoController::applyCurrent() {
     if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     cancelCalibration();
     ++m_requestedRevision;
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     m_scopesUpdating = true; m_scopesRank = -1;
     m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_exactTimer.stop();
@@ -765,6 +769,8 @@ bool PhotoController::openProject(const QUrl &url) {
 
     // All callbacks are generation-guarded: no in-flight task from the old
     // project may publish a preview or scopes for this project's first photo.
+    m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
     ++m_photoEpoch;
     ++m_requestedRevision;
     ++m_catalogEpoch; m_catalogDatesJob->cancel(); m_catalogDateTimer.stop();
@@ -806,6 +812,7 @@ bool PhotoController::openProject(const QUrl &url) {
     emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
     emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
     emit scopesChanged(); emit adjustmentsChanged(); emit backendChanged();
+    emit scopePlotChanged();
     emit previewGeometryChanged(); emit activityChanged();
     if (!m_photos.isEmpty()) selectPhoto(0);
 
@@ -971,6 +978,9 @@ QString PhotoController::reportBug() {
     PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(stageRequest.image.sizeInBytes())}});
     PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
+    PerformanceRecorder::value("scope_plot", QJsonObject{{"mode",m_scopeMode},{"revision",qint64(m_plotRevision)},
+        {"pixels",qint64(m_scopePlot.pixels)},{"full_resolution",m_plotFull},{"is_current",scopePlotCurrent()},
+        {"error",m_scopePlot.error},{"encoding","sRGB encoded, before monitor ICC"}});
     PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
     const QString path = DiagnosticBundle::create(capture, currentFile(), projectPath(), currentState(),
         m_scopes.shadowClipPercent, m_scopes.highlightClipPercent, pipelineDescription(),
@@ -1005,6 +1015,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_plotTimer.stop(); m_plotJob.reset();
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
@@ -1014,6 +1025,16 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
+    connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
+    m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(renderScopePlot,
+        [this](const ScopePlotRequest &request,ScopePlotResult result) {
+            if (m_closing || request.revision!=m_requestedRevision || request.mode!=m_scopeMode || request.fullResolution!=m_exactScopes || m_preparing) return;
+            if (result.image.isNull() && result.error.isEmpty()) result.error="Scope plot rendering failed";
+            m_scopePlot=std::move(result); m_plotRevision=request.revision; m_plotFull=request.fullResolution; ++m_plotImageId;
+            if (m_provider) m_provider->setScopePlot(m_scopePlot.image);
+            emit scopePlotChanged();
+        });
     m_catalogDatesJob = std::make_unique<LatestJob<CatalogDateRequest,QHash<QString,QString>>>(
         [](const CatalogDateRequest &request, const CancelToken &cancel) {
             QHash<QString,QString> result;
@@ -1178,6 +1199,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
 void PhotoController::prepareCurrent() {
     if (m_loadedPreview.isNull()) return;
     m_preparing = true;
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     ++m_requestedRevision;
     m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
@@ -1191,6 +1213,7 @@ void PhotoController::prepareCurrent() {
 void PhotoController::scheduleRender(bool fast) {
     if (m_previewSource.isNull() || m_preparing) return;
     setBusy(true);
+    emit scopePlotChanged();
     m_renderClock.restart();
     emit gpuFrameChanged();
     if (m_gpuEnabled && m_gpuActive) { m_render->cancel(); return; }
@@ -1218,6 +1241,8 @@ void PhotoController::completeFrame(quint64 revision) {
     if (revision != m_requestedRevision) return;
     if (m_renderClock.isValid()) PerformanceRecorder::sample("request_to_result_ms", m_renderClock.nsecsElapsed()/1e6, {{"backend", processingBackend()}, {"revision", qint64(revision)}});
     setBusy(false);
+    if (m_scopeMode!="histogram" && m_plotSubmittedRevision!=m_requestedRevision && !m_plotTimer.isActive()) m_plotTimer.start();
+    emit scopePlotChanged();
 }
 void PhotoController::setBusy(bool busy) {
     if (m_exportQueue) m_exportQueue->setInteractive(busy || m_interacting);
@@ -1325,6 +1350,8 @@ QString PhotoController::scopesStatus() const {
 void PhotoController::setExactScopes(bool enabled) {
     if (m_exactScopes == enabled) return;
     m_exactScopes = enabled;
+    m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();
+    if (m_scopeMode!="histogram") m_plotTimer.start();
     m_fullScopeJob->cancel(); m_exactTimer.stop();
     m_scopesUpdating = enabled && m_scopesRank < 1;
     emit scopesChanged();
@@ -1333,6 +1360,35 @@ void PhotoController::setExactScopes(bool enabled) {
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
     m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true, previewGeometry()});
+}
+QString PhotoController::scopePlotUrl() const {
+    return m_scopePlot.image.isNull() ? QString{} : QString("image://processed/scopes/%1").arg(m_plotImageId);
+}
+QString PhotoController::scopePlotStatus() const {
+    if (!hasImage()) return uiText("尚无统计", "No statistics");
+    if (!m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && m_plotFull==m_exactScopes)
+        return uiText("CPU 示波器失败：", "CPU scope failed: ")+m_scopePlot.error;
+    if (m_scopeMode=="histogram") return {};
+    if (!scopePlotCurrent()) return uiText("CPU 示波器更新中（旧结果）", "CPU scope updating (previous result)");
+    return uiText("CPU · ","CPU · ")+(m_plotFull ? uiText("全分辨率", "Full resolution") : uiText("当前视区预览", "Current viewport preview"))
+        +QString(" · %1 px").arg(m_scopePlot.pixels)+(m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString());
+}
+void PhotoController::setScopeMode(const QString &mode) {
+    if (!QStringList{"histogram","waveform","parade","vectorscope"}.contains(mode) || mode==m_scopeMode) return;
+    m_scopeMode=mode; m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
+    emit scopePlotChanged();
+    if (mode!="histogram") m_plotTimer.start();
+}
+void PhotoController::requestScopePlot() {
+    if (m_closing || m_scopeMode=="histogram" || !hasImage() || m_preparing || m_rendering) return;
+    ScopePlotRequest request;
+    request.source=m_exactScopes ? m_fullSource : m_previewSource;
+    if (request.source.isNull()) return;
+    request.geometry=m_exactScopes ? previewGeometry() : GeometryState{};
+    request.plan=gpuPlan(); request.mode=m_scopeMode; request.revision=m_requestedRevision; request.fullResolution=m_exactScopes;
+    m_plotSubmittedRevision=request.revision;
+    m_plotJob->submit(std::move(request));
 }
 void PhotoController::prefetchNeighbor() {
     if (!hasImage() || m_loading || exportBusy()) return;

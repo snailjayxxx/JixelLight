@@ -53,19 +53,40 @@ Rectangle {
                 Label { text: root.t("当前编辑图像 · 专业示波器", "CURRENT EDIT · SCOPES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11; Layout.topMargin: 10 }
                 RowLayout {
                     Layout.fillWidth: true
+                    ComboBox {
+                        objectName: "scopeModeChoice"; Layout.fillWidth: true
+                        model: [root.t("直方图", "Histogram"),root.t("亮度波形", "Luma waveform"),"RGB Parade",root.t("矢量示波器", "Vectorscope")]
+                        currentIndex: ["histogram","waveform","parade","vectorscope"].indexOf(root.controller.scopeMode)
+                        onActivated: root.controller.scopeMode=["histogram","waveform","parade","vectorscope"][currentIndex]
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; visible: root.controller.scopeMode==="histogram"
                     Button { id: rgbButton; text: "RGB"; checkable: true; checked: true; onClicked: { checked = true; lumaButton.checked = false } }
                     Button { id: lumaButton; text: root.t("亮度", "Luma"); checkable: true; onClicked: { checked = true; rgbButton.checked = false } }
                     Item { Layout.fillWidth: true }
                     Label { text: "1024 bins · " + root.controller.scopesPixelCount; color: "#738293"; font.pixelSize: 10 }
                 }
                 RowLayout {
-                    Label { text: root.controller.scopesStatus; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
+                    Label { text: root.controller.scopeMode==="histogram" ? root.controller.scopesStatus : root.controller.scopePlotStatus; wrapMode: Text.WordWrap; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
                     CheckBox { text: root.t("全分辨率", "Full resolution"); checked: root.controller.exactScopes; onToggled: root.controller.exactScopes=checked }
                 }
                 HistogramView {
+                    visible: root.controller.scopeMode==="histogram"
                     Layout.fillWidth: true; Layout.preferredHeight: 115
                     redData: root.controller.redHistogram; greenData: root.controller.greenHistogram; blueData: root.controller.blueHistogram
                     lumaData: root.controller.lumaHistogram; showLuma: lumaButton.checked
+                }
+                ScopePlotView {
+                    objectName: "scopePlotView"
+                    visible: root.controller.scopeMode!=="histogram"
+                    Layout.fillWidth: true; Layout.preferredHeight: 170
+                    mode: root.controller.scopeMode; imageUrl: root.controller.scopePlotUrl; current: root.controller.scopePlotCurrent
+                }
+                Label {
+                    visible: root.controller.scopeMode!=="histogram"; Layout.fillWidth: true
+                    text: root.controller.scopeMode==="vectorscope" ? root.t("sRGB 编码 · Cb/Cr · 100% 色标", "Encoded sRGB · Cb/Cr · 100% targets") : root.t("sRGB 编码 · 1024 级 · 水平位置", "Encoded sRGB · 1024 levels · horizontal position")
+                    color: "#738293"; font.pixelSize: 10
                 }
                 RowLayout {
                     Layout.fillWidth: true

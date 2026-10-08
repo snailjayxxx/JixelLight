@@ -25,6 +25,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto cropTrace=std::make_shared<QJsonObject>();
+    auto scopePlots=std::make_shared<QJsonObject>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
         const bool ready=controller->previewReady() && !controller->loading() && !controller->rendering();
@@ -223,7 +224,22 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if(state->phase==3 && ready) { controller->setExactScopes(true);state->phase=4; }
         else if(state->phase==4 && ready) {
             const auto meta=controller->currentMetadata();
-            complete=controller->scopesPixelCount()==meta.value("pixelWidth").toULongLong()*meta.value("pixelHeight").toULongLong();
+            if (controller->scopesPixelCount()==meta.value("pixelWidth").toULongLong()*meta.value("pixelHeight").toULongLong()) {
+                controller->setScopeMode("waveform"); state->phase=41;
+            }
+        } else if ((state->phase==41 || state->phase==42 || state->phase==43) && ready && controller->scopePlotCurrent()) {
+            const auto meta=controller->currentMetadata();
+            const auto expected=meta.value("pixelWidth").toULongLong()*meta.value("pixelHeight").toULongLong();
+            const auto view=window->findChild<QQuickItem *>(QStringLiteral("scopePlotView"));
+            const auto mode=controller->scopeMode();
+            scopePlots->insert(mode,view && view->isVisible() && !controller->scopePlotUrl().isEmpty() && controller->scopePlotPixels()==expected);
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+"."+mode+".png");
+            if (state->phase==41) controller->setScopeMode("parade");
+            else if (state->phase==42) controller->setScopeMode("vectorscope");
+            else controller->setScopeMode("histogram");
+            ++state->phase;
+        } else if (state->phase==44 && ready) {
+            complete=scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
         }
         if(state->lookEnabled)
             complete=complete && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty();
@@ -246,6 +262,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_geometry_passed"]=state->geometryPassed;
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
         report["ui_interactive_crop_trace"]=*cropTrace;
+        report["ui_scope_plots"]=*scopePlots;
         report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());

@@ -31,6 +31,9 @@
 #include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
+#include "core/scopes/ScopePlot.h"
+#include "core/image/ProcessedImageProvider.h"
+#include <numeric>
 #include "diagnostics/ZipStoreWriter.h"
 #include "diagnostics/DiagnosticBundle.h"
 
@@ -66,6 +69,69 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void scopePlotsCountEndpointsChannelsAndNeutralChroma() {
+        QImage image(2,1,QImage::Format_RGBA64); auto row=reinterpret_cast<QRgba64 *>(image.scanLine(0));
+        row[0]=QRgba64::fromRgba64(0,0,0,65535); row[1]=QRgba64::fromRgba64(65535,65535,65535,65535);
+        ScopePlotCounts wave("waveform"); QVERIFY(wave.add(image)); QCOMPARE(wave.height,1024); QCOMPARE(wave.pixels,quint64(2));
+        QCOMPARE(wave.bins[1023*wave.width],quint64(1)); QCOMPARE(wave.bins[255],quint64(1));
+        QCOMPARE(std::accumulate(wave.bins.cbegin(),wave.bins.cend(),quint64(0)),quint64(2));
+        ScopePlotCounts parade("parade"); QVERIFY(parade.add(image)); QCOMPARE(parade.width,768);
+        for (int channel=0;channel<3;++channel) {
+            QCOMPARE(parade.bins[1023*768+256*channel],quint64(1)); QCOMPARE(parade.bins[256*channel+255],quint64(1));
+        }
+        QCOMPARE(std::accumulate(parade.bins.cbegin(),parade.bins.cend(),quint64(0)),quint64(6));
+        ScopePlotCounts vector("vectorscope"); QVERIFY(vector.add(image)); QCOMPARE(vector.pixels,quint64(2));
+        quint64 center=0; for (int y=255;y<=256;++y) for (int x=255;x<=256;++x) center+=vector.bins[y*512+x];
+        QCOMPARE(center,quint64(2)); QCOMPARE(vector.image().size(),QSize(512,512));
+        row[0]=row[1]=QRgba64::fromRgba64(65535,0,0,65535);
+        ScopePlotCounts red("vectorscope"); QVERIFY(red.add(image)); QCOMPARE(red.bins[197],quint64(2));
+        QVERIFY(ScopePlotCounts("invalid").bins.isEmpty());
+        const auto cancel=std::make_shared<std::atomic_bool>(true); ScopePlotCounts cancelledPlot("waveform");
+        QVERIFY(!cancelledPlot.add(image,cancel)); QCOMPARE(cancelledPlot.pixels,quint64(0));
+    }
+    void scopePlotTiledReferenceMatchesFullImageAcrossRegionsAndGeometry() {
+        QImage source(20,260,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64((x*3123+y*153)%65536,(x*543+y*731)%65536,(x*831+y*87)%65536,65535);
+        AdjustmentState state; state.exposure=.5; state.geometry.crop={0,0,.75,1}; state.geometry.flipVertical=true;
+        state.look.mode="manual"; state.look.code="ST"; state.look.parameters={{"sharpness",4},{"clarity",3}};
+        for (bool raw : {false,true}) {
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,raw,0);
+            const auto encoded=ImagePipeline::processWithPlan(state.geometry.apply(source),plan);
+            for (const QString mode : {"waveform","parade","vectorscope"}) {
+                ScopePlotCounts reference(mode); QVERIFY(reference.add(encoded));
+                ScopePlotRequest request{source,plan,state.geometry,mode,7,true};
+                const auto result=renderScopePlot(request,{}); QVERIFY(result.error.isEmpty());
+                QCOMPARE(result.pixels,quint64(encoded.width())*encoded.height()); QCOMPARE(result.image,reference.image());
+                QVERIFY(renderScopePlot(request,std::make_shared<std::atomic_bool>(true)).image.isNull());
+            }
+        }
+    }
+    void controllerScopePlotRejectsOldEditsAndPhotosAndIgnoresMonitorLut() {
+        QTemporaryDir dir; QImage image(80,40,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto first=dir.filePath("first.png"), second=dir.filePath("second.png"); QVERIFY(image.save(first));
+        QVERIFY(image.scaled(20,10).save(second)); ProcessedImageProvider provider;
+        PhotoController controller(&provider); controller.setGpuEnabled(false); QVERIFY(controller.importFile(QUrl::fromLocalFile(first)));
+        QTRY_VERIFY(controller.previewReady() && !controller.rendering()); controller.setScopeMode("waveform");
+        controller.setExactScopes(true); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        QCOMPARE(controller.scopePlotPixels(),quint64(3200)); QVERIFY(!controller.scopePlotUrl().isEmpty());
+        controller.setExposure(.5); QVERIFY(!controller.scopePlotCurrent()); controller.setCrop(0,0,.5,1);
+        controller.setScopeMode("parade"); controller.finishInteraction(); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        QCOMPARE(controller.scopePlotPixels(),quint64(1600));
+        QSize size; const auto before=provider.requestImage("scopes/plot",&size,{});
+        QCOMPARE(provider.requestImage("scopes/plot",nullptr,QSize(300,150)).size(),QSize(300,150));
+        controller.setDisplayColorLut({},"identity-for-scope-test"); QCOMPARE(provider.requestImage("scopes/plot",&size,{}),before);
+        controller.setScopeMode("vectorscope"); QVERIFY(controller.importFile(QUrl::fromLocalFile(second))); controller.selectPhoto(1);
+        QVERIFY(!controller.scopePlotCurrent()); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        QCOMPARE(controller.scopePlotPixels(),quint64(200)); QCOMPARE(provider.requestImage("scopes/plot",&size,{}).size(),QSize(512,512));
+        controller.setScopeMode("histogram"); QVERIFY(controller.scopePlotUrl().isEmpty()); QCOMPARE(controller.scopePlotPixels(),quint64(0));
+        controller.setScopeMode("waveform"); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        ProjectDatabase empty; QVERIFY(empty.create(dir.path(),"Empty"));
+        QVERIFY(controller.openProject(QUrl::fromLocalFile(empty.projectPath())));
+        QVERIFY(!controller.hasImage()); QVERIFY(controller.scopePlotUrl().isEmpty()); QVERIFY(!controller.scopePlotCurrent());
+        QVERIFY(provider.requestImage("scopes/plot",nullptr,{}).isNull());
+    }
+
     void tiff16AndWebpKeepTargetIccGeometryPixelsAndCancellation() {
         QTemporaryDir dir; QImage source(9,7,QImage::Format_RGBA64);
         for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
