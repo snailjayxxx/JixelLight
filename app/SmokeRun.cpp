@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -37,8 +37,21 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 controller->finishInteraction();state->phase=2;
             }
         } else if(state->phase==2 && ready) {
-            if(auto *canvas=window->findChild<QQuickItem *>(QStringLiteral("photoCanvas"))) canvas->setProperty("zoom",1.0);
-            state->phase=3;
+            state->filmstripPresent = window->findChild<QQuickItem *>(QStringLiteral("jixelMainFilmstrip")) != nullptr;
+            // Verify that the new Library page can be instantiated while
+            // preserving the current photo, then return to the GPU canvas.
+            window->setProperty("workspaceIndex", 0);
+            state->phase=20;
+        } else if(state->phase==20) {
+            state->gridVisited=window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid")) != nullptr;
+            window->setProperty("workspaceIndex", 1);
+            state->phase=21;
+        } else if(state->phase==21) {
+            if(auto *canvas=window->findChild<QQuickItem *>(QStringLiteral("photoCanvas"))) {
+                canvas->setProperty("zoom", 1.0);
+                state->restoredDevelop=true;
+                state->phase=3;
+            }
         } else if(state->phase==3 && ready) { controller->setExactScopes(true);state->phase=4; }
         else if(state->phase==4 && ready) {
             const auto meta=controller->currentMetadata();
@@ -49,9 +62,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        bool ok=complete && (!gpuRequired || controller->gpuActive());
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop;
+        bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
+        report["ui_library_visited"]=state->gridVisited;
+        report["ui_filmstrip_found"]=state->filmstripPresent;
+        report["ui_develop_restored"]=state->restoredDevelop;
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());
         report["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);
