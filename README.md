@@ -118,6 +118,12 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - 5 个可拖动控制点。
 - 曲线参数进入项目数据库、复制/粘贴、批量同步和 Bug Snapshot。
 
+### 非破坏几何（融合开发分支）
+
+- 画布裁切、90° 旋转/翻转及 ±45° 拉直；拉直使用线性 16-bit CPU 插值，自动收边、不放大，随后可在校正画面上裁切。
+- 预览、全分辨率统计及 JPEG/PNG/TIFF/WebP 导出共用几何处理，保留 Undo/Redo、项目历史和 XMP；连续拉直拖动合并为一条历史。
+- 零角度保留旧像素路径和几何 schema 1；非零角度使用 schema 2。CLI 支持 `{"command":"geometry.straighten","degrees":5.5}`。透视和镜头校正仍未实现。
+
 ### Professional Scopes
 
 - RGB / Luminance Histogram：1024 bins。

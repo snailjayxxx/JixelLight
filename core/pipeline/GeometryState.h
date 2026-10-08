@@ -3,32 +3,45 @@
 #include <QJsonObject>
 #include <QRectF>
 #include <QTransform>
+#include "core/async/LatestJob.h"
 #include <algorithm>
 #include <cmath>
 
 struct GeometryState {
-    QRectF crop{0,0,1,1}; // Normalized original coordinates, before orientation.
+    // Normalized coordinates after optional straighten, before orientation.
+    // At zero degrees these are the unchanged original source coordinates.
+    QRectF crop{0,0,1,1};
+    double straighten = 0; // Clockwise degrees before quarter-turns and flips.
     int quarterTurns = 0;
     bool flipHorizontal = false, flipVertical = false;
     QJsonObject toJson() const {
-        return {{"schema",1},{"x",crop.x()},{"y",crop.y()},{"width",crop.width()},{"height",crop.height()},
+        QJsonObject json{{"schema",straighten == 0 ? 1 : 2},{"x",crop.x()},{"y",crop.y()},{"width",crop.width()},{"height",crop.height()},
                 {"quarterTurns",quarterTurns},{"flipHorizontal",flipHorizontal},{"flipVertical",flipVertical}};
+        if (straighten != 0) json.insert("straighten",straighten);
+        return json;
     }
+    static bool validStraighten(double value) { return std::isfinite(value) && value>=-45 && value<=45; }
     static bool validCrop(double x,double y,double width,double height) {
         return std::isfinite(x)&&std::isfinite(y)&&std::isfinite(width)&&std::isfinite(height)
             && x>=0 && y>=0 && width>0 && height>0 && x+width<=1.00000001 && y+height<=1.00000001;
     }
     static GeometryState fromJson(const QJsonObject &json) {
         GeometryState state;
-        if(json.isEmpty() || json["schema"].toInt()!=1)return state;
+        if(json.isEmpty() || (json["schema"].toDouble()!=1 && json["schema"].toDouble()!=2))return state;
+        if (json["schema"].toInt()==2) {
+            if (!json["straighten"].isDouble() || !validStraighten(json["straighten"].toDouble())) return state;
+            state.straighten=json["straighten"].toDouble();
+        }
         const double x=json["x"].toDouble(),y=json["y"].toDouble(),w=json["width"].toDouble(1),h=json["height"].toDouble(1);
         if(validCrop(x,y,w,h))state.crop={x,y,w,h};
         state.quarterTurns=((json["quarterTurns"].toInt()%4)+4)%4;
         state.flipHorizontal=json["flipHorizontal"].toBool(); state.flipVertical=json["flipVertical"].toBool();
         return state;
     }
+    static bool validJson(const QJsonObject &json) { return json.isEmpty() || fromJson(json).toJson()==json; }
+    QSize straightenedSize(QSize source) const;
     // Crop overlays use normalized coordinates after rotation and flips, while
-    // persisted geometry remains in original source coordinates. No resampling.
+    // persisted crop remains in the straightened source coordinates. No resampling.
     QRectF orientedRect(QRectF rect, bool inverse = false) const {
         auto flip = [&] {
             if (flipHorizontal) rect.moveLeft(1-rect.right());
@@ -41,19 +54,5 @@ struct GeometryState {
         // Roundoff from 1-(x+w) can be a tiny negative at a full-frame edge.
         return rect.intersected(QRectF(0,0,1,1));
     }
-    QImage apply(const QImage &source) const {
-        if(source.isNull())return {};
-        QImage result=source;
-        if(crop!=QRectF(0,0,1,1)) {
-            if(!validCrop(crop.x(),crop.y(),crop.width(),crop.height()))return {};
-            const int left=std::clamp(int(std::floor(crop.x()*source.width())),0,source.width()-1);
-            const int top=std::clamp(int(std::floor(crop.y()*source.height())),0,source.height()-1);
-            const int right=std::clamp(int(std::ceil(crop.right()*source.width())),left+1,source.width());
-            const int bottom=std::clamp(int(std::ceil(crop.bottom()*source.height())),top+1,source.height());
-            result=result.copy(left,top,right-left,bottom-top);
-        }
-        if(quarterTurns%4)result=result.transformed(QTransform().rotate(90*(quarterTurns%4)),Qt::FastTransformation);
-        if(flipHorizontal||flipVertical)result=result.mirrored(flipHorizontal,flipVertical);
-        return result;
-    }
+    QImage apply(const QImage &source, const CancelToken &cancel = {}) const;
 };

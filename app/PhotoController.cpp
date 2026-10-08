@@ -129,9 +129,16 @@ void PhotoController::setCrop(double x, double y, double width, double height) {
 void PhotoController::setCropAspect(double aspect) {
     if (!hasImage() || m_loadedPreview.isNull() || !std::isfinite(aspect) || aspect <= 0) return;
     if (currentState().geometry.quarterTurns % 2) aspect = 1 / aspect;
-    const double original = double(m_loadedPreview.width()) / m_loadedPreview.height();
+    const auto size=currentState().geometry.straightenedSize(m_loadedPreview.size());
+    const double original = double(size.width()) / size.height();
     const double width = std::min(1.0, aspect/original), height = std::min(1.0, original/aspect);
     setCrop((1-width)/2, (1-height)/2, width, height);
+}
+void PhotoController::setStraighten(double degrees) {
+    if (!GeometryState::validStraighten(degrees)) return;
+    auto *state=mutableCurrentState(); if (!state || state->geometry.straighten==degrees) return;
+    if (!CommandRegistry::execute(*state,{{"command","geometry.straighten"},{"degrees",degrees}})) return;
+    persistAndApply("geometry_straighten",{{"value",degrees}});
 }
 void PhotoController::resetGeometry() {
     if (auto *state = mutableCurrentState()) { CommandRegistry::execute(*state,{{"command","geometry.reset"}}); persistAndApply("geometry_reset"); }
@@ -482,7 +489,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength") {
+    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
@@ -1118,7 +1125,7 @@ void PhotoController::initializeJobs() {
         });
     m_fullScopeJob = std::make_unique<LatestJob<ScopeRequest, ScopesResult>>(
         [](const ScopeRequest &request, const CancelToken &cancel) {
-            try { return ScopesEngine::analyzeFull(request.geometry.apply(request.image), request.plan, cancel); }
+            try { return ScopesEngine::analyzeFull(request.geometry.apply(request.image,cancel), request.plan, cancel); }
             catch (...) { return ScopesResult{}; }
         }, [this](const ScopeRequest &request, ScopesResult scopes) {
             acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")));

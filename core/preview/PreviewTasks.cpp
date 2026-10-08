@@ -32,7 +32,7 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
             }
         }
         PerformanceRecorder::count("prepare_cache_miss");
-        QImage source = request.geometry.apply(request.image);
+        QImage source = request.geometry.apply(request.image,cancel);
         if (source.isNull() || cancelled(cancel)) return {};
         const QSize viewport = request.viewport.expandedTo(QSize(64, 64));
         if (request.zoom > 0 && request.fullResolution) {

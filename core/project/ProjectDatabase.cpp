@@ -257,6 +257,10 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
                     auto adjustments = AdjustmentState::fromJson(doc.object());
+                    if (doc.object().contains("geometry") && (!doc.object()["geometry"].isObject()
+                        || !GeometryState::validJson(doc.object()["geometry"].toObject()))) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported geometry for project photo"); break;
+                    }
                     if (!adjustments.look.error.isEmpty() || !LookProfiles::engineCompatible(adjustments.look)) {
                         ready=false; error=QStringLiteral("Invalid or incompatible Sony Look for project photo"); break;
                     }

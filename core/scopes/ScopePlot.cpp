@@ -75,7 +75,7 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
         ScopePlotCounts counts(request.mode);
         if (request.source.isNull() || counts.bins.isEmpty() || cancelled(cancel)) return result;
         PerformanceSpan timing("cpu_scope_plot",{{"mode",request.mode},{"full",request.fullResolution}});
-        const auto source=request.geometry.apply(request.source);
+        const auto source=request.geometry.apply(request.source,cancel);
         if (source.isNull() || cancelled(cancel)) return result;
         // The same processRegion path and halos as exact histogram/JPEG; bounded
         // rendered rows instead of an additional full-size output allocation.

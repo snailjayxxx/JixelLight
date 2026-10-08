@@ -143,7 +143,7 @@ Rectangle {
                 width: Math.max(280, toolScroll.availableWidth - 20)
                 spacing: 6
 
-                Label { text: root.t("裁切 / 旋转（CPU 几何准备）", "CROP / ROTATE (CPU GEOMETRY)"); color: "#a3b2c1"; font.bold: true }
+                Label { text: root.t("裁切 / 拉直 / 旋转（CPU）", "CROP / STRAIGHTEN / ROTATE (CPU)"); color: "#a3b2c1"; font.bold: true }
                 Button {
                     objectName: "beginInteractiveCrop"; Layout.fillWidth: true
                     text: root.controller.cropEditing ? root.t("取消裁剪编辑", "Cancel crop editing") : root.t("在画布上裁剪…", "Crop on canvas…")
@@ -164,6 +164,23 @@ Rectangle {
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "3:2"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(1.5) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "4:3"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(4/3) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: root.t("重置", "Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetGeometry() }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    enabled: root.controller.previewReady && !root.controller.cropEditing
+                    Label { text: root.t("拉直", "Straighten"); color: "#a3b2c1"; Layout.preferredWidth: 48 }
+                    Slider {
+                        objectName: "straightenAngle"; Layout.fillWidth: true
+                        from: -45; to: 45; stepSize: .1; value: Number(root.controller.geometry.straighten || 0)
+                        onMoved: root.controller.setStraighten(Math.round(value*10)/10)
+                        onPressedChanged: if (!pressed) root.controller.finishInteraction()
+                    }
+                    Label { text: Number(root.controller.geometry.straighten || 0).toFixed(1)+"°"; color: "#aeb9c7"; Layout.preferredWidth: 42 }
+                    Button { text: "0°"; Layout.preferredWidth: 42; onClicked: { root.controller.finishInteraction(); root.controller.setStraighten(0); root.controller.finishInteraction() } }
+                }
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#738293"; font.pixelSize: 10
+                    text: root.t("拉直自动收边；随后在校正画面上裁切。", "Straighten trims edges; crop the corrected image.")
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {

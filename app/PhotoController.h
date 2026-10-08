@@ -223,6 +223,7 @@ public:
     Q_INVOKABLE void rotatePhoto(int quarterTurns);
     Q_INVOKABLE void flipPhoto(bool horizontal);
     Q_INVOKABLE void setCrop(double x, double y, double width, double height);
+    Q_INVOKABLE void setStraighten(double degrees);
     Q_INVOKABLE void setCropAspect(double aspect);
     Q_INVOKABLE void resetGeometry();
     bool cropEditing() const { return m_cropEditing; }

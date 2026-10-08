@@ -70,6 +70,10 @@ struct CommandRegistry {
             if (!fields(command,{"quarterTurns"}) || !integer(command,"quarterTurns",-2147483648.0,2147483647.0)) return fail();
             const int turns=command["quarterTurns"].toInt(); state.geometry.quarterTurns=((state.geometry.quarterTurns+turns%4)%4+4)%4; return true;
         }
+        if (name == "geometry.straighten") {
+            if (!fields(command,{"degrees"}) || !number(command,"degrees") || !GeometryState::validStraighten(command["degrees"].toDouble())) return fail();
+            state.geometry.straighten=command["degrees"].toDouble(); return true;
+        }
         if (name == "geometry.flip") {
             if (!fields(command,{"axis"}) || !command["axis"].isString()) return fail();
             const auto axis=command["axis"].toString();
@@ -104,7 +108,8 @@ struct CommandRegistry {
         const QJsonArray commands{
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
-            QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized original source before orientation"}},
+            QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized source after optional straighten, before quarter-turns and flips"}},
+            QJsonObject{{"name","geometry.straighten"},{"fields",QJsonArray{"degrees"}},{"degrees",QJsonArray{-45,45}},{"operation","absolute clockwise angle before quarter-turns/flips; inscribed crop, no upscale; out-of-range rejected"}},
             QJsonObject{{"name","geometry.rotate"},{"fields",QJsonArray{"quarterTurns"}},{"operation","relative clockwise quarter turns, int32"}},
             QJsonObject{{"name","geometry.flip"},{"fields",QJsonArray{"axis"}},{"axis",QJsonArray{"horizontal","vertical"}},{"operation","toggle after rotation"}},
             QJsonObject{{"name","geometry.reset"},{"fields",QJsonArray{}}},

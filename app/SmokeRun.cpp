@@ -22,7 +22,7 @@ QQuickItem *visualChild(QQuickItem *item, const QString &name) {
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto cropTrace=std::make_shared<QJsonObject>();
     auto scopePlots=std::make_shared<QJsonObject>();
@@ -219,6 +219,29 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 controller->undo(); // rotation
                 state->geometryPassed = state->geometryPassed && controller->geometry().value("quarterTurns").toInt()==0
                     && controller->geometry().value("width").toDouble()==1;
+                state->phase=25;
+            }
+        } else if(state->phase==25 && ready) {
+            auto *slider=window->findChild<QQuickItem *>(QStringLiteral("straightenAngle"));
+            if (slider && slider->isVisible() && slider->isEnabled()) {
+                const auto point=slider->mapToScene(QPointF(slider->width()*.56,slider->height()/2));
+                const auto global=window->mapToGlobal(point.toPoint());
+                QMouseEvent press(QEvent::MouseButtonPress,point,point,global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+                QCoreApplication::sendEvent(window,&press);
+                QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+                QCoreApplication::sendEvent(window,&release);
+            }
+            controller->finishInteraction();
+            state->straightenDegrees=controller->geometry().value("straighten").toDouble();
+            state->straightenPassed=std::abs(state->straightenDegrees)>0 && std::abs(state->straightenDegrees)<15;
+            state->phase=26;
+        } else if(state->phase==26 && ready) {
+            const auto meta=controller->currentMetadata(); GeometryState g; g.straighten=state->straightenDegrees;
+            const auto size=g.straightenedSize({meta.value("pixelWidth").toInt(),meta.value("pixelHeight").toInt()});
+            if (controller->scopesPixelCount()==quint64(size.width())*size.height()) {
+                state->straightenedScopePixels=controller->scopesPixelCount();
+                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".straighten.png");
+                controller->undo(); state->straightenPassed=state->straightenPassed && !controller->geometry().contains("straighten");
                 state->phase=3;
             }
         } else if(state->phase==3 && ready) { controller->setExactScopes(true);state->phase=4; }
@@ -246,7 +269,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed && state->straightenPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
@@ -263,6 +286,9 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
         report["ui_interactive_crop_trace"]=*cropTrace;
         report["ui_scope_plots"]=*scopePlots;
+        report["ui_straighten_passed"]=state->straightenPassed;
+        report["ui_straighten_degrees"]=state->straightenDegrees;
+        report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);
         report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());

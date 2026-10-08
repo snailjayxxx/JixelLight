@@ -37,7 +37,7 @@ def main():
             return process
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 12
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'hsl.set', 'curve.set', 'develop.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'hsl.set', 'curve.set', 'develop.reset'}
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         commands = root / 'commands.json'
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
@@ -105,9 +105,16 @@ def main():
         assert result['adjustments']['geometry']['flipHorizontal'] is True
         assert result['adjustments']['hslSaturation'][2] == 25
         assert result['adjustments']['redCurve'][2] == .6
+        commands.write_text(json.dumps([{'command':'geometry.straighten','degrees':15}]))
+        straightened = root / 'straightened.png'
+        result = json.loads(run('--commands', commands, source, straightened).stdout)
+        assert struct.unpack('>II', straightened.read_bytes()[16:24]) == (2, 1)
+        assert result['adjustments']['geometry']['schema'] == 2 and result['adjustments']['geometry']['straighten'] == 15
         for bad in [
             {'command': 'geometry.crop', 'x': .8, 'y': 0, 'width': .5, 'height': 1},
             {'command': 'geometry.rotate', 'quarterTurns': .5},
+            {'command': 'geometry.straighten', 'degrees': 45.1},
+            {'command': 'geometry.straighten', 'degrees': '15'},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
             {'command': 'hsl.set', 'band': 8, 'component': 'saturation', 'value': 25},
             {'command': 'curve.set', 'channel': 'red', 'point': -1, 'value': .6},
@@ -217,12 +224,14 @@ def main():
         run('--catalog', catalog, '--output-dir', output, '--format', 'pdf', success=False)
         override = root / 'catalog-override'
         override.mkdir()
-        commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
+        commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
+                                        {'command': 'geometry.straighten', 'degrees': 15}]))
         edited = json.loads(run('--catalog', catalog, '--output-dir', override, '--commands', commands, '--format', 'jpeg').stdout)
         assert [r['adjustments']['exposure'] for r in edited['results']] == [1, 1]
+        assert all(r['adjustments']['geometry']['straighten'] == 15 for r in edited['results'])
         assert all(Path(r['destination']).read_bytes().startswith(b'\xff\xd8') for r in edited['results'])
         assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
-        # Unsupported saved history / Sony schema rejects the whole catalog before export.
+        # Unsupported saved history / Sony / geometry schemas reject before export.
         for format, suffix in (('tiff', '.tif'), ('webp', '.webp')):
             target = root / ('catalog-'+format)
             target.mkdir()
@@ -233,7 +242,8 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
         bad_output = root / 'catalog-rejected'
         bad_output.mkdir()
-        for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}}]:
+        for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}},
+                        {**original_state, 'geometry': {'schema': 3, 'straighten': 5}}]:
             with open_database(db_path) as db:
                 db.execute('UPDATE photos SET adjustment_json=? WHERE path=?', (json.dumps(corrupt), '../original.png'))
             current = hashlib.sha256(db_path.read_bytes()).hexdigest()
@@ -242,7 +252,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

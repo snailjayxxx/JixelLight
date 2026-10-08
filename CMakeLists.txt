@@ -68,6 +68,7 @@ add_library(JixelLightCore STATIC
     core/look/CameraReference.cpp
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
+    core/pipeline/GeometryState.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
