@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/AdjustmentState.h"
+#include "core/look/LookProfiles.h"
 #include <QVector>
 #include <QHash>
 
@@ -91,7 +92,7 @@ public:
             // Compare scalar snapshots without repeatedly decoding/serializing LUTs.
             auto checked = state;
             if (sharedLut) checked.look.lut.reset();
-            if (!state.look.error.isEmpty() || checked.toJson() != stateJson) return false;
+            if (!state.look.error.isEmpty() || !LookProfiles::engineCompatible(state.look) || checked.toJson() != stateJson) return false;
             restored.push_back({state, object.value("action").toString()});
         }
         if (restored[cursor].state.toJson() != current.toJson()) return false;

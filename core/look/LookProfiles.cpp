@@ -1,5 +1,6 @@
 #include "core/look/LookProfiles.h"
 #include "core/look/SonyLookMetadata.h"
+#include "core/pipeline/ProcessingPlan.h"
 #include <algorithm>
 #include <cmath>
 
@@ -21,6 +22,12 @@ double parameter(const LookState &l,const QString &key,double fallback=0) {
 }
 }
 QVariantList LookProfiles::catalog(){QVariantList l;for(const auto &p:presets)l<<QVariantMap{{"code",p.code},{"calibration","approximation"}};return l;}
+bool LookProfiles::engineCompatible(const LookState &look) {
+    if (!look.lut) return true;
+    const auto kind = look.lut->evidence.value("kind").toString();
+    const bool fitted = kind == "image-specific-fit" || kind == "multi-scene-empirical-fit";
+    return !fitted || look.lut->evidence.value("engineVersion").toString() == QLatin1String(ProcessingPlan::EngineVersion);
+}
 bool LookProfiles::active(const LookState &l){return l.mode!="off"&&l.error.isEmpty()&&l.strength>0&&(l.lut||find(l.code));}
 AdjustmentState LookProfiles::resolveAsShot(AdjustmentState state,const QVariantMap &metadata,bool raw){
  if(state.look.mode!="as-shot")return state;

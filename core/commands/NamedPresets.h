@@ -28,7 +28,7 @@ public:
         for (auto it = items.begin(); it != items.end(); ++it) {
             const auto state = AdjustmentState::fromJson(it.value().toObject());
             if (!validName(it.key()) || !it.value().isObject() || state.toJson() != it.value().toObject()
-                || !state.look.error.isEmpty() || state.geometry.toJson() != GeometryState{}.toJson())
+                || !state.look.error.isEmpty() || !LookProfiles::engineCompatible(state.look) || state.geometry.toJson() != GeometryState{}.toJson())
                 return fail(error, "Invalid preset snapshot");
         }
         m_items = items; m_writable = true; return true;
@@ -45,7 +45,7 @@ public:
         state.geometry = {};
         const auto snapshot = state.toJson();
         const auto checked = AdjustmentState::fromJson(snapshot);
-        if (!checked.look.error.isEmpty() || checked.toJson() != snapshot)
+        if (!checked.look.error.isEmpty() || !LookProfiles::engineCompatible(checked.look) || checked.toJson() != snapshot)
             return fail(error, "Cannot save an unsupported preset snapshot");
         auto next = m_items; next.insert(name, state.toJson()); return write(next, error);
     }

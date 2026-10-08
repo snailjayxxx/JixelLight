@@ -42,12 +42,12 @@ JixelLightCli input.jpg new-output.jpg
 [{"command":"develop.set","parameter":"exposure","value":0.5}]
 ```
 
-CLI shares the existing scalar ranges and clamps finite numeric values. It uses CPU reference processing, As Shot look resolution and camera baseline metadata; it never downloads models or opens a remote service. GUI Undo/Redo snapshots and the cursor are persisted atomically with current adjustments in the catalog adjustment JSON (`_history`, schema 1). Legacy projects without history initialize from their current state. Unknown or corrupt histories reject project opening before replacing the active writer. Shared Sony LUTs are serialized once per photo history and validated on restore. User-local named presets live in the application data directory and use atomic writes; existing names require deletion or a new name, and unreadable/unknown-version files are protected from replacement.
+CLI shares the existing scalar ranges and clamps finite numeric values. It uses CPU reference processing, As Shot look resolution and camera baseline metadata; it never downloads models or opens a remote service. GUI Undo/Redo snapshots and the cursor are persisted atomically with current adjustments in the catalog adjustment JSON (`_history`, schema 1). Legacy projects without history initialize from their current state. Unknown or corrupt histories reject project opening before replacing the active writer. Shared Sony LUTs are serialized once per photo history and validated on restore, including the same fitted-engine compatibility rule as Look profile imports. User-local named presets live in the application data directory and use atomic writes; existing names require deletion or a new name, and unreadable/unknown-version files are protected from replacement.
 
 ## Regression coverage in this batch
 
 - Undo branching, redo invalidation, gesture boundaries and bounded history; reopening at an undone cursor preserves redo; corrupt/unknown versions and LUT hashes are rejected without switching the active writer.
-- Named preset persistence, Sony As Shot round trip, geometry exclusion, duplicate refusal, deletion and unreadable-file preservation.
+- Named preset persistence, Sony fitted-engine rejection, Sony As Shot round trip, geometry exclusion, duplicate refusal, deletion and unreadable-file preservation.
 - Per-photo isolation, Sony As Shot/manual state, reset/paste and restored project state.
 - Cache reuse, exposure-independent prepare keys, geometry/source invalidation and cancellation.
 - Geometry orientation/pixel mapping, untouched original pixels, legacy default state and JSON round trip.

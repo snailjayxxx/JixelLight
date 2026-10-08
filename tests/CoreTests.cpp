@@ -158,6 +158,24 @@ private slots:
         QVERIFY(!restored.restore(invalid, state));
     }
 
+    void persistentHistoryAndPresetsRejectDifferentSonyFitEngine() {
+        auto lut = std::make_shared<LookLut>(*LookLut::identity());
+        lut->evidence = {{"kind", "multi-scene-empirical-fit"}, {"engineVersion", "older-engine"}};
+        AdjustmentState state; state.look.mode = "calibrated"; state.look.lut = lut;
+        EditHistory history; history.initialize(state); EditHistory restored;
+        QVERIFY(!restored.restore(history.toJson(), state));
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QString error;
+        NamedPresets presets(dir.filePath("presets.json")); QVERIFY(presets.load(&error));
+        QVERIFY(!presets.save("Incompatible", state, &error));
+        QVERIFY(!QFileInfo::exists(dir.filePath("presets.json")));
+        const auto json = QJsonDocument(QJsonObject{{"schema", 1}, {"presets", QJsonObject{{"Incompatible", state.toJson()}}}}).toJson();
+        QFile file(dir.filePath("presets.json")); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(json), json.size()); file.close();
+        QVERIFY(!presets.load(&error));
+        QVERIFY(!presets.remove("Incompatible", &error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), json);
+    }
+
     void namedPresetsRoundTripWithoutGeometryAndProtectUnreadableFiles() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const QString file = dir.filePath("presets.json"); QString error;
