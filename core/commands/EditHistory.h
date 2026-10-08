@@ -12,7 +12,11 @@ public:
     }
     bool record(const AdjustmentState &state, const QString &action, const QString &mergeKey = {}) {
         initialize(state);
-        if (m_entries[m_cursor].state.toJson() == state.toJson()) return false;
+        const auto &previous = m_entries[m_cursor].state;
+        // Do not serialize a potentially large calibration LUT on every slider tick.
+        auto a = previous, b = state;
+        a.look.lut.reset(); b.look.lut.reset();
+        if (previous.look.lut == state.look.lut && previous.look.error == state.look.error && a.toJson() == b.toJson()) return false;
         const bool merge = !mergeKey.isEmpty() && mergeKey == m_mergeKey && m_cursor > 0 && m_cursor == m_entries.size()-1;
         m_entries.resize(m_cursor + 1); // A new edit invalidates redo.
         if (merge) m_entries[m_cursor] = {state, action};

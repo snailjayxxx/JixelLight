@@ -18,6 +18,9 @@
 #include "core/metadata/MetadataReader.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/StageGraph.h"
+#include "core/export/PngExporter.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/ZipStoreWriter.h"
@@ -96,11 +99,118 @@ private slots:
         controller.copyAdjustments(); controller.selectPhoto(1);
         controller.pasteAdjustments(); QCOMPARE(controller.exposure(), 2.0);
         controller.undo(); QCOMPARE(controller.exposure(), -1.0);
+        controller.rotatePhoto(1);
+        QCOMPARE(controller.geometry()["quarterTurns"].toInt(),1);
+        controller.undo(); QCOMPARE(controller.geometry()["quarterTurns"].toInt(),0);
+        controller.redo(); QCOMPARE(controller.geometry()["quarterTurns"].toInt(),1);
         QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()), "history"));
         QVERIFY(controller.flushEdits());
         PhotoController reopened(nullptr);
         QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
         reopened.selectPhoto(1); QCOMPARE(reopened.exposure(), -1.0);
+        QCOMPARE(reopened.geometry()["quarterTurns"].toInt(),1);
+        QSignalSpy exported(&controller, &PhotoController::exportFinished);
+        QVERIFY(controller.exportAll(QUrl::fromLocalFile(dir.path()), "display-p3",92,"png"));
+        QTRY_COMPARE_WITH_TIMEOUT(exported.size(),1,10000);
+        QCOMPARE(exported.first()[0].toInt(),2);
+        QCOMPARE(QImage(dir.filePath("a_JixelLight.png")).depth(),64);
+        QCOMPARE(QImage(dir.filePath("b_JixelLight.png")).depth(),64);
+    }
+
+    void stageDependenciesIsolateColorFromGeometry() {
+        PrepareRequest request;
+        request.image = QImage(256,128,QImage::Format_RGBA64);
+        request.image.fill(Qt::gray);
+        request.fullResolution = true;
+        AdjustmentState state;
+        const auto before = StageGraph::describe("source", request, state, true, 0);
+        state.exposure = 1;
+        const auto edited = StageGraph::describe("source", request, state, true, 0);
+        QCOMPARE(before["prepare"], edited["prepare"]);
+        QVERIFY(before["render"] != edited["render"]);
+        QVERIFY(before["scopes"] != edited["scopes"]);
+        request.zoom = 1;
+        QVERIFY(before["prepare"] != StageGraph::describe("source",request,state,true,0)["prepare"]);
+        const auto first = preparePreview(request, {});
+        const auto second = preparePreview(request, {});
+        QCOMPARE(first.normal, second.normal);
+        QCOMPARE(first.gpu.cacheKey(), second.gpu.cacheKey());
+        auto cancel = std::make_shared<std::atomic_bool>(true);
+        QVERIFY(preparePreview(request, cancel).normal.isNull());
+        request.image.fill(Qt::red);
+        const auto changed = preparePreview(request, {});
+        QVERIFY(changed.normal != first.normal);
+    }
+
+    void pngExportPreserves16BitsAndIccAndCancellation() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QImage source(17,9,QImage::Format_RGBA64);
+        source.fill(QColor::fromRgbF(.17,.23,.29));
+        AdjustmentState state; state.exposure = .5;
+        const auto space = ColorManagement::OutputSpace::ProPhotoRgb;
+        QString error;
+        const QString path = dir.filePath("export.png");
+        QVERIFY2(exportPng16(source,state,path,space,{},&error),qPrintable(error));
+        QImageReader reader(path);
+        const auto reopened = reader.read();
+        QCOMPARE(reopened.depth(), 64);
+        QCOMPARE(reopened.colorSpace(), ColorManagement::colorSpace(space));
+        const auto expected = ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,false,0));
+        const auto actualPixel = reopened.pixelColor(4,4).rgba64(), expectedPixel = expected.pixelColor(4,4).rgba64();
+        QCOMPARE(actualPixel, expectedPixel);
+        const QString rawPath = dir.filePath("raw.png");
+        QVERIFY2(exportPng16(source,state,rawPath,space,{},&error,true,.3f),qPrintable(error));
+        const auto rawExpected = ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,.3f));
+        QCOMPARE(QImage(rawPath).pixelColor(4,4).rgba64(), rawExpected.pixelColor(4,4).rgba64());
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const QByteArray before = file.readAll(); file.close();
+        auto cancel = std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!exportPng16(source,state,path,space,cancel,&error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),before);
+    }
+
+    void commandRegistryRejectsInvalidAndMatchesUiRanges() {
+        AdjustmentState state;
+        QString error;
+        QVERIFY(CommandRegistry::execute(state,{{"command","develop.set"},{"parameter","exposure"},{"value",8}},&error));
+        QCOMPARE(state.exposure,5.0);
+        const auto before=state.toJson();
+        QVERIFY(!CommandRegistry::execute(state,{{"command","develop.set"},{"parameter","unknown"},{"value",1}},&error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(state.toJson(),before);
+        QVERIFY(!CommandRegistry::set(state,"exposure",std::numeric_limits<double>::infinity(),&error));
+        QCOMPARE(state.toJson(),before);
+        QVERIFY(!CommandRegistry::execute(state,{{"command","develop.set"},{"parameter","exposure"},{"value","2"}},&error));
+        QCOMPARE(CommandRegistry::schema()["parameters"].toArray().size(),12);
+    }
+
+    void geometryPreservesPixelsAndRestoresOldProjectDefaults() {
+        QImage source(4,2,QImage::Format_RGBA64);
+        source.setColorSpace(ColorManagement::colorSpace(ColorManagement::OutputSpace::ProPhotoRgb));
+        for(int y=0;y<2;++y)for(int x=0;x<4;++x) source.setPixelColor(x,y,QColor(20+x*30,40+y*60,80));
+        const auto original=source.copy();
+        GeometryState geometry;
+        QCOMPARE(geometry.apply(source).cacheKey(),source.cacheKey());
+        geometry.quarterTurns=1;
+        const auto rotated=geometry.apply(source);
+        QCOMPARE(rotated.size(),QSize(2,4));
+        QCOMPARE(rotated.pixelColor(1,0),source.pixelColor(0,0));
+        QCOMPARE(rotated.colorSpace(),source.colorSpace());
+        geometry.quarterTurns=0; geometry.crop=QRectF(.25,0,.5,1);
+        QCOMPARE(geometry.apply(source),source.copy(1,0,2,2));
+        geometry.flipHorizontal=true;
+        QCOMPARE(geometry.apply(source),source.copy(1,0,2,2).mirrored(true,false));
+        QCOMPARE(source,original);
+        AdjustmentState state; state.geometry=geometry;
+        QCOMPARE(AdjustmentState::fromJson(state.toJson()).geometry.toJson(),geometry.toJson());
+        QCOMPARE(AdjustmentState::fromJson({}).geometry.crop,QRectF(0,0,1,1));
+        QVERIFY(!GeometryState::validCrop(-.1,0,.5,1));
+        QVERIFY(!GeometryState::validCrop(0,0,0,1));
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QString error;
+        QVERIFY2(exportPng16(source,state,dir.filePath("cropped.png"),ColorManagement::OutputSpace::SRgb,{},&error),qPrintable(error));
+        QCOMPARE(QImage(dir.filePath("cropped.png")).size(),QSize(2,2));
+        PrepareRequest request; request.image=source; request.geometry=geometry;
+        QCOMPARE(preparePreview(request,{}).normal,geometry.apply(source));
     }
 
     void identityPipelinePreservesDisplayPixel() {

@@ -11,6 +11,7 @@ struct PrepareRequest {
     QSize viewport{1600, 1000};
     double zoom = 0, centerX = .5, centerY = .5;
     bool fullResolution = false;
+    GeometryState geometry;
 };
 struct PreparedPreview {
     QImage normal, fast, gpu;
@@ -29,5 +30,6 @@ struct ScopeRequest {
     ProcessingPlan plan;
     quint64 revision = 0;
     bool fullResolution = false;
+    GeometryState geometry;
 };
 PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken &cancel);

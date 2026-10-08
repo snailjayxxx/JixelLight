@@ -5,6 +5,7 @@
 #include <QString>
 #include <array>
 #include "core/look/LookState.h"
+#include "core/pipeline/GeometryState.h"
 
 struct AdjustmentState {
     static constexpr int ColorBandCount = 8;
@@ -13,6 +14,7 @@ struct AdjustmentState {
     using CurveArray = std::array<double, CurvePointCount>;
 
     LookState look;
+    GeometryState geometry;
 
     double exposure = 0.0;
     double temperature = 0.0;
@@ -53,7 +55,7 @@ struct AdjustmentState {
 
     [[nodiscard]] QJsonObject toJson() const {
         return {
-            {"look", look.toJson()}, {"exposure", exposure}, {"temperature", temperature}, {"tint", tint},
+            {"geometry", geometry.toJson()}, {"look", look.toJson()}, {"exposure", exposure}, {"temperature", temperature}, {"tint", tint},
             {"contrast", contrast}, {"highlights", highlights}, {"shadows", shadows},
             {"whites", whites}, {"blacks", blacks}, {"highlightRecovery", highlightRecovery},
             {"hue", hue}, {"saturation", saturation}, {"vibrance", vibrance},
@@ -69,6 +71,7 @@ struct AdjustmentState {
 
     static AdjustmentState fromJson(const QJsonObject &o) {
         AdjustmentState s;
+        s.geometry = GeometryState::fromJson(o.value("geometry").toObject());
         s.look = LookState::fromJson(o.value("look").toObject());
         s.exposure = o.value("exposure").toDouble();
         s.temperature = o.value("temperature").toDouble();

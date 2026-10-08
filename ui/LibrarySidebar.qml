@@ -12,6 +12,22 @@ Rectangle {
     border.color: "#2a3038"
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
 
+    function historyTitle(action) {
+        var titles = {
+            geometry_crop: ["裁切", "Crop"], geometry_rotate: ["旋转", "Rotate"],
+            geometry_flip: ["翻转", "Flip"], geometry_reset: ["重置几何", "Reset geometry"],
+            original: ["原始状态", "Original"], adjustment: ["基本调整", "Basic adjustment"],
+            color_mixer: ["混色器", "Color mixer"], curve_point: ["曲线", "Curve"], curve_reset: ["重置曲线", "Reset curve"],
+            look_mode: ["外观模式", "Look mode"], look_preset: ["Sony 外观", "Sony Look"],
+            look_strength: ["外观强度", "Look strength"], look_parameter: ["外观微调", "Look adjustment"],
+            reset_adjustments: ["重置调整", "Reset adjustments"], paste_adjustments: ["粘贴调整", "Paste adjustments"],
+            sync_adjustments: ["同步调整", "Sync adjustments"], reference_look_applied: ["应用参考外观", "Apply reference Look"],
+            look_profile_imported: ["导入外观配置", "Import Look profile"]
+        }
+        var title = titles[action]
+        return title ? root.t(title[0], title[1]) : root.t("编辑", "Edit")
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
@@ -114,6 +130,26 @@ Rectangle {
                         root.editRequested()
                     }
                 }
+            }
+        }
+        Label {
+            visible: root.workspaceIndex === 1
+            text: root.t("历史（本次会话）", "HISTORY (THIS SESSION)")
+            color: "#a3b2c1"; font.pixelSize: 11; font.bold: true
+        }
+        ListView {
+            visible: root.workspaceIndex === 1
+            Layout.fillWidth: true
+            Layout.preferredHeight: 110
+            clip: true
+            model: root.controller.editHistory
+            delegate: Label {
+                required property var modelData
+                width: ListView.view.width
+                text: (modelData.current ? "● " : "  ") + root.historyTitle(modelData.action)
+                color: modelData.current ? "#7bd8bd" : "#8291a2"
+                font.pixelSize: 11
+                elide: Text.ElideRight
             }
         }
     }

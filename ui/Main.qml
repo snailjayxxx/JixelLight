@@ -63,8 +63,8 @@ ApplicationWindow {
         return ["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"][Math.max(0, Math.min(3, index))]
     }
 
-    Shortcut { sequence: StandardKey.Undo; enabled: photoController.canUndo; onActivated: photoController.undo() }
-    Shortcut { sequence: StandardKey.Redo; enabled: photoController.canRedo; onActivated: photoController.redo() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: photoController.canRedo; onActivated: photoController.redo() }
     Shortcut { sequence: StandardKey.Open; onActivated: photoController.openImportDialog() }
 
     DropArea {
@@ -78,7 +78,7 @@ ApplicationWindow {
 
     Dialog {
         id: exportSettingsDialog
-        title: window.t("JPEG 导出设置", "JPEG Export Settings")
+        title: window.t("导出设置", "Export Settings")
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
@@ -94,6 +94,13 @@ ApplicationWindow {
                 model: ["sRGB", "Display P3", "Adobe RGB (1998)", "ProPhoto RGB"]
                 currentIndex: 0
             }
+            Label { visible: exportSettingsDialog.batchMode; text: window.t("批量输出格式", "Batch output format"); color: "#d6dee8" }
+            ComboBox {
+                id: batchFormatBox
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                model: ["JPEG", "PNG 16-bit"]
+            }
             RowLayout {
                 Layout.fillWidth: true
                 Label { text: window.t("JPEG 质量", "JPEG Quality"); color: "#d6dee8" }
@@ -108,8 +115,8 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 text: window.t(
-                    "从线性宽色域数据直接导出，嵌入目标 ICC。导出在后台分块执行，不覆盖原始照片。",
-                    "Export directly from linear wide-gamut data with a target ICC profile. Background tiled export never overwrites the original photograph.")
+                    "从线性宽色域数据直接导出，嵌入目标 ICC。JPEG 使用分块导出；16-bit PNG 使用完整帧内存。不覆盖原始照片。",
+                    "Export directly from linear wide-gamut data with a target ICC. JPEG is tiled; 16-bit PNG uses full-frame memory. Originals are protected.")
                 wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
             }
         }
@@ -117,13 +124,13 @@ ApplicationWindow {
 
     FileDialog {
         id: exportDialog
-        title: window.t("导出 JPEG", "Export JPEG")
+        title: window.t("导出照片", "Export Photo")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "jpg"
-        nameFilters: ["JPEG (*.jpg *.jpeg)"]
+        defaultSuffix: selectedNameFilter.index === 1 ? "png" : "jpg"
+        nameFilters: ["JPEG (*.jpg *.jpeg)", "PNG 16-bit (*.png)"]
         onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
-    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value) }
+    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, batchFormatBox.currentIndex === 1 ? "png" : "jpeg") }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }
     Dialog {
@@ -153,12 +160,12 @@ ApplicationWindow {
         Menu {
             id: exportActions
             MenuItem {
-                text: window.t("导出当前 JPEG", "Export Current JPEG")
+                text: window.t("导出当前照片", "Export Current Photo")
                 enabled: photoController.hasImage && !photoController.exportBusy
                 onTriggered: { exportSettingsDialog.batchMode = false; exportSettingsDialog.open() }
             }
             MenuItem {
-                text: window.t("批量导出 JPEG", "Batch Export JPEG")
+                text: window.t("批量导出照片", "Batch Export Photos")
                 enabled: photoController.hasImage && !photoController.exportBusy
                 onTriggered: { exportSettingsDialog.batchMode = true; exportSettingsDialog.open() }
             }

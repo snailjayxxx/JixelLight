@@ -122,6 +122,21 @@ Rectangle {
                 width: Math.max(280, toolScroll.availableWidth - 20)
                 spacing: 6
 
+                Label { text: root.t("裁切 / 旋转（CPU 几何准备）", "CROP / ROTATE (CPU GEOMETRY)"); color: "#a3b2c1"; font.bold: true }
+                RowLayout {
+                    Button { text: "↶ 90°"; enabled: root.controller.hasImage; onClicked: root.controller.rotatePhoto(-1) }
+                    Button { text: "↷ 90°"; enabled: root.controller.hasImage; onClicked: root.controller.rotatePhoto(1) }
+                    Button { text: root.t("水平翻转", "Flip H"); enabled: root.controller.hasImage; onClicked: root.controller.flipPhoto(true) }
+                    Button { text: root.t("垂直翻转", "Flip V"); enabled: root.controller.hasImage; onClicked: root.controller.flipPhoto(false) }
+                }
+                RowLayout {
+                    Label { text: root.t("居中裁切", "Center crop"); color: "#a3b2c1" }
+                    Button { text: "1:1"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(1) }
+                    Button { text: "3:2"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(1.5) }
+                    Button { text: "4:3"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(4/3) }
+                    Button { text: root.t("重置", "Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetGeometry() }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {
                     Layout.fillWidth: true
                     text: (root.sonyExpanded ? "▾ " : "▸ ") + root.t("相机 / Sony 创意外观", "CAMERA / SONY CREATIVE LOOK")

@@ -56,6 +56,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double shadowClipPercent READ shadowClipPercent NOTIFY scopesChanged)
     Q_PROPERTY(double highlightClipPercent READ highlightClipPercent NOTIFY scopesChanged)
 
+    Q_PROPERTY(QVariantMap geometry READ geometry NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QVariantList editHistory READ editHistory NOTIFY historyChanged)
@@ -155,7 +156,7 @@ public:
     Q_INVOKABLE void setExactScopes(bool enabled);
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
     Q_INVOKABLE void finishInteraction();
-    Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92);
+    Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92, const QString &format = QStringLiteral("jpeg"));
     Q_INVOKABLE void cancelExport();
     Q_INVOKABLE bool flushEdits();
     int currentIndex() const { return m_currentIndex; }
@@ -198,6 +199,12 @@ public:
     Q_INVOKABLE bool openProject(const QUrl &folder);
     Q_INVOKABLE void setRating(int rating);
     Q_INVOKABLE void setFlag(const QString &flag);
+    QVariantMap geometry() const { return currentState().geometry.toJson().toVariantMap(); }
+    Q_INVOKABLE void rotatePhoto(int quarterTurns);
+    Q_INVOKABLE void flipPhoto(bool horizontal);
+    Q_INVOKABLE void setCrop(double x, double y, double width, double height);
+    Q_INVOKABLE void setCropAspect(double aspect);
+    Q_INVOKABLE void resetGeometry();
     bool canUndo() const;
     bool canRedo() const;
     QVariantList editHistory() const;
@@ -251,6 +258,7 @@ private:
     QString m_displayColorLutKey = QStringLiteral("identity-srgb");
     bool m_loading = false, m_rendering = false, m_gpuEnabled = true, m_gpuActive = false;
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
+    QJsonObject m_preparedGeometry;
     bool m_preparing = false;
     bool m_interacting = false, m_sourceIsFull = false, m_closing = false;
     quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;

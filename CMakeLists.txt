@@ -57,6 +57,7 @@ add_library(JixelLightCore STATIC
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
+    core/export/PngExporter.cpp
     core/export/JpegExporter.cpp
     core/export/ExportQueue.cpp
     diagnostics/ActionTrace.cpp
@@ -149,3 +150,12 @@ set_tests_properties(sony-real-files PROPERTIES TIMEOUT 540 SKIP_RETURN_CODE 77)
 # The native GPU test consumes the actual profile fitted by the real-file test.
 set_tests_properties(gpu-correctness PROPERTIES DEPENDS sony-real-files
     ENVIRONMENT "JIXELLIGHT_TEST_SONY_PROFILE=${CMAKE_BINARY_DIR}/sony-real-reports/dataset/empirical.jlook.json")
+
+# Offline automation uses the same parameter registry and CPU reference engine.
+qt_add_executable(JixelLightCli tools/Cli.cpp)
+target_link_libraries(JixelLightCli PRIVATE JixelLightCore)
+set_target_properties(JixelLightCli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME cli-schema COMMAND JixelLightCli --schema)
+add_test(NAME cli-export-safety COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateCli.py $<TARGET_FILE:JixelLightCli>)
+set_tests_properties(cli-schema cli-export-safety PROPERTIES TIMEOUT 120)

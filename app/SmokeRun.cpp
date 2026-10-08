@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, historyPassed=false, geometryPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -61,8 +61,23 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             if(auto *canvas=window->findChild<QQuickItem *>(QStringLiteral("photoCanvas"))) {
                 canvas->setProperty("zoom", 1.0);
                 state->restoredDevelop=true;
-                state->phase=3;
+                state->phase=22;
             }
+        } else if(state->phase==22 && ready) {
+            const double originalExposure = controller->exposure();
+            controller->setExposure(1.2); controller->finishInteraction();
+            controller->undo();
+            state->historyPassed = std::abs(controller->exposure()-originalExposure)<1e-9 && controller->canRedo();
+            controller->redo();
+            state->historyPassed = state->historyPassed && std::abs(controller->exposure()-1.2)<1e-9;
+            controller->undo();
+            controller->rotatePhoto(1);
+            state->phase=23;
+        } else if(state->phase==23 && ready) {
+            state->geometryPassed = controller->geometry().value("quarterTurns").toInt()==1;
+            controller->undo();
+            state->geometryPassed = state->geometryPassed && controller->geometry().value("quarterTurns").toInt()==0;
+            state->phase=3;
         } else if(state->phase==3 && ready) { controller->setExactScopes(true);state->phase=4; }
         else if(state->phase==4 && ready) {
             const auto meta=controller->currentMetadata();
@@ -73,7 +88,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->historyPassed && state->geometryPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
@@ -81,6 +96,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
+        report["ui_history_passed"]=state->historyPassed;
+        report["ui_geometry_passed"]=state->geometryPassed;
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());
         report["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);

@@ -1,6 +1,6 @@
 # JixelLight × LightCraft 全面融合总计划
 
-> 2026-10-08 | 设计方案草案（不改变生产代码）  
+> 2026-10-08 | 开发路线与验收基准；实际进度见 [LIGHTCRAFT_FUSION_PROGRESS.md](LIGHTCRAFT_FUSION_PROGRESS.md)
 > JixelLight main 审查基线：4efe6aa2ec81eb83053dea239be5d7fa3435d500（0.1.0-alpha.11）  
 > 参考：storytold/lightcraft (v0.2.1) 与 Adobe Lightroom Classic 的公开工作流描述  
 > 当前 alpha.12 A7R VI / FL3 工作：PR #15，仍未合并，本计划不得覆盖或绕过其验收。
@@ -145,4 +145,4 @@ LightCraft 根项目标注 MIT OR Apache-2.0。移植算法或文件前必须查
 - 修改 RAW / display 时必须附“前后对比、相机参照、不同曝光/ISO、高光、人像肤色、裁切、16-bit vs float、CPU/GPU、导出”检查；
 - 禁止把未实现 UI 按钮展示为可用功能；可以标“计划中”，但核心流程须可操作；
 - 只完成文档不代表融合已实现；各阶段必须分别报告已改的文件、构建/回归状态、未完成项目及下一步；
-- 本设计分支只冻结方案，不改变 RAW、参数、Project.db、GPU shader 或 UI 的行为。
+- 本分支已进入增量实现；进度文档区分实际代码、验证结果与未完成范围，不以路线文档代替验收。

@@ -3,6 +3,8 @@
 #include "core/image/ProcessedImageProvider.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/StageGraph.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/DiagnosticBundle.h"
@@ -87,6 +89,37 @@ AdjustmentState *PhotoController::mutableCurrentState() {
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state);
     return &photo.state;
+}
+
+void PhotoController::rotatePhoto(int turns) {
+    if (auto *state = mutableCurrentState()) {
+        state->geometry.quarterTurns = ((state->geometry.quarterTurns + turns % 4) % 4 + 4) % 4;
+        persistAndApply("geometry_rotate");
+    }
+}
+void PhotoController::flipPhoto(bool horizontal) {
+    if (auto *state = mutableCurrentState()) {
+        if (horizontal) state->geometry.flipHorizontal = !state->geometry.flipHorizontal;
+        else state->geometry.flipVertical = !state->geometry.flipVertical;
+        persistAndApply("geometry_flip");
+    }
+}
+void PhotoController::setCrop(double x, double y, double width, double height) {
+    if (!GeometryState::validCrop(x,y,width,height)) return;
+    if (auto *state = mutableCurrentState()) {
+        state->geometry.crop = QRectF(x,y,width,height);
+        persistAndApply("geometry_crop");
+    }
+}
+void PhotoController::setCropAspect(double aspect) {
+    if (!hasImage() || m_loadedPreview.isNull() || !std::isfinite(aspect) || aspect <= 0) return;
+    if (currentState().geometry.quarterTurns % 2) aspect = 1 / aspect;
+    const double original = double(m_loadedPreview.width()) / m_loadedPreview.height();
+    const double width = std::min(1.0, aspect/original), height = std::min(1.0, original/aspect);
+    setCrop((1-width)/2, (1-height)/2, width, height);
+}
+void PhotoController::resetGeometry() {
+    if (auto *state = mutableCurrentState()) { state->geometry = {}; persistAndApply("geometry_reset"); }
 }
 
 bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
@@ -174,8 +207,8 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 void PhotoController::setAdjustment(const char *name, double value, double AdjustmentState::*member) {
     auto *state = mutableCurrentState();
     if (!state || !std::isfinite(value) || qFuzzyCompare((*state).*member + 1.0, value + 1.0)) return;
-    value = std::clamp(value, member == &AdjustmentState::exposure ? -5.0 : -180.0, member == &AdjustmentState::exposure ? 5.0 : 180.0);
-    (*state).*member = value;
+    if (!CommandRegistry::set(*state, QString::fromLatin1(name), value)) return;
+    value = (*state).*member;
     persistAndApply(QStringLiteral("adjustment"), {{"parameter", QString::fromLatin1(name)}, {"value", value}});
 }
 
@@ -373,7 +406,8 @@ void PhotoController::applyCurrent() {
     m_interacting = true;
     m_refineTimer.start();
     emit scopesChanged();
-    scheduleRender(true);
+    if (m_preparedGeometry != currentState().geometry.toJson()) prepareCurrent();
+    else scheduleRender(true);
 }
 
 bool PhotoController::createProject(const QUrl &folder, const QString &name) {
@@ -531,7 +565,7 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     if (!hasImage() || exportBusy()) return false;
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
-    if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive)) path += ".jpg";
+    if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive) && !path.endsWith(".png", Qt::CaseInsensitive)) path += ".jpg";
     if (isProtectedPhoto(path)) { setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph.")); return false; }
     const auto target = ColorManagement::fromKey(colorSpaceKey);
     // Protect every imported original, not merely the current photograph.
@@ -560,7 +594,9 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     return queued; // Accepted, not a claim that the file has already been written.
 }
 
-bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality) {
+bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format) {
+    const QString extension = format.toLower() == "png" ? QStringLiteral(".png") : QStringLiteral(".jpg");
+    if (format.toLower() != "png" && format.toLower() != "jpeg" && format.toLower() != "jpg") return false;
     if (m_photos.isEmpty() || exportBusy() || !folder.isLocalFile()) return false;
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
@@ -569,9 +605,9 @@ bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey
     QSet<QString> reserved;
     for (const auto &photo : m_photos) {
         QString stem = QFileInfo(photo.path).completeBaseName() + QStringLiteral("_JixelLight");
-        QString path = directory.filePath(stem + ".jpg");
+        QString path = directory.filePath(stem + extension);
         int suffix = 1;
-        while (QFileInfo::exists(path) || reserved.contains(path.toCaseFolded())) path = directory.filePath(stem + QStringLiteral("_%1.jpg").arg(suffix++));
+        while (QFileInfo::exists(path) || reserved.contains(path.toCaseFolded())) path = directory.filePath(stem + QStringLiteral("_%1").arg(suffix++) + extension);
         reserved.insert(path.toCaseFolded());
         requests.push_back({photo.path, path, {}, photo.state, ColorManagement::fromKey(colorSpaceKey), std::clamp(quality, 1, 100)});
     }
@@ -586,8 +622,17 @@ QString PhotoController::reportBug() {
     // Explicit, one-off reference capture. Never label a previous revision's
     // asynchronously displayed pixels as the current parameters.
     QImage capture;
-    if (!m_previewSource.isNull())
-        capture = ImagePipeline::process(m_previewSource, currentState(), ImagePipeline::InputEncoding::LinearProPhoto);
+    PrepareRequest stageRequest;
+    stageRequest.image = m_fullSource.isNull() ? m_loadedPreview : m_fullSource;
+    stageRequest.viewport = m_viewport;
+    stageRequest.zoom = m_zoom; stageRequest.centerX = m_centerX; stageRequest.centerY = m_centerY;
+    stageRequest.fullResolution = m_sourceIsFull;
+    stageRequest.geometry = currentState().geometry;
+    // Geometry may still be preparing asynchronously; capture the current
+    // snapshot rather than labeling the previous viewport as this revision.
+    const auto diagnosticPreview = preparePreview(stageRequest, {});
+    if (!diagnosticPreview.normal.isNull()) capture = ImagePipeline::processWithPlan(diagnosticPreview.normal, gpuPlan());
+    PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
     PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
     const QString path = DiagnosticBundle::create(capture, currentFile(), projectPath(), currentState(),
@@ -689,7 +734,7 @@ void PhotoController::initializeJobs() {
         });
     m_fullScopeJob = std::make_unique<LatestJob<ScopeRequest, ScopesResult>>(
         [](const ScopeRequest &request, const CancelToken &cancel) {
-            try { return ScopesEngine::analyzeFull(request.image, request.plan, cancel); }
+            try { return ScopesEngine::analyzeFull(request.geometry.apply(request.image), request.plan, cancel); }
             catch (...) { return ScopesResult{}; }
         }, [this](const ScopeRequest &request, ScopesResult scopes) {
             acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")));
@@ -717,7 +762,7 @@ void PhotoController::initializeJobs() {
         emit exportChanged();
     });
     connect(m_exportQueue.get(), &ExportQueue::fileFinished, this, [this](const QString &source, const QString &destination, bool ok, const QString &error) {
-        ActionTrace::instance().record("export_jpeg", {{"source", source}, {"destination", destination}, {"ok", ok}, {"error", error}});
+        ActionTrace::instance().record("export_image", {{"source", source}, {"destination", destination}, {"ok", ok}, {"error", error}});
         if (!ok) qWarning() << "Export failed" << source << error;
     });
     connect(m_exportQueue.get(), &ExportQueue::finished, this, [this](int succeeded, int failed, bool stopped) {
@@ -769,7 +814,9 @@ void PhotoController::prepareCurrent() {
     m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
-    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_zoom, m_centerX, m_centerY, m_sourceIsFull});
+    m_preparedGeometry = currentState().geometry.toJson();
+    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_zoom, m_centerX, m_centerY, m_sourceIsFull, currentState().geometry});
+    emit gpuFrameChanged();
     setBusy(true);
 }
 
@@ -900,7 +947,7 @@ void PhotoController::setExactScopes(bool enabled) {
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
-    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true});
+    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true, currentState().geometry});
 }
 void PhotoController::prefetchNeighbor() {
     if (!hasImage() || m_loading || exportBusy()) return;
