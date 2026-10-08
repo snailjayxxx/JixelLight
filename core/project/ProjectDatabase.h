@@ -39,5 +39,6 @@ private:
     QThread m_thread;
     QObject *m_worker = nullptr;
     QString m_projectPath, m_projectName;
+    QString m_lastOpenError; // GUI thread only; does not poison the active writer's save status
     bool m_open = false;
 };

@@ -392,6 +392,34 @@ private slots:
         QVERIFY(records.isEmpty());
     }
 
+    void failedProjectOpenMustNotPoisonCurrentProject() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        ProjectDatabase db;
+        QVERIFY(db.create(dir.path(), QStringLiteral("Working")));
+        AdjustmentState before;
+        before.exposure = 0.3;
+        const QString photo = QDir(dir.path()).filePath(QStringLiteral("existing.ARW"));
+        QVERIFY(db.updateAdjustment(photo, before));
+        QVERIFY(db.flush());
+
+        QVector<ProjectDatabase::SavedPhoto> photos;
+        const QString bad = QDir(dir.path()).filePath(QStringLiteral("DoesNotExist.jlp"));
+        QVERIFY(!db.open(bad, &photos));
+        QVERIFY(!db.lastError().isEmpty());
+        // A bad destination must not switch projects or block shutdown saves.
+        QCOMPARE(db.projectName(), QStringLiteral("Working"));
+        QVERIFY(db.flush());
+        AdjustmentState after = before;
+        after.exposure = 1.3;
+        QVERIFY(db.updateAdjustment(photo, after));
+        QVERIFY(db.flush());
+        QVERIFY2(db.open(QDir(dir.path()).filePath(QStringLiteral("Working.jlp")), &photos),
+                 qPrintable(db.lastError()));
+        QCOMPARE(photos.size(), 1);
+        QCOMPARE(photos[0].adjustments.exposure, 1.3);
+    }
+
     void zipWriterCreatesZipSignature() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

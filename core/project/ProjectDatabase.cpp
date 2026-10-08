@@ -31,7 +31,11 @@ ProjectDatabase::~ProjectDatabase() {
     m_thread.quit();
     m_thread.wait();
 }
-QString ProjectDatabase::lastError() const { QMutexLocker lock(&m_state->mutex); return m_state->error; }
+QString ProjectDatabase::lastError() const {
+    if (!m_lastOpenError.isEmpty()) return m_lastOpenError;
+    QMutexLocker lock(&m_state->mutex);
+    return m_state->error;
+}
 bool ProjectDatabase::create(const QString &directory, const QString &name) {
     const QString safe = name.trimmed().isEmpty() ? QStringLiteral("JixelLight Project") : name.trimmed();
     if (safe == "." || safe == ".." || safe.contains('/') || safe.contains('\\')) return false;
@@ -71,14 +75,14 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
 // Existing projects are opened without overwriting their metadata, and their
 // serialized edits are validated before the active writer connection changes.
 bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos) {
-    if (!photos) return false;
+    m_lastOpenError.clear();
+    if (!photos) { m_lastOpenError = QStringLiteral("Missing project destination"); return false; }
     const QFileInfo folderInfo(directory);
     const QString folder = folderInfo.absoluteFilePath();
     const QFileInfo databaseInfo(QDir(folder).filePath(QStringLiteral("Project.db")));
     if (!folderInfo.isDir() || !folderInfo.fileName().endsWith(QStringLiteral(".jlp"), Qt::CaseInsensitive)
         || !databaseInfo.isFile()) {
-        QMutexLocker lock(&m_state->mutex);
-        m_state->error = QStringLiteral("Not a JixelLight .jlp directory containing Project.db");
+        m_lastOpenError = QStringLiteral("Not a JixelLight .jlp directory containing Project.db");
         return false;
     }
     if (m_open && !flush()) return false;
@@ -169,10 +173,12 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
         } else {
             QSqlDatabase::removeDatabase(candidate);
         }
-        { QMutexLocker lock(&state->mutex); state->error = error; }
+        // A failed candidate open must never change the current writer's
+        // error status: otherwise flushing the perfectly healthy old project
+        // would fail merely because the attempted replacement was invalid.
     }, Qt::BlockingQueuedConnection);
 
-    if (!ready) return false;
+    if (!ready) { m_lastOpenError = error.isEmpty() ? QStringLiteral("Project validation failed") : error; return false; }
     *photos = std::move(staged);
     m_open = true;
     m_projectPath = folder;
@@ -248,5 +254,6 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states)
 bool ProjectDatabase::flush() {
     if (!m_thread.isRunning()) return false;
     QMetaObject::invokeMethod(m_worker, [] {}, Qt::BlockingQueuedConnection);
-    return lastError().isEmpty();
+    QMutexLocker lock(&m_state->mutex);
+    return m_state->error.isEmpty();
 }
