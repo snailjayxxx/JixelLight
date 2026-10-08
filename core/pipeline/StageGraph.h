@@ -5,12 +5,29 @@
 #include <QDataStream>
 #include <QIODevice>
 #include <QJsonDocument>
+#include <QColorSpace>
+#include <QByteArrayView>
 
 // Keys for the existing engine boundaries. These describe the actual RGBA64
 // decode / FP32 GPU staging path, not an unimplemented float RAW decoder.
 struct StageGraph {
     static QString digest(const QByteArray &bytes) {
         return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    }
+    // Diagnostic-only: stream the visible pixel bytes without allocating a
+    // full-frame copy or hashing uninitialized row padding. No slider-path cost.
+    static QJsonObject outputFingerprint(const QImage &image) {
+        if (image.isNull()) return {{"available",false}};
+        QByteArray descriptor; QDataStream stream(&descriptor,QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_6_8);
+        stream << QStringLiteral("stage-pixels-v1") << QString::fromLatin1(ProcessingPlan::EngineVersion)
+               << image.width() << image.height() << int(image.format()) << image.depth();
+        QCryptographicHash hash(QCryptographicHash::Sha256); hash.addData(descriptor);
+        const qsizetype rowBytes=(qsizetype(image.width())*image.depth()+7)/8;
+        for (int y=0;y<image.height();++y) hash.addData(QByteArrayView(reinterpret_cast<const char *>(image.constScanLine(y)),rowBytes));
+        return {{"available",true},{"pixel_sha256",QString::fromLatin1(hash.result().toHex())},
+            {"icc_sha256",digest(image.colorSpace().iccProfile())},{"width",image.width()},{"height",image.height()},
+            {"format",int(image.format())},{"depth",image.depth()},{"pixel_order","native QImage; row padding excluded"}};
     }
     static QString prepareKey(const PrepareRequest &request) {
         QByteArray bytes;

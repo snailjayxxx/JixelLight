@@ -14,6 +14,7 @@
 #include <QUuid>
 #include <QUrl>
 #include <exiv2/exiv2.hpp>
+#include <QtEndian>
 #include <algorithm>
 #include <cmath>
 
@@ -29,6 +30,7 @@
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/ZipStoreWriter.h"
+#include "diagnostics/DiagnosticBundle.h"
 
 namespace {
 int channelSpread(const QColor &c) {
@@ -42,6 +44,20 @@ QImage sceneGrayImage(double value) {
     const quint16 code = static_cast<quint16>(std::lround(value * 65535.0));
     px[0] = QRgba64::fromRgba64(code, code, code, 65535);
     return image;
+}
+QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
+    QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {};
+    const auto bytes=file.readAll(); qsizetype offset=0;
+    while (offset+30<=bytes.size() && qFromLittleEndian<quint32>(bytes.constData()+offset)==0x04034b50) {
+        const auto size=qFromLittleEndian<quint32>(bytes.constData()+offset+18);
+        const auto nameSize=qFromLittleEndian<quint16>(bytes.constData()+offset+26);
+        const auto extraSize=qFromLittleEndian<quint16>(bytes.constData()+offset+28);
+        const auto start=offset+30+nameSize+extraSize;
+        if (start>bytes.size() || size>bytes.size()-start) return {};
+        if (bytes.mid(offset+30,nameSize)==entry) return bytes.mid(start,size);
+        offset=start+size;
+    }
+    return {};
 }
 }
 
@@ -308,6 +324,56 @@ private slots:
         request.image.fill(Qt::red);
         const auto changed = preparePreview(request, {});
         QVERIFY(changed.normal != first.normal);
+    }
+
+    void stageOutputFingerprintsIgnoreRowPaddingAndSeparateIcc() {
+        QByteArray a(24,'\0'), b(24,'\0');
+        for (int row=0;row<2;++row) for (int byte=0;byte<9;++byte) a[row*12+byte]=b[row*12+byte]=char(20+byte);
+        for (int row=0;row<2;++row) for (int byte=9;byte<12;++byte) b[row*12+byte]=char(240);
+        QImage first(reinterpret_cast<uchar *>(a.data()),3,2,12,QImage::Format_RGB888);
+        QImage second(reinterpret_cast<uchar *>(b.data()),3,2,12,QImage::Format_RGB888);
+        const auto before=StageGraph::outputFingerprint(first);
+        QCOMPARE(before.value("pixel_sha256"),StageGraph::outputFingerprint(second).value("pixel_sha256"));
+        second.setColorSpace(QColorSpace::AdobeRgb); const auto tagged=StageGraph::outputFingerprint(second);
+        QCOMPARE(before.value("pixel_sha256"),tagged.value("pixel_sha256")); QVERIFY(before.value("icc_sha256")!=tagged.value("icc_sha256"));
+        first.setPixelColor(0,0,Qt::red); QVERIFY(before.value("pixel_sha256")!=StageGraph::outputFingerprint(first).value("pixel_sha256"));
+        QVERIFY(before.value("pixel_sha256")!=StageGraph::outputFingerprint(second.copy(0,0,2,2)).value("pixel_sha256"));
+        QVERIFY(!StageGraph::outputFingerprint({}).value("available").toBool());
+    }
+
+    void diagnosticZipContainsStructuredStageOutputs() {
+        QImage image(2,2,QImage::Format_RGBA64); image.fill(Qt::gray);
+        const QJsonObject outputs{{"schema",1},{"source",StageGraph::outputFingerprint(image)}};
+        const auto path=DiagnosticBundle::create(image,"synthetic.png",{}, {},0,0,"test",{},outputs); QVERIFY(!path.isEmpty());
+        const auto cleanup=qScopeGuard([&] { QFile::remove(path); });
+        QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"stage_outputs.json")).object(),outputs);
+        QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object().value("stage_outputs").toObject(),outputs);
+    }
+
+    void controllerDiagnosticHashesUseCurrentParametersAndGeometry() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(4,2,QImage::Format_RGB32); image.fill(QColor(64,96,128));
+        const auto source=dir.filePath("source.png"); QVERIFY(image.save(source));
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.loading() && controller.previewReady(),10000);
+        QStringList paths; const auto cleanup=qScopeGuard([&] { for(const auto &path:paths) QFile::remove(path); });
+        const auto baseline=controller.reportBug(); paths << baseline; QVERIFY(!baseline.isEmpty());
+        const auto before=QJsonDocument::fromJson(storedZipEntry(baseline,"stage_outputs.json")).object();
+        QVERIFY(before.value("source").toObject().value("available").toBool());
+        QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
+        controller.setExposure(.5); // Deliberately capture before asynchronous display refinement.
+        const auto edited=controller.reportBug(); paths << edited; QVERIFY(!edited.isEmpty()); QVERIFY(edited!=baseline);
+        const auto after=QJsonDocument::fromJson(storedZipEntry(edited,"stage_outputs.json")).object();
+        QCOMPARE(after.value("source"),before.value("source")); QCOMPARE(after.value("prepared_preview"),before.value("prepared_preview"));
+        QVERIFY(after.value("cpu_srgb_output").toObject().value("pixel_sha256")!=before.value("cpu_srgb_output").toObject().value("pixel_sha256"));
+        QCOMPARE(QJsonDocument::fromJson(storedZipEntry(edited,"manifest.json")).object().value("adjustments").toObject().value("exposure").toDouble(),.5);
+        controller.setCrop(0,0,.5,1);
+        const auto cropped=controller.reportBug(); paths << cropped; QVERIFY(!cropped.isEmpty());
+        const auto geometry=QJsonDocument::fromJson(storedZipEntry(cropped,"stage_outputs.json")).object();
+        QCOMPARE(geometry.value("source"),before.value("source"));
+        QCOMPARE(geometry.value("prepared_preview").toObject().value("width").toInt(),2);
+        QCOMPARE(geometry.value("cpu_srgb_output").toObject().value("width").toInt(),2);
+        QImage capture; QVERIFY(capture.loadFromData(storedZipEntry(cropped,"current_preview.png"),"PNG"));
+        QCOMPARE(StageGraph::outputFingerprint(capture).value("pixel_sha256"),geometry.value("cpu_srgb_output").toObject().value("pixel_sha256"));
     }
 
     void pngExportPreserves16BitsAndIccAndCancellation() {
@@ -1176,6 +1242,9 @@ private slots:
         QFile f(path);
         QVERIFY(f.open(QIODevice::ReadOnly));
         QCOMPARE(f.read(4), QByteArray("PK\x03\x04",4));
+        const auto rest=f.readAll(); f.close();
+        ZipStoreWriter collision(path); QVERIFY(!collision.open());
+        QVERIFY(f.open(QIODevice::ReadOnly)); QCOMPARE(f.readAll(),QByteArray("PK\x03\x04",4)+rest);
     }
 };
 

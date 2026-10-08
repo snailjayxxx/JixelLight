@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QSysInfo>
+#include <QUuid>
 
 #ifndef JIXELLIGHT_VERSION
 #define JIXELLIGHT_VERSION "dev"
@@ -23,11 +24,12 @@
 QString DiagnosticBundle::create(const QImage &preview, const QString &currentFile,
                                  const QString &projectPath, const AdjustmentState &state,
                                  double shadowClip, double highlightClip,
-                                 const QString &pipelineDescription, const QJsonObject &scopeContext) {
+                                 const QString &pipelineDescription, const QJsonObject &scopeContext, const QJsonObject &stageOutputs) {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QDir().mkpath(dir);
-    const QString path = dir + "/JixelLight_Diagnostic_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz") + ".zip";
+    const QString path = dir + "/JixelLight_Diagnostic_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz")
+        + "_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".zip";
     const bool logsFlushed = LoggingEngine::flush();
     ZipStoreWriter zip(path);
     if (!zip.open()) return {};
@@ -50,10 +52,12 @@ QString DiagnosticBundle::create(const QImage &preview, const QString &currentFi
     manifest["logs_flushed"] = logsFlushed;
     manifest["log_lines_dropped"] = qint64(LoggingEngine::droppedLines());
     manifest["preview_capture"] = QStringLiteral("CPU reference of current parameters; not a GPU screen capture");
+    if (!stageOutputs.isEmpty()) manifest["stage_outputs"] = stageOutputs;
     bool written = zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
     written &= zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));
 
     written &= zip.addFile("performance.json", QJsonDocument(PerformanceRecorder::snapshot()).toJson(QJsonDocument::Indented));
+    if (!stageOutputs.isEmpty()) written &= zip.addFile("stage_outputs.json",QJsonDocument(stageOutputs).toJson(QJsonDocument::Indented));
 
     if (!preview.isNull()) {
         QByteArray png;

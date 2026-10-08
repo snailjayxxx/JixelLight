@@ -880,6 +880,15 @@ QString PhotoController::reportBug() {
     // snapshot rather than labeling the previous viewport as this revision.
     const auto diagnosticPreview = preparePreview(stageRequest, {});
     if (!diagnosticPreview.normal.isNull()) capture = ImagePipeline::processWithPlan(diagnosticPreview.normal, gpuPlan());
+    QElapsedTimer hashTimer; hashTimer.start();
+    const QJsonObject stageOutputs{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
+        {"parameter_revision",qint64(m_requestedRevision)},{"source_is_full_resolution",m_sourceIsFull},
+        {"source",StageGraph::outputFingerprint(stageRequest.image)},
+        {"prepared_preview",StageGraph::outputFingerprint(diagnosticPreview.normal)},
+        {"cpu_srgb_output",StageGraph::outputFingerprint(capture)},
+        {"monitor_icc","excluded; hashes precede screen presentation"},
+        {"note","actual RGBA64/proxy boundaries; not per-color-kernel or float-RAW stage hashes"}};
+    PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(stageRequest.image.sizeInBytes())}});
     PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
     PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
@@ -887,7 +896,7 @@ QString PhotoController::reportBug() {
         m_scopes.shadowClipPercent, m_scopes.highlightClipPercent, pipelineDescription(),
         {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
          {"parameter_revision", qint64(m_requestedRevision)}, {"statistics_revision", qint64(m_scopesRevision)},
-         {"is_current", m_scopesRevision == m_requestedRevision}, {"viewport_preparing", m_preparing}});
+         {"is_current", m_scopesRevision == m_requestedRevision}, {"viewport_preparing", m_preparing}},stageOutputs);
     ActionTrace::instance().record("bug_snapshot_created", {{"path", path}, {"ok", !path.isEmpty()}});
     setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"), QStringLiteral("Diagnostic bundle failed"))
                              : uiText(QStringLiteral("诊断包：") + path, QStringLiteral("Diagnostic bundle: ") + path));
