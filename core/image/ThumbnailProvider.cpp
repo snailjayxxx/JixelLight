@@ -4,15 +4,15 @@
 #include <QCache>
 #include <QDateTime>
 #include <QFileInfo>
-#include <QFutureWatcher>
 #include <QImageReader>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQuickImageResponse>
 #include <QQuickTextureFactory>
-#include <QSemaphore>
+#include <QThreadPool>
+#include <QRunnable>
+#include <atomic>
 #include <QUrl>
-#include <QtConcurrent>
 #include <memory>
 
 struct ThumbnailStore {
@@ -20,6 +20,9 @@ struct ThumbnailStore {
     // Cache the decoded, bounded thumbnail, never the original RAW or a
     // full-resolution image. QCache costs are measured in image bytes.
     QCache<QString, QImage> images {64 << 20};
+    QThreadPool pool;
+
+    ThumbnailStore() { pool.setMaxThreadCount(2); }
 };
 
 namespace {
@@ -37,10 +40,9 @@ QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<Thum
         if (const QImage *cached = store->images.object(key)) return *cached;
     }
 
-    // Restrict parallel LibRaw thumbnail unpacking on rapid scrolling. No
-    // thumbnail request enters the full RAW develop / project-save path.
-    static QSemaphore decodeSlots(2);
-    decodeSlots.acquire();
+    // A dedicated pool limits this to two concurrent image decodes; unlike
+    // blocking the global QThreadPool it leaves existing preview/export jobs
+    // free to finish while the user rapidly scrolls the filmstrip.
     QImage image;
     if (RawDecoder::isRawFile(path)) {
         image = RawDecoder::thumbnail(path);
@@ -52,7 +54,6 @@ QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<Thum
             reader.setScaledSize(original.scaled(size, Qt::KeepAspectRatio));
         image = reader.read();
     }
-    decodeSlots.release();
 
     if (image.isNull()) return {};
     if (image.width() > size.width() || image.height() > size.height())
@@ -68,24 +69,39 @@ QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<Thum
     return image;
 }
 
-class ThumbnailResponse final : public QQuickImageResponse {
+class ThumbnailResponse final : public QQuickImageResponse, public QRunnable {
 public:
-    ThumbnailResponse(QString path, QSize size, std::shared_ptr<ThumbnailStore> store) {
-        connect(&m_watcher, &QFutureWatcher<QImage>::finished, this, [this] {
-            m_image = m_watcher.result();
-            emit finished();
-        });
-        m_watcher.setFuture(QtConcurrent::run([path = std::move(path), size, store = std::move(store)] {
-            return loadThumbnail(path, size, store);
-        }));
+    ThumbnailResponse(QString path, QSize size, std::shared_ptr<ThumbnailStore> store)
+        : m_path(std::move(path)), m_size(size), m_store(std::move(store)) {
+        // Qt Quick owns the QQuickImageResponse. Never let QThreadPool delete
+        // it as a QRunnable; Qt Quick calls deleteLater() after finished().
+        setAutoDelete(false);
     }
 
+    void run() override {
+        QImage image;
+        if (!m_cancelled.load(std::memory_order_relaxed))
+            image = loadThumbnail(m_path, m_size, m_store);
+        {
+            QMutexLocker lock(&m_resultMutex);
+            m_image = std::move(image);
+        }
+        emit finished();
+    }
+
+    void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
+
     QQuickTextureFactory *textureFactory() const override {
+        QMutexLocker lock(&m_resultMutex);
         return QQuickTextureFactory::textureFactoryForImage(m_image);
     }
 
 private:
-    QFutureWatcher<QImage> m_watcher;
+    QString m_path;
+    QSize m_size;
+    std::shared_ptr<ThumbnailStore> m_store;
+    std::atomic_bool m_cancelled {false};
+    mutable QMutex m_resultMutex;
     QImage m_image;
 };
 } // namespace
@@ -93,7 +109,9 @@ private:
 ThumbnailProvider::ThumbnailProvider() : m_store(std::make_shared<ThumbnailStore>()) {}
 
 QQuickImageResponse *ThumbnailProvider::requestImageResponse(const QString &id, const QSize &requestedSize) {
-    // QML uses encodeURIComponent(path). Do not interpret a remote URL here.
+    // QML uses encodeURIComponent(path). No network URLs or full RAW decode.
     const QString path = QUrl::fromPercentEncoding(id.toUtf8());
-    return new ThumbnailResponse(path, requestedSize, m_store);
+    auto *response = new ThumbnailResponse(path, requestedSize, m_store);
+    m_store->pool.start(response);
+    return response;
 }
