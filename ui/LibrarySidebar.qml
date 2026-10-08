@@ -142,7 +142,12 @@ Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 110
             clip: true
-            model: root.controller.editHistory
+            model: root.controller.editHistory.slice().reverse()
+            onModelChanged: Qt.callLater(function() {
+                for (var i = 0; i < model.length; ++i) {
+                    if (model[i].current) { currentIndex = i; positionViewAtIndex(i, ListView.Contain); break }
+                }
+            })
             delegate: Label {
                 required property var modelData
                 width: ListView.view.width

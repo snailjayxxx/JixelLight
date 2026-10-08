@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, historyPassed=false, geometryPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, historyPassed=false, geometryPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -75,9 +75,21 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->phase=23;
         } else if(state->phase==23 && ready) {
             state->geometryPassed = controller->geometry().value("quarterTurns").toInt()==1;
-            controller->undo();
-            state->geometryPassed = state->geometryPassed && controller->geometry().value("quarterTurns").toInt()==0;
-            state->phase=3;
+            controller->setCrop(0,0,.5,1);
+            controller->setExactScopes(true);
+            state->phase=24;
+        } else if(state->phase==24 && ready) {
+            const auto meta=controller->currentMetadata();
+            const auto expected=(meta.value("pixelWidth").toULongLong()+1)/2 * meta.value("pixelHeight").toULongLong();
+            if(controller->scopesPixelCount()==expected) {
+                state->croppedScopePixels=controller->scopesPixelCount();
+                state->geometryPassed = state->geometryPassed && controller->geometry().value("width").toDouble()==.5;
+                controller->undo(); // crop
+                controller->undo(); // rotation
+                state->geometryPassed = state->geometryPassed && controller->geometry().value("quarterTurns").toInt()==0
+                    && controller->geometry().value("width").toDouble()==1;
+                state->phase=3;
+            }
         } else if(state->phase==3 && ready) { controller->setExactScopes(true);state->phase=4; }
         else if(state->phase==4 && ready) {
             const auto meta=controller->currentMetadata();
@@ -98,6 +110,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_curation_passed"]=state->curationPassed;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
+        report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());
         report["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);
