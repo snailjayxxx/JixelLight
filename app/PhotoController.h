@@ -221,6 +221,8 @@ public:
     QString currentColorLabel() const;
     Q_INVOKABLE bool executeEditCommand(const QVariantMap &command);
     Q_INVOKABLE bool createVirtualCopy(const QString &name = {});
+    Q_INVOKABLE bool renameCurrentVirtualCopy(const QString &name);
+    Q_INVOKABLE bool removeCurrentVirtualCopy();
     Q_INVOKABLE bool setPhotoSelection(const QVariantList &indices);
     Q_INVOKABLE bool setSelectionRating(int rating);
     Q_INVOKABLE bool setSelectionFlag(const QString &flag);
@@ -263,6 +265,7 @@ private:
         int rating = 0; QString flag = QStringLiteral("none");
         EditHistory history; CatalogTags tags;
         QString copyKey, versionName, originalKey;
+        PhotoTimeline timeline;
         QString storageKey() const { return copyKey.isEmpty() ? (originalKey.isEmpty() ? path : originalKey) : copyKey; }
     };
     QVector<PhotoEntry> m_photos;
@@ -294,11 +297,17 @@ private:
     QSize m_viewport{1600, 1000};
     QSizeF m_displayPixels;
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
-    QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer;
+    QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer, m_catalogDateTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;
     QHash<QString, EditHistory> m_dirtyHistories;
     QHash<QString, ProjectDatabase::PhotoCuration> m_dirtyCuration;
     QHash<QString, CatalogTags> m_dirtyTags;
+    QHash<QString, PhotoTimeline> m_dirtyDates;
+    struct CatalogDateRequest { quint64 epoch; QStringList paths; };
+    quint64 m_catalogEpoch = 0;
+    std::unique_ptr<LatestJob<CatalogDateRequest,QHash<QString,QString>>> m_catalogDatesJob;
+    void updateCaptureTime(const QString &path, const QString &time);
+    void markPhotoDirty(const PhotoEntry &photo);
     bool updateSelectedTags(const QString &operation, const QString &value);
     QElapsedTimer m_renderClock;
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;

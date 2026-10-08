@@ -96,6 +96,7 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
                     && query.exec("CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')")
                     && query.exec("CREATE TABLE virtual_sources(key TEXT PRIMARY KEY,json TEXT NOT NULL)")
                     && query.exec("CREATE TABLE catalog_tags(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
+                    && query.exec("CREATE TABLE catalog_dates(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
                     && query.exec("CREATE TABLE curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))");
                 if (ok) {
                     query.prepare("INSERT INTO meta(key,value) VALUES('project_name',?)");
@@ -205,10 +206,26 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     }
                 }
                 if (!ready && error.isEmpty()) error = tagQuery.lastError().text();
+                QHash<QString,PhotoTimeline> timelines;
+                QSqlQuery dateQuery(db);
+                ready = ready && dateQuery.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_dates'");
+                if (ready && dateQuery.next()) {
+                    ready = dateQuery.exec("SELECT path,json FROM catalog_dates");
+                    while (ready && dateQuery.next()) {
+                        const auto key = dateQuery.value(0).toString(); const auto bytes = dateQuery.value(1).toByteArray();
+                        QJsonParseError parse; const auto doc = QJsonDocument::fromJson(bytes,&parse); PhotoTimeline timeline;
+                        if (key.isEmpty() || bytes.size() > 1024 || parse.error != QJsonParseError::NoError || !doc.isObject()
+                            || !PhotoTimeline::fromJson(doc.object(),&timeline) || timelines.size() >= 1000000) {
+                            ready = false; error = QStringLiteral("Invalid or unsupported catalog dates"); break;
+                        }
+                        timelines.insert(key,timeline);
+                    }
+                }
+                if (!ready && error.isEmpty()) error = dateQuery.lastError().text();
                 QSqlQuery query(db);
                 const QString querySql = hasCuration
-                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none') FROM photos p LEFT JOIN curation c ON c.path=p.path ORDER BY CASE WHEN p.path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,p.imported_at,p.path")
-                    : QStringLiteral("SELECT path,adjustment_json FROM photos ORDER BY CASE WHEN path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,imported_at,path");
+                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none'),p.imported_at FROM photos p LEFT JOIN curation c ON c.path=p.path ORDER BY CASE WHEN p.path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,p.imported_at,p.path")
+                    : QStringLiteral("SELECT path,adjustment_json,imported_at FROM photos ORDER BY CASE WHEN path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,imported_at,path");
                 if (ready && !query.exec(querySql)) {
                     ready = false;
                     error = query.lastError().text();
@@ -244,8 +261,10 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                         ready = false; error = QStringLiteral("Virtual copy has no source mapping"); break;
                     }
                     const auto source = isCopy ? copies.take(path) : QJsonObject{};
+                    auto timeline = timelines.value(path);
+                    if (!timelines.contains(path)) timeline.importedAt = std::max(qint64(0),PhotoTimeline::sqlImportTime(query.value(hasCuration ? 4 : 2).toString()));
                     staged.push_back({isCopy ? source.value("source").toString() : path, adjustments, rating, flag, history, tags.value(path),
-                                      isCopy ? path : QString(), source.value("name").toString()});
+                                      isCopy ? path : QString(), source.value("name").toString(),timeline});
                     if (staged.size() > 1000000) {
                         ready = false;
                         error = QStringLiteral("Project contains too many photos");
@@ -334,24 +353,26 @@ bool ProjectDatabase::updateCurationBatch(const QHash<QString, PhotoCuration> &c
 
 bool ProjectDatabase::addVirtualCopy(const QString &key, const QString &source, const QString &name,
                                      const AdjustmentState &adjustments, const EditHistory &history,
-                                     const CatalogTags &tags, const PhotoCuration &curation) {
+                                     const CatalogTags &tags, const PhotoCuration &curation, const PhotoTimeline &timeline) {
     m_lastOpenError.clear();
     QStringList checkedName{name}; CatalogTags checkedTags; EditHistory checkedHistory;
     if (!m_open || !validCopyKey(key) || source.isEmpty() || !CatalogTags::normalize(&checkedName,1)
         || checkedName.size() != 1 || checkedName[0] != name || !CatalogTags::fromJson(tags.toJson(),&checkedTags)
         || !checkedHistory.restore(history.toJson(),adjustments) || curation.rating < 0 || curation.rating > 5
         || (curation.flag != "none" && curation.flag != "pick" && curation.flag != "reject")) return false;
-    if (!flush()) return false;
+    PhotoTimeline checkedDates; if (!PhotoTimeline::fromJson(timeline.toJson(),&checkedDates) || !flush()) return false;
     const auto state = m_state; const auto folder = m_projectPath; bool ok = false; QString error;
     QMetaObject::invokeMethod(m_worker,[&,state,folder] {
         auto db = QSqlDatabase::database(state->connectionName,false);
         ok = db.isOpen() && backupBeforeTable(db,folder,"virtual_sources",&error)
             && backupBeforeTable(db,folder,"catalog_tags",&error)
+            && backupBeforeTable(db,folder,"catalog_dates",&error)
             && backupBeforeTable(db,folder,"curation",&error);
         if (ok) ok = db.transaction();
         QSqlQuery query(db);
         if (ok) ok = query.exec("CREATE TABLE IF NOT EXISTS virtual_sources(key TEXT PRIMARY KEY,json TEXT NOT NULL)")
             && query.exec("CREATE TABLE IF NOT EXISTS catalog_tags(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
+            && query.exec("CREATE TABLE IF NOT EXISTS catalog_dates(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
             && query.exec("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY,rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))");
         auto insert = [&](const QString &sql,const QVariantList &values) {
             if (!ok) return;
@@ -362,6 +383,7 @@ bool ProjectDatabase::addVirtualCopy(const QString &key, const QString &source, 
         auto json = adjustments.toJson(); json.insert("_history",history.toJson());
         insert("INSERT INTO photos(path,adjustment_json) VALUES(?,?)",{key,QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact))});
         insert("INSERT INTO catalog_tags(path,json) VALUES(?,?)",{key,QString::fromUtf8(QJsonDocument(tags.toJson()).toJson(QJsonDocument::Compact))});
+        insert("INSERT INTO catalog_dates(path,json) VALUES(?,?)",{key,QString::fromUtf8(QJsonDocument(timeline.toJson()).toJson(QJsonDocument::Compact))});
         insert("INSERT INTO curation(path,rating,flag) VALUES(?,?,?)",{key,curation.rating,curation.flag});
         if (!ok && error.isEmpty()) error = query.lastError().text().isEmpty() ? db.lastError().text() : query.lastError().text();
         if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
@@ -369,6 +391,70 @@ bool ProjectDatabase::addVirtualCopy(const QString &key, const QString &source, 
     },Qt::BlockingQueuedConnection);
     if (!ok) { m_lastOpenError = error; emit writeFailed(error); }
     else emit saved(1);
+    return ok;
+}
+
+bool ProjectDatabase::renameVirtualCopy(const QString &key, const QString &name) {
+    QStringList checked{name};
+    if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != name) return false;
+    return modifyVirtualCopy(key,name,false);
+}
+bool ProjectDatabase::removeVirtualCopy(const QString &key) { return modifyVirtualCopy(key,{},true); }
+bool ProjectDatabase::modifyVirtualCopy(const QString &key, const QString &name, bool remove) {
+    // Original paths never enter this transaction. Source files stay read-only.
+    if (!m_open || !validCopyKey(key) || !flush()) return false;
+    bool ok = false; QString error; const auto state = m_state;
+    QMetaObject::invokeMethod(m_worker,[&,state] {
+        auto db = QSqlDatabase::database(state->connectionName,false);
+        ok = db.isOpen() && db.transaction(); QSqlQuery query(db); QJsonObject mapping;
+        if (ok) {
+            ok = query.prepare("SELECT json FROM virtual_sources WHERE key=?"); query.addBindValue(key);
+            ok = ok && query.exec() && query.next();
+            if (ok) {
+                const auto bytes = query.value(0).toByteArray(); QJsonParseError parse;
+                const auto doc = QJsonDocument::fromJson(bytes,&parse); mapping = doc.object();
+                QStringList checked{mapping.value("name").toString()};
+                ok = bytes.size() <= 16384 && parse.error == QJsonParseError::NoError && doc.isObject()
+                    && mapping.value("schema").toDouble() == 1 && mapping.value("source").isString()
+                    && !mapping.value("source").toString().isEmpty() && CatalogTags::normalize(&checked,1)
+                    && checked.size() == 1 && checked[0] == mapping.value("name").toString()
+                    && mapping == QJsonObject{{"schema",1},{"source",mapping.value("source")},{"name",mapping.value("name")}};
+            }
+            if (!ok) error = QStringLiteral("Virtual copy is missing or invalid");
+            query.finish();
+        }
+        if (ok) {
+            query.prepare("SELECT path FROM photos WHERE path=?"); query.addBindValue(key);
+            ok = query.exec() && query.next(); query.finish();
+            if (!ok) error = QStringLiteral("Virtual copy has no edit record");
+        }
+        if (ok && remove) {
+            for (const auto &table : {QStringLiteral("photos"),QStringLiteral("curation"),QStringLiteral("catalog_tags"),QStringLiteral("catalog_dates")}) {
+                query.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?"); query.addBindValue(table);
+                ok = query.exec(); const bool exists = ok && query.next(); query.finish();
+                if (ok && exists) {
+                    ok = query.prepare("DELETE FROM " + table + " WHERE path=?"); query.addBindValue(key);
+                    ok = ok && query.exec();
+                    if (ok && table == "photos") ok = query.numRowsAffected() == 1;
+                }
+                if (!ok) break;
+            }
+            if (ok) {
+                query.prepare("DELETE FROM virtual_sources WHERE key=?"); query.addBindValue(key);
+                ok = query.exec() && query.numRowsAffected() == 1;
+            }
+        } else if (ok) {
+            mapping.insert("name",name);
+            query.prepare("UPDATE virtual_sources SET json=? WHERE key=?");
+            query.addBindValue(QString::fromUtf8(QJsonDocument(mapping).toJson(QJsonDocument::Compact))); query.addBindValue(key);
+            ok = query.exec() && query.numRowsAffected() == 1;
+        }
+        if (!ok && error.isEmpty()) error = query.lastError().text().isEmpty() ? db.lastError().text() : query.lastError().text();
+        if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
+        if (!ok) db.rollback();
+    },Qt::BlockingQueuedConnection);
+    if (!ok) { m_lastOpenError = error; emit writeFailed(error); }
+    else { m_lastOpenError.clear(); emit saved(1); }
     return ok;
 }
 
@@ -401,15 +487,20 @@ bool ProjectDatabase::updateTagsBatch(const QHash<QString, CatalogTags> &changes
     }, Qt::QueuedConnection);
 }
 
-bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories) {
+bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories, const QHash<QString, PhotoTimeline> &timelines) {
     if (!m_open) return false;
-    if (states.isEmpty()) return true;
+    if (states.isEmpty()) return timelines.isEmpty();
+    for (auto it = timelines.begin(); it != timelines.end(); ++it) {
+        PhotoTimeline checked; if (!states.contains(it.key()) || !PhotoTimeline::fromJson(it.value().toJson(),&checked)) return false;
+    }
     const auto state = m_state;
-    return QMetaObject::invokeMethod(m_worker, [this,state,states,histories] {
+    const auto folder = m_projectPath;
+    return QMetaObject::invokeMethod(m_worker, [this,state,states,histories,timelines,folder] {
         PerformanceSpan timer(QStringLiteral("database_batch"), {{"photos",states.size()}});
         auto db = QSqlDatabase::database(state->connectionName, false);
-        bool ok = db.isOpen() && db.transaction();
-        QString error = ok ? QString() : db.lastError().text();
+        QString error;
+        bool ok = db.isOpen() && (timelines.isEmpty() || backupBeforeTable(db,folder,"catalog_dates",&error)) && db.transaction();
+        if (!ok && error.isEmpty()) error = db.lastError().text();
         if (ok) {
             QSqlQuery query(db);
             ok = query.prepare("INSERT INTO photos(path,adjustment_json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET adjustment_json=excluded.adjustment_json");
@@ -423,6 +514,14 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states,
                 if (histories.contains(it.key())) json.insert("_history", histories.value(it.key()).toJson());
                 query.bindValue(1,QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
                 ok = query.exec();
+            }
+            if (ok && !timelines.isEmpty()) {
+                ok = query.exec("CREATE TABLE IF NOT EXISTS catalog_dates(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
+                    && query.prepare("INSERT INTO catalog_dates(path,json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET json=excluded.json");
+                for (auto it = timelines.begin(); ok && it != timelines.end(); ++it) {
+                    query.bindValue(0,it.key()); query.bindValue(1,QString::fromUtf8(QJsonDocument(it.value().toJson()).toJson(QJsonDocument::Compact)));
+                    ok = query.exec();
+                }
             }
             if (!ok && error.isEmpty()) error = query.lastError().text();
             if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }

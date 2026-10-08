@@ -13,6 +13,7 @@
 #include <QScopeGuard>
 #include <QUuid>
 #include <QUrl>
+#include <exiv2/exiv2.hpp>
 #include <algorithm>
 #include <cmath>
 
@@ -900,6 +901,130 @@ private slots:
         const auto backupFolder = dir.filePath("Backup.jlp"); QVERIFY(QDir().mkpath(backupFolder));
         QVERIFY(QFile::copy(QDir(folder).filePath("backups/"+backups[0]),QDir(backupFolder).filePath("Project.db")));
         QVERIFY(backup.open(backupFolder,&original)); QCOMPARE(original.size(),1); QCOMPARE(original[0].adjustments.exposure,0.75);
+    }
+
+    void virtualCopyRenameRemovalPreservesOriginalSelectionAndHistory() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path = dir.filePath("source.png"); QVERIFY(image.save(path));
+        QFile source(path); QVERIFY(source.open(QIODevice::ReadOnly)); const auto bytes = source.readAll(); source.close();
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        controller.setExposure(.5); controller.finishInteraction();
+        QVERIFY(!controller.renameCurrentVirtualCopy("Original")); QVERIFY(!controller.removeCurrentVirtualCopy());
+        QVERIFY(controller.createVirtualCopy("First")); controller.setExposure(-1); controller.finishInteraction(); controller.undo();
+        QVERIFY(controller.createVirtualCopy("Second")); controller.setExposure(2); controller.finishInteraction();
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"ManageCopies")); QVERIFY(controller.flushEdits());
+        controller.selectPhoto(1); const auto key = controller.library()[1].toMap().value("id").toString();
+        QVERIFY(controller.canRedo()); QVERIFY(controller.renameCurrentVirtualCopy(" Renamed "));
+        QVERIFY(controller.canRedo()); QCOMPARE(controller.library()[1].toMap().value("versionName").toString(),QStringLiteral("Renamed"));
+        QVERIFY(!controller.renameCurrentVirtualCopy("")); QVERIFY(!controller.renameCurrentVirtualCopy(QString(81,'x')));
+        QVERIFY(controller.setPhotoSelection({0,1,2})); QVERIFY(controller.removeCurrentVirtualCopy());
+        QCOMPARE(controller.library().size(),2); QCOMPARE(controller.selectedIndices(),(QVariantList{0,1}));
+        QCOMPARE(controller.exposure(),2.0); QVERIFY(controller.canUndo());
+        controller.selectPhoto(0); QCOMPARE(controller.exposure(),.5); QVERIFY(controller.canUndo());
+        QVERIFY(controller.flushEdits()); QCoreApplication::processEvents(); QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.library().size(),2); QCOMPARE(reopened.exposure(),.5);
+        reopened.selectPhoto(1); QCOMPARE(reopened.library()[1].toMap().value("versionName").toString(),QStringLiteral("Second"));
+        QCOMPARE(reopened.exposure(),2.0); QVERIFY(reopened.canUndo());
+        QVERIFY(source.open(QIODevice::ReadOnly)); QCOMPARE(source.readAll(),bytes);
+        for (const auto &row : reopened.library()) QVERIFY(row.toMap().value("id").toString() != key);
+    }
+
+    void virtualCopyDeleteRollsBackAllTablesOnFailureAndCanRetry() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); ProjectDatabase db; QVERIFY(db.create(dir.path(),"CopyRollback"));
+        AdjustmentState state; state.exposure = .75; EditHistory history; history.initialize(state);
+        CatalogTags tags; tags.keywords = {"keep"}; const auto key = "jixel-copy:"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(db.updateAdjustment("source.ARW",state)); QVERIFY(db.flush());
+        QVERIFY(db.addVirtualCopy(key,"source.ARW","Version",state,history,tags,{4,"pick"}));
+        QVERIFY(!db.removeVirtualCopy("source.ARW")); QVERIFY(!db.renameVirtualCopy("source.ARW","Changed"));
+        const QString connection = "copy-delete-fixture";
+        auto trigger = [&](bool enable) {
+            { auto sql = QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(db.projectPath()).filePath("Project.db")); QVERIFY(sql.open());
+              QSqlQuery query(sql); QVERIFY(query.exec(enable ? "CREATE TRIGGER block_copy_delete BEFORE DELETE ON curation BEGIN SELECT RAISE(ABORT,'blocked'); END" : "DROP TRIGGER block_copy_delete")); sql.close(); }
+            QSqlDatabase::removeDatabase(connection);
+        };
+        trigger(true); QVERIFY(!db.removeVirtualCopy(key)); QVERIFY(db.flush());
+        QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(db.projectPath(),&photos)); QCOMPARE(photos.size(),2);
+        QCOMPARE(photos[1].copyKey,key); QCOMPARE(photos[1].tags.keywords,QStringList{"keep"}); QCOMPARE(photos[1].rating,4);
+        QCOMPARE(photos[1].adjustments.exposure,.75); trigger(false);
+        QVERIFY(db.renameVirtualCopy(key,"Retained")); QVERIFY(db.open(db.projectPath(),&photos)); QCOMPARE(photos[1].versionName,QStringLiteral("Retained"));
+        QVERIFY(db.removeVirtualCopy(key)); QVERIFY(!db.removeVirtualCopy(key)); QVERIFY(db.flush());
+        QVERIFY(db.open(db.projectPath(),&photos)); QCOMPARE(photos.size(),1); QCOMPARE(photos[0].path,QStringLiteral("source.ARW"));
+    }
+
+    void deletingLastCatalogCopyClearsCanvasWithoutTouchingSource() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path = dir.filePath("source.png"); QVERIFY(image.save(path));
+        ProjectDatabase db; QVERIFY(db.create(dir.path(),"OnlyCopy")); AdjustmentState state; EditHistory history; history.initialize(state);
+        const auto key = "jixel-copy:"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(db.addVirtualCopy(key,path,"Only",state,history,{},{}));
+        PhotoController controller(nullptr); QVERIFY(controller.openProject(QUrl::fromLocalFile(db.projectPath())));
+        QVERIFY(controller.hasImage()); controller.setViewport(64,64,1,0,.5,.5);
+        QVERIFY(controller.removeCurrentVirtualCopy()); QCOMPARE(controller.library().size(),0);
+        QCOMPARE(controller.currentIndex(),-1); QVERIFY(!controller.hasImage()); QVERIFY(!controller.loading()); QVERIFY(!controller.rendering());
+        QCOMPARE(controller.scopesPixelCount(),0); QVERIFY(!controller.canUndo()); QVERIFY(QFileInfo::exists(path));
+        QTest::qWait(50); QVERIFY(controller.previewUrl().isEmpty()); QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+    }
+
+    void catalogTimelineRejectsInvalidDatesWithoutGuessingCaptureTime() {
+        PhotoTimeline timeline; timeline.captureTime=PhotoTimeline::cameraTime("2025:02:28 12:34:56"); timeline.captureChecked=true;
+        timeline.importedAt=1740000000000LL; timeline.editedAt=1740000000123LL;
+        PhotoTimeline restored; QVERIFY(PhotoTimeline::fromJson(timeline.toJson(),&restored)); QCOMPARE(restored.toJson(),timeline.toJson());
+        QCOMPARE(restored.captureTime,QStringLiteral("2025-02-28 12:34:56")); QVERIFY(restored.captureOrder()>0);
+        QVERIFY(PhotoTimeline::cameraTime("2025:02:29 12:34:56").isEmpty()); QVERIFY(PhotoTimeline::cameraTime("2025:02:28 25:34:56").isEmpty());
+        QVERIFY(PhotoTimeline::cameraTime("invalid").isEmpty()); QCOMPARE(PhotoTimeline{}.captureOrder(),0);
+        for (const auto &change : QVector<QJsonObject>{{{"schema",99}},{{"capture","x"}},{{"imported",-.5}},{{"edited",1.5}},{{"captureChecked",false}},{{"unknown",true}}}) {
+            auto invalid=timeline.toJson(); for (auto it=change.begin();it!=change.end();++it) invalid.insert(it.key(),it.value());
+            QVERIFY(!PhotoTimeline::fromJson(invalid,&restored)); QCOMPARE(restored.toJson(),timeline.toJson());
+        }
+    }
+
+    void captureIndexAndPerVersionDevelopDatesPersistAcrossProjects() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto jpeg=dir.filePath("dated.jpg"), png=dir.filePath("undated.png"); QVERIFY(image.save(jpeg)); QVERIFY(image.save(png));
+        { auto photo=Exiv2::ImageFactory::open(jpeg.toStdString()); QVERIFY(photo.get()); photo->readMetadata();
+          auto exif=photo->exifData(); exif["Exif.Photo.DateTimeOriginal"]="2025:01:02 03:04:05"; photo->setExifData(exif); photo->writeMetadata(); }
+        QFile source(jpeg); QVERIFY(source.open(QIODevice::ReadOnly)); const auto bytes=source.readAll(); source.close();
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(jpeg))); QVERIFY(controller.importFile(QUrl::fromLocalFile(png)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.library()[0].toMap().value("captureChecked").toBool() && controller.library()[1].toMap().value("captureChecked").toBool(),10000);
+        QCOMPARE(controller.library()[0].toMap().value("captureTime").toString(),QStringLiteral("2025-01-02 03:04:05"));
+        QCOMPARE(controller.library()[1].toMap().value("captureOrder").toLongLong(),0);
+        const auto imported=controller.library()[0].toMap().value("importedAt").toLongLong(); QVERIFY(imported>0);
+        controller.setExposure(.5); controller.finishInteraction(); const auto edited=controller.library()[0].toMap().value("editedAt").toLongLong(); QVERIFY(edited>=imported);
+        QVERIFY(controller.createVirtualCopy("Dated copy")); QCOMPARE(controller.library()[2].toMap().value("editedAt").toLongLong(),0);
+        controller.setExposure(-.5); controller.finishInteraction(); QVERIFY(controller.library()[2].toMap().value("editedAt").toLongLong()>0);
+        QCOMPARE(controller.library()[0].toMap().value("editedAt").toLongLong(),edited);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Dates")); QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.library()[0].toMap().value("captureTime").toString(),QStringLiteral("2025-01-02 03:04:05"));
+        QCOMPARE(reopened.library()[0].toMap().value("importedAt").toLongLong(),imported); QCOMPARE(reopened.library()[0].toMap().value("editedAt").toLongLong(),edited);
+        QVERIFY(reopened.createProject(QUrl::fromLocalFile(dir.path()),"CopiedDates")); QVERIFY(reopened.flushEdits());
+        PhotoController final(nullptr); QVERIFY(final.openProject(QUrl::fromLocalFile(reopened.projectPath())));
+        QCOMPARE(final.library()[0].toMap().value("importedAt").toLongLong(),imported);
+        QVERIFY(source.open(QIODevice::ReadOnly)); QCOMPARE(source.readAll(),bytes);
+    }
+
+    void legacyDateMigrationBacksUpAndRollsBackEditsBeforeRetry() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); ProjectDatabase db; QVERIFY(db.create(dir.path(),"DateMigration"));
+        AdjustmentState original; original.exposure=.5; QVERIFY(db.updateAdjustment("source.ARW",original)); QVERIFY(db.flush());
+        const auto folder=db.projectPath(); const QString connection="date-migration-fixture";
+        { auto sql=QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("Project.db")); QVERIFY(sql.open());
+          QSqlQuery query(sql); QVERIFY(query.exec("DROP TABLE catalog_dates")); QVERIFY(query.exec("UPDATE photos SET imported_at='2020-01-02 03:04:05'")); sql.close(); }
+        QSqlDatabase::removeDatabase(connection);
+        QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(folder,&photos)); QCOMPARE(photos[0].timeline.importedAt,PhotoTimeline::sqlImportTime("2020-01-02 03:04:05"));
+        QVERIFY(QDir(QDir(folder).filePath("backups")).removeRecursively()); QFile blocked(QDir(folder).filePath("backups")); QVERIFY(blocked.open(QIODevice::WriteOnly)); blocked.close();
+        auto edited=original; edited.exposure=1; auto dates=photos[0].timeline; dates.editedAt=1740000000123LL;
+        QVERIFY(db.updateBatch({{"source.ARW",edited}},{},{{"source.ARW",dates}})); QVERIFY(!db.flush()); QVERIFY(blocked.remove());
+        QVERIFY(db.updateBatch({{"source.ARW",edited}},{},{{"source.ARW",dates}})); QVERIFY(db.flush());
+        const auto backups=QDir(QDir(folder).filePath("backups")).entryList({"*.db"},QDir::Files); QCOMPARE(backups.size(),1);
+        { auto sql=QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("backups/"+backups[0])); QVERIFY(sql.open());
+          QSqlQuery query(sql); QVERIFY(query.exec("SELECT adjustment_json FROM photos")); QVERIFY(query.next()); QCOMPARE(AdjustmentState::fromJson(QJsonDocument::fromJson(query.value(0).toByteArray()).object()).exposure,.5); sql.close(); }
+        QSqlDatabase::removeDatabase(connection);
+        QVERIFY(db.open(folder,&photos)); QCOMPARE(photos[0].adjustments.exposure,1.0); QCOMPARE(photos[0].timeline.editedAt,dates.editedAt);
+        { auto sql=QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("Project.db")); QVERIFY(sql.open());
+          QSqlQuery query(sql); QVERIFY(query.exec("UPDATE catalog_dates SET json='{\"schema\":99}'")); sql.close(); }
+        QSqlDatabase::removeDatabase(connection);
+        ProjectDatabase active; QVERIFY(active.create(dir.path(),"WorkingDates")); QVERIFY(!active.open(folder,&photos)); QCOMPARE(active.projectName(),QStringLiteral("WorkingDates")); QVERIFY(active.flush());
     }
 
     void realSonyAsShotHistoryPersistsIntentAfterMetadataResolution() {

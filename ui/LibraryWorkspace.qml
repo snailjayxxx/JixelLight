@@ -13,8 +13,9 @@ Rectangle {
     property string searchText: ""
     property string filterAlbum: ""
     property string filterLabel: "none"
-    property int sortMode: 0 // catalog order, filename, rating descending
+    property int sortMode: 0 // catalog, filename, rating, camera capture, import, Develop edit
     property int selectionAnchor: -1
+    property var currentPhoto: controller.hasImage ? controller.library[controller.currentIndex] : ({})
     property var visiblePhotos: {
         let rows = controller.library.filter(row =>
             (filterMode !== 1 || row.flag === "pick") &&
@@ -25,6 +26,15 @@ Rectangle {
             (!searchText || (row.name + " " + row.keywords.join(" ")).toLowerCase().indexOf(searchText.toLowerCase()) >= 0))
         if (sortMode === 1) rows.sort((a,b) => a.name.localeCompare(b.name) || a.index-b.index)
         if (sortMode === 2) rows.sort((a,b) => b.rating-a.rating || a.index-b.index)
+        if (sortMode >= 3 && sortMode <= 5) {
+            const field = ["captureOrder","importedAt","editedAt"][sortMode-3]
+            rows.sort((a,b) => {
+                const left = Number(a[field]), right = Number(b[field])
+                if (left > 0 && right <= 0) return -1
+                if (right > 0 && left <= 0) return 1
+                return (sortMode === 3 ? left-right : right-left) || a.index-b.index
+            })
+        }
         return rows
     }
     function choose(index, modifiers) {
@@ -79,9 +89,10 @@ Rectangle {
             TextField { Layout.fillWidth: true; Layout.minimumWidth: 0; placeholderText: root.t("搜索文件名 / 关键词", "Search filename / keywords"); onTextChanged: root.searchText = text.trim() }
             ComboBox { objectName: "catalogAlbumFilter"; Layout.preferredWidth: 140; model: [root.t("全部相册", "All albums")].concat(Array.from(root.controller.albumNames)); currentIndex: root.filterAlbum ? model.indexOf(root.filterAlbum) : 0; onModelChanged: { if (root.filterAlbum && model.indexOf(root.filterAlbum) < 0) root.filterAlbum = "" } onActivated: root.filterAlbum = currentIndex === 0 ? "" : currentText }
             ComboBox { Layout.preferredWidth: 110; currentIndex: ["none","red","yellow","green","blue","purple"].indexOf(root.filterLabel); model: [root.t("全部颜色", "All labels"),root.t("红", "Red"),root.t("黄", "Yellow"),root.t("绿", "Green"),root.t("蓝", "Blue"),root.t("紫", "Purple")]; onActivated: root.filterLabel = ["none","red","yellow","green","blue","purple"][currentIndex] }
-            ComboBox { Layout.preferredWidth: 130; currentIndex: root.sortMode; model: [root.t("目录顺序", "Catalog order"),root.t("文件名", "Filename"),root.t("评分 ↓", "Rating ↓")]; onActivated: root.sortMode = currentIndex }
+            ComboBox { objectName: "catalogSortMode"; Layout.preferredWidth: 155; currentIndex: root.sortMode; model: [root.t("目录顺序", "Catalog order"),root.t("文件名", "Filename"),root.t("评分 ↓", "Rating ↓"),root.t("拍摄时间 ↑", "Capture time ↑"),root.t("导入时间 ↓", "Import time ↓"),root.t("显影时间 ↓", "Develop time ↓")]; onActivated: root.sortMode = currentIndex }
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: "#2c343e" }
+        Label { visible: root.sortMode === 3; Layout.fillWidth: true; color: "#8291a2"; font.pixelSize: 10; text: root.t("拍摄时间使用相机记录的时钟；缺失日期排在最后。", "Capture time follows the recorded camera clock; missing dates sort last.") }
         GridView {
             id: grid
             objectName: "libraryPhotoGrid"
@@ -186,9 +197,15 @@ Rectangle {
                 Layout.fillWidth: true
                 TextField { id: albumName; Layout.fillWidth: true; Layout.minimumWidth: 0; maximumLength: 80; placeholderText: root.t("相册名称", "Album name") }
                 Button { text: root.t("加入相册", "Add to album"); enabled: root.controller.selectedIndices.length > 0 && albumName.text.trim().length > 0; onClicked: root.controller.addSelectionToAlbum(albumName.text) }
-                TextField { id: versionName; Layout.preferredWidth: 140; maximumLength: 80; placeholderText: root.t("版本名称", "Version name") }
-                Button { text: root.t("虚拟副本", "Virtual copy"); enabled: root.controller.hasImage; onClicked: { if (root.controller.createVirtualCopy(versionName.text)) versionName.clear() } }
                 Button { text: root.t("移出相册", "Remove from album"); enabled: root.controller.selectedIndices.length > 0 && albumName.text.trim().length > 0; onClicked: root.controller.removeSelectionFromAlbum(albumName.text) }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: root.t("版本", "Versions"); color: "#a5b4c4" }
+                TextField { id: versionName; objectName: "virtualCopyName"; Layout.fillWidth: true; Layout.minimumWidth: 0; maximumLength: 80; placeholderText: root.currentPhoto.virtual ? root.currentPhoto.versionName : root.t("版本名称", "Version name") }
+                Button { objectName: "createVirtualCopy"; text: root.t("新建副本", "New copy"); enabled: root.controller.hasImage; onClicked: { if (root.controller.createVirtualCopy(versionName.text)) versionName.clear() } }
+                Button { objectName: "renameVirtualCopy"; text: root.t("重命名", "Rename"); enabled: !!root.currentPhoto.virtual && versionName.text.trim().length > 0; onClicked: { if (root.controller.renameCurrentVirtualCopy(versionName.text)) versionName.clear() } }
+                Button { objectName: "deleteVirtualCopy"; text: root.t("删除副本", "Delete copy"); enabled: !!root.currentPhoto.virtual; onClicked: { removeCopyDialog.targetId = root.currentPhoto.id; removeCopyDialog.copyName = root.currentPhoto.versionName; removeCopyDialog.open() } }
             }
             Label { Layout.fillWidth: true; text: root.t("Ctrl / ⌘ 多选，Shift 范围选择。集合相册不移动原片；关键词设置会替换所选照片的关键词。", "Ctrl / ⌘ toggles; Shift selects a range. Albums keep originals in place; keyword edits replace selected keywords."); color: "#8291a2"; font.pixelSize: 10; wrapMode: Text.WordWrap }
         }
@@ -198,5 +215,22 @@ Rectangle {
             text: root.t("导入照片以建立图库，双击缩略图开始编辑。", "Import photos to start a library. Double-click a thumbnail to develop.")
             color: "#8b99a8"
         }
+    }
+    Dialog {
+        id: removeCopyDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width-40,460)
+        modal: true
+        title: root.t("删除虚拟副本", "Delete virtual copy")
+        property string targetId: ""
+        property string copyName: ""
+        contentItem: Label { text: removeCopyDialog.copyName + "\n\n" + root.t("删除此副本及其调整和历史。原片和其他版本保留。", "Delete this copy, its adjustments and history. Keep the original and other versions."); wrapMode: Text.WordWrap }
+        footer: DialogButtonBox {
+            Button { text: root.t("删除副本", "Delete copy"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            Button { text: root.t("取消", "Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onAccepted: removeCopyDialog.accept()
+            onRejected: removeCopyDialog.reject()
+        }
+        onAccepted: { if (root.currentPhoto.virtual && root.currentPhoto.id === targetId) root.controller.removeCurrentVirtualCopy() }
     }
 }

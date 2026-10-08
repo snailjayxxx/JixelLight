@@ -62,6 +62,7 @@ QVariantList PhotoController::library() const {
         row["path"] = m_photos[i].path;
         row["current"] = i == m_currentIndex;
         row["index"] = i;
+        row["id"] = m_photos[i].storageKey();
         row["rating"] = m_photos[i].rating;
         row["flag"] = m_photos[i].flag;
         row["virtual"] = !m_photos[i].copyKey.isEmpty();
@@ -70,6 +71,11 @@ QVariantList PhotoController::library() const {
         row["keywords"] = m_photos[i].tags.keywords;
         row["albums"] = m_photos[i].tags.albums;
         row["label"] = m_photos[i].tags.label;
+        row["captureTime"] = m_photos[i].timeline.captureTime;
+        row["captureChecked"] = m_photos[i].timeline.captureChecked;
+        row["captureOrder"] = m_photos[i].timeline.captureOrder();
+        row["importedAt"] = m_photos[i].timeline.importedAt;
+        row["editedAt"] = m_photos[i].timeline.editedAt;
         row["raw"] = m_photos[i].raw;
         row["type"] = m_photos[i].raw ? QStringLiteral("RAW") : QFileInfo(m_photos[i].path).suffix().toUpper();
         out.push_back(row);
@@ -150,14 +156,50 @@ bool PhotoController::createVirtualCopy(const QString &name) {
     copy.copyKey = "jixel-copy:" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     copy.versionName = title; copy.name = QFileInfo(copy.path).fileName() + " · " + title;
     copy.history = {}; copy.history.initialize(copy.state);
+    copy.timeline.importedAt = QDateTime::currentMSecsSinceEpoch(); copy.timeline.editedAt = 0;
     EditHistory validated;
     if (!validated.restore(copy.history.toJson(),copy.state)) return false;
-    if (m_project.isOpen() && !m_project.addVirtualCopy(copy.copyKey,copy.path,title,copy.state,copy.history,copy.tags,{copy.rating,copy.flag})) {
+    if (m_project.isOpen() && !m_project.addVirtualCopy(copy.copyKey,copy.path,title,copy.state,copy.history,copy.tags,{copy.rating,copy.flag},copy.timeline)) {
         setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
     }
     m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
     ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title}});
     setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
+}
+
+bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+    if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
+    const auto title = name.trimmed(); QStringList checked{title};
+    if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != title) return false;
+    auto &photo = m_photos[m_currentIndex];
+    if (m_project.isOpen() && !m_project.renameVirtualCopy(photo.copyKey,title)) {
+        setStatus(uiText("副本重命名失败：", "Copy rename failed: ") + m_project.lastError()); return false;
+    }
+    photo.versionName = title; photo.name = QFileInfo(photo.path).fileName() + " · " + title;
+    emit libraryChanged();
+    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title}});
+    return true;
+}
+bool PhotoController::removeCurrentVirtualCopy() {
+    if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
+    const int removed = m_currentIndex; const auto photo = m_photos[removed];
+    if (m_project.isOpen() && !m_project.removeVirtualCopy(photo.copyKey)) {
+        setStatus(uiText("副本删除失败：", "Copy deletion failed: ") + m_project.lastError()); return false;
+    }
+    QSet<int> selection;
+    for (int index : m_selectedPhotos) if (index != removed) selection.insert(index > removed ? index-1 : index);
+    m_dirtyEdits.remove(photo.copyKey); m_dirtyHistories.remove(photo.copyKey);
+    m_dirtyTags.remove(photo.copyKey); m_dirtyCuration.remove(photo.copyKey);
+    m_dirtyDates.remove(photo.copyKey);
+    m_photos.removeAt(removed); m_importedPaths.clear();
+    for (const auto &item : m_photos) m_importedPaths.insert(QFileInfo(item.path).canonicalFilePath());
+    // The following version may occupy the same index: force a new epoch.
+    m_currentIndex = -2;
+    selectPhoto(std::min(removed,int(m_photos.size())-1));
+    if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged(); }
+    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path}});
+    setStatus(uiText("已删除虚拟副本：", "Virtual copy deleted: ") + photo.versionName);
+    return true;
 }
 
 bool PhotoController::setPhotoSelection(const QVariantList &indices) {
@@ -269,6 +311,7 @@ void PhotoController::undo() {
     if (!canUndo()) return;
     auto &photo = m_photos[m_currentIndex];
     photo.state = photo.history.undo();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
     markDirty();
     ActionTrace::instance().record("edit_undo", {{"file", currentFile()}});
     emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
@@ -278,6 +321,7 @@ void PhotoController::redo() {
     if (!canRedo()) return;
     auto &photo = m_photos[m_currentIndex];
     photo.state = photo.history.redo();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
     markDirty();
     ActionTrace::instance().record("edit_redo", {{"file", currentFile()}});
     emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
@@ -327,7 +371,11 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
         keyDetails.remove("value");
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
     }
-    m_photos[m_currentIndex].history.record(m_photos[m_currentIndex].state, action, mergeKey);
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.history.record(photo.state, action, mergeKey)) {
+        photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();
+        if (mergeKey.isEmpty()) emit libraryChanged();
+    }
     emit historyChanged();
     QVariantMap payload = details;
     payload["file"] = currentFile();
@@ -433,10 +481,11 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     }
 
     PhotoEntry entry{info.absoluteFilePath(), info.fileName(), {}, isRaw};
+    entry.timeline.importedAt = QDateTime::currentMSecsSinceEpoch();
     if (isRaw) entry.state.look.mode = "as-shot"; // New imports only; old projects remain off.
     m_photos.push_back(entry);
     m_importedPaths.insert(identity);
-    if (m_project.isOpen()) { m_dirtyEdits.insert(entry.storageKey(), entry.state); m_saveTimer.start(); if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start(); }
+    markPhotoDirty(entry); m_catalogDateTimer.start();
     ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
 
     if (notifyImmediately) {
@@ -506,13 +555,13 @@ void PhotoController::importFiles(const QVariantList &urls) {
 }
 
 void PhotoController::selectPhoto(int index) {
-    if (index < 0 || index >= m_photos.size()) return;
-    m_selectedPhotos = {index}; emit libraryChanged();
+    if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
+    m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
     if (index == m_currentIndex) return;
     enqueueEdits();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
-    m_photos[index].history.initialize(m_photos[index].state);
+    if (hasImage()) m_photos[index].history.initialize(m_photos[index].state);
     emit historyChanged();
     ++m_photoEpoch;
     resetReference();
@@ -525,14 +574,14 @@ void PhotoController::selectPhoto(int index) {
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
     m_sourceIsFull = false; m_currentMetadata.clear(); m_scopes = {};
     m_scopesUpdating = true; m_scopesRank = -1; m_displayPixels = {};
-    m_loading = true; m_gpuActive = false; emit backendChanged();
+    m_loading = hasImage(); m_preparing = false; m_gpuActive = false; emit backendChanged();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
     emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
     emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
     emit activityChanged();
     ActionTrace::instance().record("select_photo", {{"index", index}, {"file", currentFile()}, {"raw", currentIsRaw()}, {"photo_epoch", qint64(m_photoEpoch)}});
-    loadCurrent();
+    if (hasImage()) loadCurrent(); else setBusy(false);
 }
 
 void PhotoController::loadCurrent() {
@@ -565,7 +614,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
         // keeps its original relative keys until it is explicitly copied here.
         for (auto &photo : m_photos) if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
         for (const auto &p : m_photos) {
-            if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag})) {
+            if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag},p.timeline)) {
                 setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError()); return false;
             }
             m_dirtyEdits.insert(p.storageKey(), p.state);
@@ -573,6 +622,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
             m_dirtyHistories.insert(p.storageKey(), history);
             m_dirtyCuration.insert(p.storageKey(), {p.rating, p.flag});
             m_dirtyTags.insert(p.storageKey(),p.tags);
+            m_dirtyDates.insert(p.storageKey(),p.timeline);
         }
         enqueueEdits();
         emit projectChanged();
@@ -598,12 +648,13 @@ bool PhotoController::openProject(const QUrl &url) {
     // project may publish a preview or scopes for this project's first photo.
     ++m_photoEpoch;
     ++m_requestedRevision;
+    ++m_catalogEpoch; m_catalogDatesJob->cancel(); m_catalogDateTimer.stop();
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     m_dirtyEdits.clear(); m_dirtyHistories.clear();
-    m_dirtyCuration.clear(); m_dirtyTags.clear(); m_selectedPhotos.clear();
+    m_dirtyCuration.clear(); m_dirtyTags.clear(); m_dirtyDates.clear(); m_selectedPhotos.clear();
     m_currentIndex = -1;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
@@ -627,10 +678,11 @@ bool PhotoController::openProject(const QUrl &url) {
         if (identity.isEmpty() || (record.copyKey.isEmpty() && m_importedPaths.contains(identity))) continue;
         const QString absolute = info.absoluteFilePath();
         m_photos.push_back({absolute, info.fileName() + (record.copyKey.isEmpty() ? QString() : " · " + record.versionName), record.adjustments,
-                            RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString()});
+                            RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString(),record.timeline});
         if (record.copyKey.isEmpty()) m_importedPaths.insert(identity);
     }
     for (const auto &photo : m_photos) m_importedPaths.insert(QFileInfo(photo.path).canonicalFilePath());
+    m_catalogDateTimer.start();
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
     emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
     emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
@@ -705,8 +757,8 @@ void PhotoController::syncAdjustmentsToAll() {
         photo.history.initialize(photo.state);
         photo.history.finish();
         photo.state = state;
-        photo.history.record(state, QStringLiteral("sync_adjustments"));
-        if (m_project.isOpen()) { m_dirtyEdits.insert(photo.storageKey(), photo.state); m_dirtyHistories.insert(photo.storageKey(), photo.history); }
+        if (photo.history.record(state, QStringLiteral("sync_adjustments"))) photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();
+        markPhotoDirty(photo);
     }
     enqueueEdits();
     emit historyChanged();
@@ -824,6 +876,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
@@ -832,6 +885,31 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    m_catalogDatesJob = std::make_unique<LatestJob<CatalogDateRequest,QHash<QString,QString>>>(
+        [](const CatalogDateRequest &request, const CancelToken &cancel) {
+            QHash<QString,QString> result;
+            for (const auto &path : request.paths) {
+                if (cancelled(cancel)) return result;
+                result.insert(path,MetadataReader::read(path).value("captureTime").toString());
+            }
+            return result;
+        }, [this](const CatalogDateRequest &request, QHash<QString,QString> result) {
+            if (m_closing || request.epoch != m_catalogEpoch) return;
+            bool changed = false;
+            for (auto &photo : m_photos) if (result.contains(photo.path)) {
+                const auto captured = PhotoTimeline::cameraTime(result.value(photo.path));
+                if (photo.timeline.captureChecked && photo.timeline.captureTime == captured) continue;
+                photo.timeline.captureChecked = true; photo.timeline.captureTime = captured;
+                markPhotoDirty(photo); changed = true;
+            }
+            if (changed) emit libraryChanged();
+        });
+    m_catalogDateTimer.setSingleShot(true); m_catalogDateTimer.setInterval(50);
+    connect(&m_catalogDateTimer,&QTimer::timeout,this,[this] {
+        QStringList paths; for (const auto &photo : m_photos) if (!photo.timeline.captureChecked) paths.append(photo.path);
+        paths.removeDuplicates(); paths.sort();
+        if (!paths.isEmpty()) m_catalogDatesJob->submit({m_catalogEpoch,paths});
+    });
     m_sourceCache = std::make_shared<SourceCache>();
     m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache);
     const auto cache = m_sourceCache;
@@ -911,6 +989,7 @@ void PhotoController::initializeJobs() {
             auto history = photo.history; history.initialize(photo.state);
             m_dirtyHistories.insert(photo.storageKey(),history);
             m_dirtyTags.insert(photo.storageKey(),photo.tags);
+            m_dirtyDates.insert(photo.storageKey(),photo.timeline);
             m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
         }
         setStatus(uiText(QStringLiteral("保存失败（编辑仍保留在内存）：%1").arg(message), QStringLiteral("Save failed (edits retained in memory): %1").arg(message)));
@@ -955,6 +1034,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
     if (data.key == m_loadedKey && m_loadedPreview.cacheKey() == data.image.cacheKey() && m_sourceIsFull == data.fullResolution) return;
     m_loadedKey = data.key; m_loadedPreview = data.image; m_sourceIsFull = data.fullResolution;
     m_currentMetadata = data.metadata;
+    updateCaptureTime(currentFile(),data.metadata.value("captureTime").toString());
     if (data.fullResolution) {
         m_fullSource = data.image; m_loading = false;
         m_prefetchTimer.start();
@@ -990,6 +1070,7 @@ void PhotoController::scheduleRender(bool fast) {
 
 void PhotoController::finishInteraction() {
     if (hasImage()) m_photos[m_currentIndex].history.finish();
+    emit libraryChanged();
     m_refineTimer.stop();
     m_interacting = false;
     enqueueEdits();
@@ -1030,17 +1111,30 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
     emit scopesChanged();
 }
 
+void PhotoController::updateCaptureTime(const QString &path, const QString &time) {
+    const auto captured = PhotoTimeline::cameraTime(time); bool changed = false;
+    for (auto &photo : m_photos) if (photo.path == path && (!photo.timeline.captureChecked || photo.timeline.captureTime != captured)) {
+        photo.timeline.captureChecked = true; photo.timeline.captureTime = captured;
+        markPhotoDirty(photo); changed = true;
+    }
+    if (changed) emit libraryChanged();
+}
 void PhotoController::markDirty() {
-    if (!m_project.isOpen() || !hasImage()) return;
-    m_dirtyEdits.insert(m_photos[m_currentIndex].storageKey(), m_photos[m_currentIndex].state);
-    m_dirtyHistories.insert(m_photos[m_currentIndex].storageKey(), m_photos[m_currentIndex].history);
+    if (hasImage()) markPhotoDirty(m_photos[m_currentIndex]);
+}
+void PhotoController::markPhotoDirty(const PhotoEntry &photo) {
+    if (!m_project.isOpen()) return;
+    const auto key = photo.storageKey();
+    m_dirtyEdits.insert(key,photo.state);
+    auto history = photo.history; history.initialize(photo.state);
+    m_dirtyHistories.insert(key,history); m_dirtyDates.insert(key,photo.timeline);
     m_saveTimer.start();
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
 }
 void PhotoController::enqueueEdits() {
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     if (!m_project.isOpen()) return;
-    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); }
+    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories,m_dirtyDates)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); m_dirtyDates.clear(); }
     if (!m_dirtyCuration.isEmpty() && m_project.updateCurationBatch(m_dirtyCuration)) m_dirtyCuration.clear();
     if (!m_dirtyTags.isEmpty() && m_project.updateTagsBatch(m_dirtyTags)) m_dirtyTags.clear();
 }
