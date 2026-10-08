@@ -200,12 +200,15 @@ jobs:
           Copy-Item $exe.FullName package/JixelLight.exe
           $probe = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightSonyValidation.exe | Select-Object -First 1
           Copy-Item $probe.FullName package/JixelLightSonyValidation.exe
+          $cli = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightCli.exe | Select-Object -First 1
+          if (-not $cli) { throw 'JixelLightCli.exe not found' }
+          Copy-Item $cli.FullName package/JixelLightCli.exe
           New-Item -ItemType Directory -Force -Path package/profiles | Out-Null
           Copy-Item build/sony-real-reports/dataset/empirical.jlook.json package/profiles/Sony-ILCE7M4-ST-experimental.jlook.json
           Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
-          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe --cli package/JixelLightCli.exe
           if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
           Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
@@ -217,11 +220,12 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           cp build/bin/JixelLightSonyValidation "$APP/Contents/MacOS/JixelLightSonyValidation"
+          cp build/bin/JixelLightCli "$APP/Contents/MacOS/JixelLightCli"
           mkdir -p "$APP/Contents/Resources/profiles"
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
-          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation"
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation"
+          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli"
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload packaging validation

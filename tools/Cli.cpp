@@ -4,7 +4,7 @@
 #include "core/export/PngExporter.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
-#include <QGuiApplication>
+#include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QFile>
 #include <QFileInfo>
@@ -12,8 +12,7 @@
 #include <QTextStream>
 
 int main(int argc, char **argv) {
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM","offscreen");
-    QGuiApplication app(argc,argv);
+    QCoreApplication app(argc,argv);
     app.setApplicationName("JixelLight CLI");
     QCommandLineParser parser;
     parser.setApplicationDescription("Offline CPU reference export using the JixelLight engine. Existing destinations are never overwritten.");
@@ -58,6 +57,6 @@ int main(int argc, char **argv) {
     const bool ok=suffix=="png" ? exportPng16(source.image,state,paths[1],space,{},&error,raw,float(base))
                               : exportJpegTiled(source.image,state,paths[1],space,92,{},&error,{}, {},raw,float(base));
     if(!ok)return fail(error);
-    QTextStream(stdout)<<QJsonDocument(QJsonObject{{"ok",true},{"backend","cpu-reference"},{"destination",destination.absoluteFilePath()},{"space",parser.value("space")},{"adjustments",state.toJson()}}).toJson();
+    QTextStream(stdout)<<QJsonDocument(QJsonObject{{"ok",true},{"backend","cpu-reference"},{"source_commit",JIXELLIGHT_GIT_COMMIT},{"engine",ProcessingPlan::EngineVersion},{"destination",destination.absoluteFilePath()},{"space",parser.value("space")},{"adjustments",state.toJson()}}).toJson();
     return 0;
 }

@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument('executable', type=Path)
     parser.add_argument('raw', type=Path)
     parser.add_argument('--sony-probe', type=Path)
+    parser.add_argument('--cli', type=Path)
     parser.add_argument('--reports', type=Path, default=Path('package-validation'))
     args = parser.parse_args()
     executable, raw = args.executable.resolve(), args.raw.resolve()
@@ -132,6 +133,19 @@ def main() -> int:
                           'source_commit': data.get('commit'), 'sdk_paths_removed': True,
                           'raw_sha256': data.get('rawSha256'), 'jpeg_sha256': data.get('jpegSha256')}
             results.append(sony_check)
+    if args.cli:
+        cli = args.cli.resolve()
+        try:
+            run = subprocess.run([sys.executable, str(Path(__file__).with_name('ValidateCli.py')), str(cli)],
+                                 env=environment, capture_output=True, text=True, timeout=180)
+            code = run.returncode
+            detail = run.stdout + run.stderr
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            code, detail = -1, str(exc)
+        (reports / 'develop-cli.log').write_text(detail, encoding='utf-8')
+        results.append({'mode': 'develop-cli', 'passed': code == 0, 'returncode': code,
+                        'sdk_paths_removed': True,
+                        'executable_sha256': hashlib.sha256(cli.read_bytes()).hexdigest() if cli.is_file() else None})
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),
