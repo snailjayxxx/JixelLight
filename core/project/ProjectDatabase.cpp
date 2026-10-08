@@ -37,39 +37,54 @@ QString ProjectDatabase::lastError() const {
     return m_state->error;
 }
 bool ProjectDatabase::create(const QString &directory, const QString &name) {
+    m_lastOpenError.clear();
     const QString safe = name.trimmed().isEmpty() ? QStringLiteral("JixelLight Project") : name.trimmed();
-    if (safe == "." || safe == ".." || safe.contains('/') || safe.contains('\\')) return false;
-    flush();
-    const QString folder = QDir(directory).filePath(safe + ".jlp");
-    if (!QDir().mkpath(folder+"/cache/thumbnails") || !QDir().mkpath(folder+"/cache/previews") || !QDir().mkpath(folder+"/backups")) return false;
-    bool ok = false;
+    if (safe == "." || safe == ".." || safe.contains('/') || safe.contains('\\')) {
+        m_lastOpenError = QStringLiteral("Invalid project name"); return false;
+    }
+    if (m_open && !flush()) return false;
+    const QString folder = QDir(directory).absoluteFilePath(safe + ".jlp");
+    // mkdir reserves a new catalog directory; never reuse an existing project.
+    if (!QDir().mkpath(directory) || !QDir(directory).mkdir(safe + ".jlp")) {
+        m_lastOpenError = QStringLiteral("Project directory already exists or cannot be created"); return false;
+    }
+    if (!QDir().mkpath(folder+"/cache/thumbnails") || !QDir().mkpath(folder+"/cache/previews") || !QDir().mkpath(folder+"/backups")) {
+        QDir(folder).removeRecursively();
+        m_lastOpenError = QStringLiteral("Cannot create project cache directories"); return false;
+    }
+    bool ok = false; QString error;
     const auto state = m_state;
+    const QString candidate = "jixellight-create-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     QMetaObject::invokeMethod(m_worker, [&, state] {
-        if (QSqlDatabase::contains(state->connectionName)) {
-            { auto previous = QSqlDatabase::database(state->connectionName, false); previous.close(); }
-            QSqlDatabase::removeDatabase(state->connectionName);
-        }
-        auto db = QSqlDatabase::addDatabase("QSQLITE", state->connectionName);
-        db.setDatabaseName(folder+"/Project.db");
-        QString error;
-        if (!db.open()) error = db.lastError().text();
-        else {
-            QSqlQuery query(db);
-            ok = query.exec("PRAGMA journal_mode=WAL") && query.exec("PRAGMA busy_timeout=3000")
-                && query.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT)")
-                && query.exec("CREATE TABLE IF NOT EXISTS photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')")
-                && query.exec("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))");
-            if (ok) {
-                query.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('project_name',?)");
-                query.addBindValue(safe); ok = query.exec();
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", candidate);
+            db.setDatabaseName(folder+"/Project.db");
+            if (!db.open()) error = db.lastError().text();
+            else {
+                QSqlQuery query(db);
+                ok = query.exec("PRAGMA journal_mode=WAL") && query.exec("PRAGMA busy_timeout=3000")
+                    && query.exec("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)")
+                    && query.exec("CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')")
+                    && query.exec("CREATE TABLE curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))");
+                if (ok) {
+                    query.prepare("INSERT INTO meta(key,value) VALUES('project_name',?)");
+                    query.addBindValue(safe); ok = query.exec();
+                }
+                if (!ok) error = query.lastError().text();
             }
-            if (!ok) error = query.lastError().text();
+            if (!ok) db.close();
         }
-        QMutexLocker lock(&state->mutex); state->error = error;
+        if (ok) {
+            if (QSqlDatabase::contains(state->connectionName)) {
+                { auto previous = QSqlDatabase::database(state->connectionName, false); previous.close(); }
+                QSqlDatabase::removeDatabase(state->connectionName);
+            }
+            state->connectionName = candidate;
+            QMutexLocker lock(&state->mutex); state->error.clear();
+        } else QSqlDatabase::removeDatabase(candidate);
     }, Qt::BlockingQueuedConnection);
-    m_open = ok;
-    if (ok) { m_projectPath = folder; m_projectName = safe; }
-    else emit writeFailed(lastError());
+    if (ok) { m_open = true; m_projectPath = folder; m_projectName = safe; }
+    else { QDir(folder).removeRecursively(); m_lastOpenError = error; emit writeFailed(error); }
     return ok;
 }
 // Existing projects are opened without overwriting their metadata, and their
@@ -139,7 +154,17 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     const int rating = hasCuration ? std::clamp(query.value(2).toInt(), 0, 5) : 0;
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
-                    staged.push_back({path, AdjustmentState::fromJson(doc.object()), rating, flag});
+                    const auto adjustments = AdjustmentState::fromJson(doc.object());
+                    EditHistory history;
+                    if (doc.object().contains("_history") &&
+                        (!doc.object().value("_history").isObject() ||
+                         !history.restore(doc.object().value("_history").toObject(), adjustments))) {
+                        ready = false;
+                        error = QStringLiteral("Invalid or unsupported edit history for project photo");
+                        break;
+                    }
+                    history.initialize(adjustments);
+                    staged.push_back({path, adjustments, rating, flag, history});
                     if (staged.size() > 1000000) {
                         ready = false;
                         error = QStringLiteral("Project contains too many photos");
@@ -225,11 +250,11 @@ bool ProjectDatabase::updateCurationBatch(const QHash<QString, PhotoCuration> &c
     }, Qt::QueuedConnection);
 }
 
-bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states) {
+bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories) {
     if (!m_open) return false;
     if (states.isEmpty()) return true;
     const auto state = m_state;
-    return QMetaObject::invokeMethod(m_worker, [this,state,states] {
+    return QMetaObject::invokeMethod(m_worker, [this,state,states,histories] {
         PerformanceSpan timer(QStringLiteral("database_batch"), {{"photos",states.size()}});
         auto db = QSqlDatabase::database(state->connectionName, false);
         bool ok = db.isOpen() && db.transaction();
@@ -239,7 +264,9 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states)
             ok = query.prepare("INSERT INTO photos(path,adjustment_json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET adjustment_json=excluded.adjustment_json");
             for (auto it = states.constBegin(); ok && it != states.constEnd(); ++it) {
                 query.bindValue(0,it.key());
-                query.bindValue(1,QString::fromUtf8(QJsonDocument(it.value().toJson()).toJson(QJsonDocument::Compact)));
+                auto json = it.value().toJson();
+                if (histories.contains(it.key())) json.insert("_history", histories.value(it.key()).toJson());
+                query.bindValue(1,QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
                 ok = query.exec();
             }
             if (!ok) error = query.lastError().text();

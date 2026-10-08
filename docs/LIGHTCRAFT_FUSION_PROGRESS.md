@@ -18,7 +18,7 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 |---|---|---|
 | F0 | Alpha.11 baseline retained; cross-platform CI; existing real RAW/JPEG and GPU parity tests unchanged | Additional per-camera/cross-exposure evidence and performance measurements |
 | F1 | Library/Develop shell, Filmstrip, asynchronous thumbnails, collapsible editing panels | Additional compact-window and layout polish |
-| F2 | Project restore, ratings, Pick/Reject; per-photo session history, Undo/Redo, 128 undo steps; slider gestures coalesced; full immutable Sony LUT snapshots; reset/paste/sync covered; bilingual history UI | Durable history, albums, virtual copies, keywords/labels, richer sorting/selection, named editable presets, XMP |
+| F2 | Project restore; exclusive new-project creation and failed-create writer preservation; ratings, Pick/Reject; per-photo durable project history, Undo/Redo, 128 undo steps; slider gestures coalesced; full immutable Sony LUT snapshots; reset/paste/sync covered; bilingual history UI; user-local named Develop presets (save/apply/delete, Sony Look included, crop/curation excluded) | Albums, virtual copies, keywords/labels, richer sorting/selection, preset renaming/overwriting/export, XMP |
 | F3 | Source cache retained; independent 128 MiB prepared-preview LRU; keys include engine, QImage source identity, geometry/viewport; cache counters/timings in performance diagnostics; dependency manifest; diagnostic CPU capture uses explicit RAW semantics and current geometry | Splitting color kernels into stages, true float RAW source, highlight upgrades, output hashes and additional cache tiers |
 | F4 | Normalized original-coordinate crop; centered 1:1/3:2/4:3 crop UI; 90° rotation, horizontal/vertical flip, reset; same geometry in CPU/GPU preview, full scopes and both export formats; persisted in adjustments and Undo/Redo | Interactive crop handles/straighten, transform/lens corrections, masks, Texture/Clarity/Dehaze, noise/sharpen, grading, healing |
 | F5 | 16-bit RGBA PNG with target ICC; current and batch export; atomic QSaveFile with cancellation preserving destination; original protection; existing tiled JPEG and 1024-bin scopes retained | TIFF/WebP, proofing, waveform/parade/vectorscope, import Copy/Move and broader RAW validation |
@@ -42,11 +42,12 @@ JixelLightCli input.jpg new-output.jpg
 [{"command":"develop.set","parameter":"exposure","value":0.5}]
 ```
 
-CLI shares the existing scalar ranges and clamps finite numeric values. It uses CPU reference processing, As Shot look resolution and camera baseline metadata; it never downloads models or opens a remote service. GUI Undo/Redo is session-local; the restored current adjustments are persisted by the existing project writer.
+CLI shares the existing scalar ranges and clamps finite numeric values. It uses CPU reference processing, As Shot look resolution and camera baseline metadata; it never downloads models or opens a remote service. GUI Undo/Redo snapshots and the cursor are persisted atomically with current adjustments in the catalog adjustment JSON (`_history`, schema 1). Legacy projects without history initialize from their current state. Unknown or corrupt histories reject project opening before replacing the active writer. Shared Sony LUTs are serialized once per photo history and validated on restore. User-local named presets live in the application data directory and use atomic writes; existing names require deletion or a new name, and unreadable/unknown-version files are protected from replacement.
 
 ## Regression coverage in this batch
 
-- Undo branching, redo invalidation, gesture boundaries and bounded history.
+- Undo branching, redo invalidation, gesture boundaries and bounded history; reopening at an undone cursor preserves redo; corrupt/unknown versions and LUT hashes are rejected without switching the active writer.
+- Named preset persistence, Sony As Shot round trip, geometry exclusion, duplicate refusal, deletion and unreadable-file preservation.
 - Per-photo isolation, Sony As Shot/manual state, reset/paste and restored project state.
 - Cache reuse, exposure-independent prepare keys, geometry/source invalidation and cancellation.
 - Geometry orientation/pixel mapping, untouched original pixels, legacy default state and JSON round trip.

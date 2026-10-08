@@ -16,6 +16,8 @@
 #include <QImageWriter>
 #include <QMessageBox>
 #include <QSettings>
+#include <QStandardPaths>
+#include "core/commands/NamedPresets.h"
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
@@ -120,6 +122,44 @@ void PhotoController::setCropAspect(double aspect) {
 }
 void PhotoController::resetGeometry() {
     if (auto *state = mutableCurrentState()) { state->geometry = {}; persistAndApply("geometry_reset"); }
+}
+
+namespace {
+QString presetFile() {
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("develop-presets.json");
+}
+}
+QStringList PhotoController::presetNames() const {
+    NamedPresets presets(presetFile()); QString error;
+    return presets.load(&error) ? presets.names() : QStringList{};
+}
+bool PhotoController::saveNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.save(name.trimmed(), currentState(), &error)) {
+        setStatus(uiText("预设保存失败：", "Preset save failed: ") + error); return false;
+    }
+    emit presetsChanged();
+    setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
+}
+bool PhotoController::applyNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error; AdjustmentState state;
+    if (!presets.load(&error) || !presets.get(name, &state)) {
+        setStatus(uiText("无法读取预设：", "Cannot read preset: ") + (error.isEmpty() ? name : error)); return false;
+    }
+    state.geometry = currentState().geometry;
+    m_photos[m_currentIndex].history.finish();
+    *mutableCurrentState() = state;
+    persistAndApply(QStringLiteral("named_preset"));
+    setStatus(uiText("已应用预设：", "Preset applied: ") + name); return true;
+}
+bool PhotoController::removeNamedPreset(const QString &name) {
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.remove(name, &error)) {
+        setStatus(uiText("预设删除失败：", "Preset removal failed: ") + error); return false;
+    }
+    emit presetsChanged(); return true;
 }
 
 bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
@@ -418,6 +458,8 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     if (ok) {
         for (const auto &p : m_photos) {
             m_dirtyEdits.insert(p.path, p.state);
+            auto history = p.history; history.initialize(p.state);
+            m_dirtyHistories.insert(p.path, history);
             m_dirtyCuration.insert(p.path, {p.rating, p.flag});
         }
         enqueueEdits();
@@ -448,7 +490,7 @@ bool PhotoController::openProject(const QUrl &url) {
     m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_saveTimer.stop(); m_saveMaxTimer.stop();
-    m_dirtyEdits.clear();
+    m_dirtyEdits.clear(); m_dirtyHistories.clear();
     m_dirtyCuration.clear();
     m_currentIndex = -1;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
@@ -472,7 +514,7 @@ bool PhotoController::openProject(const QUrl &url) {
         const QString identity = info.canonicalFilePath();
         if (identity.isEmpty() || m_importedPaths.contains(identity)) continue;
         const QString absolute = info.absoluteFilePath();
-        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag});
+        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history});
         m_importedPaths.insert(identity);
     }
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
@@ -550,7 +592,7 @@ void PhotoController::syncAdjustmentsToAll() {
         photo.history.finish();
         photo.state = state;
         photo.history.record(state, QStringLiteral("sync_adjustments"));
-        if (m_project.isOpen()) m_dirtyEdits.insert(photo.path, photo.state);
+        if (m_project.isOpen()) { m_dirtyEdits.insert(photo.path, photo.state); m_dirtyHistories.insert(photo.path, photo.history); }
     }
     enqueueEdits();
     emit historyChanged();
@@ -874,13 +916,14 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
 void PhotoController::markDirty() {
     if (!m_project.isOpen() || !hasImage()) return;
     m_dirtyEdits.insert(currentFile(), currentState());
+    m_dirtyHistories.insert(currentFile(), m_photos[m_currentIndex].history);
     m_saveTimer.start();
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
 }
 void PhotoController::enqueueEdits() {
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     if (!m_project.isOpen()) return;
-    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits)) m_dirtyEdits.clear();
+    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); }
     if (!m_dirtyCuration.isEmpty() && m_project.updateCurationBatch(m_dirtyCuration)) m_dirtyCuration.clear();
 }
 bool PhotoController::flushEdits() {

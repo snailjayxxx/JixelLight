@@ -9,6 +9,9 @@
 #include <QImageReader>
 #include <QRgba64>
 #include <QTemporaryDir>
+#include <QStandardPaths>
+#include <QScopeGuard>
+#include <QUuid>
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
@@ -21,6 +24,7 @@
 #include "core/pipeline/StageGraph.h"
 #include "core/export/PngExporter.h"
 #include "core/commands/CommandRegistry.h"
+#include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/ZipStoreWriter.h"
@@ -109,12 +113,116 @@ private slots:
         QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
         reopened.selectPhoto(1); QCOMPARE(reopened.exposure(), -1.0);
         QCOMPARE(reopened.geometry()["quarterTurns"].toInt(),1);
+        QVERIFY(reopened.canUndo());
+        reopened.undo(); QCOMPARE(reopened.geometry()["quarterTurns"].toInt(),0);
+        QVERIFY(reopened.canRedo());
+        QVERIFY(reopened.flushEdits());
+        PhotoController resumed(nullptr);
+        QVERIFY(resumed.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        resumed.selectPhoto(1);
+        QVERIFY(resumed.canRedo());
+        resumed.redo(); QCOMPARE(resumed.geometry()["quarterTurns"].toInt(),1);
         QSignalSpy exported(&controller, &PhotoController::exportFinished);
         QVERIFY(controller.exportAll(QUrl::fromLocalFile(dir.path()), "display-p3",92,"png"));
         QTRY_COMPARE_WITH_TIMEOUT(exported.size(),1,10000);
         QCOMPARE(exported.first()[0].toInt(),2);
         QCOMPARE(QImage(dir.filePath("a_JixelLight.png")).depth(),64);
         QCOMPARE(QImage(dir.filePath("b_JixelLight.png")).depth(),64);
+    }
+
+    void historyPersistenceRejectsUnsupportedOrInconsistentSnapshots() {
+        AdjustmentState original, edited; edited.exposure = 1;
+        EditHistory history; history.initialize(original); history.record(edited, "exposure");
+        history.undo();
+        EditHistory restored;
+        QVERIFY(restored.restore(history.toJson(), original));
+        QVERIFY(restored.canRedo()); QCOMPARE(restored.redo().exposure, 1.0);
+        auto invalid = history.toJson(); invalid.insert("schema", 2);
+        QVERIFY(!restored.restore(invalid, original));
+        QVERIFY(!restored.restore(history.toJson(), edited));
+        invalid = history.toJson(); invalid.insert("cursor", 0.5);
+        QVERIFY(!restored.restore(invalid, original));
+        QCOMPARE(restored.cursor(), 1);
+    }
+
+    void persistentHistorySharesAndValidatesLuts() {
+        AdjustmentState state; state.look.mode = "calibrated"; state.look.lut = LookLut::identity();
+        EditHistory history; history.initialize(state);
+        state.exposure = 1; history.record(state, "exposure");
+        const auto json = history.toJson(); QCOMPARE(json.value("luts").toArray().size(), 1);
+        EditHistory restored; QVERIFY(restored.restore(json, state));
+        QCOMPARE(restored.entries()[0].state.look.lut, restored.entries()[1].state.look.lut);
+        QCOMPARE(restored.undo().look.lut->digest, state.look.lut->digest);
+        auto invalid = json; auto luts = json.value("luts").toArray();
+        auto lut = luts[0].toObject(); lut.insert("sha256", "invalid"); luts[0] = lut; invalid.insert("luts", luts);
+        QVERIFY(!restored.restore(invalid, state));
+    }
+
+    void namedPresetsRoundTripWithoutGeometryAndProtectUnreadableFiles() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString file = dir.filePath("presets.json"); QString error;
+        NamedPresets presets(file); QVERIFY(presets.load(&error));
+        AdjustmentState state; state.exposure = 1.25; state.look.mode = "as-shot";
+        state.geometry.quarterTurns = 1;
+        QVERIFY(presets.save("Portrait", state, &error));
+        QVERIFY(!presets.save("Portrait", state, &error)); // explicit delete/new name required
+        NamedPresets reopened(file); QVERIFY(reopened.load(&error));
+        AdjustmentState loaded; QVERIFY(reopened.get("Portrait", &loaded));
+        QCOMPARE(loaded.exposure, 1.25); QCOMPARE(loaded.look.mode, QStringLiteral("as-shot"));
+        QCOMPARE(loaded.geometry.quarterTurns, 0);
+        QVERIFY(reopened.remove("Portrait", &error));
+        QVERIFY(!reopened.get("Portrait", &loaded));
+        QFile corrupt(file); QVERIFY(corrupt.open(QIODevice::WriteOnly));
+        const QByteArray unknown = R"({"schema":99,"presets":{}})";
+        QCOMPARE(corrupt.write(unknown), unknown.size()); corrupt.close();
+        QVERIFY(!reopened.load(&error)); QVERIFY(!reopened.save("New", state, &error));
+        QVERIFY(corrupt.open(QIODevice::ReadOnly)); QCOMPARE(corrupt.readAll(), unknown);
+    }
+
+    void controllerNamedPresetPreservesGeometryCurationAndUndo() {
+        const auto oldName = QCoreApplication::applicationName();
+        QCoreApplication::setApplicationName("JixelLightPresetTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const auto data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const auto restoreName = qScopeGuard([&] { QDir(data).removeRecursively(); QCoreApplication::setApplicationName(oldName); });
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path = dir.filePath("photo.png"); QVERIFY(image.save(path));
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        controller.setExposure(1.5); controller.finishInteraction();
+        QVERIFY(controller.saveNamedPreset("Portrait"));
+        controller.setExposure(-1); controller.finishInteraction(); controller.rotatePhoto(1);
+        controller.setRating(4); controller.setFlag("pick");
+        QVERIFY(controller.applyNamedPreset("Portrait")); QCOMPARE(controller.exposure(), 1.5);
+        QCOMPARE(controller.currentRating(), 4); QCOMPARE(controller.currentFlag(), QStringLiteral("pick"));
+        QCOMPARE(controller.geometry()["quarterTurns"].toInt(), 1);
+        controller.undo(); QCOMPARE(controller.exposure(), -1.0);
+        QCOMPARE(controller.geometry()["quarterTurns"].toInt(), 1);
+        PhotoController reopened(nullptr); QCOMPARE(reopened.presetNames(), QStringList{"Portrait"});
+        QVERIFY(reopened.removeNamedPreset("Portrait")); QVERIFY(reopened.presetNames().isEmpty());
+    }
+
+    void projectHistoryRejectsUnknownSchemaWithoutSwitchingWriter() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        ProjectDatabase candidate; QVERIFY(candidate.create(dir.path(), "Future"));
+        AdjustmentState state; EditHistory history; history.initialize(state);
+        QVERIFY(candidate.updateBatch({{"test.ARW", state}}, {{"test.ARW", history}}));
+        QVERIFY(candidate.flush());
+        const QString connection = "future-history-fixture";
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(QDir(candidate.projectPath()).filePath("Project.db")); QVERIFY(db.open());
+            QSqlQuery query(db); auto json = state.toJson(); auto invalid = history.toJson();
+            invalid.insert("schema", 99); json.insert("_history", invalid);
+            query.prepare("UPDATE photos SET adjustment_json=?");
+            query.addBindValue(QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+            QVERIFY(query.exec()); db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        ProjectDatabase active; QVERIFY(active.create(dir.path(), "Active"));
+        QVector<ProjectDatabase::SavedPhoto> photos;
+        QVERIFY(!active.open(candidate.projectPath(), &photos));
+        QCOMPARE(active.projectName(), QStringLiteral("Active"));
+        QVERIFY(active.updateAdjustment("active.ARW", state)); QVERIFY(active.flush());
     }
 
     void stageDependenciesIsolateColorFromGeometry() {
@@ -591,6 +699,21 @@ private slots:
                  qPrintable(db.lastError()));
         QCOMPARE(photos.size(), 1);
         QCOMPARE(photos[0].adjustments.exposure, 1.3);
+    }
+
+    void projectCreationNeverOverwritesOrDropsCurrentWriter() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        ProjectDatabase db; QVERIFY(db.create(dir.path(), "Existing"));
+        AdjustmentState state; state.exposure = 0.75;
+        QVERIFY(db.updateAdjustment("original.ARW", state)); QVERIFY(db.flush());
+        const auto folder = db.projectPath();
+        QVERIFY(!db.create(dir.path(), "Existing")); QCOMPARE(db.projectPath(), folder);
+        QVERIFY(db.flush());
+        QFile blocker(dir.filePath("file")); QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.close();
+        QVERIFY(!db.create(blocker.fileName(), "Unavailable")); QCOMPARE(db.projectPath(), folder);
+        state.exposure = 1.75; QVERIFY(db.updateAdjustment("original.ARW", state)); QVERIFY(db.flush());
+        QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(folder, &photos));
+        QCOMPARE(photos.size(), 1); QCOMPARE(photos[0].adjustments.exposure, 1.75);
     }
 
     void zipWriterCreatesZipSignature() {

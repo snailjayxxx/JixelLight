@@ -57,6 +57,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double highlightClipPercent READ highlightClipPercent NOTIFY scopesChanged)
 
     Q_PROPERTY(QVariantMap geometry READ geometry NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QStringList presetNames READ presetNames NOTIFY presetsChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QVariantList editHistory READ editHistory NOTIFY historyChanged)
@@ -208,6 +209,10 @@ public:
     bool canUndo() const;
     bool canRedo() const;
     QVariantList editHistory() const;
+    QStringList presetNames() const;
+    Q_INVOKABLE bool saveNamedPreset(const QString &name);
+    Q_INVOKABLE bool applyNamedPreset(const QString &name);
+    Q_INVOKABLE bool removeNamedPreset(const QString &name);
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();
@@ -225,6 +230,7 @@ signals:
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void curationChanged();
+    void presetsChanged();
     void historyChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
@@ -268,6 +274,7 @@ private:
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
     QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;
+    QHash<QString, EditHistory> m_dirtyHistories;
     QHash<QString, ProjectDatabase::PhotoCuration> m_dirtyCuration;
     QElapsedTimer m_renderClock;
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;

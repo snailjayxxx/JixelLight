@@ -1,5 +1,5 @@
 #pragma once
-#include "core/pipeline/AdjustmentState.h"
+#include "core/commands/EditHistory.h"
 #include <QObject>
 #include <QHash>
 #include <QVector>
@@ -12,7 +12,7 @@ class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
     struct PhotoCuration { int rating = 0; QString flag = QStringLiteral("none"); };
-    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); };
+    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
@@ -24,7 +24,7 @@ public:
     bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);
-    bool updateBatch(const QHash<QString, AdjustmentState> &states);
+    bool updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories = {});
     bool flush();
     bool isOpen() const { return m_open; }
     QString projectPath() const { return m_projectPath; }

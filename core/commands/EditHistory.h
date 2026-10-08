@@ -1,8 +1,9 @@
 #pragma once
 #include "core/pipeline/AdjustmentState.h"
 #include <QVector>
+#include <QHash>
 
-// Session-local snapshots preserve shared immutable LUTs without resolving
+// Snapshots preserve shared immutable LUTs without resolving
 // As Shot metadata into the user's stored adjustments. Old project JSON stays intact.
 class EditHistory {
 public:
@@ -23,6 +24,78 @@ public:
         else { m_entries.push_back({state, action}); ++m_cursor; }
         if (m_entries.size() > 129) { m_entries.removeFirst(); --m_cursor; }
         m_mergeKey = mergeKey;
+        return true;
+    }
+    QJsonObject toJson() const {
+        QJsonArray entries, luts;
+        QHash<const LookLut *, int> references;
+        for (const auto &entry : m_entries) {
+            auto snapshot = entry.state;
+            const auto lut = snapshot.look.lut;
+            snapshot.look.lut.reset();
+            auto state = snapshot.toJson();
+            if (lut) {
+                if (!references.contains(lut.get())) {
+                    references.insert(lut.get(), luts.size()); luts.append(lut->toJson());
+                }
+                auto look = state.value("look").toObject();
+                look.insert("lutRef", references.value(lut.get())); state.insert("look", look);
+            }
+            entries.append(QJsonObject{{"state", state}, {"action", entry.action}});
+        }
+        return {{"schema", 1}, {"cursor", m_cursor}, {"entries", entries}, {"luts", luts}};
+    }
+    // Validate before replacing a live history. Unknown versions and inconsistent
+    // current snapshots must never silently destroy a project's redo branch.
+    bool restore(const QJsonObject &json, const AdjustmentState &current) {
+        const auto entries = json.value("entries").toArray();
+        const auto cursorValue = json.value("cursor");
+        const int cursor = cursorValue.toInt(-1);
+        if (json.value("schema").toDouble() != 1 || entries.isEmpty() || entries.size() > 129
+            || !cursorValue.isDouble() || cursorValue.toDouble() != cursor
+            || cursor < 0 || cursor >= entries.size()) return false;
+        if (json.contains("luts") && !json.value("luts").isArray()) return false;
+        QVector<std::shared_ptr<const LookLut>> luts;
+        for (const auto &value : json.value("luts").toArray()) {
+            if (luts.size() >= 129 || !value.isObject()) return false;
+            QString error;
+            auto lut = LookLut::fromJson(value.toObject(), &error);
+            if (!lut || !error.isEmpty()) return false;
+            luts.push_back(lut);
+        }
+        QVector<Entry> restored;
+        for (const auto &value : entries) {
+            const auto object = value.toObject();
+            if (!object.value("state").isObject() || !object.value("action").isString()
+                || object.value("action").toString().size() > 256) return false;
+            auto stateJson = object.value("state").toObject();
+            auto look = stateJson.value("look").toObject();
+            std::shared_ptr<const LookLut> sharedLut;
+            if (look.contains("lutRef")) {
+                const auto value = look.take("lutRef");
+                const int index = value.toInt(-1);
+                if (!value.isDouble() || value.toDouble() != index || index < 0 || index >= luts.size()) return false;
+                if (look.contains("lut")) return false;
+                sharedLut = luts[index];
+                stateJson.insert("look", look);
+            }
+            auto parseJson = stateJson;
+            if (sharedLut && look.value("mode").toString() == "calibrated") {
+                auto parseLook = look; parseLook.insert("mode", "off"); parseJson.insert("look", parseLook);
+            }
+            auto state = AdjustmentState::fromJson(parseJson);
+            if (sharedLut) {
+                state.look.lut = sharedLut;
+                if (look.value("mode").toString() == "calibrated") state.look.mode = "calibrated";
+            }
+            // Compare scalar snapshots without repeatedly decoding/serializing LUTs.
+            auto checked = state;
+            if (sharedLut) checked.look.lut.reset();
+            if (!state.look.error.isEmpty() || checked.toJson() != stateJson) return false;
+            restored.push_back({state, object.value("action").toString()});
+        }
+        if (restored[cursor].state.toJson() != current.toJson()) return false;
+        m_entries = restored; m_cursor = cursor; finish();
         return true;
     }
     void finish() { m_mergeKey.clear(); }
