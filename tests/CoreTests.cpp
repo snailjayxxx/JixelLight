@@ -40,6 +40,69 @@ QImage sceneGrayImage(double value) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void editHistoryBranchesAndPreservesSonyState() {
+        EditHistory history;
+        AdjustmentState original;
+        original.look.mode = "as-shot";
+        history.initialize(original);
+        auto edited = original;
+        edited.exposure = 1;
+        QVERIFY(history.record(edited, "exposure", "exposure"));
+        edited.exposure = 2;
+        QVERIFY(history.record(edited, "exposure", "exposure"));
+        QCOMPARE(history.entries().size(), 2);
+        QCOMPARE(history.undo().toJson(), original.toJson());
+        QCOMPARE(history.redo().exposure, 2.0);
+        history.finish();
+        edited.look.mode = "manual";
+        edited.look.code = "FL";
+        edited.look.parameters["contrast"] = -2;
+        history.record(edited, "look");
+        QCOMPARE(history.undo().look.mode, QStringLiteral("as-shot"));
+        edited.saturation = 12;
+        history.record(edited, "saturation");
+        QVERIFY(!history.canRedo());
+        for (int i = 0; i < 160; ++i) {
+            edited.tint = i;
+            history.record(edited, "tint");
+        }
+        QCOMPARE(history.entries().size(), 129);
+        int undos = 0;
+        while (history.canUndo()) { history.undo(); ++undos; }
+        QCOMPARE(undos, 128);
+    }
+
+    void controllerUndoIsPerPhotoAndPersistsRestoredState() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const QString a = dir.filePath("a.png"), b = dir.filePath("b.png");
+        QVERIFY(image.save(a)); QVERIFY(image.save(b));
+        PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(a)));
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(b)));
+        controller.selectPhoto(0);
+        controller.setExposure(1); controller.setExposure(2);
+        controller.finishInteraction();
+        controller.setSaturation(30);
+        controller.undo(); QCOMPARE(controller.saturation(), 0.0);
+        controller.undo(); QCOMPARE(controller.exposure(), 0.0);
+        controller.redo(); QCOMPARE(controller.exposure(), 2.0);
+        controller.selectPhoto(1); QVERIFY(!controller.canUndo());
+        controller.setExposure(-1); controller.finishInteraction();
+        controller.selectPhoto(0); QCOMPARE(controller.exposure(), 2.0);
+        controller.resetAdjustments(); QCOMPARE(controller.exposure(), 0.0);
+        controller.undo(); QCOMPARE(controller.exposure(), 2.0);
+        controller.copyAdjustments(); controller.selectPhoto(1);
+        controller.pasteAdjustments(); QCOMPARE(controller.exposure(), 2.0);
+        controller.undo(); QCOMPARE(controller.exposure(), -1.0);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()), "history"));
+        QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr);
+        QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        reopened.selectPhoto(1); QCOMPARE(reopened.exposure(), -1.0);
+    }
+
     void identityPipelinePreservesDisplayPixel() {
         QImage image(2, 2, QImage::Format_RGBA8888);
         image.fill(QColor(64, 128, 192, 255));

@@ -17,6 +17,7 @@
 #include "core/look/LookCalibration.h"
 
 #include "core/pipeline/AdjustmentState.h"
+#include "core/commands/EditHistory.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/scopes/ScopesEngine.h"
 
@@ -54,6 +55,10 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantList lumaHistogram READ lumaHistogram NOTIFY scopesChanged)
     Q_PROPERTY(double shadowClipPercent READ shadowClipPercent NOTIFY scopesChanged)
     Q_PROPERTY(double highlightClipPercent READ highlightClipPercent NOTIFY scopesChanged)
+
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList editHistory READ editHistory NOTIFY historyChanged)
 
     Q_PROPERTY(double exposure READ exposure WRITE setExposure NOTIFY adjustmentsChanged)
     Q_PROPERTY(double temperature READ temperature WRITE setTemperature NOTIFY adjustmentsChanged)
@@ -193,6 +198,11 @@ public:
     Q_INVOKABLE bool openProject(const QUrl &folder);
     Q_INVOKABLE void setRating(int rating);
     Q_INVOKABLE void setFlag(const QString &flag);
+    bool canUndo() const;
+    bool canRedo() const;
+    QVariantList editHistory() const;
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
@@ -208,6 +218,7 @@ signals:
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void curationChanged();
+    void historyChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
     void activityChanged(); void backendChanged(); void exportChanged();
@@ -218,6 +229,7 @@ private:
     struct PhotoEntry {
         QString path; QString name; AdjustmentState state; bool raw = false;
         int rating = 0; QString flag = QStringLiteral("none");
+        EditHistory history;
     };
     QVector<PhotoEntry> m_photos;
     QSet<QString> m_importedPaths;

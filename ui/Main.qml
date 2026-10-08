@@ -63,6 +63,8 @@ ApplicationWindow {
         return ["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"][Math.max(0, Math.min(3, index))]
     }
 
+    Shortcut { sequence: StandardKey.Undo; enabled: photoController.canUndo; onActivated: photoController.undo() }
+    Shortcut { sequence: StandardKey.Redo; enabled: photoController.canRedo; onActivated: photoController.redo() }
     Shortcut { sequence: StandardKey.Open; onActivated: photoController.openImportDialog() }
 
     DropArea {
@@ -191,6 +193,8 @@ ApplicationWindow {
                 onClicked: photoController.openImportDialog()
             }
             ToolSeparator {}
+            ToolButton { text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.undo() }
+            ToolButton { text: window.t("重做", "Redo"); enabled: photoController.canRedo; onClicked: photoController.redo() }
             ToolButton {
                 text: window.t("复制", "Copy")
                 enabled: photoController.hasImage

@@ -82,7 +82,41 @@ QString PhotoController::pipelineDescription() const {
 }
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
-AdjustmentState *PhotoController::mutableCurrentState() { return hasImage() ? &m_photos[m_currentIndex].state : nullptr; }
+AdjustmentState *PhotoController::mutableCurrentState() {
+    if (!hasImage()) return nullptr;
+    auto &photo = m_photos[m_currentIndex];
+    photo.history.initialize(photo.state);
+    return &photo.state;
+}
+
+bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
+bool PhotoController::canRedo() const { return hasImage() && m_photos[m_currentIndex].history.canRedo(); }
+QVariantList PhotoController::editHistory() const {
+    QVariantList out;
+    if (!hasImage()) return out;
+    const auto &history = m_photos[m_currentIndex].history;
+    for (int i = 0; i < history.entries().size(); ++i)
+        out.push_back(QVariantMap{{"action", history.entries()[i].action}, {"current", i == history.cursor()}});
+    return out;
+}
+void PhotoController::undo() {
+    if (!canUndo()) return;
+    auto &photo = m_photos[m_currentIndex];
+    photo.state = photo.history.undo();
+    markDirty();
+    ActionTrace::instance().record("edit_undo", {{"file", currentFile()}});
+    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    applyCurrent();
+}
+void PhotoController::redo() {
+    if (!canRedo()) return;
+    auto &photo = m_photos[m_currentIndex];
+    photo.state = photo.history.redo();
+    markDirty();
+    ActionTrace::instance().record("edit_redo", {{"file", currentFile()}});
+    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    applyCurrent();
+}
 
 #define GETTER(name) double PhotoController::name() const { return currentState().name; }
 GETTER(exposure)
@@ -121,6 +155,14 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
+    QString mergeKey;
+    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength") {
+        QVariantMap keyDetails = details;
+        keyDetails.remove("value");
+        mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
+    }
+    m_photos[m_currentIndex].history.record(m_photos[m_currentIndex].state, action, mergeKey);
+    emit historyChanged();
     QVariantMap payload = details;
     payload["file"] = currentFile();
     ActionTrace::instance().record(action, payload);
@@ -290,7 +332,10 @@ void PhotoController::importFiles(const QVariantList &urls) {
 void PhotoController::selectPhoto(int index) {
     if (index < 0 || index >= m_photos.size() || index == m_currentIndex) return;
     enqueueEdits();
+    if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
+    m_photos[index].history.initialize(m_photos[index].state);
+    emit historyChanged();
     ++m_photoEpoch;
     resetReference();
     ++m_requestedRevision;
@@ -382,6 +427,7 @@ bool PhotoController::openProject(const QUrl &url) {
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
     m_photos.clear();
+    emit historyChanged();
     m_importedPaths.clear();
 
     int missing = 0;
@@ -442,10 +488,7 @@ void PhotoController::setFlag(const QString &flag) {
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
         *state = {};
-        markDirty();
-        ActionTrace::instance().record("reset_adjustments", {{"file", currentFile()}});
-        emit adjustmentsChanged();
-        applyCurrent();
+        persistAndApply(QStringLiteral("reset_adjustments"));
         setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
     }
 }
@@ -461,10 +504,7 @@ void PhotoController::copyAdjustments() {
 void PhotoController::pasteAdjustments() {
     if (!hasImage() || !m_hasClipboard) return;
     *mutableCurrentState() = m_clipboard;
-    markDirty();
-    ActionTrace::instance().record("paste_adjustments", {{"file", currentFile()}});
-    emit adjustmentsChanged();
-    applyCurrent();
+    persistAndApply(QStringLiteral("paste_adjustments"));
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
 }
 
@@ -472,10 +512,14 @@ void PhotoController::syncAdjustmentsToAll() {
     if (!hasImage()) return;
     const auto state = currentState();
     for (auto &photo : m_photos) {
+        photo.history.initialize(photo.state);
+        photo.history.finish();
         photo.state = state;
+        photo.history.record(state, QStringLiteral("sync_adjustments"));
         if (m_project.isOpen()) m_dirtyEdits.insert(photo.path, photo.state);
     }
     enqueueEdits();
+    emit historyChanged();
     ActionTrace::instance().record("sync_adjustments", {{"count", m_photos.size()}});
     emit libraryChanged();
     emit adjustmentsChanged();
@@ -739,6 +783,7 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
+    if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_refineTimer.stop();
     m_interacting = false;
     enqueueEdits();
