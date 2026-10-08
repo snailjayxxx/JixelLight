@@ -44,6 +44,7 @@ add_library(JixelLightCore STATIC
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
+    core/image/ThumbnailProvider.cpp
     core/metadata/MetadataReader.cpp
     core/look/SonyLookMetadata.cpp
     core/look/LookLut.cpp

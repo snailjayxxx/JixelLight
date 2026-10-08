@@ -14,6 +14,7 @@
 #include "core/color/MonitorColorTransform.h"
 #include "core/gpu/GpuPreviewItem.h"
 #include "core/image/ProcessedImageProvider.h"
+#include "core/image/ThumbnailProvider.h"
 #include "diagnostics/CrashReporter.h"
 #include "diagnostics/LoggingEngine.h"
 #include "diagnostics/ActionTrace.h"
@@ -49,6 +50,7 @@ int main(int argc, char *argv[]) {
     PhotoController controller(provider);
     QQmlApplicationEngine engine;
     engine.addImageProvider("processed", provider);
+    engine.addImageProvider("thumbnails", new ThumbnailProvider);
     engine.rootContext()->setContextProperty("photoController", &controller);
     engine.rootContext()->setContextProperty("appVersion", QString(JIXELLIGHT_VERSION));
 
