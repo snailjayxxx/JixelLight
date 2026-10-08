@@ -95,7 +95,15 @@ public:
             if (!state.look.error.isEmpty() || !LookProfiles::engineCompatible(state.look) || checked.toJson() != stateJson) return false;
             restored.push_back({state, object.value("action").toString()});
         }
-        if (restored[cursor].state.toJson() != current.toJson()) return false;
+        auto expected = restored[cursor].state, actual = current;
+        // Earlier fusion drafts persisted resolved camera metadata alongside the
+        // symbolic As Shot history. These fields are ignored by resolveAsShot;
+        // accept only that narrow difference, keeping every user scalar intact.
+        if (expected.look.mode == "as-shot" && actual.look.mode == "as-shot" && !expected.look.lut && !actual.look.lut) {
+            expected.look.code.clear(); expected.look.parameters.clear();
+            actual.look.code.clear(); actual.look.parameters.clear();
+        }
+        if (expected.toJson() != actual.toJson()) return false;
         m_entries = restored; m_cursor = cursor; finish();
         return true;
     }

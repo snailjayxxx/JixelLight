@@ -102,21 +102,20 @@ AdjustmentState *PhotoController::mutableCurrentState() {
 
 void PhotoController::rotatePhoto(int turns) {
     if (auto *state = mutableCurrentState()) {
-        state->geometry.quarterTurns = ((state->geometry.quarterTurns + turns % 4) % 4 + 4) % 4;
+        CommandRegistry::execute(*state,{{"command","geometry.rotate"},{"quarterTurns",turns}});
         persistAndApply("geometry_rotate");
     }
 }
 void PhotoController::flipPhoto(bool horizontal) {
     if (auto *state = mutableCurrentState()) {
-        if (horizontal) state->geometry.flipHorizontal = !state->geometry.flipHorizontal;
-        else state->geometry.flipVertical = !state->geometry.flipVertical;
+        CommandRegistry::execute(*state,{{"command","geometry.flip"},{"axis",horizontal ? "horizontal" : "vertical"}});
         persistAndApply("geometry_flip");
     }
 }
 void PhotoController::setCrop(double x, double y, double width, double height) {
     if (!GeometryState::validCrop(x,y,width,height)) return;
     if (auto *state = mutableCurrentState()) {
-        state->geometry.crop = QRectF(x,y,width,height);
+        CommandRegistry::execute(*state,{{"command","geometry.crop"},{"x",x},{"y",y},{"width",width},{"height",height}});
         persistAndApply("geometry_crop");
     }
 }
@@ -128,7 +127,7 @@ void PhotoController::setCropAspect(double aspect) {
     setCrop((1-width)/2, (1-height)/2, width, height);
 }
 void PhotoController::resetGeometry() {
-    if (auto *state = mutableCurrentState()) { state->geometry = {}; persistAndApply("geometry_reset"); }
+    if (auto *state = mutableCurrentState()) { CommandRegistry::execute(*state,{{"command","geometry.reset"}}); persistAndApply("geometry_reset"); }
 }
 
 QVariantList PhotoController::selectedIndices() const {
@@ -230,7 +229,7 @@ QStringList PhotoController::presetNames() const {
 bool PhotoController::saveNamedPreset(const QString &name) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
-    if (!presets.load(&error) || !presets.save(name.trimmed(), currentState(), &error)) {
+    if (!presets.load(&error) || !presets.save(name.trimmed(), m_photos[m_currentIndex].state, &error)) {
         setStatus(uiText("预设保存失败：", "Preset save failed: ") + error); return false;
     }
     emit presetsChanged();
@@ -339,6 +338,16 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
     applyCurrent();
 }
 
+bool PhotoController::executeEditCommand(const QVariantMap &command) {
+    auto *state = mutableCurrentState(); if (!state) return false;
+    QString error; auto staged = *state;
+    if (!CommandRegistry::execute(staged,QJsonObject::fromVariantMap(command),&error)) {
+        setStatus(uiText("命令未执行：", "Command rejected: ") + error); return false;
+    }
+    m_photos[m_currentIndex].history.finish(); *state = std::move(staged);
+    persistAndApply("command_replay",{{"command",command}}); return true;
+}
+
 void PhotoController::setAdjustment(const char *name, double value, double AdjustmentState::*member) {
     auto *state = mutableCurrentState();
     if (!state || !std::isfinite(value) || qFuzzyCompare((*state).*member + 1.0, value + 1.0)) return;
@@ -367,7 +376,8 @@ void PhotoController::setColorMix(int band, int component, double value) {
     auto *array = component == 0 ? &state->hslHue : (component == 1 ? &state->hslSaturation : &state->hslLuminance);
     const std::size_t index = static_cast<std::size_t>(band);
     if (qFuzzyCompare((*array)[index] + 1.0, value + 1.0)) return;
-    (*array)[index] = value;
+    const QString componentName = component == 0 ? "hue" : component == 1 ? "saturation" : "luminance";
+    CommandRegistry::execute(*state,{{"command","hsl.set"},{"band",band},{"component",componentName},{"value",value}});
     persistAndApply(QStringLiteral("color_mixer"), {{"band", band}, {"component", component}, {"value", value}});
 }
 
@@ -381,18 +391,16 @@ void PhotoController::setCurvePoint(int channel, int point, double value) {
     else if (channel == 3) curve = &state->blueCurve;
     const std::size_t index = static_cast<std::size_t>(point);
     if (qFuzzyCompare((*curve)[index] + 1.0, value + 1.0)) return;
-    (*curve)[index] = value;
+    const QString channelName = channel == 0 ? "master" : channel == 1 ? "red" : channel == 2 ? "green" : "blue";
+    CommandRegistry::execute(*state,{{"command","curve.set"},{"channel",channelName},{"point",point},{"value",value}});
     persistAndApply(QStringLiteral("curve_point"), {{"channel", channel}, {"point", point}, {"value", value}});
 }
 
 void PhotoController::resetCurve(int channel) {
     auto *state = mutableCurrentState();
     if (!state || channel < 0 || channel > 3) return;
-    const AdjustmentState::CurveArray identity{0.0, 0.25, 0.5, 0.75, 1.0};
-    if (channel == 0) state->masterCurve = identity;
-    else if (channel == 1) state->redCurve = identity;
-    else if (channel == 2) state->greenCurve = identity;
-    else state->blueCurve = identity;
+    const QString channelName = channel == 0 ? "master" : channel == 1 ? "red" : channel == 2 ? "green" : "blue";
+    CommandRegistry::execute(*state,{{"command","curve.reset"},{"channel",channelName}});
     persistAndApply(QStringLiteral("curve_reset"), {{"channel", channel}});
 }
 
@@ -669,7 +677,7 @@ void PhotoController::setFlag(const QString &flag) {
 
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
-        *state = {};
+        CommandRegistry::execute(*state,{{"command","develop.reset"}});
         persistAndApply(QStringLiteral("reset_adjustments"));
         setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
     }
@@ -677,7 +685,7 @@ void PhotoController::resetAdjustments() {
 
 void PhotoController::copyAdjustments() {
     if (!hasImage()) return;
-    m_clipboard = currentState();
+    m_clipboard = m_photos[m_currentIndex].state;
     m_hasClipboard = true;
     ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()}});
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
@@ -692,7 +700,7 @@ void PhotoController::pasteAdjustments() {
 
 void PhotoController::syncAdjustmentsToAll() {
     if (!hasImage()) return;
-    const auto state = currentState();
+    const auto state = m_photos[m_currentIndex].state;
     for (auto &photo : m_photos) {
         photo.history.initialize(photo.state);
         photo.history.finish();
@@ -900,6 +908,9 @@ void PhotoController::initializeJobs() {
         // Retain a recoverable in-memory copy after an asynchronous SQL failure.
         for (const auto &photo : m_photos) {
             m_dirtyEdits.insert(photo.storageKey(), photo.state);
+            auto history = photo.history; history.initialize(photo.state);
+            m_dirtyHistories.insert(photo.storageKey(),history);
+            m_dirtyTags.insert(photo.storageKey(),photo.tags);
             m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
         }
         setStatus(uiText(QStringLiteral("保存失败（编辑仍保留在内存）：%1").arg(message), QStringLiteral("Save failed (edits retained in memory): %1").arg(message)));
@@ -1021,7 +1032,7 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
 
 void PhotoController::markDirty() {
     if (!m_project.isOpen() || !hasImage()) return;
-    m_dirtyEdits.insert(m_photos[m_currentIndex].storageKey(), currentState());
+    m_dirtyEdits.insert(m_photos[m_currentIndex].storageKey(), m_photos[m_currentIndex].state);
     m_dirtyHistories.insert(m_photos[m_currentIndex].storageKey(), m_photos[m_currentIndex].history);
     m_saveTimer.start();
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();

@@ -37,7 +37,7 @@ signals:
     void saved(int count);
     void writeFailed(const QString &message);
 private:
-    struct WorkerState { QString connectionName; QString error; QMutex mutex; };
+    struct WorkerState { QString connectionName; QString error; QHash<QString,QString> failedWrites; QMutex mutex; };
     std::shared_ptr<WorkerState> m_state;
     QThread m_thread;
     QObject *m_worker = nullptr;

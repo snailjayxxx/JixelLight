@@ -902,6 +902,103 @@ private slots:
         QVERIFY(backup.open(backupFolder,&original)); QCOMPARE(original.size(),1); QCOMPARE(original[0].adjustments.exposure,0.75);
     }
 
+    void realSonyAsShotHistoryPersistsIntentAfterMetadataResolution() {
+        const auto folder = qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if (folder.isEmpty()) QSKIP("Sony real fixtures are not configured");
+        QString source;
+        for (const auto &name : QDir(folder).entryList({"*.arw","*.ARW"},QDir::Files)) {
+            const auto path = QDir(folder).filePath(name);
+            if (MetadataReader::read(path).value("sonyLook").toMap().value("autoEligible").toBool()) { source = path; break; }
+        }
+        QVERIFY2(!source.isEmpty(),"No verified Sony As Shot fixture found");
+        QTemporaryDir dir; QVERIFY(dir.isValid()); PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.currentMetadata().value("sonyLook").toMap().value("autoEligible").toBool(),60000);
+        controller.setViewport(320,240,1,0,.5,.5);
+        controller.setExposure(.5); controller.finishInteraction();
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"AsShot")); QVERIFY(controller.flushEdits());
+        controller.setExposure(1); controller.finishInteraction(); QVERIFY(controller.flushEdits());
+        ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY2(db.open(controller.projectPath(),&photos),qPrintable(db.lastError()));
+        QCOMPARE(photos.size(),1); QCOMPARE(photos[0].adjustments.look.mode,QStringLiteral("as-shot"));
+        QVERIFY(photos[0].adjustments.look.code.isEmpty()); QVERIFY(photos[0].adjustments.look.parameters.isEmpty());
+        QVERIFY(photos[0].history.canUndo()); QCOMPARE(photos[0].history.undo().exposure,.5);
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        reopened.undo(); QCOMPARE(reopened.exposure(),.5); QVERIFY(reopened.canRedo()); QVERIFY(reopened.flushEdits());
+    }
+
+    void failedAnnotationWritesRetainHistoryAndTagsForRetry() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path = dir.filePath("source.png"); QVERIFY(image.save(path)); PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path))); controller.setExposure(.5); controller.finishInteraction();
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Retry")); QVERIFY(controller.flushEdits());
+        const auto folder = controller.projectPath(); const QString connection = "controller-retry-fixture";
+        {
+            auto sql = QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("Project.db")); QVERIFY(sql.open());
+            QSqlQuery query(sql); QVERIFY(query.exec("DROP TABLE catalog_tags")); sql.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QVERIFY(QDir(QDir(folder).filePath("backups")).removeRecursively());
+        QFile blocked(QDir(folder).filePath("backups")); QVERIFY(blocked.open(QIODevice::WriteOnly)); blocked.close();
+        QVERIFY(controller.setSelectionKeywords("retained"));
+        // A later successful curation batch must not mask a failed tags batch.
+        QVERIFY(controller.setSelectionRating(4)); QVERIFY(!controller.flushEdits());
+        QCoreApplication::processEvents(); // Deliver writer failure and refill all dirty snapshots.
+        QVERIFY(blocked.remove()); QVERIFY(controller.flushEdits());
+        ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY2(db.open(folder,&photos),qPrintable(db.lastError()));
+        QCOMPARE(photos[0].tags.keywords,QStringList{"retained"}); QVERIFY(photos[0].history.canUndo());
+        QCOMPARE(photos[0].history.undo().exposure,0.0);
+    }
+
+    void olderResolvedAsShotCatalogHistoryRecoversOnlyMetadataDifferences() {
+        AdjustmentState intent; intent.look.mode = "as-shot"; intent.exposure = .5;
+        EditHistory history; history.initialize(intent);
+        auto rendered = intent; rendered.look.code = "ST"; rendered.look.parameters.insert("clarity",1);
+        EditHistory restored; QVERIFY(restored.restore(history.toJson(),rendered));
+        rendered.exposure = 1; QVERIFY(!restored.restore(history.toJson(),rendered));
+        rendered.exposure = .5; rendered.look.strength = .5; QVERIFY(!restored.restore(history.toJson(),rendered));
+        rendered.look.strength = 1;
+        QTemporaryDir dir; QVERIFY(dir.isValid()); ProjectDatabase db; QVERIFY(db.create(dir.path(),"AsShotDraft"));
+        QVERIFY(db.updateBatch({{"source.ARW",rendered}},{{"source.ARW",history}})); QVERIFY(db.flush());
+        QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(db.projectPath(),&photos));
+        QVERIFY(photos[0].adjustments.look.code.isEmpty()); QVERIFY(photos[0].adjustments.look.parameters.isEmpty());
+        QCOMPARE(photos[0].adjustments.exposure,.5);
+    }
+
+    void sharedGeometryHslCurveCommandsMatchGuiAndRejectPartialMutations() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path=dir.filePath("source.png"); QVERIFY(image.save(path)); PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path))); AdjustmentState state;
+        const QVector<QJsonObject> commands{
+            {{"command","develop.set"},{"parameter","exposure"},{"value",.5}},
+            {{"command","geometry.crop"},{"x",0.0},{"y",.25},{"width",.5},{"height",.5}},
+            {{"command","geometry.rotate"},{"quarterTurns",-1}},
+            {{"command","geometry.flip"},{"axis","vertical"}},
+            {{"command","hsl.set"},{"band",2},{"component","saturation"},{"value",25}},
+            {{"command","curve.set"},{"channel","red"},{"point",2},{"value",.6}}
+        };
+        for (const auto &command : commands) QVERIFY(CommandRegistry::execute(state,command));
+        controller.setExposure(.5); controller.finishInteraction(); controller.setCrop(0,.25,.5,.5);
+        controller.rotatePhoto(-1); controller.flipPhoto(false); controller.setColorMix(2,1,25); controller.setCurvePoint(1,2,.6);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Commands")); QVERIFY(controller.flushEdits());
+        ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(controller.projectPath(),&photos));
+        QCOMPARE(photos[0].adjustments.toJson(),state.toJson());
+        const auto before=state.toJson();
+        const QVector<QJsonObject> invalid{
+            {{"command","geometry.crop"},{"x",.8},{"y",0.0},{"width",.5},{"height",1.0}},
+            {{"command","geometry.rotate"},{"quarterTurns",.5}},
+            {{"command","geometry.flip"},{"axis","diagonal"}},
+            {{"command","hsl.set"},{"band",8},{"component","hue"},{"value",1}},
+            {{"command","curve.set"},{"channel","red"},{"point",2},{"value","invalid"}},
+            {{"command","develop.reset"},{"unexpected",true}}
+        };
+        for (const auto &command : invalid) { QVERIFY(!CommandRegistry::execute(state,command)); QCOMPARE(state.toJson(),before); }
+        QVERIFY(controller.executeEditCommand({{"command","geometry.reset"}})); QCOMPARE(controller.geometry()["quarterTurns"].toInt(),0);
+        controller.undo(); QCOMPARE(controller.geometry()["quarterTurns"].toInt(),3);
+        QVERIFY(!controller.executeEditCommand({{"command","curve.set"},{"channel","red"},{"point",5},{"value",.5}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","curve.reset"},{"channel","red"}})); QCOMPARE(state.redCurve[2],.5);
+        QVERIFY(CommandRegistry::execute(state,{{"command","develop.reset"}})); QCOMPARE(state.toJson(),AdjustmentState{}.toJson());
+    }
+
     void zipWriterCreatesZipSignature() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

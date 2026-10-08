@@ -12,6 +12,17 @@
 #include <algorithm>
 
 namespace {
+template<class State, class Values>
+void recordWriteResult(const std::shared_ptr<State> &state, const QString &group, const Values &values, bool ok, const QString &error) {
+    QMutexLocker lock(&state->mutex);
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        const auto key = group + ":" + it.key();
+        if (ok) state->failedWrites.remove(key);
+        else state->failedWrites.insert(key,error.isEmpty() ? QStringLiteral("Project write failed") : error);
+    }
+    auto errors = state->failedWrites.values(); errors.removeDuplicates();
+    state->error = errors.join('\n');
+}
 bool validCopyKey(const QString &key) {
     return key.startsWith("jixel-copy:") && !QUuid::fromString(key.mid(11)).isNull();
 }
@@ -100,7 +111,7 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
                 QSqlDatabase::removeDatabase(state->connectionName);
             }
             state->connectionName = candidate;
-            QMutexLocker lock(&state->mutex); state->error.clear();
+            QMutexLocker lock(&state->mutex); state->error.clear(); state->failedWrites.clear();
         } else QSqlDatabase::removeDatabase(candidate);
     }, Qt::BlockingQueuedConnection);
     if (ok) { m_open = true; m_projectPath = folder; m_projectName = safe; }
@@ -215,7 +226,7 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     const int rating = hasCuration ? std::clamp(query.value(2).toInt(), 0, 5) : 0;
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
-                    const auto adjustments = AdjustmentState::fromJson(doc.object());
+                    auto adjustments = AdjustmentState::fromJson(doc.object());
                     EditHistory history;
                     if (doc.object().contains("_history") &&
                         (!doc.object().value("_history").isObject() ||
@@ -225,6 +236,9 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                         break;
                     }
                     history.initialize(adjustments);
+                    // Restore the exact user snapshot rather than stale resolved
+                    // As Shot metadata from earlier fusion draft saves.
+                    adjustments = history.entries()[history.cursor()].state;
                     const bool isCopy = validCopyKey(path);
                     if (isCopy && !copies.contains(path)) {
                         ready = false; error = QStringLiteral("Virtual copy has no source mapping"); break;
@@ -312,7 +326,7 @@ bool ProjectDatabase::updateCurationBatch(const QHash<QString, PhotoCuration> &c
             if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
             if (!ok) db.rollback();
         }
-        { QMutexLocker lock(&state->mutex); state->error = error; }
+        recordWriteResult(state,"curation",changes,ok,error);
         if (ok) emit saved(changes.size());
         else emit writeFailed(error);
     }, Qt::QueuedConnection);
@@ -382,7 +396,7 @@ bool ProjectDatabase::updateTagsBatch(const QHash<QString, CatalogTags> &changes
         if (!ok && error.isEmpty()) error = query.lastError().text().isEmpty() ? db.lastError().text() : query.lastError().text();
         if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
         if (!ok) db.rollback();
-        { QMutexLocker lock(&state->mutex); state->error = error; }
+        recordWriteResult(state,"tags",changes,ok,error);
         if (ok) emit saved(changes.size()); else emit writeFailed(error);
     }, Qt::QueuedConnection);
 }
@@ -400,17 +414,21 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states,
             QSqlQuery query(db);
             ok = query.prepare("INSERT INTO photos(path,adjustment_json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET adjustment_json=excluded.adjustment_json");
             for (auto it = states.constBegin(); ok && it != states.constEnd(); ++it) {
+                if (validCopyKey(it.key())) {
+                    QSqlQuery source(db); source.prepare("SELECT key FROM virtual_sources WHERE key=?"); source.addBindValue(it.key());
+                    if (!source.exec() || !source.next()) { ok = false; error = QStringLiteral("Virtual copy has no source mapping"); break; }
+                }
                 query.bindValue(0,it.key());
                 auto json = it.value().toJson();
                 if (histories.contains(it.key())) json.insert("_history", histories.value(it.key()).toJson());
                 query.bindValue(1,QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
                 ok = query.exec();
             }
-            if (!ok) error = query.lastError().text();
+            if (!ok && error.isEmpty()) error = query.lastError().text();
             if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
             if (!ok) db.rollback();
         }
-        { QMutexLocker lock(&state->mutex); state->error = error; }
+        recordWriteResult(state,"adjustments",states,ok,error);
         if (ok) emit saved(states.size());
         else emit writeFailed(error);
     }, Qt::QueuedConnection);
