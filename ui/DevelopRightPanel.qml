@@ -1,15 +1,31 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtCore
 
-// The existing JixelLight camera-look, scopes and editing controls remain
-// wired to the same C++ PhotoController. This component is a layout migration,
-// NOT a replacement of the RAW / GPU / Sony processing engine.
+// Lightroom-inspired collapsible editing panels. All commands still route
+// through the existing JixelLight controller and CPU/GPU processing chain.
 Rectangle {
     id: root
     required property var controller
+    property bool sonyExpanded: false
+    property bool basicExpanded: true
+    property bool colorExpanded: true
+    property bool mixerExpanded: false
+    property bool curveExpanded: false
+    property bool exifExpanded: false
     color: "#15191f"
     border.color: "#292f37"
+
+    Settings {
+        category: "DevelopPanelSections"
+        property alias sonyExpanded: root.sonyExpanded
+        property alias basicExpanded: root.basicExpanded
+        property alias colorExpanded: root.colorExpanded
+        property alias mixerExpanded: root.mixerExpanded
+        property alias curveExpanded: root.curveExpanded
+        property alias exifExpanded: root.exifExpanded
+    }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
         const value = controller.currentMetadata[key]
@@ -22,18 +38,18 @@ Rectangle {
         if (model === "—") return make
         return make + " " + model
     }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-
-        // Pinned histogram: remains visible while the develop controls scroll.
+        // Sticky Scopes: the existing 1024-bin GPU histogram is kept pinned.
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 6
             Layout.leftMargin: 10
             Layout.rightMargin: 10
             Layout.topMargin: 8
-            Layout.bottomMargin: 10
+            Layout.bottomMargin: 8
                 Label { text: root.t("当前编辑图像 · 专业示波器", "CURRENT EDIT · SCOPES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11; Layout.topMargin: 10 }
                 RowLayout {
                     Layout.fillWidth: true
@@ -47,7 +63,7 @@ Rectangle {
                     CheckBox { text: root.t("全分辨率", "Full resolution"); checked: root.controller.exactScopes; onToggled: root.controller.exactScopes=checked }
                 }
                 HistogramView {
-                    Layout.fillWidth: true; Layout.preferredHeight: 116
+                    Layout.fillWidth: true; Layout.preferredHeight: 115
                     redData: root.controller.redHistogram; greenData: root.controller.greenHistogram; blueData: root.controller.blueHistogram
                     lumaData: root.controller.lumaHistogram; showLuma: lumaButton.checked
                 }
@@ -59,9 +75,7 @@ Rectangle {
                 }
 
         }
-
-        Rectangle { Layout.fillWidth: true; height: 1; color: "#2f353e" }
-
+        Rectangle { Layout.fillWidth: true; height: 1; color: "#303840" }
         ScrollView {
             id: toolScroll
             Layout.fillWidth: true
@@ -71,22 +85,34 @@ Rectangle {
             ColumnLayout {
                 x: 10
                 width: Math.max(280, toolScroll.availableWidth - 20)
-                spacing: 10
-                Label {
-                    text: root.t("相机 / 创意外观", "CAMERA / CREATIVE LOOK")
-                    color: "#abb9c8"
+                spacing: 6
+
+                ToolButton {
+                    Layout.fillWidth: true
+                    text: (root.sonyExpanded ? "▾ " : "▸ ") + root.t("相机 / Sony 创意外观", "CAMERA / SONY CREATIVE LOOK")
+                    onClicked: root.sonyExpanded = !root.sonyExpanded
                     font.bold: true
-                    font.pixelSize: 11
-                    Layout.topMargin: 10
                 }
-                SonyLookPanel { controller: root.controller; Layout.fillWidth: true }
+                SonyLookPanel {
+                    controller: root.controller
+                    Layout.fillWidth: true
+                    visible: root.sonyExpanded
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: root.t("RAW / 基础调整", "RAW / BASIC"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                    ToolButton {
+                        text: (root.basicExpanded ? "▾ " : "▸ ") + root.t("基础调整", "LIGHT")
+                        onClicked: root.basicExpanded = !root.basicExpanded
+                        font.bold: true
+                    }
                     Item { Layout.fillWidth: true }
                     Button { text: root.t("全部重置", "Reset All"); enabled: root.controller.hasImage; onClicked: root.controller.resetAdjustments() }
                 }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: root.basicExpanded
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("曝光", "Exposure"); from: -5; to: 5; decimals: 2; value: root.controller.exposure; onEdited: root.controller.exposure = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色温", "Temperature"); value: root.controller.temperature; onEdited: root.controller.temperature = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色调", "Tint"); value: root.controller.tint; onEdited: root.controller.tint = newValue }
@@ -96,23 +122,40 @@ Rectangle {
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("白色色阶", "Whites"); value: root.controller.whites; onEdited: root.controller.whites = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("黑色色阶", "Blacks"); value: root.controller.blacks; onEdited: root.controller.blacks = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("高光恢复", "Highlight Recovery"); from: 0; to: 100; value: root.controller.highlightRecovery; onEdited: root.controller.highlightRecovery = newValue }
-
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
-                Label { text: root.t("颜色 / RAW 工作空间", "COLOR / RAW WORKING SPACE"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                ToolButton {
+                    Layout.fillWidth: true
+                    text: (root.colorExpanded ? "▾ " : "▸ ") + root.t("颜色 / RAW 工作空间", "COLOR")
+                    onClicked: root.colorExpanded = !root.colorExpanded
+                    font.bold: true
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: root.colorExpanded
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色相", "Hue"); from: -180; to: 180; value: root.controller.hue; onEdited: root.controller.hue = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("饱和度", "Saturation"); value: root.controller.saturation; onEdited: root.controller.saturation = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("自然饱和度", "Vibrance"); value: root.controller.vibrance; onEdited: root.controller.vibrance = newValue }
-
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: root.t("HSL 颜色混合器", "HSL COLOR MIXER"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                    ToolButton {
+                        text: (root.mixerExpanded ? "▾ " : "▸ ") + root.t("HSL 颜色混合器", "COLOR MIXER")
+                        onClicked: root.mixerExpanded = !root.mixerExpanded
+                        font.bold: true
+                    }
                     Item { Layout.fillWidth: true }
                     ComboBox {
                         id: mixerMode; Layout.preferredWidth: 105
                         model: [root.t("色相", "Hue"), root.t("饱和度", "Sat"), root.t("明度", "Luma")]
                     }
                 }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: root.mixerExpanded
                 Repeater {
                     model: 8
                     delegate: AdjustmentSlider {
@@ -123,24 +166,41 @@ Rectangle {
                         onEdited: root.controller.setColorMix(index, mixerMode.currentIndex, newValue)
                     }
                 }
-
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: root.t("曲线", "CURVES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                    ToolButton {
+                        text: (root.curveExpanded ? "▾ " : "▸ ") + root.t("曲线", "TONE CURVE")
+                        onClicked: root.curveExpanded = !root.curveExpanded
+                        font.bold: true
+                    }
                     Item { Layout.fillWidth: true }
                     ComboBox { id: curveChannel; Layout.preferredWidth: 110; model: [root.t("主曲线", "Master"), "Red", "Green", "Blue"] }
                     Button { text: root.t("重置", "Reset"); onClicked: root.controller.resetCurve(curveChannel.currentIndex) }
                 }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: root.curveExpanded
                 CurveEditor {
                     Layout.fillWidth: true; Layout.preferredHeight: 160
                     channel: curveChannel.currentIndex
                     values: curveChannel.currentIndex === 0 ? root.controller.masterCurve : curveChannel.currentIndex === 1 ? root.controller.redCurve : curveChannel.currentIndex === 2 ? root.controller.greenCurve : root.controller.blueCurve
                     onPointEdited: function(point, value) { root.controller.setCurvePoint(channel, point, value) }
                 }
-
+                }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
-                Label { text: root.t("照片信息 / EXIF", "PHOTO INFO / EXIF"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11 }
+                ToolButton {
+                    Layout.fillWidth: true
+                    text: (root.exifExpanded ? "▾ " : "▸ ") + root.t("照片信息 / EXIF", "PHOTO INFO / EXIF")
+                    onClicked: root.exifExpanded = !root.exifExpanded
+                    font.bold: true
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: root.exifExpanded
                 GridLayout {
                     Layout.fillWidth: true; columns: 2; columnSpacing: 10; rowSpacing: 5
                     Label { text: root.t("相机", "Camera"); color: "#748394"; font.pixelSize: 10 }
@@ -171,6 +231,7 @@ Rectangle {
                     Layout.fillWidth: true
                     text: root.t("处理顺序：RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → ICC sRGB Preview", "Graph: RAW → Camera WB/Matrix → Linear ProPhoto → HSL/Color → Curves → ICC sRGB Preview")
                     wrapMode: Text.WordWrap; color: "#627180"; font.pixelSize: 10; Layout.bottomMargin: 18
+                }
                 }
             }
         }
