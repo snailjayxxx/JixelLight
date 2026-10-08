@@ -142,6 +142,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Button { text: root.t("应用", "Apply"); Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: root.controller.hasImage && presetChoice.currentIndex >= 0; onClicked: root.controller.applyNamedPreset(presetChoice.currentText) }
                 Button { text: root.t("删除", "Delete"); Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: presetChoice.currentIndex >= 0; onClicked: root.controller.removeNamedPreset(presetChoice.currentText) }
+                Button { id: presetActionsButton; objectName: "namedPresetActions"; text: root.t("管理", "Manage"); Layout.fillWidth: true; Layout.minimumWidth: 0; onClicked: presetMenu.open() }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -175,5 +176,49 @@ Rectangle {
                 elide: Text.ElideRight
             }
         }
+    }
+    Menu {
+        id: presetMenu
+        objectName: "namedPresetMenu"
+        popupType: Popup.Item
+        parent: presetActionsButton
+        y: presetActionsButton.height
+        MenuItem { text: root.t("重命名…", "Rename…"); enabled: presetChoice.currentIndex >= 0; onTriggered: { renamePresetDialog.targetName = presetChoice.currentText; renamePresetDialog.open() } }
+        MenuItem { text: root.t("用当前调整更新…", "Update from current edits…"); enabled: root.controller.hasImage && presetChoice.currentIndex >= 0; onTriggered: { replacePresetDialog.targetName = presetChoice.currentText; replacePresetDialog.photoId = root.controller.library[root.controller.currentIndex].id; replacePresetDialog.open() } }
+        MenuSeparator {}
+        MenuItem { text: root.t("导出预设…", "Export preset…"); enabled: presetChoice.currentIndex >= 0; onTriggered: root.controller.openPresetExportDialog(presetChoice.currentText) }
+        MenuItem { text: root.t("导入预设…", "Import preset…"); onTriggered: root.controller.openPresetImportDialog(presetName.text) }
+    }
+    Dialog {
+        id: renamePresetDialog
+        anchors.centerIn: Overlay.overlay
+        width: 360; modal: true
+        title: root.t("重命名预设", "Rename preset")
+        property string targetName: ""
+        contentItem: TextField { id: replacementPresetName; maximumLength: 80; placeholderText: root.t("新的预设名称", "New preset name") }
+        onOpened: { replacementPresetName.text = renamePresetDialog.targetName; replacementPresetName.selectAll(); replacementPresetName.forceActiveFocus() }
+        footer: DialogButtonBox {
+            Button { text: root.t("重命名", "Rename"); enabled: replacementPresetName.text.trim().length > 0; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            Button { text: root.t("取消", "Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onAccepted: renamePresetDialog.accept()
+            onRejected: renamePresetDialog.reject()
+        }
+        onAccepted: { if (root.controller.renameNamedPreset(renamePresetDialog.targetName,replacementPresetName.text)) presetChoice.currentIndex = Array.from(root.controller.presetNames).indexOf(replacementPresetName.text.trim()) }
+    }
+    Dialog {
+        id: replacePresetDialog
+        anchors.centerIn: Overlay.overlay
+        width: 400; modal: true
+        title: root.t("更新现有预设", "Update existing preset")
+        property string targetName: ""
+        property string photoId: ""
+        contentItem: Label { text: root.t("将当前显影调整和 Sony 外观保存到预设：", "Save current Develop edits and Sony Look into preset: ") + replacePresetDialog.targetName + "\n\n" + root.t("此操作会替换该预设的原有设置。", "This replaces the preset's saved settings."); wrapMode: Text.WordWrap }
+        footer: DialogButtonBox {
+            Button { text: root.t("更新预设", "Update preset"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            Button { text: root.t("取消", "Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onAccepted: replacePresetDialog.accept()
+            onRejected: replacePresetDialog.reject()
+        }
+        onAccepted: { if (root.controller.hasImage && root.controller.library[root.controller.currentIndex].id === replacePresetDialog.photoId) root.controller.replaceNamedPreset(replacePresetDialog.targetName) }
     }
 }

@@ -231,6 +231,6 @@ Rectangle {
             onAccepted: removeCopyDialog.accept()
             onRejected: removeCopyDialog.reject()
         }
-        onAccepted: { if (root.currentPhoto.virtual && root.currentPhoto.id === targetId) root.controller.removeCurrentVirtualCopy() }
+        onAccepted: { if (root.currentPhoto.virtual && root.currentPhoto.id === removeCopyDialog.targetId) root.controller.removeCurrentVirtualCopy() }
     }
 }

@@ -296,6 +296,46 @@ bool PhotoController::removeNamedPreset(const QString &name) {
     }
     emit presetsChanged(); return true;
 }
+bool PhotoController::renameNamedPreset(const QString &name, const QString &replacement) {
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.rename(name,replacement.trimmed(),&error)) {
+        setStatus(uiText("预设重命名失败：", "Preset rename failed: ")+error); return false;
+    }
+    emit presetsChanged(); return true;
+}
+bool PhotoController::replaceNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.replace(name,m_photos[m_currentIndex].state,&error)) {
+        setStatus(uiText("预设更新失败：", "Preset update failed: ")+error); return false;
+    }
+    emit presetsChanged(); setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
+}
+bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destination) {
+    if (!destination.isLocalFile() || isProtectedPhoto(destination.toLocalFile())) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.exportFile(name,destination.toLocalFile(),&error)) {
+        setStatus(uiText("预设导出失败：", "Preset export failed: ")+error); return false;
+    }
+    setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
+}
+bool PhotoController::importNamedPreset(const QUrl &source, const QString &replacementName) {
+    if (!source.isLocalFile()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.importFile(source.toLocalFile(),replacementName.trimmed(),&error)) {
+        setStatus(uiText("预设导入失败：", "Preset import failed: ")+error); return false;
+    }
+    emit presetsChanged(); setStatus(uiText("预设已导入", "Preset imported")); return true;
+}
+void PhotoController::openPresetExportDialog(const QString &name) {
+    const auto path=QFileDialog::getSaveFileName(nullptr,uiText("导出 JixelLight 预设", "Export JixelLight preset"),
+        QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).filePath("preset.jixelpreset.json"),"JixelLight preset (*.jixelpreset.json)");
+    if (!path.isEmpty()) exportNamedPreset(name,QUrl::fromLocalFile(path.endsWith(".jixelpreset.json",Qt::CaseInsensitive) ? path : path+".jixelpreset.json"));
+}
+void PhotoController::openPresetImportDialog(const QString &replacementName) {
+    const auto path=QFileDialog::getOpenFileName(nullptr,uiText("导入 JixelLight 预设", "Import JixelLight preset"),{},"JixelLight preset (*.jixelpreset.json)");
+    if (!path.isEmpty()) importNamedPreset(QUrl::fromLocalFile(path),replacementName);
+}
 
 bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
 bool PhotoController::canRedo() const { return hasImage() && m_photos[m_currentIndex].history.canRedo(); }

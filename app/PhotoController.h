@@ -234,6 +234,12 @@ public:
     Q_INVOKABLE bool saveNamedPreset(const QString &name);
     Q_INVOKABLE bool applyNamedPreset(const QString &name);
     Q_INVOKABLE bool removeNamedPreset(const QString &name);
+    Q_INVOKABLE bool renameNamedPreset(const QString &name, const QString &replacement);
+    Q_INVOKABLE bool replaceNamedPreset(const QString &name);
+    Q_INVOKABLE bool exportNamedPreset(const QString &name, const QUrl &destination);
+    Q_INVOKABLE bool importNamedPreset(const QUrl &source, const QString &replacementName = {});
+    Q_INVOKABLE void openPresetExportDialog(const QString &name);
+    Q_INVOKABLE void openPresetImportDialog(const QString &replacementName = {});
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();

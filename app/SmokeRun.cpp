@@ -12,7 +12,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -127,8 +127,16 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             if(auto *canvas=window->findChild<QQuickItem *>(QStringLiteral("photoCanvas"))) {
                 canvas->setProperty("zoom", 1.0);
                 state->restoredDevelop=true;
-                state->phase=22;
+                const auto actions=window->findChild<QQuickItem *>(QStringLiteral("namedPresetActions"));
+                if (actions) QMetaObject::invokeMethod(actions,"clicked",Qt::DirectConnection);
+                state->phase=211;
             }
+        } else if(state->phase==211) {
+            const auto menu=window->findChild<QObject *>(QStringLiteral("namedPresetMenu"));
+            state->presetActionsPresent=menu && menu->property("visible").toBool();
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".presets.png");
+            if (menu) QMetaObject::invokeMethod(menu,"close",Qt::DirectConnection);
+            state->phase=22;
         } else if(state->phase==22 && ready) {
             const double originalExposure = controller->exposure();
             controller->setExposure(1.2); controller->finishInteraction();
@@ -166,12 +174,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
+        report["ui_preset_actions_found"]=state->presetActionsPresent;
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
         report["ui_catalog_passed"]=state->catalogPassed;

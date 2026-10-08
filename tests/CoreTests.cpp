@@ -184,7 +184,7 @@ private slots:
         AdjustmentState state; state.exposure = 1.25; state.look.mode = "as-shot";
         state.geometry.quarterTurns = 1;
         QVERIFY(presets.save("Portrait", state, &error));
-        QVERIFY(!presets.save("Portrait", state, &error)); // explicit delete/new name required
+        QVERIFY(!presets.save("Portrait", state, &error)); // replacement uses a separate explicit operation
         NamedPresets reopened(file); QVERIFY(reopened.load(&error));
         AdjustmentState loaded; QVERIFY(reopened.get("Portrait", &loaded));
         QCOMPARE(loaded.exposure, 1.25); QCOMPARE(loaded.look.mode, QStringLiteral("as-shot"));
@@ -196,6 +196,47 @@ private slots:
         QCOMPARE(corrupt.write(unknown), unknown.size()); corrupt.close();
         QVERIFY(!reopened.load(&error)); QVERIFY(!reopened.save("New", state, &error));
         QVERIFY(corrupt.open(QIODevice::ReadOnly)); QCOMPARE(corrupt.readAll(), unknown);
+    }
+
+    void namedPresetManagementAndPortableFilesPreserveIntent() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QString error; NamedPresets presets(dir.filePath("presets.json")); QVERIFY(presets.load(&error));
+        AdjustmentState state; state.exposure=.5; state.look.mode="as-shot"; state.geometry.quarterTurns=1;
+        QVERIFY(presets.save("First",state,&error)); QVERIFY(presets.save("Other",state,&error));
+        QVERIFY(!presets.rename("First","Other",&error)); QVERIFY(presets.rename("First","Renamed",&error));
+        state.exposure=1.5; QVERIFY(presets.replace("Renamed",state,&error)); QVERIFY(!presets.replace("Missing",state,&error));
+        AdjustmentState loaded; QVERIFY(presets.get("Renamed",&loaded)); QCOMPARE(loaded.exposure,1.5); QCOMPARE(loaded.geometry.quarterTurns,0);
+        const auto path=dir.filePath("portable.jixelpreset.json"); QVERIFY(presets.exportFile("Renamed",path,&error));
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes=file.readAll(); file.close();
+        QVERIFY(!presets.exportFile("Renamed",path,&error)); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),bytes); file.close();
+        NamedPresets imported(dir.filePath("imported.json")); QVERIFY(imported.load(&error)); QVERIFY(imported.importFile(path,{},&error));
+        QVERIFY(imported.get("Renamed",&loaded)); QCOMPARE(loaded.exposure,1.5); QCOMPARE(loaded.look.mode,QStringLiteral("as-shot"));
+        QVERIFY(loaded.look.code.isEmpty()); QVERIFY(!imported.importFile(path,{},&error)); QVERIFY(imported.importFile(path,"Imported copy",&error));
+        NamedPresets reopened(dir.filePath("imported.json")); QVERIFY(reopened.load(&error)); QCOMPARE(reopened.names().size(),2);
+        auto invalid=QJsonDocument::fromJson(bytes).object(); invalid.insert("engine","future-engine");
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write(QJsonDocument(invalid).toJson()); file.close();
+        QVERIFY(!reopened.importFile(path,"Invalid",&error)); QCOMPARE(reopened.names().size(),2);
+        QFile protectedFile(dir.filePath("imported.json")); QVERIFY(protectedFile.open(QIODevice::ReadOnly)); const auto before=protectedFile.readAll(); protectedFile.close();
+        state.look.error="invalid"; QVERIFY(!reopened.replace("Renamed",state,&error));
+        QVERIFY(protectedFile.open(QIODevice::ReadOnly)); QCOMPARE(protectedFile.readAll(),before);
+    }
+
+    void controllerPresetManageImportExportLeavesDevelopAndOriginalUntouched() {
+        const auto oldName=QCoreApplication::applicationName(); QCoreApplication::setApplicationName("JixelLightPresetManage-"+QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const auto data=QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const auto restore=qScopeGuard([&] { QDir(data).removeRecursively(); QCoreApplication::setApplicationName(oldName); });
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path=dir.filePath("source.png"); QVERIFY(image.save(path)); QFile source(path); QVERIFY(source.open(QIODevice::ReadOnly)); const auto bytes=source.readAll(); source.close();
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(path))); controller.setExposure(.5); controller.finishInteraction();
+        QVERIFY(controller.saveNamedPreset("First")); QVERIFY(controller.renameNamedPreset("First","Renamed"));
+        controller.setExposure(1.5); controller.finishInteraction(); controller.rotatePhoto(1); controller.setRating(4);
+        const auto steps=controller.editHistory().size(); QVERIFY(controller.replaceNamedPreset("Renamed"));
+        QCOMPARE(controller.editHistory().size(),steps); QCOMPARE(controller.exposure(),1.5); QCOMPARE(controller.currentRating(),4);
+        const auto exported=QUrl::fromLocalFile(dir.filePath("preset.jixelpreset.json")); QVERIFY(controller.exportNamedPreset("Renamed",exported));
+        QVERIFY(!controller.exportNamedPreset("Renamed",QUrl::fromLocalFile(path))); QVERIFY(!controller.exportNamedPreset("Renamed",exported));
+        QVERIFY(controller.importNamedPreset(exported,"Imported")); QCOMPARE(controller.editHistory().size(),steps);
+        controller.setExposure(-.5); controller.finishInteraction(); QVERIFY(controller.applyNamedPreset("Imported"));
+        QCOMPARE(controller.exposure(),1.5); QCOMPARE(controller.geometry()["quarterTurns"].toInt(),1); QCOMPARE(controller.currentRating(),4);
+        controller.undo(); QCOMPARE(controller.exposure(),-.5); QVERIFY(source.open(QIODevice::ReadOnly)); QCOMPARE(source.readAll(),bytes);
     }
 
     void controllerNamedPresetPreservesGeometryCurationAndUndo() {
