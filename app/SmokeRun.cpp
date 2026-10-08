@@ -22,6 +22,15 @@ QQuickItem *visualChild(QQuickItem *item, const QString &name) {
     for (auto *child : item->childItems()) if (auto *found=visualChild(child,name)) return found;
     return nullptr;
 }
+bool clickItem(QQuickWindow *window,QQuickItem *item) {
+    if (!item || !item->isVisible() || !item->isEnabled()) return false;
+    const auto point=item->mapToScene(QPointF(item->width()/2,item->height()/2));
+    const auto global=window->mapToGlobal(point.toPoint());
+    QMouseEvent press(QEvent::MouseButtonPress,point,point,global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&press);
+    QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&release); return true;
+}
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
@@ -30,6 +39,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto cropTrace=std::make_shared<QJsonObject>();
     auto scopePlots=std::make_shared<QJsonObject>();
     auto copyTrace=std::make_shared<QJsonObject>();
+    auto transferTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -285,6 +295,39 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             QFile source(importFixture->filePath("copy-test.png")),destination(importFixture->filePath("copies/copy-test.png"));
             copyTrace->insert("content_equal",source.open(QIODevice::ReadOnly) && destination.open(QIODevice::ReadOnly) && source.readAll()==destination.readAll());
             copyTrace->insert("catalog_added",controller->library().size()==copyTrace->value("before").toInt()+1);
+            transferTrace->insert("source_index",controller->currentIndex());
+            transferTrace->insert("source_exposure",controller->exposure());
+            controller->setPhotoSelection({controller->currentIndex(),controller->library().size()-1});
+            transferTrace->insert("opened",clickItem(window,window->findChild<QQuickItem *>(QStringLiteral("openTransferSync"))));
+            state->phase=47;
+        } else if (state->phase==47 && ready) {
+            auto *dialog=window->findChild<QObject *>(QStringLiteral("adjustmentTransferDialog"));
+            auto *geometry=visualChild(window->contentItem(),QStringLiteral("transferGroup_geometry"));
+            transferTrace->insert("default_geometry_excluded",geometry && !geometry->property("checked").toBool());
+            transferTrace->insert("visible",dialog && dialog->property("visible").toBool() && dialog->property("targetCount").toInt()==1);
+            transferTrace->insert("none_clicked",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferSelectNone"))));
+            transferTrace->insert("exposure_clicked",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferGroup_exposure"))));
+            state->phase=48;
+        } else if (state->phase==48 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog.png");
+            transferTrace->insert("language",controller->language());
+            controller->setLanguage("en_US"); window->resize(1180,720); state->phase=481;
+        } else if (state->phase==481 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog-en.png");
+            transferTrace->insert("applied",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferApplyButton"))));
+            controller->setLanguage(transferTrace->value("language").toString()); window->resize(1540,920);
+            state->phase=49;
+        } else if (state->phase==49 && ready) {
+            auto *dialog=window->findChild<QObject *>(QStringLiteral("adjustmentTransferDialog"));
+            transferTrace->insert("closed",dialog && !dialog->property("visible").toBool());
+            controller->selectPhoto(controller->library().size()-1);
+            const auto expected=transferTrace->value("source_exposure").toDouble();
+            const bool changed=controller->exposure()==expected && controller->saturation()==0 && controller->canUndo();
+            controller->undo(); const bool undone=controller->exposure()==0; controller->redo();
+            transferTrace->insert("isolated_undo",changed && undone && controller->exposure()==expected);
+            controller->selectPhoto(transferTrace->value("source_index").toInt());
+            state->phase=50;
+        } else if (state->phase==50 && ready) {
             complete=scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
         }
         if(state->lookEnabled)
@@ -295,7 +338,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed && state->straightenPassed;
         const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
-        bool ok=complete && workspaceOk && copyOk && (!gpuRequired || controller->gpuActive());
+        bool transferOk=true;
+        for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo"})
+            transferOk=transferOk && transferTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -313,6 +359,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_scope_plots"]=*scopePlots;
         report["ui_copy_import_passed"]=copyOk;
         report["ui_copy_import_trace"]=*copyTrace;
+        report["ui_selective_sync_passed"]=transferOk;
+        report["ui_selective_sync_trace"]=*transferTrace;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

@@ -6,6 +6,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/commands/CommandRegistry.h"
+#include "core/commands/AdjustmentTransfer.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/DiagnosticBundle.h"
@@ -905,35 +906,55 @@ void PhotoController::resetAdjustments() {
 void PhotoController::copyAdjustments() {
     if (!hasImage()) return;
     m_clipboard = m_photos[m_currentIndex].state;
+    m_clipboardName = m_photos[m_currentIndex].name;
     m_hasClipboard = true;
+    emit adjustmentClipboardChanged();
     ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()}});
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
 }
 
 void PhotoController::pasteAdjustments() {
-    if (!hasImage() || !m_hasClipboard) return;
-    *mutableCurrentState() = m_clipboard;
-    persistAndApply(QStringLiteral("paste_adjustments"));
+    pasteAdjustmentGroups(AdjustmentTransfer::allGroups());
+}
+
+bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+    if (!hasImage() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
+    auto *state=mutableCurrentState();
+    AdjustmentTransfer::apply(*state,m_clipboard,groups);
+    m_photos[m_currentIndex].history.finish();
+    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName}});
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
+    return true;
 }
 
 void PhotoController::syncAdjustmentsToAll() {
-    if (!hasImage()) return;
-    const auto state = m_photos[m_currentIndex].state;
-    for (auto &photo : m_photos) {
+    syncAdjustmentGroups(AdjustmentTransfer::allGroups(),false);
+}
+
+int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+    if (!hasImage() || !AdjustmentTransfer::validGroups(groups)) return -1;
+    const auto source=m_photos[m_currentIndex].state;
+    const auto sourceKey=m_photos[m_currentIndex].storageKey();
+    QStringList changedKeys; int targets=0;
+    for (int i=0;i<m_photos.size();++i) {
+        if (i==m_currentIndex || (selectedOnly && !m_selectedPhotos.contains(i))) continue;
+        ++targets; auto &photo=m_photos[i];
+        auto state=photo.state; AdjustmentTransfer::apply(state,source,groups);
         photo.history.initialize(photo.state);
         photo.history.finish();
-        photo.state = state;
-        if (photo.history.record(state, QStringLiteral("sync_adjustments"))) photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();
+        if (!photo.history.record(state,QStringLiteral("sync_adjustments"))) continue;
+        photo.state=std::move(state); photo.timeline.editedAt=QDateTime::currentMSecsSinceEpoch();
         markPhotoDirty(photo);
+        changedKeys.append(photo.storageKey());
     }
-    enqueueEdits();
-    emit historyChanged();
-    ActionTrace::instance().record("sync_adjustments", {{"count", m_photos.size()}});
-    emit libraryChanged();
-    emit adjustmentsChanged();
-    applyCurrent();
-    setStatus(uiText(QStringLiteral("已同步到 %1 张照片").arg(m_photos.size()), QStringLiteral("Synced to %1 image(s)").arg(m_photos.size())));
+    ActionTrace::instance().record("sync_adjustments",QVariantMap{{"source_key",sourceKey},{"groups",groups},
+        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()}});
+    if (!changedKeys.isEmpty()) emit libraryChanged();
+    setStatus(uiText("同步完成：更新 %1 / %2 个目标版本", "Sync complete: updated %1 / %2 target version(s)").arg(changedKeys.size()).arg(targets));
+    // A failed write remains pending via the existing per-photo retry path.
+    // Keep its save-error status visible instead of replacing it with success.
+    if (m_project.isOpen()) flushEdits();
+    return int(changedKeys.size());
 }
 
 bool PhotoController::exportCurrent(const QUrl &destination, const QString &colorSpaceKey, int quality) {

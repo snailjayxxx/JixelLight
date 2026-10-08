@@ -70,6 +70,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QVariantList editHistory READ editHistory NOTIFY historyChanged)
+    Q_PROPERTY(bool hasAdjustmentClipboard READ hasAdjustmentClipboard NOTIFY adjustmentClipboardChanged)
+    Q_PROPERTY(QString adjustmentClipboardName READ adjustmentClipboardName NOTIFY adjustmentClipboardChanged)
 
     Q_PROPERTY(double exposure READ exposure WRITE setExposure NOTIFY adjustmentsChanged)
     Q_PROPERTY(double temperature READ temperature WRITE setTemperature NOTIFY adjustmentsChanged)
@@ -281,6 +283,11 @@ public:
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
     Q_INVOKABLE void syncAdjustmentsToAll();
+    bool hasAdjustmentClipboard() const { return m_hasClipboard; }
+    QString adjustmentClipboardName() const { return m_clipboardName; }
+    Q_INVOKABLE bool pasteAdjustmentGroups(const QStringList &groups);
+    // Returns changed version count, or -1 for invalid input. Source is excluded.
+    Q_INVOKABLE int syncAdjustmentGroups(const QStringList &groups, bool selectedOnly);
     Q_INVOKABLE void setColorMix(int band, int component, double value);
     Q_INVOKABLE void setCurvePoint(int channel, int point, double value);
     Q_INVOKABLE void resetCurve(int channel);
@@ -289,6 +296,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void adjustmentClipboardChanged();
     void copyImportChanged();
     void scopePlotChanged();
     void cropEditingChanged();
@@ -322,6 +330,7 @@ private:
     ScopesResult m_scopes;
     ProjectDatabase m_project;
     AdjustmentState m_clipboard;
+    QString m_clipboardName;
     bool m_hasClipboard = false;
     QString m_language = QStringLiteral("zh_CN");
     QString m_statusMessage;

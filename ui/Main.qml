@@ -76,6 +76,8 @@ ApplicationWindow {
         }
     }
 
+    AdjustmentTransferDialog { id: transferDialog; controller: photoController }
+
     Dialog {
         id: exportSettingsDialog
         title: window.t("导出设置", "Export Settings")
@@ -220,14 +222,15 @@ ApplicationWindow {
                 onClicked: photoController.copyAdjustments()
             }
             ToolButton {
-                text: window.t("粘贴", "Paste")
-                enabled: photoController.hasImage
-                onClicked: photoController.pasteAdjustments()
+                text: window.t("粘贴…", "Paste…")
+                enabled: photoController.hasImage && photoController.hasAdjustmentClipboard
+                onClicked: transferDialog.openFor(false)
             }
             ToolButton {
-                text: window.t("同步全部", "Sync All")
+                text: window.t("同步…", "Sync…")
+                objectName: "openTransferSync"
                 enabled: photoController.hasImage
-                onClicked: photoController.syncAdjustmentsToAll()
+                onClicked: transferDialog.openFor(true)
             }
             Item { Layout.fillWidth: true }
             ToolButton { text: window.t("导出 ▾", "Export ▾"); onClicked: exportActions.popup() }

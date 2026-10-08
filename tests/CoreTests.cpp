@@ -28,6 +28,7 @@
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/commands/CommandRegistry.h"
+#include "core/commands/AdjustmentTransfer.h"
 #include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
 #include "core/scopes/ScopesEngine.h"
@@ -69,6 +70,107 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void adjustmentTransferGroupsAreCompleteIndependentAndRejectPartialInput() {
+        AdjustmentState source,target;
+        auto json=source.toJson(); int n=0;
+        for (auto it=json.begin();it!=json.end();++it) {
+            if (it.value().isDouble()) it.value()=++n*.1;
+            else if (it.value().isArray()) { auto a=it.value().toArray(); for (int i=0;i<a.size();++i) a[i]=.1+i*.15; it.value()=a; }
+        }
+        source=AdjustmentState::fromJson(json); source.geometry.crop={.1,.2,.7,.6}; source.geometry.straighten=4;
+        source.look.mode="calibrated"; source.look.lut=LookLut::identity(); source.look.strength=.7;
+        const QMap<QString,QStringList> groups{
+            {"exposure",{"exposure"}},{"white_balance",{"temperature","tint"}},
+            {"tone",{"contrast","highlights","shadows","whites","blacks","highlightRecovery"}},
+            {"color",{"hue","saturation","vibrance"}},{"hsl",{"hslHue","hslSaturation","hslLuminance"}},
+            {"curves",{"masterCurve","redCurve","greenCurve","blueCurve"}},{"sony_look",{"look"}},{"geometry",{"geometry"}}
+        };
+        const auto before=target.toJson(),after=source.toJson(); QSet<QString> covered;
+        for (auto group=groups.begin();group!=groups.end();++group) {
+            auto actual=target; QVERIFY(AdjustmentTransfer::apply(actual,source,{group.key()}));
+            auto expected=before; for (const auto &key : group.value()) { QVERIFY(!covered.contains(key)); covered.insert(key); expected[key]=after[key]; }
+            QCOMPARE(actual.toJson(),expected);
+            if (group.key()=="sony_look") QCOMPARE(actual.look.lut,source.look.lut);
+        }
+        const auto keys=after.keys(); QCOMPARE(covered,QSet<QString>(keys.begin(),keys.end()));
+        QVERIFY(AdjustmentTransfer::apply(target,source,AdjustmentTransfer::allGroups())); QCOMPARE(target.toJson(),after);
+        QCOMPARE(target.look.lut,source.look.lut);
+        for (const QStringList &invalid : QList<QStringList>{{},{"exposure","unknown"},{"exposure","exposure"}}) {
+            const auto saved=target.toJson(); QVERIFY(!AdjustmentTransfer::apply(target,AdjustmentState{},invalid)); QCOMPARE(target.toJson(),saved);
+        }
+        source.look={}; source.look.mode="as-shot";
+        QVERIFY(AdjustmentTransfer::apply(target,source,{"sony_look"})); QCOMPARE(target.look.mode,QString("as-shot"));
+        QVERIFY(target.look.code.isEmpty()); QVERIFY(target.look.parameters.isEmpty()); QVERIFY(!target.look.lut);
+    }
+    void selectivePasteUsesFrozenClipboardAndKeepsOtherGroupsAndUndo() {
+        QTemporaryDir dir; QImage image(24,16,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto a=dir.filePath("a.png"),b=dir.filePath("b.png"); QVERIFY(image.save(a)); QVERIFY(image.save(b));
+        PhotoController c(nullptr); c.setGpuEnabled(false); QVERIFY(c.importFile(QUrl::fromLocalFile(a))); QVERIFY(c.importFile(QUrl::fromLocalFile(b)));
+        QVERIFY(!c.hasAdjustmentClipboard()); QVERIFY(!c.pasteAdjustmentGroups({"exposure"}));
+        c.setExposure(1.5); c.setTemperature(12); c.setLookCode("FL"); c.setStraighten(3); c.copyAdjustments();
+        QVERIFY(c.hasAdjustmentClipboard()); QCOMPARE(c.adjustmentClipboardName(),QString("a.png"));
+        c.setExposure(2); c.setLookCode("VV"); c.selectPhoto(1); c.setExposure(-1); c.setTemperature(-8); c.setSaturation(25); c.setLookCode("ST"); c.setStraighten(-4);
+        c.setRating(3); c.setSelectionKeywords("target"); c.finishInteraction(); const auto history=c.editHistory();
+        QVERIFY(!c.pasteAdjustmentGroups({"exposure","bad"})); QCOMPARE(c.exposure(),-1.0); QCOMPARE(c.editHistory(),history);
+        QVERIFY(c.pasteAdjustmentGroups({"exposure","sony_look"})); QCOMPARE(c.exposure(),1.5); QCOMPARE(c.lookState()["code"].toString(),QString("FL"));
+        QCOMPARE(c.temperature(),-8.0); QCOMPARE(c.saturation(),25.0); QCOMPARE(c.geometry()["straighten"].toDouble(),-4.0);
+        QCOMPARE(c.currentRating(),3); QCOMPARE(c.currentKeywords(),QStringList{"target"}); QCOMPARE(c.editHistory().size(),history.size()+1);
+        c.undo(); QCOMPARE(c.exposure(),-1.0); QCOMPARE(c.lookState()["code"].toString(),QString("ST")); c.redo(); QCOMPARE(c.exposure(),1.5);
+        const auto pastedHistory=c.editHistory(); QVERIFY(c.pasteAdjustmentGroups({"exposure","sony_look"})); QCOMPARE(c.editHistory(),pastedHistory);
+        QVERIFY(c.pasteAdjustmentGroups({"geometry"})); QCOMPARE(c.geometry()["straighten"].toDouble(),3.0); c.undo(); QCOMPARE(c.geometry()["straighten"].toDouble(),-4.0);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Paste")); QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath()))); reopened.selectPhoto(1);
+        QCOMPARE(reopened.exposure(),1.5); QCOMPARE(reopened.geometry()["straighten"].toDouble(),-4.0); QVERIFY(reopened.canRedo());
+        reopened.redo(); QCOMPARE(reopened.geometry()["straighten"].toDouble(),3.0);
+        QFile original(a); QVERIFY(original.open(QIODevice::ReadOnly)); const auto bytes=original.readAll(); original.close();
+        QFile second(b); QVERIFY(second.open(QIODevice::ReadOnly)); QCOMPARE(second.readAll(),bytes);
+    }
+    void selectiveSyncExcludesSourceAndUnselectedVersionsAndPersistsPerTargetHistory() {
+        QTemporaryDir dir; QImage image(24,16,QImage::Format_RGB32); image.fill(Qt::gray); PhotoController c(nullptr); c.setGpuEnabled(false);
+        for (const auto &name : {"a.png","b.png","c.png"}) { const auto path=dir.filePath(name); QVERIFY(image.save(path)); QVERIFY(c.importFile(QUrl::fromLocalFile(path))); }
+        c.selectPhoto(1); c.setExposure(-1); c.setStraighten(-4); c.setRating(2); c.setSelectionKeywords("keep"); c.finishInteraction();
+        const auto targetHistory=c.editHistory();
+        c.selectPhoto(0); c.setExposure(1.25); c.setTemperature(17); c.setLookCode("FL"); c.setStraighten(5); c.finishInteraction();
+        QVERIFY(c.createVirtualCopy("independent")); c.setExposure(-2); c.setStraighten(9); c.finishInteraction();
+        c.selectPhoto(0); c.setSaturation(30); c.undo(); QVERIFY(c.canRedo()); const auto sourceHistory=c.editHistory();
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Sync")); QVERIFY(c.flushEdits());
+        QVERIFY(c.setPhotoSelection({0})); QCOMPARE(c.syncAdjustmentGroups({"exposure"},true),0);
+        QVERIFY(c.setPhotoSelection({0,1,3})); const auto before=c.library();
+        QCOMPARE(c.syncAdjustmentGroups({"exposure","white_balance","sony_look"},true),2);
+        QCOMPARE(c.editHistory(),sourceHistory); QVERIFY(c.canRedo()); QCOMPARE(c.selectedIndices(),QVariantList({0,1,3}));
+        const auto once=c.library(); QCOMPARE(c.syncAdjustmentGroups({"exposure","white_balance","sony_look"},true),0); QCOMPARE(c.library(),once);
+        QCOMPARE(c.syncAdjustmentGroups({"exposure","invalid"},false),-1); QCOMPARE(c.library(),once);
+        QCOMPARE(c.library()[2],before[2]);
+        c.selectPhoto(1); QCOMPARE(c.exposure(),1.25); QCOMPARE(c.temperature(),17.0); QCOMPARE(c.geometry()["straighten"].toDouble(),-4.0);
+        QCOMPARE(c.currentRating(),2); QCOMPARE(c.currentKeywords(),QStringList{"keep"}); QCOMPARE(c.editHistory().size(),targetHistory.size()+1);
+        c.undo(); QCOMPARE(c.exposure(),-1.0); QCOMPARE(c.temperature(),0.0); QVERIFY(c.canRedo()); QVERIFY(c.flushEdits());
+        ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> saved; QVERIFY(db.readSnapshot(c.projectPath(),&saved));
+        int looks=0; for (const auto &photo : saved) if (photo.adjustments.look.code=="FL") ++looks;
+        QCOMPARE(looks,2); // Source + virtual copy; target B is at its pre-sync undo cursor.
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath()))); reopened.selectPhoto(1);
+        QCOMPARE(reopened.exposure(),-1.0); QVERIFY(reopened.canRedo()); reopened.redo(); QCOMPARE(reopened.exposure(),1.25);
+        reopened.selectPhoto(3); QCOMPARE(reopened.exposure(),1.25); QCOMPARE(reopened.geometry()["straighten"].toDouble(),9.0);
+        reopened.undo(); QCOMPARE(reopened.exposure(),-2.0); QCOMPARE(reopened.geometry()["straighten"].toDouble(),9.0);
+        reopened.selectPhoto(0); QCOMPARE(reopened.syncAdjustmentGroups({"exposure"},false),2); // B already matches.
+        reopened.selectPhoto(2); QCOMPARE(reopened.exposure(),1.25); QVERIFY(reopened.canUndo());
+    }
+    void selectiveSyncDatabaseFailureRollsBackBatchAndCanRetry() {
+        QTemporaryDir dir; QImage image(12,8,QImage::Format_RGB32); image.fill(Qt::gray); PhotoController c(nullptr); c.setGpuEnabled(false);
+        for (const auto &name : {"a.png","b.png","c.png"}) { const auto path=dir.filePath(name); QVERIFY(image.save(path)); QVERIFY(c.importFile(QUrl::fromLocalFile(path))); }
+        c.setExposure(1); c.finishInteraction(); QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"RetrySync")); QVERIFY(c.flushEdits());
+        const QString connection="sync-failure-fixture";
+        auto trigger=[&](bool enable) {
+            { auto db=QSqlDatabase::addDatabase("QSQLITE",connection); db.setDatabaseName(QDir(c.projectPath()).filePath("Project.db")); QVERIFY(db.open());
+              QSqlQuery q(db); QVERIFY(q.exec(enable ? "CREATE TRIGGER block_sync BEFORE UPDATE ON photos WHEN NEW.path LIKE '%b.png' BEGIN SELECT RAISE(ABORT,'blocked sync'); END" : "DROP TRIGGER block_sync")); db.close(); }
+            QSqlDatabase::removeDatabase(connection);
+        };
+        trigger(true); QCOMPARE(c.syncAdjustmentGroups({"exposure"},false),2); QVERIFY(!c.flushEdits());
+        const auto saveError=c.statusMessage(); QCOMPARE(c.syncAdjustmentGroups({"exposure"},false),0); QCOMPARE(c.statusMessage(),saveError);
+        ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> saved; QVERIFY(db.readSnapshot(c.projectPath(),&saved));
+        for (const auto &photo : saved) if (!photo.path.endsWith("a.png")) QCOMPARE(photo.adjustments.exposure,0.0);
+        QCoreApplication::processEvents(); trigger(false); QCOMPARE(c.syncAdjustmentGroups({"exposure"},false),0); QVERIFY(c.flushEdits()); QVERIFY(db.readSnapshot(c.projectPath(),&saved));
+        for (auto &photo : saved) { QCOMPARE(photo.adjustments.exposure,1.0); if (!photo.path.endsWith("a.png")) { QVERIFY(photo.history.canUndo()); QCOMPARE(photo.history.undo().exposure,0.0); } }
+    }
     void copyImportVerifiesContentAndRejectsWholePlanConflicts() {
         QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QVERIFY(QDir(dir.path()).mkdir("other"));
         QImage image(20,10,QImage::Format_RGB32); image.fill(Qt::red);
@@ -1592,6 +1694,17 @@ private slots:
         QVERIFY(photos[0].history.canUndo()); QCOMPARE(photos[0].history.undo().exposure,.5);
         PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
         reopened.undo(); QCOMPARE(reopened.exposure(),.5); QVERIFY(reopened.canRedo()); QVERIFY(reopened.flushEdits());
+        QVERIFY(reopened.createVirtualCopy("Transfer target")); reopened.setLookCode("FL"); reopened.setExposure(-.5); reopened.finishInteraction();
+        reopened.selectPhoto(0);
+        QTRY_VERIFY_WITH_TIMEOUT(reopened.currentMetadata().value("sonyLook").toMap().value("autoEligible").toBool(),60000);
+        QVERIFY(!reopened.lookState()["code"].toString().isEmpty()); reopened.copyAdjustments();
+        reopened.selectPhoto(1); QVERIFY(reopened.pasteAdjustmentGroups({"sony_look"})); QCOMPARE(reopened.exposure(),-.5);
+        reopened.undo(); QCOMPARE(reopened.lookState()["mode"].toString(),QString("manual"));
+        reopened.selectPhoto(0); QVERIFY(reopened.setPhotoSelection({0,1})); QCOMPARE(reopened.syncAdjustmentGroups({"sony_look"},true),1);
+        QVERIFY(reopened.flushEdits()); QVERIFY(db.readSnapshot(reopened.projectPath(),&photos)); QCOMPARE(photos.size(),2);
+        for (const auto &photo : photos) {
+            QCOMPARE(photo.adjustments.look.mode,QString("as-shot")); QVERIFY(photo.adjustments.look.code.isEmpty()); QVERIFY(photo.adjustments.look.parameters.isEmpty());
+        }
     }
 
     void failedAnnotationWritesRetainHistoryAndTagsForRetry() {
