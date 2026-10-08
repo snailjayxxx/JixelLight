@@ -53,7 +53,7 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
             QSqlQuery query(db);
             ok = query.exec("PRAGMA journal_mode=WAL") && query.exec("PRAGMA busy_timeout=3000")
                 && query.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT)")
-                && query.exec("CREATE TABLE IF NOT EXISTS photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')"
+                && query.exec("CREATE TABLE IF NOT EXISTS photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')")
                 && query.exec("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))"));
             if (ok) {
                 query.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('project_name',?)");

@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -37,6 +37,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 controller->finishInteraction();state->phase=2;
             }
         } else if(state->phase==2 && ready) {
+            // Exercise new curation metadata without changing the RAW pixels.
+            controller->setRating(4);
+            controller->setFlag(QStringLiteral("pick"));
+            state->curationPassed = controller->currentRating() == 4
+                && controller->currentFlag() == QStringLiteral("pick");
             state->filmstripPresent = window->findChild<QQuickItem *>(QStringLiteral("jixelMainFilmstrip")) != nullptr;
             // Verify that the new Library page can be instantiated while
             // preserving the current photo, then return to the GPU canvas.
@@ -62,13 +67,14 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_develop_restored"]=state->restoredDevelop;
+        report["ui_curation_passed"]=state->curationPassed;
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());
         report["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);
