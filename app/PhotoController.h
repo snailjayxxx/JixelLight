@@ -13,6 +13,7 @@
 #include <cmath>
 #include "core/preview/PreviewTasks.h"
 #include "core/export/ExportQueue.h"
+#include "core/import/CopyImportQueue.h"
 #include "core/look/CameraReference.h"
 #include "core/look/LookCalibration.h"
 
@@ -107,6 +108,9 @@ class PhotoController final : public QObject {
     Q_PROPERTY(qulonglong scopePlotPixels READ scopePlotPixels NOTIFY scopePlotChanged)
     Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
+    Q_PROPERTY(bool copyImportBusy READ copyImportBusy NOTIFY copyImportChanged)
+    Q_PROPERTY(double copyImportProgress READ copyImportProgress NOTIFY copyImportChanged)
+    Q_PROPERTY(QString copyImportStatus READ copyImportStatus NOTIFY copyImportChanged)
     Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
     Q_PROPERTY(qulonglong renderRevision READ renderRevision NOTIFY gpuFrameChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
@@ -212,6 +216,13 @@ public:
     Q_INVOKABLE void setLanguage(const QString &language);
 
     Q_INVOKABLE void openImportDialog();
+    Q_INVOKABLE void openCopyImportDialog();
+    Q_INVOKABLE bool copyImport(const QVariantList &urls,const QUrl &directory);
+    Q_INVOKABLE void cancelCopyImport();
+    Q_INVOKABLE bool prepareToClose();
+    bool copyImportBusy() const { return m_copyImportQueue && m_copyImportQueue->busy(); }
+    double copyImportProgress() const { return m_copyImportProgress; }
+    QString copyImportStatus() const { return m_copyImportStatus; }
     Q_INVOKABLE bool importFile(const QUrl &url);
     Q_INVOKABLE void importFiles(const QVariantList &urls);
     Q_INVOKABLE void selectPhoto(int index);
@@ -278,6 +289,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void copyImportChanged();
     void scopePlotChanged();
     void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
@@ -316,6 +328,9 @@ private:
     QVariantMap m_currentMetadata;
     std::shared_ptr<SourceCache> m_sourceCache;
     std::unique_ptr<ExportQueue> m_exportQueue;
+    std::unique_ptr<CopyImportQueue> m_copyImportQueue;
+    double m_copyImportProgress=0;
+    QString m_copyImportStatus;
     QImage m_fastSource, m_gpuSource, m_loadedPreview;
     QString m_loadedKey, m_backendName, m_scopesLabel;
     QString m_displayColorLutKey = QStringLiteral("identity-srgb");

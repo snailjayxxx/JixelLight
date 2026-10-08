@@ -661,6 +661,38 @@ void PhotoController::openImportDialog() {
     finishImportBatch(added, rawAdded);
 }
 
+bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory) {
+    if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
+    QStringList sources;
+    for (const auto &value : urls) {
+        const auto url=value.canConvert<QUrl>() ? value.toUrl() : QUrl(value.toString());
+        if (!url.isLocalFile()) { setStatus(uiText("复制导入仅支持本地文件", "Copy import requires local files")); return false; }
+        sources.push_back(url.toLocalFile());
+    }
+    if (!m_copyImportQueue->start(sources,directory.toLocalFile())) return false;
+    m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
+    ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()}});
+    return true;
+}
+void PhotoController::openCopyImportDialog() {
+    if (copyImportBusy()) return;
+    QSettings settings;
+    const auto files=QFileDialog::getOpenFileNames(nullptr,uiText("选择要复制并导入的照片", "Choose photos to copy and import"),
+        settings.value("ui/lastImportDir").toString(),uiText("照片与 RAW (*)", "Photos and RAW (*)"));
+    if (files.isEmpty()) return;
+    const auto folder=QFileDialog::getExistingDirectory(nullptr,uiText("复制到文件夹（同名文件将拒绝）", "Copy to folder (existing names will be refused)"),
+        settings.value("ui/lastCopyImportDir").toString());
+    if (folder.isEmpty()) return;
+    settings.setValue("ui/lastImportDir",QFileInfo(files.first()).absolutePath()); settings.setValue("ui/lastCopyImportDir",folder);
+    QVariantList urls; for (const auto &file : files) urls.push_back(QUrl::fromLocalFile(file));
+    copyImport(urls,QUrl::fromLocalFile(folder));
+}
+void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel(); }
+bool PhotoController::prepareToClose() {
+    m_copyImportQueue->stopAndCollect();
+    return flushEdits();
+}
+
 bool PhotoController::importFile(const QUrl &url) {
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     return importPath(path, true);
@@ -735,6 +767,7 @@ void PhotoController::applyCurrent() {
 }
 
 bool PhotoController::createProject(const QUrl &folder, const QString &name) {
+    if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     const QString path = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
     if (!flushEdits()) return false;
     const bool ok = m_project.create(path, name);
@@ -764,6 +797,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
 }
 
 bool PhotoController::openProject(const QUrl &url) {
+    if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     if (!url.isLocalFile() || !flushEdits()) return false;
     QVector<ProjectDatabase::SavedPhoto> saved;
     const QString path = url.toLocalFile();
@@ -1022,6 +1056,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_copyImportQueue.reset();
     m_plotTimer.stop(); m_plotJob.reset();
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
@@ -1032,6 +1067,27 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    m_copyImportQueue=std::make_unique<CopyImportQueue>();
+    connect(m_copyImportQueue.get(),&CopyImportQueue::progress,this,[this](qint64 copied,qint64 total,int completed,int files,const QString &stage) {
+        m_copyImportProgress=total>0 ? std::clamp(double(copied)/total,0.0,1.0) : 0;
+        m_copyImportStatus=(stage=="verify" ? uiText("校验副本", "Verifying copy") : uiText("复制导入", "Copy import"))
+            +QString(" · %1/%2").arg(completed).arg(files); emit copyImportChanged();
+    });
+    connect(m_copyImportQueue.get(),&CopyImportQueue::finished,this,[this](const CopyImportResult &result) {
+        if (m_closing) return;
+        int added=0,raw=0;
+        for (const auto &file : result.completed) {
+            if (importPath(file.destination,false)) { ++added; if (RawDecoder::isRawFile(file.destination)) ++raw; }
+            ActionTrace::instance().record("copy_import_published",{{"source",file.source},{"destination",file.destination},{"sha256",file.sha256}});
+        }
+        if (added) finishImportBatch(added,raw);
+        m_copyImportProgress=result.error.isEmpty() && !result.wasCancelled ? 1 : m_copyImportProgress;
+        m_copyImportStatus=uiText("复制完成 %1 个，导入 %2 张", "Copied %1 file(s), imported %2 image(s)").arg(result.completed.size()).arg(added);
+        if (result.wasCancelled) m_copyImportStatus+=uiText(" · 已取消，保留已完成副本", " · cancelled; completed copies retained");
+        if (!result.error.isEmpty()) m_copyImportStatus+=uiText(" · 错误：", " · error: ")+result.error;
+        setStatus(m_copyImportStatus); emit copyImportChanged();
+        ActionTrace::instance().record("copy_import_finished",{{"copied",result.completed.size()},{"imported",added},{"cancelled",result.wasCancelled},{"error",result.error}});
+    });
     m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
     connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
     m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(renderScopePlot,

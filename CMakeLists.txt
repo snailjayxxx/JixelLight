@@ -59,6 +59,8 @@ add_library(JixelLightCore STATIC
     core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
     core/image/ThumbnailProvider.cpp
+    core/import/CopyImport.cpp
+    core/import/CopyImportQueue.cpp
     core/metadata/MetadataReader.cpp
     core/metadata/XmpSidecar.cpp
     core/look/SonyLookMetadata.cpp

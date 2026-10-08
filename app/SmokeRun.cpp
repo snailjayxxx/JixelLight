@@ -10,6 +10,9 @@
 #include <QJsonDocument>
 #include <QJSValue>
 #include <QMouseEvent>
+#include <QTemporaryDir>
+#include <QDir>
+#include <QFile>
 #include <memory>
 
 namespace {
@@ -26,6 +29,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto state=std::make_shared<State>();state->elapsed.start();
     auto cropTrace=std::make_shared<QJsonObject>();
     auto scopePlots=std::make_shared<QJsonObject>();
+    auto copyTrace=std::make_shared<QJsonObject>();
+    auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
         const bool ready=controller->previewReady() && !controller->loading() && !controller->rendering();
@@ -262,6 +267,24 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             else controller->setScopeMode("histogram");
             ++state->phase;
         } else if (state->phase==44 && ready) {
+            auto *menu=window->findChild<QObject *>(QStringLiteral("importActionsMenu"));
+            copyTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
+            state->phase=45;
+        } else if (state->phase==45 && ready) {
+            auto *menu=window->findChild<QObject *>(QStringLiteral("importActionsMenu"));
+            auto *item=window->findChild<QQuickItem *>(QStringLiteral("copyImportAction"));
+            copyTrace->insert("menu_visible",menu && menu->property("visible").toBool() && item && item->isVisible() && item->isEnabled());
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-menu.png");
+            if (menu) QMetaObject::invokeMethod(menu,"close");
+            QImage fixture(64,48,QImage::Format_RGB32); fixture.fill(QColor("#658797"));
+            const bool prepared=importFixture->isValid() && QDir(importFixture->path()).mkdir("copies") && fixture.save(importFixture->filePath("copy-test.png"));
+            copyTrace->insert("before",controller->library().size());
+            copyTrace->insert("started",prepared && controller->copyImport({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))},QUrl::fromLocalFile(importFixture->filePath("copies"))));
+            state->phase=46;
+        } else if (state->phase==46 && ready && !controller->copyImportBusy()) {
+            QFile source(importFixture->filePath("copy-test.png")),destination(importFixture->filePath("copies/copy-test.png"));
+            copyTrace->insert("content_equal",source.open(QIODevice::ReadOnly) && destination.open(QIODevice::ReadOnly) && source.readAll()==destination.readAll());
+            copyTrace->insert("catalog_added",controller->library().size()==copyTrace->value("before").toInt()+1);
             complete=scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
         }
         if(state->lookEnabled)
@@ -270,7 +293,9 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed && state->straightenPassed;
-        bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
+        const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
+            && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
+        bool ok=complete && workspaceOk && copyOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -286,6 +311,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
         report["ui_interactive_crop_trace"]=*cropTrace;
         report["ui_scope_plots"]=*scopePlots;
+        report["ui_copy_import_passed"]=copyOk;
+        report["ui_copy_import_trace"]=*copyTrace;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

@@ -19,7 +19,7 @@ ApplicationWindow {
     palette.highlight: "#507aa5"
     palette.highlightedText: "#ffffff"
     palette.placeholderText: "#8b98a6"
-    onClosing: function(close) { if (!photoController.flushEdits()) close.accepted=false }
+    onClosing: function(close) { if (!photoController.prepareToClose()) close.accepted=false }
 
     // "Develop" remains the default to keep existing GPU/RAW smoke behavior.
     property int workspaceIndex: 1 // 0 Library, 1 Develop
@@ -154,8 +154,8 @@ ApplicationWindow {
         background: Rectangle { color: "#171c23"; border.color: "#303943" }
         Menu {
             id: projectActions
-            MenuItem { text: window.t("新建项目", "New Project"); onTriggered: projectFolder.open() }
-            MenuItem { text: window.t("打开已有项目", "Open Existing Project"); onTriggered: openProjectFolder.open() }
+            MenuItem { text: window.t("新建项目", "New Project"); enabled: !photoController.copyImportBusy; onTriggered: projectFolder.open() }
+            MenuItem { text: window.t("打开已有项目", "Open Existing Project"); enabled: !photoController.copyImportBusy; onTriggered: openProjectFolder.open() }
             MenuSeparator {}
             MenuItem { text: window.t("导入 XMP 到当前版本…", "Import XMP into current version…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpImportDialog() }
         }
@@ -173,6 +173,13 @@ ApplicationWindow {
             }
             MenuSeparator {}
             MenuItem { text: window.t("导出 XMP 侧车文件…", "Export XMP sidecar…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpExportDialog() }
+        }
+        Menu {
+            id: importActions
+            parent: importButton; y: importButton.height
+            objectName: "importActionsMenu"
+            MenuItem { text: window.t("添加现有照片…", "Add existing photos…"); onTriggered: photoController.openImportDialog() }
+            MenuItem { objectName: "copyImportAction"; text: window.t("复制到文件夹并导入…", "Copy to folder and import…"); enabled: !photoController.copyImportBusy; onTriggered: photoController.openCopyImportDialog() }
         }
         RowLayout {
             anchors.fill: parent
@@ -200,8 +207,9 @@ ApplicationWindow {
                 onClicked: projectActions.popup()
             }
             ToolButton {
-                text: window.t("导入", "Import")
-                onClicked: photoController.openImportDialog()
+                id: importButton
+                text: window.t("导入 ▾", "Import ▾")
+                onClicked: importActions.open()
             }
             ToolSeparator {}
             ToolButton { text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.undo() }
@@ -265,8 +273,11 @@ ApplicationWindow {
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
             ProgressBar { visible: photoController.exportBusy; value: photoController.exportProgress; Layout.preferredWidth: 120 }
+            Label { visible: photoController.copyImportBusy; text: photoController.copyImportStatus; textFormat: Text.PlainText; color: "#aeb9c7" }
+            ProgressBar { visible: photoController.copyImportBusy; value: photoController.copyImportProgress; Layout.preferredWidth: 90 }
+            ToolButton { visible: photoController.copyImportBusy; text: window.t("取消复制", "Cancel copy"); onClicked: photoController.cancelCopyImport() }
             CheckBox { text: "GPU"; checked: photoController.gpuEnabled; onToggled: photoController.gpuEnabled = checked }
-            Label { text: photoController.statusMessage; color: "#9eabb9"; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: 11 }
+            Label { text: photoController.statusMessage; textFormat: Text.PlainText; color: "#9eabb9"; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: 11 }
             Label { visible: photoController.hasImage; text: photoController.pipelineDescription; color: "#687b8d"; elide: Text.ElideMiddle; Layout.maximumWidth: 500; font.pixelSize: 10 }
             Label { visible: photoController.hasImage; text: photoController.currentFormat; color: photoController.currentIsRaw ? "#7ee2c3" : "#8ca1b5"; font.bold: true; font.pixelSize: 11 }
         }

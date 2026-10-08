@@ -69,6 +69,92 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void copyImportVerifiesContentAndRejectsWholePlanConflicts() {
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QVERIFY(QDir(dir.path()).mkdir("other"));
+        QImage image(20,10,QImage::Format_RGB32); image.fill(Qt::red);
+        const auto first=dir.filePath("photo.png"),second=dir.filePath("other/photo.png"),out=dir.filePath("out");
+        QVERIFY(image.save(first)); QVERIFY(image.save(second));
+        QFile original(first); QVERIFY(original.open(QIODevice::ReadOnly)); const auto bytes=original.readAll(); original.close();
+        auto result=copyImportFiles({first,dir.filePath("missing.png")},out); QVERIFY(!result.error.isEmpty()); QVERIFY(result.completed.isEmpty()); QVERIFY(QDir(out).isEmpty());
+        result=copyImportFiles({first,second},out); QVERIFY(!result.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+        result=copyImportFiles({first},out); QVERIFY(result.error.isEmpty()); QCOMPARE(result.completed.size(),1);
+        QFile copied(QDir(out).filePath("photo.png")); QVERIFY(copied.open(QIODevice::ReadOnly)); QCOMPARE(copied.readAll(),bytes); copied.close();
+        QCOMPARE(result.completed[0].sha256,QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex()));
+        QVERIFY(!copyImportFiles({first},out).error.isEmpty());
+        QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(),bytes); original.close();
+        QVERIFY(QFile::remove(copied.fileName()));
+        { QFile upper(QDir(out).filePath("PHOTO.PNG")); QVERIFY(upper.open(QIODevice::WriteOnly|QIODevice::NewOnly)); QCOMPARE(upper.write(bytes),qint64(bytes.size())); }
+        QVERIFY(!copyImportFiles({first},out).error.isEmpty());
+        QCOMPARE(QDir(out).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),QStringList{"PHOTO.PNG"});
+    }
+    void copyImportCancellationAndPublicationRaceCleanStaging() {
+        QTemporaryDir dir; const auto out=dir.filePath("out"); QVERIFY(QDir(dir.path()).mkdir("out"));
+        QImage image(10,10,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto first=dir.filePath("first.png"), second=dir.filePath("second.png"); QVERIFY(image.save(first)); QVERIFY(image.save(second));
+        { QFile large(second); QVERIFY(large.open(QIODevice::Append)); QCOMPARE(large.write(QByteArray(3*1024*1024,'x')),qint64(3*1024*1024)); }
+        auto token=std::make_shared<std::atomic_bool>(false);
+        const auto result=copyImportFiles({first,second},out,token,[&](qint64,qint64,int done,int,const QString &stage) { if (done==1 && stage=="copy") token->store(true); });
+        QVERIFY(result.wasCancelled); QVERIFY(result.error.isEmpty()); QCOMPARE(result.completed.size(),1);
+        QCOMPARE(QDir(out).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),QStringList{"first.png"});
+        QVERIFY(QFileInfo::exists(first)); QVERIFY(QFileInfo::exists(second));
+        QVERIFY(QFile::remove(QDir(out).filePath("first.png")));
+        const auto collision=QDir(out).filePath("first.png");
+        const auto raced=copyImportFiles({first},out,{},[&](qint64,qint64,int,int,const QString &stage) {
+            if (stage=="verify") { QFile file(collision); QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly)); QCOMPARE(file.write("existing"),qint64(8)); }
+        });
+        QVERIFY(!raced.error.isEmpty()); QVERIFY(raced.completed.isEmpty());
+        QFile existing(collision); QVERIFY(existing.open(QIODevice::ReadOnly)); QCOMPARE(existing.readAll(),QByteArray("existing")); existing.close();
+        QCOMPARE(QDir(out).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),QStringList{"first.png"});
+        QVERIFY(copyImportFiles({second},out,token).wasCancelled);
+    }
+    void copyImportDetectsSourceChangesAndPreservesEarlierResults() {
+        QTemporaryDir dir; const auto out=dir.filePath("out"); QVERIFY(QDir(dir.path()).mkdir("out"));
+        QImage image(10,10,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto first=dir.filePath("first.png"),second=dir.filePath("second.png"); QVERIFY(image.save(first)); QVERIFY(image.save(second));
+        bool changed=false;
+        const auto result=copyImportFiles({first,second},out,{},[&](qint64,qint64,int done,int,const QString &stage) {
+            if (done==1 && stage=="published" && !changed) { QFile file(second); QVERIFY(file.open(QIODevice::Append)); QCOMPARE(file.write("changed"),qint64(7)); changed=true; }
+        });
+        QVERIFY(changed); QVERIFY(!result.error.isEmpty()); QCOMPARE(result.completed.size(),1);
+        QCOMPARE(QDir(out).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),QStringList{"first.png"});
+        QVERIFY(QFile::remove(QDir(out).filePath("first.png")));
+        const auto timestamp=QFileInfo(first).lastModified();
+        const auto sameSize=copyImportFiles({first},out,{},[&](qint64,qint64,int,int,const QString &stage) {
+            if (stage=="verify") {
+                QFile file(first); QVERIFY(file.open(QIODevice::ReadWrite)); QVERIFY(file.seek(file.size()-1));
+                QCOMPARE(file.write("X"),qint64(1)); QVERIFY(file.flush()); QVERIFY(file.setFileTime(timestamp,QFileDevice::FileModificationTime));
+            }
+        });
+        QVERIFY(sameSize.error.contains("Source content changed")); QVERIFY(sameSize.completed.isEmpty()); QVERIFY(QDir(out).isEmpty());
+    }
+    void copyImportControllerKeepsProjectAndPersistsCompletedCopiesOnClose() {
+        QTemporaryDir dir; const auto out=dir.filePath("out"); QVERIFY(QDir(dir.path()).mkdir("out"));
+        QImage image(20,10,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto first=dir.filePath("first.png"), second=dir.filePath("second.png"); QVERIFY(image.save(first)); QVERIFY(image.save(second));
+        { QFile large(second); QVERIFY(large.open(QIODevice::Append)); QCOMPARE(large.write(QByteArray(16*1024*1024,'x')),qint64(16*1024*1024)); }
+        PhotoController controller(nullptr); controller.setGpuEnabled(false); QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Copied"));
+        const auto project=controller.projectPath(); bool closeCollected=false,closeOk=false;
+        connect(&controller,&PhotoController::copyImportChanged,&controller,[&] {
+            if (!closeCollected && controller.copyImportBusy() && controller.copyImportStatus().contains("1/2")) {
+                closeCollected=true; closeOk=controller.prepareToClose();
+            }
+        });
+        QVERIFY(controller.copyImport({QUrl::fromLocalFile(first),QUrl::fromLocalFile(second)},QUrl::fromLocalFile(out)));
+        QVERIFY(controller.copyImportBusy()); QVERIFY(!controller.createProject(QUrl::fromLocalFile(dir.path()),"Wrong"));
+        QVERIFY(!controller.openProject(QUrl::fromLocalFile(project))); QCOMPARE(controller.projectPath(),project);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.copyImportBusy(),10000); QVERIFY(closeCollected); QVERIFY(closeOk);
+        QVERIFY(!controller.library().isEmpty());
+        for (const auto &row : controller.library()) QVERIFY(row.toMap()["path"].toString().startsWith(out+"/"));
+        ProjectDatabase read; QVector<ProjectDatabase::SavedPhoto> saved; QVERIFY(read.readSnapshot(project,&saved)); QCOMPARE(saved.size(),controller.library().size());
+        QVERIFY(QFileInfo::exists(first)); QVERIFY(QFileInfo::exists(second));
+        QVERIFY(QDir(out).entryList({".jixellight-import-*"},QDir::Dirs|QDir::Hidden).isEmpty());
+        // A new job immediately after synchronous collection cannot consume an
+        // older watcher's queued finished/progress signal as its own result.
+        const auto third=dir.filePath("third.png"); QVERIFY(image.save(third));
+        QVERIFY(controller.copyImport({QUrl::fromLocalFile(third)},QUrl::fromLocalFile(out)));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.copyImportBusy(),10000); QVERIFY(QFileInfo::exists(QDir(out).filePath("third.png")));
+        QVERIFY(controller.prepareToClose());
+    }
     void straightenResamplesLinear16BitWithoutBlackCornersOrUpscaling() {
         QImage source(101,61,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setText("JixelLightSource","RAW"); source.setDotsPerMeterX(3000); source.setDevicePixelRatio(2);
