@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, historyPassed=false, geometryPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, historyPassed=false, geometryPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -45,6 +45,14 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->filmstripPresent = window->findChild<QQuickItem *>(QStringLiteral("jixelMainFilmstrip")) != nullptr;
             // Verify that the new Library page can be instantiated while
             // preserving the current photo, then return to the GPU canvas.
+            const auto exposure = controller->exposure();
+            state->catalogPassed = controller->setPhotoSelection({controller->currentIndex()})
+                && controller->setSelectionKeywords("fusion, smoke")
+                && controller->addSelectionToAlbum("Smoke validation")
+                && controller->addSelectionToAlbum("Second album")
+                && controller->setSelectionLabel("blue")
+                && controller->exposure() == exposure;
+            window->resize(1180,720);
             window->setProperty("workspaceIndex", 0);
             state->phase=20;
         } else if(state->phase==20) {
@@ -55,6 +63,27 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 workspace->setProperty("filterMode", 1); // Picks
                 state->curationPassed = state->curationPassed && grid->property("count").toInt() == 1;
             }
+            if (workspace) {
+                workspace->setProperty("searchText", "SMOKE");
+                workspace->setProperty("filterAlbum", "Smoke validation");
+                workspace->setProperty("filterLabel", "blue");
+                workspace->setProperty("sortMode", 2);
+            }
+            state->phase=201;
+        } else if(state->phase==201) {
+            auto *workspace = window->findChild<QQuickItem *>(QStringLiteral("libraryWorkspace"));
+            auto *grid = window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid"));
+            state->catalogPassed = state->catalogPassed && workspace && grid
+                && grid->property("count").toInt() == 1 && grid->height() > 100;
+            const auto albumFilter = window->findChild<QQuickItem *>(QStringLiteral("catalogAlbumFilter"));
+            state->catalogPassed = state->catalogPassed && albumFilter && albumFilter->property("count").toInt() == 3;
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".library.png");
+            if (workspace) workspace->setProperty("searchText", "no-matching-photo-xyz");
+            state->phase=202;
+        } else if(state->phase==202) {
+            auto *grid = window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid"));
+            state->catalogPassed = state->catalogPassed && grid && grid->property("count").toInt() == 0;
+            window->resize(1540,920);
             window->setProperty("workspaceIndex", 1);
             state->phase=21;
         } else if(state->phase==21) {
@@ -100,7 +129,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->historyPassed && state->geometryPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->historyPassed && state->geometryPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
@@ -108,6 +137,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
+        report["ui_catalog_passed"]=state->catalogPassed;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
         report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);

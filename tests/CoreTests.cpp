@@ -734,6 +734,74 @@ private slots:
         QCOMPARE(photos.size(), 1); QCOMPARE(photos[0].adjustments.exposure, 1.75);
     }
 
+    void catalogBatchAnnotationsAndSelectionSurviveReopenWithoutDevelopChanges() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        PhotoController controller(nullptr);
+        for (int i = 0; i < 3; ++i) { const auto path = dir.filePath(QString::number(i)+".png"); QVERIFY(image.save(path)); QVERIFY(controller.importFile(QUrl::fromLocalFile(path))); }
+        controller.setExposure(1.25); controller.finishInteraction();
+        QVERIFY(controller.setPhotoSelection({0,2,2})); QCOMPARE(controller.selectedIndices().size(),2);
+        QVERIFY(!controller.setPhotoSelection({0,3})); QCOMPARE(controller.selectedIndices().size(),2);
+        QVERIFY(!controller.setPhotoSelection({0,1.5}));
+        QVERIFY(controller.setSelectionKeywords("travel, Sony, travel"));
+        QVERIFY(controller.addSelectionToAlbum(" Japan "));
+        QVERIFY(controller.setSelectionLabel("blue"));
+        QVERIFY(controller.setSelectionRating(4)); QVERIFY(controller.setSelectionFlag("pick"));
+        QVERIFY(!controller.setSelectionLabel("unknown"));
+        QVERIFY(!controller.setSelectionKeywords(QString(81,'a')));
+        QCOMPARE(controller.exposure(),1.25); QVERIFY(controller.canUndo());
+        const auto untouched = controller.library()[1].toMap();
+        QCOMPARE(untouched["rating"].toInt(),0); QVERIFY(untouched["keywords"].toStringList().isEmpty());
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Tags")); QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.albumNames(),QStringList{"Japan"});
+        reopened.selectPhoto(2); QCOMPARE(reopened.currentKeywords(),(QStringList{"Sony","travel"}));
+        QCOMPARE(reopened.currentColorLabel(),QStringLiteral("blue")); QCOMPARE(reopened.currentRating(),4);
+        QCOMPARE(reopened.exposure(),0.0); // original edit belongs to photo 0
+        QVERIFY(reopened.setPhotoSelection({0,2})); QVERIFY(reopened.removeSelectionFromAlbum("Japan"));
+        QVERIFY(reopened.albumNames().isEmpty()); QVERIFY(reopened.flushEdits());
+        QVERIFY(reopened.setPhotoSelection({})); QVERIFY(!reopened.setSelectionRating(3));
+    }
+
+    void legacyCatalogTagsMigrationHasWalConsistentBackupAndRecoversFromFailure() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        ProjectDatabase db; QVERIFY(db.create(dir.path(),"Migration"));
+        AdjustmentState state; state.exposure = 1.5;
+        QVERIFY(db.updateAdjustment("source.ARW",state)); QVERIFY(db.flush());
+        const auto folder = db.projectPath(); const QString connection = "tag-migration-fixture";
+        {
+            auto sql = QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("Project.db")); QVERIFY(sql.open());
+            QSqlQuery query(sql); QVERIFY(query.exec("DROP TABLE catalog_tags")); sql.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QVERIFY(QDir(QDir(folder).filePath("backups")).removeRecursively());
+        QFile blocked(QDir(folder).filePath("backups")); QVERIFY(blocked.open(QIODevice::WriteOnly)); blocked.close();
+        CatalogTags tags; tags.keywords = {"Sony"}; tags.albums = {"Japan"};
+        QVERIFY(db.updateTagsBatch({{"source.ARW",tags}})); QVERIFY(!db.flush());
+        QVERIFY(blocked.remove());
+        QVERIFY(db.updateTagsBatch({{"source.ARW",tags}})); QVERIFY2(db.flush(),qPrintable(db.lastError()));
+        const auto backups = QDir(QDir(folder).filePath("backups")).entryList({"*.db"},QDir::Files);
+        QCOMPARE(backups.size(),1);
+        {
+            auto sql = QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("backups/"+backups[0]));
+            sql.setConnectOptions("QSQLITE_OPEN_READONLY"); QVERIFY(sql.open()); QSqlQuery query(sql);
+            QVERIFY(query.exec("SELECT adjustment_json FROM photos")); QVERIFY(query.next());
+            QCOMPARE(AdjustmentState::fromJson(QJsonDocument::fromJson(query.value(0).toByteArray()).object()).exposure,1.5);
+            QVERIFY(query.exec("SELECT name FROM sqlite_master WHERE name='catalog_tags'")); QVERIFY(!query.next()); sql.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(db.open(folder,&photos));
+        QCOMPARE(photos[0].tags.keywords,QStringList{"Sony"}); QCOMPARE(photos[0].adjustments.exposure,1.5);
+        {
+            auto sql = QSqlDatabase::addDatabase("QSQLITE",connection); sql.setDatabaseName(QDir(folder).filePath("Project.db")); QVERIFY(sql.open());
+            QSqlQuery query(sql); auto invalid = tags.toJson(); invalid.insert("schema",99);
+            query.prepare("UPDATE catalog_tags SET json=?"); query.addBindValue(QString::fromUtf8(QJsonDocument(invalid).toJson())); QVERIFY(query.exec()); sql.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        ProjectDatabase active; QVERIFY(active.create(dir.path(),"Active"));
+        QVERIFY(!active.open(folder,&photos)); QCOMPARE(active.projectName(),QStringLiteral("Active")); QVERIFY(active.flush());
+    }
+
     void zipWriterCreatesZipSignature() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

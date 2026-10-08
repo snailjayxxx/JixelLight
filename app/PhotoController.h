@@ -36,6 +36,11 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool calibrationBusy READ calibrationBusy NOTIFY calibrationChanged)
     Q_PROPERTY(QVariantMap calibrationReport READ calibrationReport NOTIFY calibrationChanged)
     Q_PROPERTY(QVariantList library READ library NOTIFY libraryChanged)
+    Q_PROPERTY(QVariantList selectedIndices READ selectedIndices NOTIFY libraryChanged)
+    Q_PROPERTY(QStringList albumNames READ albumNames NOTIFY libraryChanged)
+    Q_PROPERTY(QStringList currentKeywords READ currentKeywords NOTIFY libraryChanged)
+    Q_PROPERTY(QStringList currentAlbums READ currentAlbums NOTIFY libraryChanged)
+    Q_PROPERTY(QString currentColorLabel READ currentColorLabel NOTIFY libraryChanged)
     Q_PROPERTY(int currentIndex READ currentIndex NOTIFY currentIndexChanged)
     Q_PROPERTY(int currentRating READ currentRating NOTIFY curationChanged)
     Q_PROPERTY(QString currentFlag READ currentFlag NOTIFY curationChanged)
@@ -209,6 +214,18 @@ public:
     bool canUndo() const;
     bool canRedo() const;
     QVariantList editHistory() const;
+    QVariantList selectedIndices() const;
+    QStringList albumNames() const;
+    QStringList currentKeywords() const;
+    QStringList currentAlbums() const;
+    QString currentColorLabel() const;
+    Q_INVOKABLE bool setPhotoSelection(const QVariantList &indices);
+    Q_INVOKABLE bool setSelectionRating(int rating);
+    Q_INVOKABLE bool setSelectionFlag(const QString &flag);
+    Q_INVOKABLE bool setSelectionKeywords(const QString &text);
+    Q_INVOKABLE bool setSelectionLabel(const QString &label);
+    Q_INVOKABLE bool addSelectionToAlbum(const QString &name);
+    Q_INVOKABLE bool removeSelectionFromAlbum(const QString &name);
     QStringList presetNames() const;
     Q_INVOKABLE bool saveNamedPreset(const QString &name);
     Q_INVOKABLE bool applyNamedPreset(const QString &name);
@@ -242,10 +259,11 @@ private:
     struct PhotoEntry {
         QString path; QString name; AdjustmentState state; bool raw = false;
         int rating = 0; QString flag = QStringLiteral("none");
-        EditHistory history;
+        EditHistory history; CatalogTags tags;
     };
     QVector<PhotoEntry> m_photos;
     QSet<QString> m_importedPaths;
+    QSet<int> m_selectedPhotos;
     int m_currentIndex = -1;
     quint64 m_previewRevision = 0;
     QImage m_fullSource, m_previewSource, m_processedPreview;
@@ -276,6 +294,8 @@ private:
     QHash<QString, AdjustmentState> m_dirtyEdits;
     QHash<QString, EditHistory> m_dirtyHistories;
     QHash<QString, ProjectDatabase::PhotoCuration> m_dirtyCuration;
+    QHash<QString, CatalogTags> m_dirtyTags;
+    bool updateSelectedTags(const QString &operation, const QString &value);
     QElapsedTimer m_renderClock;
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;

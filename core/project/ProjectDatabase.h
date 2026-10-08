@@ -1,5 +1,6 @@
 #pragma once
 #include "core/commands/EditHistory.h"
+#include "core/library/CatalogTags.h"
 #include <QObject>
 #include <QHash>
 #include <QVector>
@@ -12,7 +13,7 @@ class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
     struct PhotoCuration { int rating = 0; QString flag = QStringLiteral("none"); };
-    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; };
+    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
@@ -22,6 +23,7 @@ public:
     // Curation is independent of Develop adjustments, so syncing presets
     // cannot overwrite a photo's personal pick/reject/rating decision.
     bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);
+    bool updateTagsBatch(const QHash<QString, CatalogTags> &changes);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);
     bool updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories = {});

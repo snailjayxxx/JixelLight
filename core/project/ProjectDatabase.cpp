@@ -65,6 +65,7 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
                 ok = query.exec("PRAGMA journal_mode=WAL") && query.exec("PRAGMA busy_timeout=3000")
                     && query.exec("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)")
                     && query.exec("CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')")
+                    && query.exec("CREATE TABLE catalog_tags(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
                     && query.exec("CREATE TABLE curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))");
                 if (ok) {
                     query.prepare("INSERT INTO meta(key,value) VALUES('project_name',?)");
@@ -133,6 +134,25 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     error = tableQuery.lastError().text();
                 }
                 const bool hasCuration = ready && tableQuery.next();
+                QHash<QString, CatalogTags> tags;
+                QSqlQuery tagQuery(db);
+                ready = ready && tagQuery.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_tags'");
+                const bool hasTags = ready && tagQuery.next();
+                if (hasTags) {
+                    ready = tagQuery.exec("SELECT path,json FROM catalog_tags");
+                    while (ready && tagQuery.next()) {
+                        const auto path = tagQuery.value(0).toString();
+                        const auto bytes = tagQuery.value(1).toString().toUtf8();
+                        QJsonParseError parse; const auto doc = QJsonDocument::fromJson(bytes, &parse);
+                        CatalogTags item;
+                        if (path.isEmpty() || bytes.size() > 16384 || parse.error != QJsonParseError::NoError
+                            || !doc.isObject() || !CatalogTags::fromJson(doc.object(), &item) || tags.size() >= 1000000) {
+                            ready = false; error = QStringLiteral("Invalid or unsupported catalog annotations"); break;
+                        }
+                        tags.insert(path, item);
+                    }
+                }
+                if (!ready && error.isEmpty()) error = tagQuery.lastError().text();
                 QSqlQuery query(db);
                 const QString querySql = hasCuration
                     ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none') FROM photos p LEFT JOIN curation c ON c.path=p.path ORDER BY p.imported_at,p.path")
@@ -164,7 +184,7 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                         break;
                     }
                     history.initialize(adjustments);
-                    staged.push_back({path, adjustments, rating, flag, history});
+                    staged.push_back({path, adjustments, rating, flag, history, tags.value(path)});
                     if (staged.size() > 1000000) {
                         ready = false;
                         error = QStringLiteral("Project contains too many photos");
@@ -247,6 +267,45 @@ bool ProjectDatabase::updateCurationBatch(const QHash<QString, PhotoCuration> &c
         { QMutexLocker lock(&state->mutex); state->error = error; }
         if (ok) emit saved(changes.size());
         else emit writeFailed(error);
+    }, Qt::QueuedConnection);
+}
+
+bool ProjectDatabase::updateTagsBatch(const QHash<QString, CatalogTags> &changes) {
+    if (!m_open) return false;
+    if (changes.isEmpty()) return true;
+    for (auto it = changes.begin(); it != changes.end(); ++it) {
+        CatalogTags checked;
+        if (it.key().isEmpty() || !CatalogTags::fromJson(it.value().toJson(), &checked)) return false;
+    }
+    const auto state = m_state;
+    const auto folder = m_projectPath;
+    return QMetaObject::invokeMethod(m_worker, [this,state,folder,changes] {
+        auto db = QSqlDatabase::database(state->connectionName, false);
+        QSqlQuery query(db); QString error;
+        bool ok = db.isOpen() && query.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_tags'");
+        const bool exists = ok && query.next(); query.finish();
+        if (ok && !exists) {
+            // VACUUM INTO captures committed WAL contents as a consistent backup.
+            // Backup must succeed before the first additive schema migration.
+            ok = QDir().mkpath(QDir(folder).filePath("backups"));
+            const auto backup = QDir(folder).filePath("backups/Project-before-catalog-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".db");
+            if (ok) ok = query.prepare("VACUUM INTO ?");
+            if (ok) { query.addBindValue(backup); ok = query.exec(); }
+            if (!ok) error = QStringLiteral("Catalog backup failed: ") + query.lastError().text();
+            query.finish();
+        }
+        if (ok) ok = db.transaction();
+        if (ok) ok = query.exec("CREATE TABLE IF NOT EXISTS catalog_tags(path TEXT PRIMARY KEY,json TEXT NOT NULL)");
+        if (ok) ok = query.prepare("INSERT INTO catalog_tags(path,json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET json=excluded.json");
+        for (auto it = changes.begin(); ok && it != changes.end(); ++it) {
+            query.bindValue(0,it.key()); query.bindValue(1,QString::fromUtf8(QJsonDocument(it.value().toJson()).toJson(QJsonDocument::Compact)));
+            ok = query.exec();
+        }
+        if (!ok && error.isEmpty()) error = query.lastError().text().isEmpty() ? db.lastError().text() : query.lastError().text();
+        if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
+        if (!ok) db.rollback();
+        { QMutexLocker lock(&state->mutex); state->error = error; }
+        if (ok) emit saved(changes.size()); else emit writeFailed(error);
     }, Qt::QueuedConnection);
 }
 

@@ -63,6 +63,10 @@ QVariantList PhotoController::library() const {
         row["index"] = i;
         row["rating"] = m_photos[i].rating;
         row["flag"] = m_photos[i].flag;
+        row["selected"] = m_selectedPhotos.contains(i);
+        row["keywords"] = m_photos[i].tags.keywords;
+        row["albums"] = m_photos[i].tags.albums;
+        row["label"] = m_photos[i].tags.label;
         row["raw"] = m_photos[i].raw;
         row["type"] = m_photos[i].raw ? QStringLiteral("RAW") : QFileInfo(m_photos[i].path).suffix().toUpper();
         out.push_back(row);
@@ -123,6 +127,74 @@ void PhotoController::setCropAspect(double aspect) {
 void PhotoController::resetGeometry() {
     if (auto *state = mutableCurrentState()) { state->geometry = {}; persistAndApply("geometry_reset"); }
 }
+
+QVariantList PhotoController::selectedIndices() const {
+    auto indices = m_selectedPhotos.values(); std::sort(indices.begin(),indices.end());
+    QVariantList out; for (int index : indices) out.append(index); return out;
+}
+QStringList PhotoController::albumNames() const {
+    QStringList names; for (const auto &photo : m_photos) names.append(photo.tags.albums);
+    names.removeDuplicates(); names.sort(); return names;
+}
+QStringList PhotoController::currentKeywords() const { return hasImage() ? m_photos[m_currentIndex].tags.keywords : QStringList{}; }
+QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
+QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
+bool PhotoController::setPhotoSelection(const QVariantList &indices) {
+    QSet<int> selected;
+    for (const auto &value : indices) {
+        bool valid = false; const int index = value.toInt(&valid);
+        if (!valid || value.toDouble() != index || index < 0 || index >= m_photos.size()) return false;
+        selected.insert(index);
+    }
+    m_selectedPhotos = selected; emit libraryChanged(); return true;
+}
+bool PhotoController::setSelectionRating(int rating) {
+    if (rating < 0 || rating > 5 || m_selectedPhotos.isEmpty()) return false;
+    for (int index : m_selectedPhotos) {
+        auto &photo = m_photos[index]; photo.rating = rating;
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+    }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    ActionTrace::instance().record("selection_rating", {{"count",m_selectedPhotos.size()},{"rating",rating}}); return true;
+}
+bool PhotoController::setSelectionFlag(const QString &flag) {
+    if ((flag != "none" && flag != "pick" && flag != "reject") || m_selectedPhotos.isEmpty()) return false;
+    for (int index : m_selectedPhotos) {
+        auto &photo = m_photos[index]; photo.flag = flag;
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+    }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    ActionTrace::instance().record("selection_flag", {{"count",m_selectedPhotos.size()},{"flag",flag}}); return true;
+}
+bool PhotoController::updateSelectedTags(const QString &operation, const QString &value) {
+    if (m_selectedPhotos.isEmpty()) return false;
+    QHash<int, CatalogTags> staged;
+    for (int index : m_selectedPhotos) {
+        auto tags = m_photos[index].tags;
+        if (operation == "keywords") tags.keywords = value.split(',');
+        else if (operation == "label") tags.label = value;
+        else {
+            const auto name = value.trimmed();
+            if (name.isEmpty()) return false;
+            if (operation == "album_add") tags.albums.append(name);
+            else if (operation == "album_remove") tags.albums.removeAll(name);
+            else return false;
+        }
+        if (!CatalogTags::normalize(&tags.keywords,64) || !CatalogTags::normalize(&tags.albums,32)
+            || !CatalogTags::validLabel(tags.label)) return false;
+        staged.insert(index,tags);
+    }
+    for (auto it = staged.begin(); it != staged.end(); ++it) {
+        auto &photo = m_photos[it.key()]; photo.tags = it.value();
+        if (m_project.isOpen()) m_dirtyTags.insert(photo.path,photo.tags);
+    }
+    enqueueEdits(); emit libraryChanged();
+    ActionTrace::instance().record("selection_" + operation, {{"count",staged.size()}}); return true;
+}
+bool PhotoController::setSelectionKeywords(const QString &text) { return updateSelectedTags("keywords",text); }
+bool PhotoController::setSelectionLabel(const QString &label) { return updateSelectedTags("label",label); }
+bool PhotoController::addSelectionToAlbum(const QString &name) { return updateSelectedTags("album_add",name); }
+bool PhotoController::removeSelectionFromAlbum(const QString &name) { return updateSelectedTags("album_remove",name); }
 
 namespace {
 QString presetFile() {
@@ -403,7 +475,9 @@ void PhotoController::importFiles(const QVariantList &urls) {
 }
 
 void PhotoController::selectPhoto(int index) {
-    if (index < 0 || index >= m_photos.size() || index == m_currentIndex) return;
+    if (index < 0 || index >= m_photos.size()) return;
+    m_selectedPhotos = {index}; emit libraryChanged();
+    if (index == m_currentIndex) return;
     enqueueEdits();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
@@ -461,6 +535,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
             auto history = p.history; history.initialize(p.state);
             m_dirtyHistories.insert(p.path, history);
             m_dirtyCuration.insert(p.path, {p.rating, p.flag});
+            m_dirtyTags.insert(p.path,p.tags);
         }
         enqueueEdits();
         emit projectChanged();
@@ -491,7 +566,7 @@ bool PhotoController::openProject(const QUrl &url) {
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     m_dirtyEdits.clear(); m_dirtyHistories.clear();
-    m_dirtyCuration.clear();
+    m_dirtyCuration.clear(); m_dirtyTags.clear(); m_selectedPhotos.clear();
     m_currentIndex = -1;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
@@ -514,7 +589,7 @@ bool PhotoController::openProject(const QUrl &url) {
         const QString identity = info.canonicalFilePath();
         if (identity.isEmpty() || m_importedPaths.contains(identity)) continue;
         const QString absolute = info.absoluteFilePath();
-        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history});
+        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags});
         m_importedPaths.insert(identity);
     }
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
@@ -925,6 +1000,7 @@ void PhotoController::enqueueEdits() {
     if (!m_project.isOpen()) return;
     if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); }
     if (!m_dirtyCuration.isEmpty() && m_project.updateCurationBatch(m_dirtyCuration)) m_dirtyCuration.clear();
+    if (!m_dirtyTags.isEmpty() && m_project.updateTagsBatch(m_dirtyTags)) m_dirtyTags.clear();
 }
 bool PhotoController::flushEdits() {
     enqueueEdits();
