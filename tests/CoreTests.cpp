@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QJsonDocument>
 #include "core/project/ProjectDatabase.h"
 #include <QImageReader>
 #include <QRgba64>
