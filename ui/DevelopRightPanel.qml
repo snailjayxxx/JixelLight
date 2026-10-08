@@ -123,6 +123,12 @@ Rectangle {
                 spacing: 6
 
                 Label { text: root.t("裁切 / 旋转（CPU 几何准备）", "CROP / ROTATE (CPU GEOMETRY)"); color: "#a3b2c1"; font.bold: true }
+                Button {
+                    objectName: "beginInteractiveCrop"; Layout.fillWidth: true
+                    text: root.controller.cropEditing ? root.t("取消裁剪编辑", "Cancel crop editing") : root.t("在画布上裁剪…", "Crop on canvas…")
+                    enabled: root.controller.previewReady
+                    onClicked: root.controller.cropEditing ? root.controller.cancelCrop() : root.controller.beginCrop()
+                }
                 RowLayout {
                     Layout.fillWidth: true
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "↶ 90°"; enabled: root.controller.hasImage; onClicked: root.controller.rotatePhoto(-1) }

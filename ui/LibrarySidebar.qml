@@ -14,7 +14,7 @@ Rectangle {
 
     function historyTitle(action) {
         var titles = {
-            geometry_crop: ["裁切", "Crop"], geometry_rotate: ["旋转", "Rotate"],
+            xmp_import: ["导入 XMP", "Import XMP"], geometry_crop: ["裁切", "Crop"], geometry_rotate: ["旋转", "Rotate"],
             geometry_flip: ["翻转", "Flip"], geometry_reset: ["重置几何", "Reset geometry"],
             named_preset: ["命名预设", "Named preset"], command_replay: ["命令编辑", "Command edit"], original: ["起始状态", "Starting state"], adjustment: ["基本调整", "Basic adjustment"],
             color_mixer: ["混色器", "Color mixer"], curve_point: ["曲线", "Curve"], curve_reset: ["重置曲线", "Reset curve"],

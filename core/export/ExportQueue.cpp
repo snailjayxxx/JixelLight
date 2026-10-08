@@ -4,6 +4,7 @@
 #include "core/export/ExportQueue.h"
 #include "core/export/JpegExporter.h"
 #include "core/export/PngExporter.h"
+#include "core/export/RasterExporter.h"
 #include <QFileInfo>
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
@@ -64,8 +65,11 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                     metadata.value("rawBaselineExposure",0.0)).toDouble();
                 if(!std::isfinite(rawBaseExposure))rawBaseExposure=0.0;
                 rawBaseExposure=std::clamp(rawBaseExposure,-8.0,8.0);
-                if (!source.image.isNull() && QFileInfo(request.destination).suffix().compare("png", Qt::CaseInsensitive) == 0)
-                    result.ok=exportPng16(source.image,state,request.destination,request.space,token,&result.error,rawSource,float(rawBaseExposure));
+                const auto suffix=QFileInfo(request.destination).suffix().toLower();
+                if (!source.image.isNull() && QStringList{"png","tif","tiff","webp"}.contains(suffix))
+                    result.ok=exportRaster(source.image,state,request.destination,request.space,
+                        suffix=="png" ? RasterFormat::Png16 : suffix=="webp" ? RasterFormat::WebP8 : RasterFormat::Tiff16,
+                        request.quality,token,&result.error,rawSource,float(rawBaseExposure));
                 else if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,request.destination,request.space,request.quality,token,&result.error,
                     [this,index,total=requests.size(),file=request.sourcePath](int percent) {
                         QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);

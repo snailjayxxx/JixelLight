@@ -99,11 +99,11 @@ ApplicationWindow {
                 id: batchFormatBox
                 visible: exportSettingsDialog.batchMode
                 Layout.fillWidth: true
-                model: ["JPEG", "PNG 16-bit"]
+                model: ["JPEG", "PNG 16-bit", "TIFF 16-bit", "WebP 8-bit"]
             }
             RowLayout {
                 Layout.fillWidth: true
-                Label { text: window.t("JPEG 质量", "JPEG Quality"); color: "#d6dee8" }
+                Label { text: window.t("JPEG / WebP 质量", "JPEG / WebP Quality"); color: "#d6dee8" }
                 Item { Layout.fillWidth: true }
                 SpinBox {
                     id: exportQualityBox
@@ -115,8 +115,8 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 text: window.t(
-                    "从线性宽色域数据直接导出，嵌入目标 ICC。JPEG 使用分块导出；16-bit PNG 使用完整帧内存。不覆盖原始照片。",
-                    "Export directly from linear wide-gamut data with a target ICC. JPEG is tiled; 16-bit PNG uses full-frame memory. Originals are protected.")
+                    "嵌入目标 ICC。PNG / TIFF 保留 16-bit；WebP 为 8-bit，质量 100 时无损。TIFF 使用无损 LZW 压缩。",
+                    "Target ICC is embedded. PNG / TIFF retain 16-bit channels. WebP is 8-bit; quality 100 is lossless. TIFF uses lossless LZW compression.")
                 wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
             }
         }
@@ -126,11 +126,11 @@ ApplicationWindow {
         id: exportDialog
         title: window.t("导出照片", "Export Photo")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: selectedNameFilter.index === 1 ? "png" : "jpg"
-        nameFilters: ["JPEG (*.jpg *.jpeg)", "PNG 16-bit (*.png)"]
+        defaultSuffix: ["jpg","png","tif","webp"][Math.max(0,selectedNameFilter.index)]
+        nameFilters: ["JPEG (*.jpg *.jpeg)", "PNG 16-bit (*.png)", "TIFF 16-bit (*.tif *.tiff)", "WebP 8-bit (*.webp)"]
         onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
-    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, batchFormatBox.currentIndex === 1 ? "png" : "jpeg") }
+    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, ["jpeg","png","tiff","webp"][batchFormatBox.currentIndex]) }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }
     Dialog {
@@ -156,6 +156,8 @@ ApplicationWindow {
             id: projectActions
             MenuItem { text: window.t("新建项目", "New Project"); onTriggered: projectFolder.open() }
             MenuItem { text: window.t("打开已有项目", "Open Existing Project"); onTriggered: openProjectFolder.open() }
+            MenuSeparator {}
+            MenuItem { text: window.t("导入 XMP 到当前版本…", "Import XMP into current version…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpImportDialog() }
         }
         Menu {
             id: exportActions
@@ -169,6 +171,8 @@ ApplicationWindow {
                 enabled: photoController.hasImage && !photoController.exportBusy
                 onTriggered: { exportSettingsDialog.batchMode = true; exportSettingsDialog.open() }
             }
+            MenuSeparator {}
+            MenuItem { text: window.t("导出 XMP 侧车文件…", "Export XMP sidecar…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpExportDialog() }
         }
         RowLayout {
             anchors.fill: parent

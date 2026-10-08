@@ -2,6 +2,7 @@
 #include "core/cache/SourceCache.h"
 #include "core/export/JpegExporter.h"
 #include "core/export/PngExporter.h"
+#include "core/export/RasterExporter.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
 #include "core/project/ProjectDatabase.h"
@@ -11,6 +12,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QImageWriter>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -77,13 +79,13 @@ bool readBatch(const QString &path, const QString &defaultSpace, QVector<ExportJ
 
 bool readCatalog(const QString &path, const QString &destination, const QString &space, const QString &format,
                  QVector<ExportJob> *jobs, QString *error) {
-    if (format!="png" && format!="jpeg" && format!="jpg") { *error="Catalog format must be JPEG or PNG"; return false; }
+    if (!QStringList{"png","jpeg","jpg","tif","tiff","webp"}.contains(format)) { *error="Catalog format must be JPEG, PNG, TIFF or WebP"; return false; }
     if (destination.trimmed().isEmpty() || !QFileInfo(destination).isDir()) { *error="Choose an existing --output-dir for catalog exports"; return false; }
     ProjectDatabase catalog; QVector<ProjectDatabase::SavedPhoto> photos;
     if (!catalog.readSnapshot(path,&photos)) { *error=catalog.lastError(); return false; }
     if (photos.isEmpty() || photos.size()>1000) { *error="Catalog export requires 1 to 1000 saved versions"; return false; }
     const QDir base(QFileInfo(path).absoluteFilePath()), output(QFileInfo(destination).absoluteFilePath());
-    const auto extension=format=="png" ? QStringLiteral("png") : QStringLiteral("jpg");
+    const auto extension=format=="jpeg" ? QStringLiteral("jpg") : format=="tiff" ? QStringLiteral("tif") : format;
     for (qsizetype i=0;i<photos.size();++i) {
         const auto &photo=photos[i]; const auto source=base.absoluteFilePath(photo.path);
         const auto filename=QString("%1_%2_JixelLight.%3").arg(i+1,6,10,QChar('0')).arg(QFileInfo(source).completeBaseName().left(120)).arg(extension);
@@ -105,7 +107,10 @@ bool preflight(QVector<ExportJob> *jobs, QString *error) {
         if (!source.isFile() || !source.isReadable()) return fail("Source is not a readable file: "+job.source);
         if (destination.exists() || destination.isSymLink()) return fail("Destination already exists; choose a new path");
         const auto suffix=destination.suffix().toLower();
-        if (suffix!="png" && suffix!="jpg" && suffix!="jpeg") return fail("Destination must be JPEG or PNG");
+        if (!QStringList{"png","jpg","jpeg","tif","tiff","webp"}.contains(suffix)) return fail("Destination must be JPEG, PNG, TIFF or WebP");
+        const auto codec=suffix=="tif" ? QByteArray("tiff") : suffix.toLatin1();
+        if (suffix!="jpg" && suffix!="jpeg" && !QImageWriter::supportedImageFormats().contains(codec))
+            return fail("Required image format plugin is unavailable: "+QString::fromLatin1(codec));
         const QFileInfo parent(destination.absolutePath());
         if (!parent.isDir() || parent.canonicalFilePath().isEmpty()) return fail("Destination directory does not exist");
         job.source=source.absoluteFilePath();
@@ -134,8 +139,8 @@ bool executeExport(const ExportJob &job, SourceCache &cache, QJsonObject *result
     if (!staging.isValid()) { *error=staging.errorString(); return false; }
     const auto temporary=QDir(staging.path()).filePath("output."+suffix);
     const auto space=ColorManagement::fromKey(job.space);
-    const bool rendered=suffix=="png" ? exportPng16(source.image,state,temporary,space,{},error,raw,float(base))
-        : exportJpegTiled(source.image,state,temporary,space,92,{},error,{}, {},raw,float(base));
+    const bool rendered=(suffix=="jpg" || suffix=="jpeg") ? exportJpegTiled(source.image,state,temporary,space,92,{},error,{}, {},raw,float(base))
+        : exportRaster(source.image,state,temporary,space,suffix=="png" ? RasterFormat::Png16 : suffix=="webp" ? RasterFormat::WebP8 : RasterFormat::Tiff16,92,{},error,raw,float(base));
     if (!rendered) return false;
     QFile publication(temporary);
     if (!publication.rename(job.destination)) { *error="Cannot publish new destination: "+publication.errorString(); return false; }
@@ -157,10 +162,10 @@ int main(int argc, char **argv) {
     parser.addOption({"batch","Execute a validated JSON export plan; relative paths use its directory. Stop on runtime failure, retaining completed outputs.","file"});
     parser.addOption({"catalog","Export all saved catalog versions from a read-only snapshot.","project.jlp"});
     parser.addOption({"output-dir","Existing output directory for --catalog.","directory"});
-    parser.addOption({"format","Catalog output format: png, jpeg (JPEG quality 92).","format","png"});
+    parser.addOption({"format","Catalog output format: png, jpeg, tiff, webp (JPEG/WebP quality 92).","format","png"});
     parser.addOption({"space","Output ICC space: srgb, display-p3, adobe-rgb, prophoto-rgb.","space","srgb"});
     parser.addPositionalArgument("source","Input photograph.");
-    parser.addPositionalArgument("destination","New JPEG or 16-bit PNG path.");
+    parser.addPositionalArgument("destination","New JPEG, 16-bit PNG/TIFF or 8-bit WebP path.");
     parser.process(app);
     auto fail=[](const QString &error) { QTextStream(stderr) << error << '\n'; return 2; };
     if (parser.isSet("schema")) {

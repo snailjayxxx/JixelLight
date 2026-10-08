@@ -9,11 +9,22 @@
 #include <QSaveFile>
 #include <QJsonDocument>
 #include <QJSValue>
+#include <QMouseEvent>
 #include <memory>
 
+namespace {
+QQuickItem *visualChild(QQuickItem *item, const QString &name) {
+    if (!item) return nullptr;
+    if (item->objectName()==name) return item;
+    for (auto *child : item->childItems()) if (auto *found=visualChild(child,name)) return found;
+    return nullptr;
+}
+}
+
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
+    auto cropTrace=std::make_shared<QJsonObject>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
         const bool ready=controller->previewReady() && !controller->loading() && !controller->rendering();
@@ -149,6 +160,51 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->phase=23;
         } else if(state->phase==23 && ready) {
             state->geometryPassed = controller->geometry().value("quarterTurns").toInt()==1;
+            const auto button=window->findChild<QQuickItem *>(QStringLiteral("beginInteractiveCrop"));
+            if (button) QMetaObject::invokeMethod(button,"clicked",Qt::DirectConnection);
+            state->interactiveCropPassed=controller->cropEditing();
+            cropTrace->insert("began",controller->cropEditing());
+            state->phase=231;
+        } else if(state->phase==231 && ready) {
+            const auto overlay=window->findChild<QQuickItem *>(QStringLiteral("interactiveCropOverlay"));
+            // Repeater delegates live in the visual tree, which can differ
+            // from QObject ownership used by findChild.
+            const auto handle=visualChild(overlay,QStringLiteral("cropHandle4"));
+            state->interactiveCropPassed=state->interactiveCropPassed && overlay && handle && overlay->isVisible();
+            cropTrace->insert("overlay",overlay!=nullptr); cropTrace->insert("handle",handle!=nullptr);
+            cropTrace->insert("visible",overlay && overlay->isVisible());
+            if (handle && overlay) {
+                // Full-frame corner centers lie on the canvas clip edge. Hit
+                // the visible interior of the handle, as a real pointer would.
+                const auto origin=handle->mapToScene(QPointF(handle->width()/2-3,handle->height()/2-3));
+                const auto destination=origin-QPointF(overlay->width()/4,overlay->height()/4);
+                cropTrace->insert("origin_x",origin.x()); cropTrace->insert("origin_y",origin.y());
+                auto send=[&](QEvent::Type type,QPointF position,Qt::MouseButton button,Qt::MouseButtons buttons) {
+                    QMouseEvent event(type,position,window->mapToGlobal(position.toPoint()),button,buttons,Qt::NoModifier);
+                    QCoreApplication::sendEvent(window,&event);
+                };
+                send(QEvent::MouseButtonPress,origin,Qt::LeftButton,Qt::LeftButton);
+                send(QEvent::MouseMove,destination,Qt::NoButton,Qt::LeftButton);
+                send(QEvent::MouseButtonRelease,destination,Qt::LeftButton,Qt::NoButton);
+            }
+            state->phase=232;
+        } else if(state->phase==232 && ready) {
+            const auto overlay=window->findChild<QQuickItem *>(QStringLiteral("interactiveCropOverlay"));
+            const auto selection=overlay ? overlay->property("selection").toRectF() : QRectF{};
+            cropTrace->insert("width",selection.width()); cropTrace->insert("height",selection.height());
+            state->interactiveCropPassed=state->interactiveCropPassed && selection.width()>.5 && selection.width()<.99
+                && selection.height()>.5 && selection.height()<.99;
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".crop.png");
+            const auto apply=window->findChild<QQuickItem *>(QStringLiteral("applyInteractiveCrop"));
+            if (apply) QMetaObject::invokeMethod(apply,"clicked",Qt::DirectConnection);
+            state->interactiveCropPassed=state->interactiveCropPassed && !controller->cropEditing();
+            cropTrace->insert("applied",!controller->cropEditing());
+            state->phase=233;
+        } else if(state->phase==233 && ready) {
+            state->interactiveCropPassed=state->interactiveCropPassed && controller->geometry().value("width").toDouble()<1;
+            controller->undo();
+            state->interactiveCropPassed=state->interactiveCropPassed && controller->geometry().value("width").toDouble()==1
+                && controller->geometry().value("quarterTurns").toInt()==1;
             controller->setCrop(0,0,.5,1);
             controller->setExactScopes(true);
             state->phase=24;
@@ -174,7 +230,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
@@ -188,6 +244,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_virtual_copies_passed"]=state->copiesPassed;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
+        report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
+        report["ui_interactive_crop_trace"]=*cropTrace;
         report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);
         report["look"]=QJsonObject::fromVariantMap(controller->lookState());
         report["reference"]=QJsonObject::fromVariantMap(controller->cameraReferenceInfo());

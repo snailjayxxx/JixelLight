@@ -2,6 +2,7 @@
 #include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/metadata/MetadataReader.h"
+#include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/commands/CommandRegistry.h"
@@ -134,6 +135,29 @@ void PhotoController::setCropAspect(double aspect) {
 }
 void PhotoController::resetGeometry() {
     if (auto *state = mutableCurrentState()) { CommandRegistry::execute(*state,{{"command","geometry.reset"}}); persistAndApply("geometry_reset"); }
+}
+
+GeometryState PhotoController::previewGeometry() const {
+    auto geometry = currentState().geometry;
+    if (m_cropEditing) geometry.crop = QRectF(0,0,1,1);
+    return geometry;
+}
+bool PhotoController::beginCrop() {
+    if (!hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
+    finishInteraction(); m_cropEditing = true;
+    m_zoom = 0; m_centerX = m_centerY = .5;
+    emit cropEditingChanged(); prepareCurrent(); return true;
+}
+void PhotoController::cancelCrop() {
+    if (!m_cropEditing) return;
+    m_cropEditing = false; emit cropEditingChanged(); prepareCurrent();
+}
+bool PhotoController::applyCrop(double x, double y, double width, double height) {
+    if (!m_cropEditing || !GeometryState::validCrop(x,y,width,height)) return false;
+    const auto crop = currentState().geometry.orientedRect({x,y,width,height},true);
+    if (!GeometryState::validCrop(crop.x(),crop.y(),crop.width(),crop.height())) return false;
+    m_cropEditing = false; emit cropEditingChanged();
+    setCrop(crop.x(),crop.y(),crop.width(),crop.height()); finishInteraction(); return true;
 }
 
 QVariantList PhotoController::selectedIndices() const {
@@ -335,6 +359,58 @@ void PhotoController::openPresetExportDialog(const QString &name) {
 void PhotoController::openPresetImportDialog(const QString &replacementName) {
     const auto path=QFileDialog::getOpenFileName(nullptr,uiText("导入 JixelLight 预设", "Import JixelLight preset"),{},"JixelLight preset (*.jixelpreset.json)");
     if (!path.isEmpty()) importNamedPreset(QUrl::fromLocalFile(path),replacementName);
+}
+
+bool PhotoController::exportXmp(const QUrl &destination) {
+    if (!hasImage() || !destination.isLocalFile()) return false;
+    const auto &photo = m_photos[m_currentIndex]; QString error;
+    if (!XmpSidecar::writeNew(destination.toLocalFile(),photo.state,photo.tags,photo.rating,photo.flag,&error)) {
+        setStatus(uiText("XMP 导出失败：", "XMP export failed: ")+error); return false;
+    }
+    setStatus(uiText("XMP 已导出：", "XMP exported: ")+destination.toLocalFile()); return true;
+}
+bool PhotoController::importXmp(const QUrl &source) {
+    if (!hasImage() || !source.isLocalFile()) return false;
+    XmpSidecar::Document document; QString error;
+    if (!XmpSidecar::read(source.toLocalFile(),&document,&error)) {
+        setStatus(uiText("XMP 导入失败：", "XMP import failed: ")+error); return false;
+    }
+    auto &photo = m_photos[m_currentIndex];
+    photo.history.initialize(photo.state); photo.history.finish();
+    if (document.hasRating) photo.rating = document.rating;
+    if (document.hasFlag) photo.flag = document.flag;
+    if (document.hasKeywords) photo.tags.keywords = document.tags.keywords;
+    if (document.hasLabel) photo.tags.label = document.tags.label;
+    if (document.hasAlbums) photo.tags.albums = document.tags.albums;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.storageKey(),{photo.rating,photo.flag});
+        m_dirtyTags.insert(photo.storageKey(),photo.tags);
+    }
+    if (document.hasAdjustments) { photo.state = document.adjustments; persistAndApply("xmp_import"); }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    setStatus(document.warnings.isEmpty() ? uiText("XMP 已应用到当前版本", "XMP applied to current version")
+        : uiText("XMP 已应用；部分外部属性未映射：", "XMP applied; some external properties were not mapped: ")+document.warnings.join("; "));
+    return true;
+}
+void PhotoController::openXmpExportDialog() {
+    if (!hasImage()) return;
+    const auto key = m_photos[m_currentIndex].storageKey();
+    const auto suffix = m_photos[m_currentIndex].copyKey.isEmpty() ? QString{} : "."+m_photos[m_currentIndex].copyKey.mid(11);
+    const auto path = QFileDialog::getSaveFileName(nullptr,uiText("导出新的 XMP 侧车文件", "Export new XMP sidecar"),
+        currentFile()+suffix+".xmp","XMP (*.xmp)");
+    if (!path.isEmpty() && hasImage() && key == m_photos[m_currentIndex].storageKey())
+        exportXmp(QUrl::fromLocalFile(path.endsWith(".xmp",Qt::CaseInsensitive) ? path : path+".xmp"));
+}
+void PhotoController::openXmpImportDialog() {
+    if (!hasImage()) return;
+    const auto key = m_photos[m_currentIndex].storageKey();
+    const auto path = QFileDialog::getOpenFileName(nullptr,uiText("导入 XMP 到当前版本", "Import XMP into current version"),
+        QFileInfo(currentFile()).absolutePath(),"XMP (*.xmp)");
+    if (path.isEmpty()) return;
+    const auto answer = QMessageBox::question(nullptr,uiText("应用 XMP", "Apply XMP"),
+        uiText("应用到当前照片版本？\n文件中已有的评分、标签和关键词会替换当前值。JixelLight 显影可撤销；目录标注不能撤销。Adobe 显影参数不会转换。",
+               "Apply to the current photo version?\nPresent ratings, labels and keywords replace current values. JixelLight Develop edits can be undone; catalog annotations cannot. Adobe Develop settings are not converted."));
+    if (answer == QMessageBox::Yes && hasImage() && key == m_photos[m_currentIndex].storageKey()) importXmp(QUrl::fromLocalFile(path));
 }
 
 bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
@@ -598,6 +674,7 @@ void PhotoController::selectPhoto(int index) {
     if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
     m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
     if (index == m_currentIndex) return;
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     enqueueEdits();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
@@ -632,6 +709,8 @@ void PhotoController::loadCurrent() {
 }
 
 void PhotoController::applyCurrent() {
+    // Another Develop action, including Undo/Redo, abandons an uncommitted box.
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     cancelCalibration();
     ++m_requestedRevision;
     m_scopesUpdating = true; m_scopesRank = -1;
@@ -640,7 +719,7 @@ void PhotoController::applyCurrent() {
     m_interacting = true;
     m_refineTimer.start();
     emit scopesChanged();
-    if (m_preparedGeometry != currentState().geometry.toJson()) prepareCurrent();
+    if (m_preparedGeometry != previewGeometry().toJson()) prepareCurrent();
     else scheduleRender(true);
 }
 
@@ -813,7 +892,7 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     if (!hasImage() || exportBusy()) return false;
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
-    if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive) && !path.endsWith(".png", Qt::CaseInsensitive)) path += ".jpg";
+    if (!QStringList{"jpg","jpeg","png","tif","tiff","webp"}.contains(QFileInfo(path).suffix().toLower())) path += ".jpg";
     if (isProtectedPhoto(path)) { setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph.")); return false; }
     const auto target = ColorManagement::fromKey(colorSpaceKey);
     // Protect every imported original, not merely the current photograph.
@@ -843,8 +922,9 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
 }
 
 bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format) {
-    const QString extension = format.toLower() == "png" ? QStringLiteral(".png") : QStringLiteral(".jpg");
-    if (format.toLower() != "png" && format.toLower() != "jpeg" && format.toLower() != "jpg") return false;
+    const auto normalized=format.toLower();
+    if (!QStringList{"png","jpeg","jpg","tif","tiff","webp"}.contains(normalized)) return false;
+    const QString extension = normalized=="jpeg" ? ".jpg" : normalized=="tiff" ? ".tif" : "."+normalized;
     if (m_photos.isEmpty() || exportBusy() || !folder.isLocalFile()) return false;
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
@@ -1102,8 +1182,8 @@ void PhotoController::prepareCurrent() {
     m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
-    m_preparedGeometry = currentState().geometry.toJson();
-    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_zoom, m_centerX, m_centerY, m_sourceIsFull, currentState().geometry});
+    m_preparedGeometry = previewGeometry().toJson();
+    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_cropEditing ? 0 : m_zoom, m_centerX, m_centerY, m_sourceIsFull, previewGeometry()});
     emit gpuFrameChanged();
     setBusy(true);
 }
@@ -1239,7 +1319,8 @@ void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes,
 QString PhotoController::scopesStatus() const {
     if (m_previewSource.isNull()) return m_scopesLabel.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : m_scopesLabel;
     if (m_scopesRevision != m_requestedRevision) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
-    return m_scopesLabel + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
+    return m_scopesLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
+        + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
 }
 void PhotoController::setExactScopes(bool enabled) {
     if (m_exactScopes == enabled) return;
@@ -1251,7 +1332,7 @@ void PhotoController::setExactScopes(bool enabled) {
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
-    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true, currentState().geometry});
+    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true, previewGeometry()});
 }
 void PhotoController::prefetchNeighbor() {
     if (!hasImage() || m_loading || exportBusy()) return;

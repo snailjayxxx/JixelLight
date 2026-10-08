@@ -21,10 +21,12 @@
 #include "app/PhotoController.h"
 #include "core/color/ColorManagement.h"
 #include "core/metadata/MetadataReader.h"
+#include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/export/PngExporter.h"
+#include "core/export/RasterExporter.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
@@ -64,6 +66,158 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void tiff16AndWebpKeepTargetIccGeometryPixelsAndCancellation() {
+        QTemporaryDir dir; QImage source(9,7,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(1000+x*6101,503+y*9011,123+x*997+y*997,65535);
+        AdjustmentState state; state.exposure=.35; state.geometry.crop={.1,.2,.7,.7}; state.geometry.quarterTurns=1;
+        for (const auto format : {RasterFormat::Tiff16,RasterFormat::WebP8}) for (const auto space : {ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3,ColorManagement::OutputSpace::AdobeRgb,ColorManagement::OutputSpace::ProPhotoRgb}) for (bool raw : {false,true}) {
+            QString error; const auto path=dir.filePath(format==RasterFormat::Tiff16 ? "out.tif" : "out.webp");
+            QVERIFY2(exportRaster(source,state,path,space,format,100,{},&error,raw),qPrintable(error));
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,raw,0.0f);
+            auto expected=ImagePipeline::processWithPlan(state.geometry.apply(source),plan);
+            const auto actual=QImageReader(path).read(); QVERIFY(!actual.isNull()); QCOMPARE(actual.size(),expected.size());
+            QCOMPARE(actual.colorSpace().iccProfile(),expected.colorSpace().iccProfile());
+            if (format==RasterFormat::Tiff16) {
+                QCOMPARE(actual.depth(),64); QCOMPARE(actual.convertToFormat(QImage::Format_RGBA64),expected);
+            } else {
+                QCOMPARE(actual.convertToFormat(QImage::Format_RGBA8888),expected.convertToFormat(QImage::Format_RGBA8888));
+            }
+            QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes=file.readAll(); file.close();
+            const auto token=std::make_shared<std::atomic_bool>(true);
+            QVERIFY(!exportRaster(source,{},path,space,format,92,token,&error,raw));
+            QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),bytes);
+        }
+    }
+
+    void orientedCropCoordinatesMatchAllPixelOrientations() {
+        QImage image(16,12,QImage::Format_RGBA64);
+        for (int y=0;y<image.height();++y) for (int x=0;x<image.width();++x)
+            reinterpret_cast<QRgba64 *>(image.scanLine(y))[x] = QRgba64::fromRgba64(x*3000,y*5000,(x+y)*1700,65535);
+        for (int turns=0;turns<4;++turns) for (bool horizontal : {false,true}) for (bool vertical : {false,true}) {
+            GeometryState g; g.crop = {.25,.25,.5,.5}; g.quarterTurns = turns; g.flipHorizontal = horizontal; g.flipVertical = vertical;
+            const auto oriented = g.orientedRect(g.crop);
+            QCOMPARE(g.orientedRect(oriented,true),g.crop);
+            auto full = g; full.crop = {0,0,1,1}; const auto rotated = full.apply(image);
+            const auto reference = rotated.copy(qRound(oriented.x()*rotated.width()),qRound(oriented.y()*rotated.height()),
+                qRound(oriented.width()*rotated.width()),qRound(oriented.height()*rotated.height()));
+            QCOMPARE(g.apply(image),reference);
+            QCOMPARE(g.orientedRect(QRectF(0,0,1,1)),QRectF(0,0,1,1));
+        }
+        GeometryState g; g.quarterTurns=1; QCOMPARE(g.orientedRect({0,0,.25,.5}),QRectF(.5,0,.5,.25));
+        g.flipHorizontal=true; QCOMPARE(g.orientedRect({0,0,.25,.5}),QRectF(0,0,.5,.25));
+    }
+    void interactiveCropDraftCancelCommitUndoAndPhotoSwitchStayIsolated() {
+        QTemporaryDir dir; QImage image(80,40,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto source=dir.filePath("source.png"), other=dir.filePath("other.png"); QVERIFY(image.save(source)); QVERIFY(image.save(other));
+        PhotoController controller(nullptr); controller.setGpuEnabled(false); QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY(controller.previewReady() && !controller.rendering());
+        controller.setCrop(.25,0,.5,1); controller.rotatePhoto(1); controller.flipPhoto(true); controller.finishInteraction();
+        QTRY_VERIFY(!controller.rendering()); const auto saved=controller.geometry(); const auto history=controller.editHistory();
+        QVERIFY(controller.beginCrop()); QVERIFY(controller.cropEditing()); QTRY_VERIFY(!controller.rendering());
+        QCOMPARE(controller.geometry(),saved); QCOMPARE(controller.editHistory(),history);
+        QCOMPARE(controller.gpuSource().size(),QSize(40,80)); // full oriented photo; stored crop still intact
+        QVERIFY(!controller.applyCrop(-1,0,1,1)); QVERIFY(controller.cropEditing());
+        controller.cancelCrop(); QVERIFY(!controller.cropEditing()); QCOMPARE(controller.editHistory(),history);
+        QTRY_VERIFY(!controller.rendering()); QCOMPARE(controller.gpuSource().size(),QSize(40,40));
+        QVERIFY(controller.beginCrop()); QVERIFY(controller.applyCrop(.25,0,.5,.75));
+        const auto expected=GeometryState::fromJson(QJsonObject::fromVariantMap(saved)).orientedRect({.25,0,.5,.75},true);
+        QCOMPARE(controller.geometry().value("x").toDouble(),expected.x()); QCOMPARE(controller.geometry().value("height").toDouble(),expected.height());
+        QCOMPARE(controller.editHistory().size(),history.size()+1); controller.undo(); QCOMPARE(controller.geometry(),saved);
+        QTRY_VERIFY(!controller.rendering()); QVERIFY(controller.beginCrop()); controller.setExposure(.5); QVERIFY(!controller.cropEditing());
+        QTRY_VERIFY(!controller.rendering()); QVERIFY(controller.beginCrop());
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(other))); controller.selectPhoto(1); QVERIFY(!controller.cropEditing());
+        QCOMPARE(controller.geometry().value("width").toDouble(),1.0); controller.selectPhoto(0); QCOMPARE(controller.geometry(),saved);
+    }
+
+    void xmpRoundTripPreservesSonyGeometryAndProtectsExistingFiles() {
+        QTemporaryDir dir; QString error; const auto path = dir.filePath("photo.ARW.xmp");
+        AdjustmentState state; state.exposure = .75; state.look.mode = "as-shot";
+        state.geometry.crop = {.1,.2,.7,.6}; state.geometry.quarterTurns = 3; state.geometry.flipHorizontal = true;
+        CatalogTags tags; tags.keywords = {"A & B","旅行 <日本>"}; tags.albums = {"旅行"}; tags.label = "red";
+        QVERIFY(CatalogTags::normalize(&tags.keywords,64));
+        QVERIFY2(XmpSidecar::writeNew(path,state,tags,4,"reject",&error),qPrintable(error));
+        XmpSidecar::Document restored;
+        QVERIFY2(XmpSidecar::read(path,&restored,&error),qPrintable(error));
+        QCOMPARE(restored.adjustments.toJson(),state.toJson()); QCOMPARE(restored.tags.toJson(),tags.toJson());
+        QCOMPARE(restored.rating,4); QCOMPARE(restored.flag,QStringLiteral("reject")); QVERIFY(restored.hasAdjustments);
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes = file.readAll(); file.close();
+        QVERIFY(bytes.contains("<xmp:Rating>-1</xmp:Rating>")); QVERIFY(bytes.contains("A &amp; B"));
+        QVERIFY(!XmpSidecar::writeNew(path,{},tags,0,"none",&error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),bytes); file.close();
+        QVERIFY(!XmpSidecar::writeNew(dir.filePath("source.ARW"),state,tags,4,"none",&error));
+        state.look.error = "broken";
+        QVERIFY(!XmpSidecar::writeNew(dir.filePath("invalid.xmp"),state,tags,4,"none",&error));
+        QVERIFY(!QFileInfo::exists(dir.filePath("invalid.xmp")));
+        QCOMPARE(QDir(dir.path()).entryList(QDir::Dirs|QDir::Hidden|QDir::NoDotAndDotDot).size(),0);
+    }
+    void xmpStandardNamespacesAndPublicOverridesAreExplicit() {
+        QTemporaryDir dir; const auto path = dir.filePath("external.xmp"); QString error;
+        QFile file(path); auto put = [&](const QByteArray &bytes) {
+            if (!file.open(QIODevice::WriteOnly)) return false;
+            const bool ok = file.write(bytes) == bytes.size(); file.close(); return ok;
+        };
+        const QByteArray xml = R"(<x:xmpmeta xmlns:x="adobe:ns:meta/"><r:RDF xmlns:r="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><r:Description r:about="" xmlns:a="http://ns.adobe.com/xap/1.0/" xmlns:d="http://purl.org/dc/elements/1.1/" xmlns:c="http://ns.adobe.com/camera-raw-settings/1.0/" a:Rating="3.0" a:Label="Blue" c:Exposure2012="2"><d:subject><r:Bag><r:li> Japan </r:li><r:li>Japan</r:li><r:li>A &amp; B</r:li></r:Bag></d:subject></r:Description></r:RDF></x:xmpmeta>)";
+        QVERIFY(put(xml)); XmpSidecar::Document result;
+        QVERIFY2(XmpSidecar::read(path,&result,&error),qPrintable(error));
+        QVERIFY(!result.hasAdjustments); QCOMPARE(result.rating,3); QCOMPARE(result.tags.label,QStringLiteral("blue"));
+        QCOMPARE(result.tags.keywords,QStringList({"A & B","Japan"})); QVERIFY(!result.hasAlbums); QCOMPARE(result.warnings.size(),1);
+        auto custom = xml; custom.replace("a:Label=\"Blue\"","a:Label=\"Client choice\""); QVERIFY(put(custom));
+        QVERIFY(XmpSidecar::read(path,&result,&error)); QVERIFY(!result.hasLabel); QCOMPARE(result.warnings.size(),2);
+        QVERIFY(file.remove()); AdjustmentState state; state.look.mode = "as-shot";
+        QVERIFY(XmpSidecar::writeNew(path,state,{},5,"reject",&error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); auto changed = file.readAll(); file.close();
+        changed.replace("<xmp:Rating>-1</xmp:Rating>","<xmp:Rating>2</xmp:Rating>"); QVERIFY(put(changed));
+        QVERIFY(XmpSidecar::read(path,&result,&error)); QCOMPARE(result.rating,2); QCOMPARE(result.flag,QStringLiteral("none"));
+        QVERIFY(result.hasAdjustments); QCOMPARE(result.adjustments.look.mode,QStringLiteral("as-shot"));
+    }
+    void xmpRejectsMalformedDuplicateEntityAndFutureSnapshotsWithoutMutation() {
+        QTemporaryDir dir; QString error; const auto path = dir.filePath("invalid.xmp"); QFile file(path);
+        const QByteArray start = R"(<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">)";
+        const QByteArray end = "</rdf:Description></rdf:RDF>";
+        const QList<QByteArray> invalid = {
+            start+"<xmp:Rating>2.5</xmp:Rating>"+end,
+            start+"<xmp:Rating>2</xmp:Rating><xmp:Rating>3</xmp:Rating>"+end,
+            start+"<xmp:Rating><rdf:value>3</rdf:value></xmp:Rating>"+end,
+            start+"<dc:subject><rdf:Seq><rdf:li>A</rdf:li></rdf:Seq></dc:subject>"+end,
+            "<!DOCTYPE x [<!ENTITY test '3'>]>"+start+"<xmp:Rating>&test;</xmp:Rating>"+end,
+            start+"<xmp:Rating>3</xmp:Rating>",
+            start+"<dc:subject><rdf:Bag><rdf:li><rdf:Bag/></rdf:li></rdf:Bag></dc:subject>"+end
+        };
+        XmpSidecar::Document result; result.rating = 5; result.adjustments.exposure = 1;
+        for (const auto &bytes : invalid) {
+            QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(bytes),bytes.size()); file.close();
+            QVERIFY(!XmpSidecar::read(path,&result,&error)); QVERIFY(!error.isEmpty());
+            QCOMPARE(result.rating,5); QCOMPARE(result.adjustments.exposure,1.0);
+        }
+        QVERIFY(file.remove()); QVERIFY(XmpSidecar::writeNew(path,{}, {},2,"pick",&error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); auto bytes = file.readAll(); file.close();
+        bytes.replace(ProcessingPlan::EngineVersion,"future-engine");
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write(bytes); file.close();
+        QVERIFY(!XmpSidecar::read(path,&result,&error)); QCOMPARE(result.rating,5);
+    }
+    void controllerXmpImportIsPerVersionUndoableAndPersistsCatalog() {
+        QTemporaryDir dir; QImage image(12,8,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto source = dir.filePath("source.png"), sidecar = dir.filePath("saved.xmp"); QVERIFY(image.save(source));
+        QFile file(source); QVERIFY(file.open(QIODevice::ReadOnly)); const auto original = file.readAll(); file.close();
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
+        controller.setExposure(.5); controller.finishInteraction(); controller.setCrop(.1,.2,.8,.7);
+        controller.setRating(4); controller.setFlag("pick"); QVERIFY(controller.setSelectionKeywords("Japan, Sony"));
+        QVERIFY(controller.setSelectionLabel("green")); QVERIFY(controller.addSelectionToAlbum("Trip"));
+        QVERIFY(controller.exportXmp(QUrl::fromLocalFile(sidecar))); QVERIFY(controller.createVirtualCopy("Alternate"));
+        controller.resetAdjustments(); controller.setRating(1); QVERIFY(controller.setSelectionKeywords("Other"));
+        QVERIFY(controller.importXmp(QUrl::fromLocalFile(sidecar)));
+        QCOMPARE(controller.exposure(),.5); QCOMPARE(controller.geometry().value("x").toDouble(),.1);
+        QCOMPARE(controller.currentRating(),4); QCOMPARE(controller.currentKeywords(),QStringList({"Japan","Sony"}));
+        controller.undo(); QCOMPARE(controller.exposure(),0.0); controller.redo(); QCOMPARE(controller.exposure(),.5);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"XMP")); QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.library().size(),2); reopened.selectPhoto(1); QCOMPARE(reopened.exposure(),.5);
+        QCOMPARE(reopened.currentColorLabel(),QStringLiteral("green")); QCOMPARE(reopened.currentAlbums(),QStringList({"Trip"}));
+        reopened.undo(); QCOMPARE(reopened.exposure(),0.0); reopened.selectPhoto(0); QCOMPARE(reopened.exposure(),.5);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),original);
+    }
+
     void editHistoryBranchesAndPreservesSonyState() {
         EditHistory history;
         AdjustmentState original;

@@ -27,6 +27,20 @@ struct GeometryState {
         state.flipHorizontal=json["flipHorizontal"].toBool(); state.flipVertical=json["flipVertical"].toBool();
         return state;
     }
+    // Crop overlays use normalized coordinates after rotation and flips, while
+    // persisted geometry remains in original source coordinates. No resampling.
+    QRectF orientedRect(QRectF rect, bool inverse = false) const {
+        auto flip = [&] {
+            if (flipHorizontal) rect.moveLeft(1-rect.right());
+            if (flipVertical) rect.moveTop(1-rect.bottom());
+        };
+        if (inverse) flip();
+        const int turns = inverse ? (4-quarterTurns%4)%4 : quarterTurns%4;
+        for (int i=0;i<turns;++i) rect = QRectF(1-rect.bottom(),rect.x(),rect.height(),rect.width());
+        if (!inverse) flip();
+        // Roundoff from 1-(x+w) can be a tiny negative at a full-frame edge.
+        return rect.intersected(QRectF(0,0,1,1));
+    }
     QImage apply(const QImage &source) const {
         if(source.isNull())return {};
         QImage result=source;

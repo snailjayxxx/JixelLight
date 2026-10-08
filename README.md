@@ -163,7 +163,7 @@ Bug ZIP / Action Trace 当前覆盖：
 
 - CMake 3.24+
 - C++20
-- **Qt 6.8.3**（包含 Qt Shader Tools 和 Qt Gui private headers；QRhi 属于有限兼容 API，升级需重新验证）
+- **Qt 6.8.3**（包含 Qt Shader Tools、Qt Image Formats 和 Qt Gui private headers；TIFF / WebP 需要 imageformats 插件；QRhi 属于有限兼容 API，升级需重新验证）
 - LibRaw（vcpkg manifest）
 - LittleCMS 2（vcpkg `lcms`）
 - libjpeg-turbo（分块 JPEG 写入）

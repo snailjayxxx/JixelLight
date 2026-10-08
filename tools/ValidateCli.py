@@ -45,12 +45,49 @@ def main():
         rendered = json.loads(run('--commands', commands, '--space', 'display-p3', source, destination).stdout)
         assert rendered['adjustments']['exposure'] == 1 and rendered['backend'] == 'cpu-reference'
         assert destination.read_bytes()[24] == 16  # PNG IHDR bit depth, independent of Qt reader.
+        # Parse container metadata independently from the Qt decoder. These
+        # checks also run against the deployed CLI with SDK paths removed.
+        tiff = root / 'result.tiff'
+        run('--commands', commands, '--space', 'display-p3', source, tiff)
+        data = tiff.read_bytes()
+        byte_order = '<' if data[:2] == b'II' else '>'
+        assert data[:2] in (b'II', b'MM') and struct.unpack_from(byte_order+'H', data, 2)[0] == 42
+        ifd = struct.unpack_from(byte_order+'I', data, 4)[0]
+        tags = {}
+        for index in range(struct.unpack_from(byte_order+'H', data, ifd)[0]):
+            offset = ifd+2+12*index
+            tag, kind, count, value = struct.unpack_from(byte_order+'HHII', data, offset)
+            size = {1:1,2:1,3:2,4:4,5:8,7:1}.get(kind, 1)*count
+            payload = data[offset+8:offset+8+size] if size <= 4 else data[value:value+size]
+            tags[tag] = (kind, count, payload)
+        assert struct.unpack(byte_order+'H'*tags[258][1], tags[258][2]) == (16,)*tags[258][1]
+        assert tags[34675][2][36:40] == b'acsp'
+        assert struct.unpack(byte_order+'H', tags[259][2])[0] == 5  # lossless LZW
+        webp = root / 'result.webp'
+        run('--commands', commands, '--space', 'display-p3', source, webp)
+        data = webp.read_bytes()
+        assert data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+        assert struct.unpack_from('<I', data, 4)[0]+8 == len(data)
+        chunks, offset = {}, 12
+        while offset+8 <= len(data):
+            name, size = data[offset:offset+4], struct.unpack_from('<I',data,offset+4)[0]
+            chunks[name] = data[offset+8:offset+8+size]
+            offset += 8+size+(size & 1)
+        assert chunks[b'ICCP'][36:40] == b'acsp'
+        assert b'VP8 ' in chunks or b'VP8L' in chunks
+        for index, output in enumerate((tiff, webp)):
+            reimported = root / f'reimported-{index}.png'
+            run(output, reimported)
+            assert struct.unpack('>II', reimported.read_bytes()[16:24]) == (4, 2)
+            digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            run(source, output, success=False)
+            assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
         exported = hashlib.sha256(destination.read_bytes()).hexdigest()
         run(source, destination, success=False)
         assert hashlib.sha256(destination.read_bytes()).hexdigest() == exported
         run(source, source, success=False)
         run('--space', 'invalid', source, root / 'invalid.jpg', success=False)
-        run(source, root / 'invalid.tiff', success=False)
+        run(source, root / 'invalid.pdf', success=False)
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'unknown', 'value': 1}]))
         run('--commands', commands, source, root / 'bad.jpg', success=False)
         assert not (root / 'bad.jpg').exists()
@@ -177,7 +214,7 @@ def main():
         run('--catalog', catalog, '--output-dir', output, success=False)
         run('--catalog', catalog, success=False)
         run('--catalog', catalog, '--batch', plan, success=False)
-        run('--catalog', catalog, '--output-dir', output, '--format', 'tiff', success=False)
+        run('--catalog', catalog, '--output-dir', output, '--format', 'pdf', success=False)
         override = root / 'catalog-override'
         override.mkdir()
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
@@ -186,6 +223,14 @@ def main():
         assert all(Path(r['destination']).read_bytes().startswith(b'\xff\xd8') for r in edited['results'])
         assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
         # Unsupported saved history / Sony schema rejects the whole catalog before export.
+        for format, suffix in (('tiff', '.tif'), ('webp', '.webp')):
+            target = root / ('catalog-'+format)
+            target.mkdir()
+            raster = json.loads(run('--catalog', catalog, '--output-dir', target, '--format', format).stdout)
+            assert raster['ok'] and raster['completed'] == 2
+            assert [r['adjustments']['exposure'] for r in raster['results']] == [.25, -.5]
+            assert all(Path(r['destination']).suffix == suffix for r in raster['results'])
+            assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
         bad_output = root / 'catalog-rejected'
         bad_output.mkdir()
         for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}}]:
@@ -197,7 +242,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'invalid-edit-commands', 'png16', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

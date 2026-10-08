@@ -62,6 +62,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double highlightClipPercent READ highlightClipPercent NOTIFY scopesChanged)
 
     Q_PROPERTY(QVariantMap geometry READ geometry NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool cropEditing READ cropEditing NOTIFY cropEditingChanged)
+    Q_PROPERTY(QRectF cropOverlay READ cropOverlay NOTIFY cropEditingChanged)
     Q_PROPERTY(QStringList presetNames READ presetNames NOTIFY presetsChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
@@ -211,6 +213,11 @@ public:
     Q_INVOKABLE void setCrop(double x, double y, double width, double height);
     Q_INVOKABLE void setCropAspect(double aspect);
     Q_INVOKABLE void resetGeometry();
+    bool cropEditing() const { return m_cropEditing; }
+    QRectF cropOverlay() const { const auto g = currentState().geometry; return g.orientedRect(g.crop); }
+    Q_INVOKABLE bool beginCrop();
+    Q_INVOKABLE void cancelCrop();
+    Q_INVOKABLE bool applyCrop(double x, double y, double width, double height);
     bool canUndo() const;
     bool canRedo() const;
     QVariantList editHistory() const;
@@ -240,6 +247,10 @@ public:
     Q_INVOKABLE bool importNamedPreset(const QUrl &source, const QString &replacementName = {});
     Q_INVOKABLE void openPresetExportDialog(const QString &name);
     Q_INVOKABLE void openPresetImportDialog(const QString &replacementName = {});
+    Q_INVOKABLE bool exportXmp(const QUrl &destination);
+    Q_INVOKABLE bool importXmp(const QUrl &source);
+    Q_INVOKABLE void openXmpExportDialog();
+    Q_INVOKABLE void openXmpImportDialog();
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();
@@ -254,6 +265,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
     void curationChanged();
@@ -297,6 +309,7 @@ private:
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
     QJsonObject m_preparedGeometry;
     bool m_preparing = false;
+    bool m_cropEditing = false;
     bool m_interacting = false, m_sourceIsFull = false, m_closing = false;
     quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;
     int m_scopesRank = -1;
@@ -347,6 +360,7 @@ private:
     void prefetchNeighbor();
 
     AdjustmentState currentState() const;
+    GeometryState previewGeometry() const;
     AdjustmentState *mutableCurrentState();
     bool importPath(const QString &path, bool notifyImmediately);
     void finishImportBatch(int added, int rawAdded);

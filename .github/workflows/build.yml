@@ -37,7 +37,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Checkout vcpkg
         uses: actions/checkout@v4
@@ -260,7 +260,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Build
         run: |
