@@ -12,7 +12,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QSet>
-#include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QTextStream>
 
 namespace {
@@ -125,11 +125,14 @@ bool executeExport(const ExportJob &job, SourceCache &cache, QJsonObject *result
     const auto state=LookProfiles::resolveAsShot(job.state,source.metadata,raw);
     const double base=source.metadata.value("rawBaseExposureStops",0).toDouble();
     const auto suffix=QFileInfo(job.destination).suffix().toLower();
-    // Export to a same-directory staging file, then use QFile's non-overwriting
-    // rename. A destination created after preflight must also remain untouched.
-    QTemporaryFile staging(QDir(QFileInfo(job.destination).absolutePath()).filePath(".jixellight-export-XXXXXX."+suffix));
-    if (!staging.open()) { *error=staging.errorString(); return false; }
-    const auto temporary=staging.fileName(); staging.close();
+    // A unique directory on the destination filesystem has no open file handle
+    // for QSaveFile to replace. QTemporaryFile::close() retains its native handle
+    // until destruction, blocking that replacement on Windows. The directory
+    // also owns cleanup after encode/publication failure. Final rename refuses
+    // any destination which appeared after preflight.
+    QTemporaryDir staging(QDir(QFileInfo(job.destination).absolutePath()).filePath(".jixellight-export-XXXXXX"));
+    if (!staging.isValid()) { *error=staging.errorString(); return false; }
+    const auto temporary=QDir(staging.path()).filePath("output."+suffix);
     const auto space=ColorManagement::fromKey(job.space);
     const bool rendered=suffix=="png" ? exportPng16(source.image,state,temporary,space,{},error,raw,float(base))
         : exportJpegTiled(source.image,state,temporary,space,92,{},error,{}, {},raw,float(base));
