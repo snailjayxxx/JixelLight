@@ -9,6 +9,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QUuid>
+#include <algorithm>
 
 ProjectDatabase::ProjectDatabase(QObject *parent) : QObject(parent), m_state(std::make_shared<WorkerState>()) {
     m_state->connectionName = "jixellight-writer-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -52,7 +53,8 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
             QSqlQuery query(db);
             ok = query.exec("PRAGMA journal_mode=WAL") && query.exec("PRAGMA busy_timeout=3000")
                 && query.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT)")
-                && query.exec("CREATE TABLE IF NOT EXISTS photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')");
+                && query.exec("CREATE TABLE IF NOT EXISTS photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')"
+                && query.exec("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))"));
             if (ok) {
                 query.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('project_name',?)");
                 query.addBindValue(safe); ok = query.exec();
@@ -106,8 +108,17 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                 }
             }
             if (ready) {
+                QSqlQuery tableQuery(db);
+                if (!tableQuery.exec(QStringLiteral("SELECT name FROM sqlite_master WHERE type='table' AND name='curation'"))) {
+                    ready = false;
+                    error = tableQuery.lastError().text();
+                }
+                const bool hasCuration = ready && tableQuery.next();
                 QSqlQuery query(db);
-                if (!query.exec(QStringLiteral("SELECT path, adjustment_json FROM photos ORDER BY imported_at, path"))) {
+                const QString querySql = hasCuration
+                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none') FROM photos p LEFT JOIN curation c ON c.path=p.path ORDER BY p.imported_at,p.path")
+                    : QStringLiteral("SELECT path,adjustment_json FROM photos ORDER BY imported_at,path");
+                if (ready && !query.exec(querySql)) {
                     ready = false;
                     error = query.lastError().text();
                 }
@@ -121,7 +132,10 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                         error = QStringLiteral("Invalid adjustment JSON for project photo");
                         break;
                     }
-                    staged.push_back({path, AdjustmentState::fromJson(doc.object())});
+                    const int rating = hasCuration ? std::clamp(query.value(2).toInt(), 0, 5) : 0;
+                    QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
+                    if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
+                    staged.push_back({path, AdjustmentState::fromJson(doc.object()), rating, flag});
                     if (staged.size() > 1000000) {
                         ready = false;
                         error = QStringLiteral("Project contains too many photos");
@@ -168,6 +182,43 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
 
 bool ProjectDatabase::addOrUpdatePhoto(const QString &path, const AdjustmentState &state) { return updateBatch({{path,state}}); }
 bool ProjectDatabase::updateAdjustment(const QString &path, const AdjustmentState &state) { return addOrUpdatePhoto(path,state); }
+bool ProjectDatabase::updateCurationBatch(const QHash<QString, PhotoCuration> &changes) {
+    if (!m_open) return false;
+    if (changes.isEmpty()) return true;
+    const auto state = m_state;
+    return QMetaObject::invokeMethod(m_worker, [this, state, changes] {
+        auto db = QSqlDatabase::database(state->connectionName, false);
+        bool ok = db.isOpen() && db.transaction();
+        QString error = ok ? QString() : db.lastError().text();
+        if (ok) {
+            QSqlQuery query(db);
+            // Old projects have no curation table. Add it transactionally
+            // on first write, not just on an open.
+            ok = query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY, rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5), flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))"));
+            if (ok) ok = query.prepare(QStringLiteral("INSERT INTO curation(path,rating,flag) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET rating=excluded.rating,flag=excluded.flag"));
+            for (auto it = changes.constBegin(); ok && it != changes.constEnd(); ++it) {
+                const auto &item = it.value();
+                if (item.rating < 0 || item.rating > 5
+                    || (item.flag != QStringLiteral("none") && item.flag != QStringLiteral("pick") && item.flag != QStringLiteral("reject"))) {
+                    error = QStringLiteral("Invalid rating/flag");
+                    ok = false;
+                    break;
+                }
+                query.bindValue(0, it.key());
+                query.bindValue(1, item.rating);
+                query.bindValue(2, item.flag);
+                ok = query.exec();
+            }
+            if (!ok && error.isEmpty()) error = query.lastError().text();
+            if (ok) { ok = db.commit(); if (!ok) error = db.lastError().text(); }
+            if (!ok) db.rollback();
+        }
+        { QMutexLocker lock(&state->mutex); state->error = error; }
+        if (ok) emit saved(changes.size());
+        else emit writeFailed(error);
+    }, Qt::QueuedConnection);
+}
+
 bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states) {
     if (!m_open) return false;
     if (states.isEmpty()) return true;

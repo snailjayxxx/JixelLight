@@ -8,6 +8,14 @@ Rectangle {
     id: root
     required property var controller
     signal editRequested()
+    property int filterMode: 0 // all, picks, rejects, rating >= 3
+    property var visiblePhotos: {
+        const all = controller.library
+        if (filterMode === 1) return all.filter(row => row.flag === "pick")
+        if (filterMode === 2) return all.filter(row => row.flag === "reject")
+        if (filterMode === 3) return all.filter(row => row.rating >= 3)
+        return all
+    }
     color: "#0d1014"
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     ColumnLayout {
@@ -28,6 +36,13 @@ Rectangle {
                 font.pixelSize: 12
             }
             Item { Layout.fillWidth: true }
+            ComboBox {
+                Layout.preferredWidth: 155
+                model: [root.t("全部", "All"), root.t("已选", "Picks"),
+                        root.t("拒绝", "Rejects"), root.t("三星以上", "3+ Stars")]
+                currentIndex: root.filterMode
+                onActivated: root.filterMode = currentIndex
+            }
             Button {
                 text: root.t("导入照片", "Import Photos")
                 onClicked: root.controller.openImportDialog()
@@ -41,8 +56,7 @@ Rectangle {
             Layout.fillHeight: true
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            model: root.controller.library
-            currentIndex: root.controller.currentIndex
+            model: root.visiblePhotos
             cellWidth: Math.max(180, width / Math.max(1, Math.floor(width / 225)))
             cellHeight: 224
             delegate: Item {
@@ -55,8 +69,8 @@ Rectangle {
                     anchors.margins: 5
                     radius: 6
                     color: "#1b2129"
-                    border.width: index === root.controller.currentIndex ? 2 : 1
-                    border.color: index === root.controller.currentIndex ? "#74aee9" : "#303944"
+                    border.width: modelData.index === root.controller.currentIndex ? 2 : 1
+                    border.color: modelData.index === root.controller.currentIndex ? "#74aee9" : "#303944"
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 7
@@ -79,7 +93,7 @@ Rectangle {
                                 anchors.right: parent.right
                                 anchors.top: parent.top
                                 anchors.margins: 4
-                                text: modelData.type
+                                text: modelData.type + (modelData.flag === "pick" ? "  P" : modelData.flag === "reject" ? "  X" : "")
                                 color: modelData.raw ? "#a7f1d6" : "#d1dbe5"
                                 font.bold: true
                                 font.pixelSize: 9
@@ -89,7 +103,7 @@ Rectangle {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: modelData.name
+                            text: modelData.name + (modelData.rating > 0 ? "  ★" + modelData.rating : "")
                             color: "#dce5ee"
                             elide: Text.ElideMiddle
                             font.pixelSize: 11
@@ -98,9 +112,9 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         acceptedButtons: Qt.LeftButton
-                        onClicked: root.controller.selectPhoto(index)
+                        onClicked: root.controller.selectPhoto(modelData.index)
                         onDoubleClicked: {
-                            root.controller.selectPhoto(index)
+                            root.controller.selectPhoto(modelData.index)
                             root.editRequested()
                         }
                     }

@@ -75,6 +75,41 @@ Rectangle {
                 }
 
         }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            spacing: 2
+            Label { text: root.t("评分", "Rating"); color: "#a2b1c0"; font.pixelSize: 10 }
+            Repeater {
+                model: 5
+                delegate: ToolButton {
+                    required property int index
+                    text: index < root.controller.currentRating ? "★" : "☆"
+                    enabled: root.controller.hasImage
+                    font.pixelSize: 15
+                    onClicked: root.controller.setRating(index + 1)
+                }
+            }
+            ToolButton {
+                text: "P"
+                enabled: root.controller.hasImage
+                highlighted: root.controller.currentFlag === "pick"
+                onClicked: root.controller.setFlag(root.controller.currentFlag === "pick" ? "none" : "pick")
+            }
+            ToolButton {
+                text: "X"
+                enabled: root.controller.hasImage
+                highlighted: root.controller.currentFlag === "reject"
+                onClicked: root.controller.setFlag(root.controller.currentFlag === "reject" ? "none" : "reject")
+            }
+            Item { Layout.fillWidth: true }
+            ToolButton {
+                text: "0"
+                enabled: root.controller.hasImage
+                onClicked: root.controller.setRating(0)
+            }
+        }
         Rectangle { Layout.fillWidth: true; height: 1; color: "#303840" }
         ScrollView {
             id: toolScroll

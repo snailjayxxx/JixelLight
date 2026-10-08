@@ -313,6 +313,9 @@ private slots:
         const QString original = QDir(dir.path()).filePath(QStringLiteral("sample.ARW"));
         QVERIFY(created.addOrUpdatePhoto(original, state));
         QVERIFY(created.flush());
+        ProjectDatabase::PhotoCuration picked {4, QStringLiteral("pick")};
+        QVERIFY(created.updateCurationBatch({{original, picked}}));
+        QVERIFY(created.flush());
 
         ProjectDatabase reopened;
         QVector<ProjectDatabase::SavedPhoto> loaded;
@@ -324,6 +327,8 @@ private slots:
         QCOMPARE(loaded.first().adjustments.exposure, 1.25);
         QCOMPARE(loaded.first().adjustments.highlights, -40.0);
         QCOMPARE(loaded.first().adjustments.hslHue[2], 8.0);
+        QCOMPARE(loaded.first().rating, 4);
+        QCOMPARE(loaded.first().flag, QStringLiteral("pick"));
         AdjustmentState changed = loaded.first().adjustments;
         changed.exposure = -0.75;
         QVERIFY(reopened.updateAdjustment(original, changed));

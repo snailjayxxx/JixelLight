@@ -36,6 +36,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantMap calibrationReport READ calibrationReport NOTIFY calibrationChanged)
     Q_PROPERTY(QVariantList library READ library NOTIFY libraryChanged)
     Q_PROPERTY(int currentIndex READ currentIndex NOTIFY currentIndexChanged)
+    Q_PROPERTY(int currentRating READ currentRating NOTIFY curationChanged)
+    Q_PROPERTY(QString currentFlag READ currentFlag NOTIFY curationChanged)
     Q_PROPERTY(QString previewUrl READ previewUrl NOTIFY previewUrlChanged)
     Q_PROPERTY(bool hasImage READ hasImage NOTIFY currentIndexChanged)
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentIndexChanged)
@@ -152,6 +154,8 @@ public:
     Q_INVOKABLE void cancelExport();
     Q_INVOKABLE bool flushEdits();
     int currentIndex() const { return m_currentIndex; }
+    int currentRating() const { return hasImage() ? m_photos[m_currentIndex].rating : 0; }
+    QString currentFlag() const { return hasImage() ? m_photos[m_currentIndex].flag : QStringLiteral("none"); }
     QString previewUrl() const;
     bool hasImage() const { return m_currentIndex >= 0 && m_currentIndex < m_photos.size(); }
     QString currentFile() const;
@@ -187,6 +191,8 @@ public:
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool createProject(const QUrl &folder, const QString &name);
     Q_INVOKABLE bool openProject(const QUrl &folder);
+    Q_INVOKABLE void setRating(int rating);
+    Q_INVOKABLE void setFlag(const QString &flag);
     Q_INVOKABLE void resetAdjustments();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
@@ -201,6 +207,7 @@ public:
 signals:
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
+    void curationChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
     void activityChanged(); void backendChanged(); void exportChanged();
@@ -208,7 +215,10 @@ signals:
     void exportFinished(int succeeded, int failed, bool cancelled);
 
 private:
-    struct PhotoEntry { QString path; QString name; AdjustmentState state; bool raw = false; };
+    struct PhotoEntry {
+        QString path; QString name; AdjustmentState state; bool raw = false;
+        int rating = 0; QString flag = QStringLiteral("none");
+    };
     QVector<PhotoEntry> m_photos;
     QSet<QString> m_importedPaths;
     int m_currentIndex = -1;
@@ -238,6 +248,7 @@ private:
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
     QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;
+    QHash<QString, ProjectDatabase::PhotoCuration> m_dirtyCuration;
     QElapsedTimer m_renderClock;
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;

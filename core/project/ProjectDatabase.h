@@ -11,13 +11,17 @@
 class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
-    struct SavedPhoto { QString path; AdjustmentState adjustments; };
+    struct PhotoCuration { int rating = 0; QString flag = QStringLiteral("none"); };
+    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
     // Read and validate an existing .jlp catalog before switching the writer.
     // A failed open never replaces the currently opened database.
     bool open(const QString &projectDirectory, QVector<SavedPhoto> *photos);
+    // Curation is independent of Develop adjustments, so syncing presets
+    // cannot overwrite a photo's personal pick/reject/rating decision.
+    bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);
     bool updateBatch(const QHash<QString, AdjustmentState> &states);

@@ -56,6 +56,9 @@ QVariantList PhotoController::library() const {
         row["name"] = m_photos[i].name;
         row["path"] = m_photos[i].path;
         row["current"] = i == m_currentIndex;
+        row["index"] = i;
+        row["rating"] = m_photos[i].rating;
+        row["flag"] = m_photos[i].flag;
         row["raw"] = m_photos[i].raw;
         row["type"] = m_photos[i].raw ? QStringLiteral("RAW") : QFileInfo(m_photos[i].path).suffix().toUpper();
         out.push_back(row);
@@ -302,7 +305,7 @@ void PhotoController::selectPhoto(int index) {
     m_loading = true; m_gpuActive = false; emit backendChanged();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
-    emit currentIndexChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
+    emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
     emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
     emit activityChanged();
     ActionTrace::instance().record("select_photo", {{"index", index}, {"file", currentFile()}, {"raw", currentIsRaw()}, {"photo_epoch", qint64(m_photoEpoch)}});
@@ -334,7 +337,10 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
-        for (const auto &p : m_photos) m_dirtyEdits.insert(p.path, p.state);
+        for (const auto &p : m_photos) {
+            m_dirtyEdits.insert(p.path, p.state);
+            m_dirtyCuration.insert(p.path, {p.rating, p.flag});
+        }
         enqueueEdits();
         emit projectChanged();
         setStatus(uiText(QStringLiteral("项目已创建：") + m_project.projectName(), QStringLiteral("Project created: ") + m_project.projectName()));
@@ -364,6 +370,7 @@ bool PhotoController::openProject(const QUrl &url) {
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     m_dirtyEdits.clear();
+    m_dirtyCuration.clear();
     m_currentIndex = -1;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
@@ -385,11 +392,11 @@ bool PhotoController::openProject(const QUrl &url) {
         const QString identity = info.canonicalFilePath();
         if (identity.isEmpty() || m_importedPaths.contains(identity)) continue;
         const QString absolute = info.absoluteFilePath();
-        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute)});
+        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag});
         m_importedPaths.insert(identity);
     }
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
-    emit projectChanged(); emit libraryChanged(); emit currentIndexChanged();
+    emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
     emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
     emit scopesChanged(); emit adjustmentsChanged(); emit backendChanged();
     emit previewGeometryChanged(); emit activityChanged();
@@ -402,6 +409,34 @@ bool PhotoController::openProject(const QUrl &url) {
     ActionTrace::instance().record("project_opened",
         {{"project", path}, {"available", m_photos.size()}, {"missing", missing}});
     return true;
+}
+
+void PhotoController::setRating(int rating) {
+    if (!hasImage()) return;
+    rating = std::clamp(rating, 0, 5);
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.rating == rating) return;
+    photo.rating = rating;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        m_saveTimer.start();
+        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
+    }
+    ActionTrace::instance().record("photo_rating", {{"file", photo.path}, {"rating", rating}});
+    emit libraryChanged(); emit curationChanged();
+}
+void PhotoController::setFlag(const QString &flag) {
+    if (!hasImage() || (flag != QStringLiteral("none") && flag != QStringLiteral("pick") && flag != QStringLiteral("reject"))) return;
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.flag == flag) return;
+    photo.flag = flag;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        m_saveTimer.start();
+        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
+    }
+    ActionTrace::instance().record("photo_flag", {{"file", photo.path}, {"flag", flag}});
+    emit libraryChanged(); emit curationChanged();
 }
 
 void PhotoController::resetAdjustments() {
@@ -626,7 +661,10 @@ void PhotoController::initializeJobs() {
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { flushEdits(); });
     connect(&m_project, &ProjectDatabase::writeFailed, this, [this](const QString &message) {
         // Retain a recoverable in-memory copy after an asynchronous SQL failure.
-        for (const auto &photo : m_photos) m_dirtyEdits.insert(photo.path, photo.state);
+        for (const auto &photo : m_photos) {
+            m_dirtyEdits.insert(photo.path, photo.state);
+            m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        }
         setStatus(uiText(QStringLiteral("保存失败（编辑仍保留在内存）：%1").arg(message), QStringLiteral("Save failed (edits retained in memory): %1").arg(message)));
         ActionTrace::instance().record("project_save_failed", {{"error", message}});
     });
@@ -749,8 +787,9 @@ void PhotoController::markDirty() {
 }
 void PhotoController::enqueueEdits() {
     m_saveTimer.stop(); m_saveMaxTimer.stop();
-    if (m_dirtyEdits.isEmpty() || !m_project.isOpen()) return;
-    if (m_project.updateBatch(m_dirtyEdits)) m_dirtyEdits.clear();
+    if (!m_project.isOpen()) return;
+    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits)) m_dirtyEdits.clear();
+    if (!m_dirtyCuration.isEmpty() && m_project.updateCurationBatch(m_dirtyCuration)) m_dirtyCuration.clear();
 }
 bool PhotoController::flushEdits() {
     enqueueEdits();

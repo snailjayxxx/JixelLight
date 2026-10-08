@@ -68,6 +68,17 @@ Rectangle {
                     cache: true
                 }
                 Label {
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.margins: 3
+                    text: (modelData.rating > 0 ? "★" + modelData.rating : "")
+                        + (modelData.flag === "pick" ? "  P" : modelData.flag === "reject" ? "  X" : "")
+                    visible: modelData.rating > 0 || modelData.flag !== "none"
+                    color: "#d5e9ff"
+                    font.pixelSize: 10
+                    background: Rectangle { color: "#cb1a2530"; radius: 2 }
+                }
+                Label {
                     anchors.bottom: parent.bottom
                     anchors.left: parent.left
                     anchors.right: parent.right
