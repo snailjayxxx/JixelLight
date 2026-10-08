@@ -328,7 +328,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             controller->selectPhoto(transferTrace->value("source_index").toInt());
             state->phase=50;
         } else if (state->phase==50 && ready) {
-            complete=scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
+            // Restoring the source starts a new asynchronous histogram. Preview
+            // readiness alone does not mean its full-resolution counts arrived.
+            const auto meta=controller->currentMetadata();
+            const auto expected=meta.value("pixelWidth").toULongLong()*meta.value("pixelHeight").toULongLong();
+            const bool scopesReady=expected>0 && controller->scopesPixelCount()==expected;
+            transferTrace->insert("final_scopes",scopesReady);
+            complete=scopesReady && scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
         }
         if(state->lookEnabled)
             complete=complete && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty();
@@ -339,7 +345,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
         bool transferOk=true;
-        for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo"})
+        for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
             transferOk=transferOk && transferTrace->value(key).toBool();
         bool ok=complete && workspaceOk && copyOk && transferOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
