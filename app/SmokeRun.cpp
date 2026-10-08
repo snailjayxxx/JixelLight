@@ -48,7 +48,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             window->setProperty("workspaceIndex", 0);
             state->phase=20;
         } else if(state->phase==20) {
-            state->gridVisited=window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid")) != nullptr;
+            auto *workspace = window->findChild<QQuickItem *>(QStringLiteral("libraryWorkspace"));
+            auto *grid = window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid"));
+            state->gridVisited = workspace && grid;
+            if (state->gridVisited) {
+                workspace->setProperty("filterMode", 1); // Picks
+                state->curationPassed = state->curationPassed && grid->property("count").toInt() == 1;
+            }
             window->setProperty("workspaceIndex", 1);
             state->phase=21;
         } else if(state->phase==21) {

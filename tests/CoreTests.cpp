@@ -2,6 +2,8 @@
 #include <QColorSpace>
 #include <QFile>
 #include <QDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "core/project/ProjectDatabase.h"
 #include <QImageReader>
 #include <QRgba64>
@@ -336,6 +338,46 @@ private slots:
         QVERIFY2(reopened.open(QDir(dir.path()).filePath(QStringLiteral("Resume.jlp")), &loaded),
                  qPrintable(reopened.lastError()));
         QCOMPARE(loaded.first().adjustments.exposure, -0.75);
+    }
+
+    void legacyProjectCanReadWithoutCurationAndUpgradeOnFirstRating() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString folder = QDir(dir.path()).filePath(QStringLiteral("Legacy.jlp"));
+        QVERIFY(QDir().mkpath(folder));
+        const QString dbPath = QDir(folder).filePath(QStringLiteral("Project.db"));
+        const QString conn = QStringLiteral("jixellight-legacy-fixture");
+        const QString photoPath = QDir(folder).filePath(QStringLiteral("older.ARW"));
+        {
+            auto database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            database.setDatabaseName(dbPath);
+            QVERIFY(database.open());
+            QSqlQuery query(database);
+            QVERIFY(query.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)"));
+            QVERIFY(query.exec("INSERT INTO meta(key,value) VALUES('project_name','Legacy')"));
+            QVERIFY(query.exec("CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT NOT NULL DEFAULT '{}')"));
+            query.prepare("INSERT INTO photos(path, adjustment_json) VALUES(?, ?)");
+            query.addBindValue(photoPath);
+            AdjustmentState fromOld;
+            fromOld.exposure = 0.75;
+            query.addBindValue(QString::fromUtf8(QJsonDocument(fromOld.toJson()).toJson(QJsonDocument::Compact)));
+            QVERIFY(query.exec());
+            database.close();
+        }
+        QSqlDatabase::removeDatabase(conn);
+        ProjectDatabase restored;
+        QVector<ProjectDatabase::SavedPhoto> loaded;
+        QVERIFY2(restored.open(folder, &loaded), qPrintable(restored.lastError()));
+        QCOMPARE(loaded.size(), 1);
+        QCOMPARE(loaded[0].adjustments.exposure, 0.75);
+        QCOMPARE(loaded[0].rating, 0);
+        QCOMPARE(loaded[0].flag, QStringLiteral("none"));
+        QVERIFY(restored.updateCurationBatch({{photoPath, {5, QStringLiteral("reject")}}}));
+        QVERIFY(restored.flush());
+        QVERIFY2(restored.open(folder, &loaded), qPrintable(restored.lastError()));
+        QCOMPARE(loaded[0].rating, 5);
+        QCOMPARE(loaded[0].flag, QStringLiteral("reject"));
+        QCOMPARE(loaded[0].adjustments.exposure, 0.75);
     }
 
     void projectRejectsNonexistentDatabaseWithoutCreatingOne() {

@@ -6,6 +6,7 @@ import QtQuick.Layouts
 // Selecting photos keeps the same PhotoController state as Develop mode.
 Rectangle {
     id: root
+    objectName: "libraryWorkspace"
     required property var controller
     signal editRequested()
     property int filterMode: 0 // all, picks, rejects, rating >= 3
