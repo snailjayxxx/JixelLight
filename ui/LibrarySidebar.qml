@@ -105,7 +105,7 @@ Rectangle {
                     anchors.margins: 6
                     spacing: 5
                     Label {
-                        text: modelData.raw ? "RAW" : modelData.type
+                        text: modelData.virtual ? root.t("副本", "COPY") : modelData.raw ? "RAW" : modelData.type
                         color: modelData.raw ? "#7bd8bd" : "#8fa0b1"
                         font.bold: true
                         font.pixelSize: 9

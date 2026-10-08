@@ -13,7 +13,7 @@ class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
     struct PhotoCuration { int rating = 0; QString flag = QStringLiteral("none"); };
-    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; };
+    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; QString copyKey; QString versionName; };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
@@ -23,6 +23,7 @@ public:
     // Curation is independent of Develop adjustments, so syncing presets
     // cannot overwrite a photo's personal pick/reject/rating decision.
     bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);
+    bool addVirtualCopy(const QString &key, const QString &source, const QString &name, const AdjustmentState &adjustments, const EditHistory &history, const CatalogTags &tags, const PhotoCuration &curation);
     bool updateTagsBatch(const QHash<QString, CatalogTags> &changes);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);

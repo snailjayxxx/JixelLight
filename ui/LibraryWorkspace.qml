@@ -126,7 +126,7 @@ Rectangle {
                                 anchors.right: parent.right
                                 anchors.top: parent.top
                                 anchors.margins: 4
-                                text: modelData.type + (modelData.flag === "pick" ? "  P" : modelData.flag === "reject" ? "  X" : "")
+                                text: (modelData.virtual ? root.t("副本 ", "Copy ") : "") + modelData.type + (modelData.flag === "pick" ? "  P" : modelData.flag === "reject" ? "  X" : "")
                                 color: modelData.raw ? "#a7f1d6" : "#d1dbe5"
                                 font.bold: true
                                 font.pixelSize: 9
@@ -186,6 +186,8 @@ Rectangle {
                 Layout.fillWidth: true
                 TextField { id: albumName; Layout.fillWidth: true; Layout.minimumWidth: 0; maximumLength: 80; placeholderText: root.t("相册名称", "Album name") }
                 Button { text: root.t("加入相册", "Add to album"); enabled: root.controller.selectedIndices.length > 0 && albumName.text.trim().length > 0; onClicked: root.controller.addSelectionToAlbum(albumName.text) }
+                TextField { id: versionName; Layout.preferredWidth: 140; maximumLength: 80; placeholderText: root.t("版本名称", "Version name") }
+                Button { text: root.t("虚拟副本", "Virtual copy"); enabled: root.controller.hasImage; onClicked: { if (root.controller.createVirtualCopy(versionName.text)) versionName.clear() } }
                 Button { text: root.t("移出相册", "Remove from album"); enabled: root.controller.selectedIndices.length > 0 && albumName.text.trim().length > 0; onClicked: root.controller.removeSelectionFromAlbum(albumName.text) }
             }
             Label { Layout.fillWidth: true; text: root.t("Ctrl / ⌘ 多选，Shift 范围选择。集合相册不移动原片；关键词设置会替换所选照片的关键词。", "Ctrl / ⌘ toggles; Shift selects a range. Albums keep originals in place; keyword edits replace selected keywords."); color: "#8291a2"; font.pixelSize: 10; wrapMode: Text.WordWrap }

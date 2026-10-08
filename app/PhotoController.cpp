@@ -17,6 +17,7 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QUuid>
 #include "core/commands/NamedPresets.h"
 #include <QUrl>
 #include <algorithm>
@@ -63,6 +64,8 @@ QVariantList PhotoController::library() const {
         row["index"] = i;
         row["rating"] = m_photos[i].rating;
         row["flag"] = m_photos[i].flag;
+        row["virtual"] = !m_photos[i].copyKey.isEmpty();
+        row["versionName"] = m_photos[i].versionName;
         row["selected"] = m_selectedPhotos.contains(i);
         row["keywords"] = m_photos[i].tags.keywords;
         row["albums"] = m_photos[i].tags.albums;
@@ -139,6 +142,25 @@ QStringList PhotoController::albumNames() const {
 QStringList PhotoController::currentKeywords() const { return hasImage() ? m_photos[m_currentIndex].tags.keywords : QStringList{}; }
 QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
 QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
+bool PhotoController::createVirtualCopy(const QString &name) {
+    if (!hasImage() || !flushEdits()) return false;
+    auto copy = m_photos[m_currentIndex];
+    const auto title = name.trimmed().isEmpty() ? QStringLiteral("Version %1").arg(m_photos.size()+1) : name.trimmed();
+    QStringList checked{title};
+    if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != title || !copy.state.look.error.isEmpty()) return false;
+    copy.copyKey = "jixel-copy:" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    copy.versionName = title; copy.name = QFileInfo(copy.path).fileName() + " · " + title;
+    copy.history = {}; copy.history.initialize(copy.state);
+    EditHistory validated;
+    if (!validated.restore(copy.history.toJson(),copy.state)) return false;
+    if (m_project.isOpen() && !m_project.addVirtualCopy(copy.copyKey,copy.path,title,copy.state,copy.history,copy.tags,{copy.rating,copy.flag})) {
+        setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
+    }
+    m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
+    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title}});
+    setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
+}
+
 bool PhotoController::setPhotoSelection(const QVariantList &indices) {
     QSet<int> selected;
     for (const auto &value : indices) {
@@ -152,7 +174,7 @@ bool PhotoController::setSelectionRating(int rating) {
     if (rating < 0 || rating > 5 || m_selectedPhotos.isEmpty()) return false;
     for (int index : m_selectedPhotos) {
         auto &photo = m_photos[index]; photo.rating = rating;
-        if (m_project.isOpen()) m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
     }
     enqueueEdits(); emit libraryChanged(); emit curationChanged();
     ActionTrace::instance().record("selection_rating", {{"count",m_selectedPhotos.size()},{"rating",rating}}); return true;
@@ -161,7 +183,7 @@ bool PhotoController::setSelectionFlag(const QString &flag) {
     if ((flag != "none" && flag != "pick" && flag != "reject") || m_selectedPhotos.isEmpty()) return false;
     for (int index : m_selectedPhotos) {
         auto &photo = m_photos[index]; photo.flag = flag;
-        if (m_project.isOpen()) m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
     }
     enqueueEdits(); emit libraryChanged(); emit curationChanged();
     ActionTrace::instance().record("selection_flag", {{"count",m_selectedPhotos.size()},{"flag",flag}}); return true;
@@ -186,7 +208,7 @@ bool PhotoController::updateSelectedTags(const QString &operation, const QString
     }
     for (auto it = staged.begin(); it != staged.end(); ++it) {
         auto &photo = m_photos[it.key()]; photo.tags = it.value();
-        if (m_project.isOpen()) m_dirtyTags.insert(photo.path,photo.tags);
+        if (m_project.isOpen()) m_dirtyTags.insert(photo.storageKey(),photo.tags);
     }
     enqueueEdits(); emit libraryChanged();
     ActionTrace::instance().record("selection_" + operation, {{"count",staged.size()}}); return true;
@@ -310,6 +332,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
     emit historyChanged();
     QVariantMap payload = details;
     payload["file"] = currentFile();
+    payload["photo_key"] = m_photos[m_currentIndex].storageKey();
     ActionTrace::instance().record(action, payload);
     markDirty();
     emit adjustmentsChanged();
@@ -405,7 +428,7 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     if (isRaw) entry.state.look.mode = "as-shot"; // New imports only; old projects remain off.
     m_photos.push_back(entry);
     m_importedPaths.insert(identity);
-    if (m_project.isOpen()) { m_dirtyEdits.insert(entry.path, entry.state); m_saveTimer.start(); if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start(); }
+    if (m_project.isOpen()) { m_dirtyEdits.insert(entry.storageKey(), entry.state); m_saveTimer.start(); if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start(); }
     ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
 
     if (notifyImmediately) {
@@ -530,12 +553,18 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
+        // A new catalog stores absolute source keys; an opened legacy catalog
+        // keeps its original relative keys until it is explicitly copied here.
+        for (auto &photo : m_photos) if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
         for (const auto &p : m_photos) {
-            m_dirtyEdits.insert(p.path, p.state);
+            if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag})) {
+                setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError()); return false;
+            }
+            m_dirtyEdits.insert(p.storageKey(), p.state);
             auto history = p.history; history.initialize(p.state);
-            m_dirtyHistories.insert(p.path, history);
-            m_dirtyCuration.insert(p.path, {p.rating, p.flag});
-            m_dirtyTags.insert(p.path,p.tags);
+            m_dirtyHistories.insert(p.storageKey(), history);
+            m_dirtyCuration.insert(p.storageKey(), {p.rating, p.flag});
+            m_dirtyTags.insert(p.storageKey(),p.tags);
         }
         enqueueEdits();
         emit projectChanged();
@@ -587,11 +616,13 @@ bool PhotoController::openProject(const QUrl &url) {
         const QFileInfo info(rawPath.isAbsolute() ? record.path : QDir(m_project.projectPath()).filePath(record.path));
         if (!info.isFile() || !info.isReadable()) { ++missing; continue; }
         const QString identity = info.canonicalFilePath();
-        if (identity.isEmpty() || m_importedPaths.contains(identity)) continue;
+        if (identity.isEmpty() || (record.copyKey.isEmpty() && m_importedPaths.contains(identity))) continue;
         const QString absolute = info.absoluteFilePath();
-        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags});
-        m_importedPaths.insert(identity);
+        m_photos.push_back({absolute, info.fileName() + (record.copyKey.isEmpty() ? QString() : " · " + record.versionName), record.adjustments,
+                            RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString()});
+        if (record.copyKey.isEmpty()) m_importedPaths.insert(identity);
     }
+    for (const auto &photo : m_photos) m_importedPaths.insert(QFileInfo(photo.path).canonicalFilePath());
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
     emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
     emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
@@ -615,7 +646,7 @@ void PhotoController::setRating(int rating) {
     if (photo.rating == rating) return;
     photo.rating = rating;
     if (m_project.isOpen()) {
-        m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
         m_saveTimer.start();
         if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
     }
@@ -628,7 +659,7 @@ void PhotoController::setFlag(const QString &flag) {
     if (photo.flag == flag) return;
     photo.flag = flag;
     if (m_project.isOpen()) {
-        m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
         m_saveTimer.start();
         if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
     }
@@ -667,7 +698,7 @@ void PhotoController::syncAdjustmentsToAll() {
         photo.history.finish();
         photo.state = state;
         photo.history.record(state, QStringLiteral("sync_adjustments"));
-        if (m_project.isOpen()) { m_dirtyEdits.insert(photo.path, photo.state); m_dirtyHistories.insert(photo.path, photo.history); }
+        if (m_project.isOpen()) { m_dirtyEdits.insert(photo.storageKey(), photo.state); m_dirtyHistories.insert(photo.storageKey(), photo.history); }
     }
     enqueueEdits();
     emit historyChanged();
@@ -868,8 +899,8 @@ void PhotoController::initializeJobs() {
     connect(&m_project, &ProjectDatabase::writeFailed, this, [this](const QString &message) {
         // Retain a recoverable in-memory copy after an asynchronous SQL failure.
         for (const auto &photo : m_photos) {
-            m_dirtyEdits.insert(photo.path, photo.state);
-            m_dirtyCuration.insert(photo.path, {photo.rating, photo.flag});
+            m_dirtyEdits.insert(photo.storageKey(), photo.state);
+            m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
         }
         setStatus(uiText(QStringLiteral("保存失败（编辑仍保留在内存）：%1").arg(message), QStringLiteral("Save failed (edits retained in memory): %1").arg(message)));
         ActionTrace::instance().record("project_save_failed", {{"error", message}});
@@ -990,8 +1021,8 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
 
 void PhotoController::markDirty() {
     if (!m_project.isOpen() || !hasImage()) return;
-    m_dirtyEdits.insert(currentFile(), currentState());
-    m_dirtyHistories.insert(currentFile(), m_photos[m_currentIndex].history);
+    m_dirtyEdits.insert(m_photos[m_currentIndex].storageKey(), currentState());
+    m_dirtyHistories.insert(m_photos[m_currentIndex].storageKey(), m_photos[m_currentIndex].history);
     m_saveTimer.start();
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
 }

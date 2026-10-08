@@ -219,6 +219,7 @@ public:
     QStringList currentKeywords() const;
     QStringList currentAlbums() const;
     QString currentColorLabel() const;
+    Q_INVOKABLE bool createVirtualCopy(const QString &name = {});
     Q_INVOKABLE bool setPhotoSelection(const QVariantList &indices);
     Q_INVOKABLE bool setSelectionRating(int rating);
     Q_INVOKABLE bool setSelectionFlag(const QString &flag);
@@ -260,6 +261,8 @@ private:
         QString path; QString name; AdjustmentState state; bool raw = false;
         int rating = 0; QString flag = QStringLiteral("none");
         EditHistory history; CatalogTags tags;
+        QString copyKey, versionName, originalKey;
+        QString storageKey() const { return copyKey.isEmpty() ? (originalKey.isEmpty() ? path : originalKey) : copyKey; }
     };
     QVector<PhotoEntry> m_photos;
     QSet<QString> m_importedPaths;

@@ -11,7 +11,7 @@
 #include <memory>
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, historyPassed=false, geometryPassed=false; };
+    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -83,6 +83,18 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if(state->phase==202) {
             auto *grid = window->findChild<QQuickItem *>(QStringLiteral("libraryPhotoGrid"));
             state->catalogPassed = state->catalogPassed && grid && grid->property("count").toInt() == 0;
+            const auto originalIndex = controller->currentIndex();
+            const auto originalExposure = controller->exposure();
+            const auto source = controller->currentFile();
+            state->copiesPassed = controller->createVirtualCopy("Smoke version") && !controller->canUndo()
+                && controller->currentFile() == source;
+            const auto copyIndex = controller->currentIndex();
+            controller->setExposure(-.6); controller->finishInteraction();
+            controller->selectPhoto(originalIndex);
+            state->copiesPassed = state->copiesPassed && controller->exposure() == originalExposure;
+            controller->selectPhoto(copyIndex);
+            state->copiesPassed = state->copiesPassed && controller->exposure() == -.6;
+            controller->setExposure(originalExposure); controller->finishInteraction();
             window->resize(1540,920);
             window->setProperty("workspaceIndex", 1);
             state->phase=21;
@@ -129,7 +141,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->historyPassed && state->geometryPassed;
+        const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->copiesPassed && state->historyPassed && state->geometryPassed;
         bool ok=complete && workspaceOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
@@ -138,6 +150,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
         report["ui_catalog_passed"]=state->catalogPassed;
+        report["ui_virtual_copies_passed"]=state->copiesPassed;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
         report["ui_geometry_crop_scope_pixels"]=qint64(state->croppedScopePixels);
