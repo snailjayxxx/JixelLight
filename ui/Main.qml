@@ -28,12 +28,15 @@ ApplicationWindow {
     property bool filmstripVisible: true
 
     Settings {
+        id: workspaceSettings
         category: "WorkspaceLayout"
         property alias workspaceIndex: window.workspaceIndex
         property alias leftPanelVisible: window.leftPanelVisible
         property alias rightPanelVisible: window.rightPanelVisible
         property alias filmstripVisible: window.filmstripVisible
     }
+    Component.onCompleted: workspaceSplit.restoreState(workspaceSettings.value("splitViewState"))
+    Component.onDestruction: workspaceSettings.setValue("splitViewState", workspaceSplit.saveState())
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; onActivated: window.workspaceIndex = 0 }
     Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; onActivated: window.workspaceIndex = 1 }
 
@@ -120,6 +123,7 @@ ApplicationWindow {
     }
     FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value) }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
+    FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }
     Dialog {
         id: projectNameDialog
         title: window.t("创建 JixelLight 项目", "Create JixelLight project")
@@ -139,6 +143,11 @@ ApplicationWindow {
     header: ToolBar {
         height: 56
         background: Rectangle { color: "#171c23"; border.color: "#303943" }
+        Menu {
+            id: projectActions
+            MenuItem { text: window.t("新建项目", "New Project"); onTriggered: projectFolder.open() }
+            MenuItem { text: window.t("打开已有项目", "Open Existing Project"); onTriggered: openProjectFolder.open() }
+        }
         Menu {
             id: exportActions
             MenuItem {
@@ -174,8 +183,8 @@ ApplicationWindow {
             }
             ToolSeparator {}
             ToolButton {
-                text: window.t("项目", "Project")
-                onClicked: projectFolder.open()
+                text: window.t("项目 ▾", "Project ▾")
+                onClicked: projectActions.popup()
             }
             ToolButton {
                 text: window.t("导入", "Import")

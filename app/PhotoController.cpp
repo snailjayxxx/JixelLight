@@ -344,6 +344,66 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     return ok;
 }
 
+bool PhotoController::openProject(const QUrl &url) {
+    if (!url.isLocalFile() || !flushEdits()) return false;
+    QVector<ProjectDatabase::SavedPhoto> saved;
+    const QString path = url.toLocalFile();
+    if (!m_project.open(path, &saved)) {
+        const QString error = m_project.lastError();
+        setStatus(uiText(QStringLiteral("无法打开项目：") + error, QStringLiteral("Cannot open project: ") + error));
+        ActionTrace::instance().record("project_open_failed", {{"path", path}, {"error", error}});
+        return false;
+    }
+
+    // All callbacks are generation-guarded: no in-flight task from the old
+    // project may publish a preview or scopes for this project's first photo.
+    ++m_photoEpoch;
+    ++m_requestedRevision;
+    m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
+    m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
+    m_saveTimer.stop(); m_saveMaxTimer.stop();
+    m_dirtyEdits.clear();
+    m_currentIndex = -1;
+    m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
+    m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
+    m_currentMetadata.clear(); m_scopes = {}; m_scopesRank = -1;
+    m_sourceIsFull = false; m_loading = false; m_rendering = false; m_gpuActive = false;
+    m_scopesUpdating = true; m_displayPixels = {};
+    m_referenceFiles.clear();
+    resetReference();
+    if (m_provider) m_provider->setImage({});
+    ++m_previewRevision;
+    m_photos.clear();
+    m_importedPaths.clear();
+
+    int missing = 0;
+    for (const auto &record : saved) {
+        const QFileInfo rawPath(record.path);
+        const QFileInfo info(rawPath.isAbsolute() ? record.path : QDir(m_project.projectPath()).filePath(record.path));
+        if (!info.isFile() || !info.isReadable()) { ++missing; continue; }
+        const QString identity = info.canonicalFilePath();
+        if (identity.isEmpty() || m_importedPaths.contains(identity)) continue;
+        const QString absolute = info.absoluteFilePath();
+        m_photos.push_back({absolute, info.fileName(), record.adjustments, RawDecoder::isRawFile(absolute)});
+        m_importedPaths.insert(identity);
+    }
+    QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
+    emit projectChanged(); emit libraryChanged(); emit currentIndexChanged();
+    emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
+    emit scopesChanged(); emit adjustmentsChanged(); emit backendChanged();
+    emit previewGeometryChanged(); emit activityChanged();
+    if (!m_photos.isEmpty()) selectPhoto(0);
+
+    setStatus(uiText(QStringLiteral("已打开项目：%1 · %2 张照片 · %3 个缺失文件保留在原目录中")
+                          .arg(m_project.projectName()).arg(m_photos.size()).arg(missing),
+                     QStringLiteral("Opened project: %1 · %2 photos · %3 missing files kept in catalog")
+                          .arg(m_project.projectName()).arg(m_photos.size()).arg(missing)));
+    ActionTrace::instance().record("project_opened",
+        {{"project", path}, {"available", m_photos.size()}, {"missing", missing}});
+    return true;
+}
+
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
         *state = {};

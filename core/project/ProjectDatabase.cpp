@@ -1,6 +1,8 @@
 #include "core/project/ProjectDatabase.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QDir>
+#include <QFileInfo>
+#include <QJsonParseError>
 #include <QJsonDocument>
 #include <QMutexLocker>
 #include <QSqlDatabase>
@@ -64,6 +66,106 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
     else emit writeFailed(lastError());
     return ok;
 }
+// Existing projects are opened without overwriting their metadata, and their
+// serialized edits are validated before the active writer connection changes.
+bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos) {
+    if (!photos) return false;
+    const QFileInfo folderInfo(directory);
+    const QString folder = folderInfo.absoluteFilePath();
+    const QFileInfo databaseInfo(QDir(folder).filePath(QStringLiteral("Project.db")));
+    if (!folderInfo.isDir() || !folderInfo.fileName().endsWith(QStringLiteral(".jlp"), Qt::CaseInsensitive)
+        || !databaseInfo.isFile()) {
+        QMutexLocker lock(&m_state->mutex);
+        m_state->error = QStringLiteral("Not a JixelLight .jlp directory containing Project.db");
+        return false;
+    }
+    if (m_open && !flush()) return false;
+
+    const auto state = m_state;
+    QVector<SavedPhoto> staged;
+    QString projectName = folderInfo.fileName().chopped(4);
+    QString error;
+    bool ready = false;
+    QMetaObject::invokeMethod(m_worker, [&, state] {
+        const QString candidate = QStringLiteral("jixellight-writer-")
+            + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), candidate);
+            db.setDatabaseName(databaseInfo.absoluteFilePath());
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+            ready = db.open();
+            if (!ready) error = db.lastError().text();
+
+            if (ready) {
+                QSqlQuery title(db);
+                if (!title.exec(QStringLiteral("SELECT value FROM meta WHERE key='project_name'"))) {
+                    ready = false;
+                    error = title.lastError().text();
+                } else if (title.next() && !title.value(0).toString().isEmpty()) {
+                    projectName = title.value(0).toString();
+                }
+            }
+            if (ready) {
+                QSqlQuery query(db);
+                if (!query.exec(QStringLiteral("SELECT path, adjustment_json FROM photos ORDER BY imported_at, path"))) {
+                    ready = false;
+                    error = query.lastError().text();
+                }
+                while (ready && query.next()) {
+                    const QString path = query.value(0).toString();
+                    const QByteArray json = query.value(1).toString().toUtf8();
+                    QJsonParseError parseError;
+                    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
+                    if (path.isEmpty() || parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+                        ready = false;
+                        error = QStringLiteral("Invalid adjustment JSON for project photo");
+                        break;
+                    }
+                    staged.push_back({path, AdjustmentState::fromJson(doc.object())});
+                    if (staged.size() > 1000000) {
+                        ready = false;
+                        error = QStringLiteral("Project contains too many photos");
+                        break;
+                    }
+                }
+            }
+
+            // Verify the same file is writable before dropping the previous
+            // connection. Failed opens leave the old project untouched.
+            if (ready) {
+                db.close();
+                db.setConnectOptions(QString());
+                ready = db.open();
+                if (!ready) error = db.lastError().text();
+                else {
+                    QSqlQuery pragma(db);
+                    ready = pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"))
+                        && pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
+                    if (!ready) error = pragma.lastError().text();
+                }
+            }
+            if (!ready) db.close();
+        }
+        if (ready) {
+            if (QSqlDatabase::contains(state->connectionName)) {
+                { QSqlDatabase previous = QSqlDatabase::database(state->connectionName, false); previous.close(); }
+                QSqlDatabase::removeDatabase(state->connectionName);
+            }
+            state->connectionName = candidate;
+        } else {
+            QSqlDatabase::removeDatabase(candidate);
+        }
+        { QMutexLocker lock(&state->mutex); state->error = error; }
+    }, Qt::BlockingQueuedConnection);
+
+    if (!ready) return false;
+    *photos = std::move(staged);
+    m_open = true;
+    m_projectPath = folder;
+    m_projectName = projectName;
+    return true;
+}
+
 bool ProjectDatabase::addOrUpdatePhoto(const QString &path, const AdjustmentState &state) { return updateBatch({{path,state}}); }
 bool ProjectDatabase::updateAdjustment(const QString &path, const AdjustmentState &state) { return addOrUpdatePhoto(path,state); }
 bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states) {

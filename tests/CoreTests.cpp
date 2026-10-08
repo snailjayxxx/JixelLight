@@ -1,6 +1,8 @@
 #include <QtTest>
 #include <QColorSpace>
 #include <QFile>
+#include <QDir>
+#include "core/project/ProjectDatabase.h"
 #include <QImageReader>
 #include <QRgba64>
 #include <QTemporaryDir>
@@ -297,6 +299,49 @@ private slots:
         QVERIFY(exported.colorSpace().isValid());
         QCOMPARE(exported.colorSpace(), ColorManagement::colorSpace(ColorManagement::OutputSpace::DisplayP3));
         QVERIFY(ColorManagement::validateIcc(exported.colorSpace().iccProfile()));
+    }
+
+    void projectCanOpenAnExistingCatalogWithEdits() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        ProjectDatabase created;
+        QVERIFY(created.create(dir.path(), QStringLiteral("Resume")));
+        AdjustmentState state;
+        state.exposure = 1.25;
+        state.highlights = -40;
+        state.hslHue[2] = 8;
+        const QString original = QDir(dir.path()).filePath(QStringLiteral("sample.ARW"));
+        QVERIFY(created.addOrUpdatePhoto(original, state));
+        QVERIFY(created.flush());
+
+        ProjectDatabase reopened;
+        QVector<ProjectDatabase::SavedPhoto> loaded;
+        QVERIFY2(reopened.open(QDir(dir.path()).filePath(QStringLiteral("Resume.jlp")), &loaded),
+                 qPrintable(reopened.lastError()));
+        QCOMPARE(reopened.projectName(), QStringLiteral("Resume"));
+        QCOMPARE(loaded.size(), 1);
+        QCOMPARE(loaded.first().path, original);
+        QCOMPARE(loaded.first().adjustments.exposure, 1.25);
+        QCOMPARE(loaded.first().adjustments.highlights, -40.0);
+        QCOMPARE(loaded.first().adjustments.hslHue[2], 8.0);
+        AdjustmentState changed = loaded.first().adjustments;
+        changed.exposure = -0.75;
+        QVERIFY(reopened.updateAdjustment(original, changed));
+        QVERIFY(reopened.flush());
+        QVERIFY2(reopened.open(QDir(dir.path()).filePath(QStringLiteral("Resume.jlp")), &loaded),
+                 qPrintable(reopened.lastError()));
+        QCOMPARE(loaded.first().adjustments.exposure, -0.75);
+    }
+
+    void projectRejectsNonexistentDatabaseWithoutCreatingOne() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        ProjectDatabase db;
+        QVector<ProjectDatabase::SavedPhoto> records;
+        const QString invalid = QDir(dir.path()).filePath(QStringLiteral("Absent.jlp"));
+        QVERIFY(!db.open(invalid, &records));
+        QVERIFY(!QFileInfo::exists(QDir(invalid).filePath(QStringLiteral("Project.db"))));
+        QVERIFY(records.isEmpty());
     }
 
     void zipWriterCreatesZipSignature() {

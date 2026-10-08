@@ -186,6 +186,7 @@ public:
     Q_INVOKABLE void importFiles(const QVariantList &urls);
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool createProject(const QUrl &folder, const QString &name);
+    Q_INVOKABLE bool openProject(const QUrl &folder);
     Q_INVOKABLE void resetAdjustments();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();

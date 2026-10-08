@@ -2,6 +2,7 @@
 #include "core/pipeline/AdjustmentState.h"
 #include <QObject>
 #include <QHash>
+#include <QVector>
 #include <QThread>
 #include <QMutex>
 #include <memory>
@@ -10,9 +11,13 @@
 class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
+    struct SavedPhoto { QString path; AdjustmentState adjustments; };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
+    // Read and validate an existing .jlp catalog before switching the writer.
+    // A failed open never replaces the currently opened database.
+    bool open(const QString &projectDirectory, QVector<SavedPhoto> *photos);
     bool addOrUpdatePhoto(const QString &path, const AdjustmentState &state);
     bool updateAdjustment(const QString &path, const AdjustmentState &state);
     bool updateBatch(const QHash<QString, AdjustmentState> &states);
