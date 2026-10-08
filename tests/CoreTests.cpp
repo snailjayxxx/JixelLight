@@ -748,6 +748,34 @@ private slots:
         QCOMPARE(loaded.first().adjustments.exposure, -0.75);
     }
 
+    void projectSnapshotPreservesVersionsRedoAndAnActiveWriter() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        ProjectDatabase writer, source;
+        QVERIFY(writer.create(dir.path(),"Writer")); QVERIFY(source.create(dir.path(),"Snapshot"));
+        const auto active=dir.filePath("active.png"), original=dir.filePath("original.png");
+        AdjustmentState activeState; activeState.exposure=.7; QVERIFY(writer.updateAdjustment(active,activeState));
+        AdjustmentState state; state.exposure=.25; EditHistory history; history.initialize({}); history.record(state,"exposure");
+        auto redo=state; redo.exposure=1.25; history.record(redo,"exposure"); history.undo();
+        QVERIFY(source.updateBatch({{original,state}},{{original,history}}));
+        auto copy=state; copy.exposure=-.5; copy.geometry.crop={0,0,.5,1}; copy.look.mode="manual"; copy.look.code="FL";
+        EditHistory copyHistory; copyHistory.initialize(copy); CatalogTags tags; tags.keywords={"portrait"};
+        const auto key="jixel-copy:"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(source.addVirtualCopy(key,original,"Alternative",copy,copyHistory,tags,{4,"pick"})); QVERIFY(source.flush());
+        const auto writerPath=writer.projectPath(), sourcePath=source.projectPath();
+        QVector<ProjectDatabase::SavedPhoto> loaded;
+        QVERIFY2(writer.readSnapshot(sourcePath,&loaded),qPrintable(writer.lastError()));
+        QCOMPARE(writer.projectPath(),writerPath); QCOMPARE(writer.projectName(),QStringLiteral("Writer")); QVERIFY(writer.isOpen());
+        QCOMPARE(loaded.size(),2); QCOMPARE(loaded[0].adjustments.exposure,.25); QVERIFY(loaded[0].history.canRedo());
+        QCOMPARE(loaded[0].history.redo().exposure,1.25); QCOMPARE(loaded[1].copyKey,key); QCOMPARE(loaded[1].versionName,QStringLiteral("Alternative"));
+        QCOMPARE(loaded[1].adjustments.geometry.crop,QRectF(0,0,.5,1)); QCOMPARE(loaded[1].adjustments.look.code,QStringLiteral("FL"));
+        QCOMPARE(loaded[1].tags.keywords,QStringList{"portrait"}); QCOMPARE(loaded[1].rating,4);
+        ProjectDatabase readonly; QVERIFY(readonly.readSnapshot(sourcePath,&loaded)); QVERIFY(!readonly.isOpen());
+        QVERIFY(!readonly.updateAdjustment(original,{}));
+        QVERIFY(!writer.readSnapshot(dir.filePath("missing.jlp"),&loaded)); QCOMPARE(loaded.size(),2);
+        activeState.exposure=.8; QVERIFY(writer.updateAdjustment(active,activeState)); QVERIFY(writer.flush());
+        QVERIFY(writer.open(writerPath,&loaded)); QCOMPARE(loaded.size(),1); QCOMPARE(loaded[0].adjustments.exposure,.8);
+    }
+
     void legacyProjectCanReadWithoutCurationAndUpgradeOnFirstRating() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -775,6 +803,12 @@ private slots:
         QSqlDatabase::removeDatabase(conn);
         ProjectDatabase restored;
         QVector<ProjectDatabase::SavedPhoto> loaded;
+        QFile before(dbPath); QVERIFY(before.open(QIODevice::ReadOnly)); const auto original=before.readAll(); before.close();
+        ProjectDatabase snapshot; QVector<ProjectDatabase::SavedPhoto> readonly;
+        QVERIFY2(snapshot.readSnapshot(folder,&readonly),qPrintable(snapshot.lastError()));
+        QVERIFY(!snapshot.isOpen()); QCOMPARE(readonly.size(),1); QCOMPARE(readonly[0].adjustments.exposure,.75);
+        QVERIFY(before.open(QIODevice::ReadOnly)); QCOMPARE(before.readAll(),original); before.close();
+        QVERIFY(!QDir(folder).exists("backups"));
         QVERIFY2(restored.open(folder, &loaded), qPrintable(restored.lastError()));
         QCOMPARE(loaded.size(), 1);
         QCOMPARE(loaded[0].adjustments.exposure, 0.75);

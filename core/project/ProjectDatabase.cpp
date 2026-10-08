@@ -122,6 +122,12 @@ bool ProjectDatabase::create(const QString &directory, const QString &name) {
 // Existing projects are opened without overwriting their metadata, and their
 // serialized edits are validated before the active writer connection changes.
 bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos) {
+    return openCatalog(directory,photos,false);
+}
+bool ProjectDatabase::readSnapshot(const QString &directory, QVector<SavedPhoto> *photos) {
+    return openCatalog(directory,photos,true);
+}
+bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> *photos, bool readOnly) {
     m_lastOpenError.clear();
     if (!photos) { m_lastOpenError = QStringLiteral("Missing project destination"); return false; }
     const QFileInfo folderInfo(directory);
@@ -132,7 +138,7 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
         m_lastOpenError = QStringLiteral("Not a JixelLight .jlp directory containing Project.db");
         return false;
     }
-    if (m_open && !flush()) return false;
+    if (!readOnly && m_open && !flush()) return false;
 
     const auto state = m_state;
     QVector<SavedPhoto> staged;
@@ -148,6 +154,13 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
             db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
             ready = db.open();
             if (!ready) error = db.lastError().text();
+            if (ready) {
+                // Keep all catalog tables in one SQLite read snapshot, including
+                // when another application is actively saving the WAL writer.
+                QSqlQuery timeout(db);
+                ready = timeout.exec("PRAGMA busy_timeout=3000") && db.transaction();
+                if (!ready) error = db.lastError().text();
+            }
 
             if (ready) {
                 QSqlQuery title(db);
@@ -244,6 +257,9 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
                     auto adjustments = AdjustmentState::fromJson(doc.object());
+                    if (!adjustments.look.error.isEmpty() || !LookProfiles::engineCompatible(adjustments.look)) {
+                        ready=false; error=QStringLiteral("Invalid or incompatible Sony Look for project photo"); break;
+                    }
                     EditHistory history;
                     if (doc.object().contains("_history") &&
                         (!doc.object().value("_history").isObject() ||
@@ -276,7 +292,8 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
 
             // Verify the same file is writable before dropping the previous
             // connection. Failed opens leave the old project untouched.
-            if (ready) {
+            if (ready && !db.commit()) { ready=false; error=db.lastError().text(); }
+            if (ready && !readOnly) {
                 db.close();
                 db.setConnectOptions(QString());
                 ready = db.open();
@@ -288,9 +305,9 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
                     if (!ready) error = pragma.lastError().text();
                 }
             }
-            if (!ready) db.close();
+            if (!ready || readOnly) db.close();
         }
-        if (ready) {
+        if (ready && !readOnly) {
             if (QSqlDatabase::contains(state->connectionName)) {
                 { QSqlDatabase previous = QSqlDatabase::database(state->connectionName, false); previous.close(); }
                 QSqlDatabase::removeDatabase(state->connectionName);
@@ -306,9 +323,11 @@ bool ProjectDatabase::open(const QString &directory, QVector<SavedPhoto> *photos
 
     if (!ready) { m_lastOpenError = error.isEmpty() ? QStringLiteral("Project validation failed") : error; return false; }
     *photos = std::move(staged);
-    m_open = true;
-    m_projectPath = folder;
-    m_projectName = projectName;
+    if (!readOnly) {
+        m_open = true;
+        m_projectPath = folder;
+        m_projectName = projectName;
+    }
     return true;
 }
 

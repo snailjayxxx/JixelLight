@@ -15,7 +15,8 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 - Shared-command/As Shot/save-retry checkpoint: **e24028635edbab155f386a6331559299a2e63c9e**, run **37754564896** succeeded on all three platforms, including mandatory GPU, real Sony renders, GUI and desktop package validation. Qt 6.8.3 Release and 46 local core checks passed; CPU RAW GUI smoke passed in 6.524 s.
 - Version-management/date-index checkpoint: **aee4c4013d88dd0ce19d4c088d48b3dde1a6a2f6**, run **37757196524** succeeded on all three platforms, including mandatory GPU, real Sony renders, GUI and desktop package validation. Release build, 52 local core checks and CPU RAW GUI smoke (6.613 s) passed.
 - Preset-management checkpoint: **904d6565998a99423f5ec0b48f5c434d05b54f98**, run **37759215058** succeeded on all three platforms, including mandatory GPU, real Sony renders, GUI and desktop package validation. Release build, **54** local core checks and the complete 10-test CTest set passed (two local GPU suites explicitly skip). Empty/non-executable build artifacts were repaired and verified as actual ELF executables before acceptance; zero-output CTest results are not test evidence. CPU RAW GUI smoke passed in **7.171 s**, including the reachable preset menu, copy/date ordering, history/geometry and exact scopes.
-- Current diagnostic-fingerprint batch: Qt 6.8.3 Release build and **57** local core checks passed, including immediate current-state diagnostic capture. Complete local CTest and CPU RAW GUI smoke (**7.240 s**) passed; actual ELF executables were verified first and both local GPU suites explicitly skip. Commit metadata now reports the current configured Git revision. Cross-platform acceptance for this exact batch is tracked in PR #16.
+- Diagnostic-fingerprint checkpoint: **05e98e6d5f526f43b85dbc356777f3601d621a3b**, run **37760750681** succeeded on all three platforms, including mandatory GPU, real Sony renders, GUI and desktop package validation. Qt 6.8.3 Release build and **57** local core checks passed, including immediate current-state diagnostic capture. Complete local CTest and CPU RAW GUI smoke (**7.240 s**) passed; actual ELF executables were verified first and both local GPU suites explicitly skip. Commit metadata now reports the current configured Git revision.
+- Current offline batch/catalog batch: Release build, **58** core checks and the complete local CTest set passed (GPU explicitly skips), plus CPU RAW GUI smoke (**7.369 s**). Extended CLI checks passed again after the final report change. A real Sony ARW two-version cropped JPEG catalog export passed in **1.922 s**, resolving symbolic As Shot to ST while retaining the alternate manual FL/.5 EV snapshot; source RAW and database SHA-256 were unchanged. This verifies state/export semantics, not FL calibration or full-frame throughput. Exact cross-platform acceptance is tracked in PR #16.
 - Local verification: Qt **6.8.3** Release build; core, performance, monitor-color, RAW-worker, Sony look, real Sony fixture and CLI tests executed. Local offscreen environment has no compute backend: GPU/display-GPU tests skip and are **not GPU validation**. Every subsequent code batch must pass mandatory GPU CI before acceptance.
 
 ## Actual implemented scope
@@ -28,7 +29,7 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 | F3 | Source cache retained; independent 128 MiB prepared-preview LRU; keys include engine, QImage source identity, geometry/viewport; cache counters/timings in performance diagnostics; dependency manifest; diagnostic CPU capture uses explicit RAW semantics and current geometry; source, prepared-preview and CPU sRGB output fingerprints in diagnostic ZIP | Splitting color kernels into stages, true float RAW source, highlight upgrades, per-kernel/GPU output hashes and additional cache tiers |
 | F4 | Normalized original-coordinate crop; centered 1:1/3:2/4:3 crop UI; 90° rotation, horizontal/vertical flip, reset; same geometry in CPU/GPU preview, full scopes and both export formats; persisted in adjustments and Undo/Redo | Interactive crop handles/straighten, transform/lens corrections, masks, Texture/Clarity/Dehaze, noise/sharpen, grading, healing |
 | F5 | 16-bit RGBA PNG with target ICC; current and batch export; atomic QSaveFile with cancellation preserving destination; original protection; existing tiled JPEG and 1024-bin scopes retained | TIFF/WebP, proofing, waveform/parade/vectorscope, import Copy/Move and broader RAW validation |
-| F6 | Shared scalar/HSL/curve/geometry Develop registry used by UI and offline CLI; strict JSON commands and undoable GUI command replay; CPU JPEG/PNG export, schema inspection, invalid-command checks and existing-output refusal | Full action registry/replay, headless batch catalogs and optional MCP |
+| F6 | Shared scalar/HSL/curve/geometry Develop registry used by UI and offline CLI; strict JSON commands and undoable GUI command replay; CPU JPEG/PNG export, schema inspection, invalid-command checks and existing-output refusal; portable batch plans; read-only catalog snapshots exporting saved original/virtual versions and current history cursors, with optional command overrides and structured partial-failure reports | Full action registry/replay, optional MCP and additional catalog job selection |
 
 CLI is included in the Windows ZIP and macOS app under `Contents/MacOS`, with a deployed CLI safety test after stripping development Qt search paths.
 
@@ -40,6 +41,9 @@ The PNG writer uses full-frame rendered memory; JPEG retains its streaming 128-r
 JixelLightCli --schema
 JixelLightCli --commands adjustments.json --space display-p3 input.ARW new-output.png
 JixelLightCli input.jpg new-output.jpg
+JixelLightCli --batch exports.json
+JixelLightCli --catalog Project.jlp --output-dir existing-folder --format png
+JixelLightCli --catalog Project.jlp --output-dir existing-folder --commands adjustments.json --format jpeg
 ```
 
 `adjustments.json`:
@@ -48,11 +52,24 @@ JixelLightCli input.jpg new-output.jpg
 [{"command":"develop.set","parameter":"exposure","value":0.5}]
 ```
 
+Example `exports.json` (use the engine reported by `--schema`):
+
+```json
+{"schema":1,"engine":"jixellight-linear-v5-base2-look4","jobs":[
+  {"source":"input.ARW","destination":"variant.png","space":"display-p3",
+   "commands":[{"command":"develop.set","parameter":"exposure","value":0.5}]}
+]}
+```
+
 CLI shares the existing scalar/HSL/curve ranges and clamps finite numeric values. It also supports normalized `geometry.crop`, relative integer `geometry.rotate`, flip toggles, geometry reset, curve reset and Develop reset. Unknown fields, invalid indices and invalid geometry are rejected without partial state changes. It uses CPU reference processing, As Shot look resolution and camera baseline metadata; it never downloads models or opens a remote service. GUI Undo/Redo snapshots and the cursor are persisted atomically with current adjustments in the catalog adjustment JSON (`_history`, schema 1). Legacy projects without history initialize from their current state. Unknown or corrupt histories reject project opening before replacing the active writer. Shared Sony LUTs are serialized once per photo history and validated on restore, including the same fitted-engine compatibility rule as Look profile imports. Persisted/copied/synced/preset As Shot state preserves the symbolic user request; camera-derived code/parameters are resolved only for rendering. Earlier draft histories with only stale resolved As Shot metadata differences are restored to the exact user snapshot, while differing scalars/strength are rejected. Failed writes remain sticky per category/photo until the same data is successfully retried; GUI recovery retains history and catalog annotations too.
 
 User-local named presets live in the application data directory and use atomic writes. Save/import refuse duplicate names; Rename refuses collisions; Update is a separate operation with GUI confirmation. Unreadable/unknown-version files remain protected. Portable `.jixelpreset.json` files validate the current rendering engine and full Sony state, exclude geometry/curation and use a same-folder temporary file with a non-overwriting final rename; importing requires an unused name and never applies the preset to the active photo automatically.
 
 Diagnostic ZIPs include `stage_outputs.json` and the same structured data in their manifest. SHA-256 hashes stream visible native QImage rows without copying full frames or hashing row padding; format/dimensions/engine are included and ICC bytes are hashed separately. These are the actual RGBA64/proxy and CPU output boundaries, before monitor presentation, not float RAW, GPU readback or individual color-kernel hashes. Hashing runs only on the explicit diagnostic action and records its elapsed time. Capture renders the current parameters/geometry even before asynchronous preview refinement. Each ZIP has a unique filename and refuses existing destinations. Reused CMake builds track Git HEAD/ref changes so commit metadata does not stay at the initial configuration.
+
+`--batch` accepts a schema-1 JSON object with the exact current engine and 1–1000 jobs (4 MiB limit); each job requires `source`, `destination` and a shared-command array, with optional `space`. Relative paths use the manifest directory; `--space` is the per-job default. All commands, readable source paths, existing parent directories and distinct new destinations are validated before rendering. Destination aliases/case-only duplicates are rejected. Both single and batch CLI exports render into a same-directory temporary file and publish with a non-overwriting rename, including protection against destinations appearing after preflight.
+
+`--catalog` reads all saved original/virtual versions through the same catalog/history/Sony validator in one read-only SQLite transaction. It never adopts a writer, changes journal mode, upgrades tables or changes saved edits. Relative source paths use the `.jlp` directory; output names have a deterministic version index. It exports the saved history cursor and Sony/geometry snapshot, rather than reusing defaults from a different version. Optional `--commands` modify each export snapshot without persisting changes. Both multi-job modes stop on a runtime decode/render/publication failure, retain completed output files, exit 2 and emit JSON with completed/failed/not-attempted counts; success exits 0. This is sequential offline CPU processing; JPEG quality is 92 and output folders must already exist.
 
 ## Regression coverage in this batch
 
@@ -71,6 +88,7 @@ Diagnostic ZIPs include `stage_outputs.json` and the same structured data in the
 - Geometry orientation/pixel mapping, untouched original pixels, legacy default state and JSON round trip.
 - Exact PNG 16-bit pixel comparison for explicit RAW and non-RAW semantics, ICC round trip, cancellation and batch PNG.
 - CLI schema, finite/range validation, invalid/unknown commands, JPEG/PNG export and original/existing-file preservation.
+- Offline batch relative paths and per-job state/ICC isolation, all-job preflight, case/path collisions, schema/engine/field rejection, partial runtime failures and temporary-file cleanup. Catalog export checks actual original/virtual versions and an undone history cursor, saved Sony/crop, command overrides, database-byte preservation and no legacy migration/WAL switch; invalid saved history/Sony data rejects before any output. The read-only snapshot API preserves an already active project writer and its save/reopen behavior.
 - GUI smoke rotates and crops a photograph, requires exact cropped pixel counts, undoes both, and restores full-resolution scopes. Local Leica DNG: 5,170,480 cropped pixels → 10,340,960 restored pixels; CPU smoke 6.632 s, two prepare-cache hits. These are container measurements, not a real-GPU or 24MP performance claim.
 - Layout screenshot QA corrected geometry-control overflow and made the current history step visible.
 - Headless CLI and deployed-package CLI safety checks cover builds without graphic platform plugins and without development SDK lookup paths.

@@ -21,6 +21,8 @@ public:
     // Read and validate an existing .jlp catalog before switching the writer.
     // A failed open never replaces the currently opened database.
     bool open(const QString &projectDirectory, QVector<SavedPhoto> *photos);
+    // A consistent read-only snapshot; never adopts a writer or migrates tables.
+    bool readSnapshot(const QString &projectDirectory, QVector<SavedPhoto> *photos);
     // Curation is independent of Develop adjustments, so syncing presets
     // cannot overwrite a photo's personal pick/reject/rating decision.
     bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);
@@ -40,6 +42,7 @@ signals:
     void saved(int count);
     void writeFailed(const QString &message);
 private:
+    bool openCatalog(const QString &projectDirectory, QVector<SavedPhoto> *photos, bool readOnly);
     bool modifyVirtualCopy(const QString &key, const QString &name, bool remove);
     struct WorkerState { QString connectionName; QString error; QHash<QString,QString> failedWrites; QMutex mutex; };
     std::shared_ptr<WorkerState> m_state;

@@ -1,8 +1,11 @@
 """Exercise offline exports, shared commands and destination protection without external fixtures."""
 import hashlib
+import copy
+import contextlib
 import json
 from pathlib import Path
 import struct
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -11,6 +14,12 @@ import zlib
 
 def chunk(kind, data):
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+
+
+@contextlib.contextmanager
+def open_database(path):
+    with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+        yield connection
 
 
 def main():
@@ -29,6 +38,7 @@ def main():
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 12
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'hsl.set', 'curve.set', 'develop.reset'}
+        assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         commands = root / 'commands.json'
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
         destination = root / 'result.png'
@@ -72,8 +82,121 @@ def main():
             assert not rejected.exists()
         run(source, root / 'result.jpg')
         assert (root / 'result.jpg').read_bytes().startswith(b'\xff\xd8')
+        plan = root / 'batch.json'
+        def write_batch(jobs, **overrides):
+            manifest = {'schema': 1, 'engine': rendered['engine'], 'jobs': jobs}
+            manifest.update(overrides)
+            plan.write_text(json.dumps(manifest))
+        def job(destination, commands=None, source='original.png', **options):
+            return {'source': source, 'destination': destination, 'commands': commands or [], **options}
+        # Relative paths resolve against the manifest, independently of the CLI cwd.
+        write_batch([
+            job('batch-a.png', [{'command': 'develop.set', 'parameter': 'exposure', 'value': .5}], space='adobe-rgb'),
+            job('batch-b.png', [{'command': 'geometry.crop', 'x': 0, 'y': 0, 'width': .5, 'height': 1}]),
+        ])
+        batch = json.loads(run('--batch', plan, '--space', 'display-p3').stdout)
+        assert batch['ok'] and batch['completed'] == 2 and batch['failed'] == batch['not_attempted'] == 0
+        assert [r['space'] for r in batch['results']] == ['adobe-rgb', 'display-p3']
+        assert [r['adjustments']['exposure'] for r in batch['results']] == [.5, 0]
+        assert struct.unpack('>II', (root / 'batch-b.png').read_bytes()[16:24]) == (2, 2)
+        assert (root / 'batch-a.png').read_bytes()[24] == 16
+        preserved = hashlib.sha256((root / 'batch-a.png').read_bytes()).hexdigest()
+        refused = root / 'batch-refused.png'
+        # The second job is invalid: the first must also produce no file.
+        write_batch([job(refused.name), job('batch-a.png')])
+        run('--batch', plan, success=False)
+        assert not refused.exists()
+        assert hashlib.sha256((root / 'batch-a.png').read_bytes()).hexdigest() == preserved
+        write_batch([job(refused.name), job('./' + refused.name)])
+        run('--batch', plan, success=False)
+        assert not refused.exists()
+        write_batch([job(refused.name), job('BATCH-REFUSED.PNG')])
+        run('--batch', plan, success=False)
+        assert not refused.exists()
+        invalid_batches = [
+            ([job(refused.name), job('second.png', [{'command': 'geometry.flip', 'axis': 'diagonal'}])], {}),
+            ([job(refused.name), job('second.png', source='missing.png')], {}),
+            ([job(refused.name, typo=True)], {}),
+            ([job(refused.name, space='unknown')], {}),
+            ([job('missing-directory/result.png')], {}),
+            ([job(refused.name)], {'schema': 2}),
+            ([job(refused.name)], {'engine': 'future-engine'}),
+            ([job(refused.name)], {'typo': True}),
+            ([], {}),
+            ([job(refused.name)] * 1001, {}),
+        ]
+        for jobs, overrides in invalid_batches:
+            write_batch(jobs, **overrides)
+            run('--batch', plan, success=False)
+            assert not refused.exists() and not (root / 'second.png').exists()
+        write_batch([job(refused.name)])
+        run('--batch', plan, '--commands', commands, success=False)
+        run('--batch', plan, source, refused, success=False)
+        # Runtime decode failures retain completed outputs and report unattempted jobs.
+        (root / 'corrupt.png').write_bytes(b'not an image')
+        write_batch([job('partial.png'), job('failed.png', source='corrupt.png'), job('unattempted.jpg')])
+        partial = json.loads(run('--batch', plan, success=False).stdout)
+        assert not partial['ok'] and partial['completed'] == partial['failed'] == partial['not_attempted'] == 1
+        assert [r['ok'] for r in partial['results']] == [True, False]
+        assert (root / 'partial.png').is_file() and not (root / 'failed.png').exists() and not (root / 'unattempted.jpg').exists()
+        assert not list(root.glob('.jixellight-export-*'))
+        catalog = root / 'Saved.jlp'
+        catalog.mkdir()
+        db_path = catalog / 'Project.db'
+        original_state = copy.deepcopy(rendered['adjustments'])
+        original_state['exposure'] = .25
+        redo_state = copy.deepcopy(original_state)
+        redo_state['exposure'] = 1.25
+        saved = copy.deepcopy(original_state)
+        saved['_history'] = {'schema': 1, 'cursor': 0, 'luts': [], 'entries': [
+            {'state': original_state, 'action': 'initial'}, {'state': redo_state, 'action': 'exposure'}]}
+        alternate = copy.deepcopy(original_state)
+        alternate['exposure'] = -.5
+        alternate['geometry'].update(x=0, y=0, width=.5, height=1)
+        alternate['look'].update(mode='manual', code='FL', strength=.7)
+        key = 'jixel-copy:11111111-1111-4111-8111-111111111111'
+        with open_database(db_path) as db:
+            db.executescript("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);"
+                             "INSERT INTO meta VALUES('project_name','Saved');"
+                             "CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT);"
+                             "CREATE TABLE virtual_sources(key TEXT PRIMARY KEY,json TEXT);")
+            db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)', ('../original.png', json.dumps(saved)))
+            db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)', (key, json.dumps(alternate)))
+            db.execute('INSERT INTO virtual_sources VALUES(?,?)', (key, json.dumps({'schema': 1, 'source': '../original.png', 'name': 'Alternative'})))
+        before_catalog = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        output = root / 'catalog-output'
+        output.mkdir()
+        snapshot = json.loads(run('--catalog', catalog, '--output-dir', output).stdout)
+        assert snapshot['ok'] and snapshot['mode'] == 'catalog' and snapshot['completed'] == 2
+        assert [r['adjustments']['exposure'] for r in snapshot['results']] == [.25, -.5]
+        assert snapshot['results'][1]['catalog_key'] == key and snapshot['results'][1]['version_name'] == 'Alternative'
+        assert snapshot['results'][1]['adjustments']['look']['code'] == 'FL'
+        assert struct.unpack('>II', Path(snapshot['results'][1]['destination']).read_bytes()[16:24]) == (2, 2)
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        assert set(p.name for p in catalog.iterdir()) == {'Project.db'}  # No migration, backup or WAL switch.
+        run('--catalog', catalog, '--output-dir', output, success=False)
+        run('--catalog', catalog, success=False)
+        run('--catalog', catalog, '--batch', plan, success=False)
+        run('--catalog', catalog, '--output-dir', output, '--format', 'tiff', success=False)
+        override = root / 'catalog-override'
+        override.mkdir()
+        commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
+        edited = json.loads(run('--catalog', catalog, '--output-dir', override, '--commands', commands, '--format', 'jpeg').stdout)
+        assert [r['adjustments']['exposure'] for r in edited['results']] == [1, 1]
+        assert all(Path(r['destination']).read_bytes().startswith(b'\xff\xd8') for r in edited['results'])
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        # Unsupported saved history / Sony schema rejects the whole catalog before export.
+        bad_output = root / 'catalog-rejected'
+        bad_output.mkdir()
+        for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}}]:
+            with open_database(db_path) as db:
+                db.execute('UPDATE photos SET adjustment_json=? WHERE path=?', (json.dumps(corrupt), '../original.png'))
+            current = hashlib.sha256(db_path.read_bytes()).hexdigest()
+            run('--catalog', catalog, '--output-dir', bad_output, success=False)
+            assert not list(bad_output.iterdir())
+            assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'invalid-edit-commands', 'png16', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'invalid-edit-commands', 'png16', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':
