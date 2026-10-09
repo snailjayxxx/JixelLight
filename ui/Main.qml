@@ -132,6 +132,14 @@ ApplicationWindow {
         nameFilters: ["JPEG (*.jpg *.jpeg)", "PNG 16-bit (*.png)", "TIFF 16-bit (*.tif *.tiff)", "WebP 8-bit (*.webp)"]
         onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
+    CopyImportDialog {
+        id: copyImportDialog; controller: photoController; parent: Overlay.overlay
+        hostWidth: window.width; hostHeight: window.height
+    }
+    Connections {
+        target: photoController
+        function onCopyImportRequested(urls) { copyImportDialog.openFor(urls) }
+    }
     FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, ["jpeg","png","tiff","webp"][batchFormatBox.currentIndex]) }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }

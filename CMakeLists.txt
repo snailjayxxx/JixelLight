@@ -60,6 +60,7 @@ add_library(JixelLightCore STATIC
     core/image/ProcessedImageProvider.cpp
     core/image/ThumbnailProvider.cpp
     core/import/CopyImport.cpp
+    core/import/ImportNaming.cpp
     core/import/CopyImportQueue.cpp
     core/metadata/MetadataReader.cpp
     core/metadata/XmpSidecar.cpp
@@ -94,7 +95,7 @@ if(WIN32)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})

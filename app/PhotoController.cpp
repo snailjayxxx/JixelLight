@@ -662,7 +662,20 @@ void PhotoController::openImportDialog() {
     finishImportBatch(added, rawAdded);
 }
 
-bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory) {
+QVariantMap PhotoController::previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) const {
+    QStringList sources;
+    for (const auto &value : urls) {
+        const auto url=value.canConvert<QUrl>() ? value.toUrl() : QUrl(value.toString());
+        if (!url.isLocalFile()) return {{"valid",false},{"error",uiText("复制导入仅支持本地文件", "Copy import requires local files")},{"rows",QVariantList{}}};
+        sources.push_back(url.toLocalFile());
+    }
+    const auto plan=planImportNames(sources,{pattern,sequenceStart});
+    QVariantList rows;
+    if (plan.error.isEmpty()) for (int i=0;i<sources.size();++i)
+        rows.push_back(QVariantMap{{"source",QFileInfo(sources[i]).fileName()},{"destination",plan.names[i]}});
+    return {{"valid",plan.error.isEmpty()},{"error",plan.error},{"rows",rows}};
+}
+bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart) {
     if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
     QStringList sources;
     for (const auto &value : urls) {
@@ -670,9 +683,13 @@ bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory)
         if (!url.isLocalFile()) { setStatus(uiText("复制导入仅支持本地文件", "Copy import requires local files")); return false; }
         sources.push_back(url.toLocalFile());
     }
-    if (!m_copyImportQueue->start(sources,directory.toLocalFile())) return false;
+    const ImportNaming naming{pattern,sequenceStart};
+    const auto names=planImportNames(sources,naming);
+    if (!names.error.isEmpty()) { setStatus(uiText("复制名称计划错误：", "Copy name plan error: ")+names.error); return false; }
+    if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming)) return false;
     m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
-    ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()}});
+    ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},
+        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)}});
     return true;
 }
 void PhotoController::openCopyImportDialog() {
@@ -681,12 +698,9 @@ void PhotoController::openCopyImportDialog() {
     const auto files=QFileDialog::getOpenFileNames(nullptr,uiText("选择要复制并导入的照片", "Choose photos to copy and import"),
         settings.value("ui/lastImportDir").toString(),uiText("照片与 RAW (*)", "Photos and RAW (*)"));
     if (files.isEmpty()) return;
-    const auto folder=QFileDialog::getExistingDirectory(nullptr,uiText("复制到文件夹（同名文件将拒绝）", "Copy to folder (existing names will be refused)"),
-        settings.value("ui/lastCopyImportDir").toString());
-    if (folder.isEmpty()) return;
-    settings.setValue("ui/lastImportDir",QFileInfo(files.first()).absolutePath()); settings.setValue("ui/lastCopyImportDir",folder);
+    settings.setValue("ui/lastImportDir",QFileInfo(files.first()).absolutePath());
     QVariantList urls; for (const auto &file : files) urls.push_back(QUrl::fromLocalFile(file));
-    copyImport(urls,QUrl::fromLocalFile(folder));
+    emit copyImportRequested(urls);
 }
 void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel(); }
 bool PhotoController::prepareToClose() {

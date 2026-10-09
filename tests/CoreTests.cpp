@@ -70,6 +70,76 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void importNamingPreservesExtensionAndSelectionOrder() {
+        const QStringList sources{"/one/photo.v1.ARW","/two/photo.v1.ARW","/two/花.png"};
+        auto plan=planImportNames(sources,{"旅行_{seq:4}_{name}",7});
+        QVERIFY2(plan.error.isEmpty(),qPrintable(plan.error));
+        QCOMPARE(plan.names,QStringList({"旅行_0007_photo.v1.ARW","旅行_0008_photo.v1.ARW","旅行_0009_花.png"}));
+        plan=planImportNames({"photo.ARW","flower.png"}); QVERIFY(plan.error.isEmpty());
+        QCOMPARE(plan.names,QStringList({"photo.ARW","flower.png"}));
+        plan=planImportNames({"a.dng","b.dng"},{"{seq:2}-{seq}-{name}",99});
+        QCOMPARE(plan.names,QStringList({"99-99-a.dng","100-100-b.dng"})); // Padding never truncates.
+        plan=planImportNames({"a.png","b.png"},{"{seq}",999999998});
+        QCOMPARE(plan.names,QStringList({"999999998.png","999999999.png"}));
+    }
+    void importNamingRejectsUnsafePlansBeforeAnyCopy() {
+        for (const QString &pattern : {QString("{name"),QString("{date}"),QString("{seq:0}"),QString("{seq:10}"),QString("}"),
+             QString("../{name}"),QString("C:{name}"),QString("{name}\\x"),QString("CON"),QString("lpt¹"),QString("NUL.tar"),
+             QString("x."),QString("x "),QString(".."),QString(241,'x'),QString(100,QChar(0x82b1))}) {
+            const auto plan=planImportNames({"a.png"},{pattern,1});
+            QVERIFY2(!plan.error.isEmpty(),qPrintable(pattern)); QVERIFY(plan.names.isEmpty());
+        }
+        QVERIFY(!planImportNames({"CON.ARW"}).error.isEmpty());
+        QVERIFY(!planImportNames({"a.png","A.PNG"}).error.isEmpty());
+        QVERIFY(!planImportNames({"é.png","e\u0301.png"},{"{name}",1}).error.isEmpty());
+        QVERIFY(!planImportNames({"a.png","b.png"},{"{seq}",999999999}).error.isEmpty());
+        QVERIFY(!planImportNames({"a.png"},{"{seq}",0}).error.isEmpty());
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::red);
+        const auto source=dir.filePath("a.png"),out=dir.filePath("out"); QVERIFY(image.save(source));
+        auto copied=copyImportFiles({source},out,{},{},{"../{name}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+        copied=copyImportFiles({source,source},out,{},{},{"{seq}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+    }
+    void namedCopyImportRetainsBytesAndHandlesConflictsCancellationAndRaces() {
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QVERIFY(QDir(dir.path()).mkdir("other"));
+        QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::green);
+        const auto a=dir.filePath("same.png"),b=dir.filePath("other/same.png"),out=dir.filePath("out"); QVERIFY(image.save(a)); QVERIFY(image.save(b));
+        QFile input(a); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes=input.readAll(); input.close();
+        auto result=copyImportFiles({a,b},out,{},{},{"image_{seq:4}",12});
+        QVERIFY2(result.error.isEmpty(),qPrintable(result.error)); QCOMPARE(result.completed.size(),2);
+        QCOMPARE(QFileInfo(result.completed[0].destination).fileName(),QString("image_0012.png"));
+        QCOMPARE(QFileInfo(result.completed[1].destination).fileName(),QString("image_0013.png"));
+        for (const auto &entry : result.completed) { QFile output(entry.destination); QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(),bytes); }
+        QVERIFY(!copyImportFiles({a,b},out,{},{},{"image_{seq:4}",12}).error.isEmpty());
+        auto token=std::make_shared<std::atomic_bool>(false);
+        result=copyImportFiles({a,b},out,token,[&](qint64,qint64,int done,int,const QString &stage) {
+            if (done==1 && stage=="published") token->store(true);
+        },{"cancel_{seq}",1});
+        QVERIFY(result.wasCancelled); QCOMPARE(result.completed.size(),1); QVERIFY(!QFileInfo::exists(QDir(out).filePath("cancel_2.png")));
+        result=copyImportFiles({a},out,{},[&](qint64,qint64,int,int,const QString &stage) {
+            if (stage=="verify") { QFile competing(QDir(out).filePath("RACE_1.PNG")); QVERIFY(competing.open(QIODevice::WriteOnly|QIODevice::NewOnly)); QCOMPARE(competing.write("existing"),qint64(8)); }
+        },{"race_{seq}",1});
+        QVERIFY(!result.error.isEmpty()); QVERIFY(result.completed.isEmpty());
+        QFile competing(QDir(out).filePath("RACE_1.PNG")); QVERIFY(competing.open(QIODevice::ReadOnly)); QCOMPARE(competing.readAll(),QByteArray("existing"));
+        QVERIFY(QDir(out).entryList({".jixellight-import-*"},QDir::Dirs|QDir::Hidden).isEmpty());
+        QVERIFY(input.open(QIODevice::ReadOnly)); QCOMPARE(input.readAll(),bytes);
+    }
+    void namedImportControllerPreviewAndCatalogUseTheSamePlan() {
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QImage image(8,8,QImage::Format_RGB32); image.fill(Qt::blue);
+        const auto source=dir.filePath("a.png"),out=dir.filePath("out"); QVERIFY(image.save(source));
+        PhotoController c(nullptr); c.setGpuEnabled(false); QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Named"));
+        const QVariantList urls{QUrl::fromLocalFile(source)};
+        const auto preview=c.previewImportNames(urls,"photo_{seq:4}_{name}",7); QVERIFY(preview["valid"].toBool());
+        QCOMPARE(preview["rows"].toList().first().toMap()["destination"].toString(),QString("photo_0007_a.png"));
+        QVERIFY(!c.previewImportNames(urls,"{unsupported}",1)["valid"].toBool());
+        QVERIFY(!c.copyImport(urls,QUrl::fromLocalFile(out),"{unsupported}",1)); QVERIFY(!c.copyImportBusy()); QVERIFY(c.library().isEmpty()); QVERIFY(QDir(out).isEmpty());
+        QVERIFY(c.copyImport(urls,QUrl::fromLocalFile(out),"photo_{seq:4}_{name}",7));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000); QCOMPARE(c.library().size(),1);
+        QCOMPARE(c.library().first().toMap()["path"].toString(),QDir(out).filePath("photo_0007_a.png"));
+        QVERIFY(c.prepareToClose()); const auto project=c.projectPath();
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false); QVERIFY(reopened.openProject(QUrl::fromLocalFile(project)));
+        QCOMPARE(reopened.library().size(),1); QCOMPARE(reopened.library().first().toMap()["path"].toString(),QDir(out).filePath("photo_0007_a.png"));
+        QVERIFY(QFileInfo::exists(source));
+    }
     void adjustmentTransferGroupsAreCompleteIndependentAndRejectPartialInput() {
         AdjustmentState source,target;
         auto json=source.toJson(); int n=0;

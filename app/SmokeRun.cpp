@@ -14,8 +14,17 @@
 #include <QDir>
 #include <QFile>
 #include <memory>
+#include <cmath>
 
 namespace {
+void resizeForSmoke(QQuickWindow *window,int width,int height) {
+    window->resize(width,height);
+    // The offscreen platform can change native geometry without notifying
+    // QML size bindings. Publish the actual dimensions in this test helper;
+    // regular desktop resize notifications may already have arrived.
+    window->widthChanged(window->width());
+    window->heightChanged(window->height());
+}
 QQuickItem *visualChild(QQuickItem *item, const QString &name) {
     if (!item) return nullptr;
     if (item->objectName()==name) return item;
@@ -80,7 +89,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && controller->addSelectionToAlbum("Second album")
                 && controller->setSelectionLabel("blue")
                 && controller->exposure() == exposure;
-            window->resize(1180,720);
+            resizeForSmoke(window,1180,720);
             window->setProperty("workspaceIndex", 0);
             state->phase=20;
         } else if(state->phase==20) {
@@ -147,7 +156,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto sort = window->findChild<QQuickItem *>(QStringLiteral("catalogSortMode"));
             state->catalogDatesPassed = state->catalogDatesPassed && sort && sort->property("count").toInt() == 6;
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".versions.png");
-            window->resize(1540,920);
+            resizeForSmoke(window,1540,920);
             window->setProperty("workspaceIndex", 1);
             state->phase=21;
         } else if(state->phase==21) {
@@ -289,10 +298,49 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             QImage fixture(64,48,QImage::Format_RGB32); fixture.fill(QColor("#658797"));
             const bool prepared=importFixture->isValid() && QDir(importFixture->path()).mkdir("copies") && fixture.save(importFixture->filePath("copy-test.png"));
             copyTrace->insert("before",controller->library().size());
-            copyTrace->insert("started",prepared && controller->copyImport({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))},QUrl::fromLocalFile(importFixture->filePath("copies"))));
-            state->phase=46;
+            copyTrace->insert("prepared",prepared);
+            controller->copyImportRequested({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
+            state->phase=451;
+        } else if (state->phase==451 && ready) {
+            auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog"));
+            copyTrace->insert("dialog_visible",dialog && dialog->property("visible").toBool());
+            if (dialog) {
+                dialog->setProperty("customNames",false);
+                copyTrace->insert("custom_clicked",clickItem(window,visualChild(window->contentItem(),"copyImportCustomNames")));
+                dialog->setProperty("pattern",QString("session_{seq:4}_{name}"));
+                dialog->setProperty("sequenceStart",7);
+                dialog->setProperty("destination",QUrl::fromLocalFile(importFixture->filePath("copies")));
+                const auto value=dialog->property("preview");
+                const auto preview=value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toMap() : value.toMap();
+                const auto rows=preview["rows"].toList();
+                copyTrace->insert("preview_valid",preview["valid"].toBool() && rows.size()==1 && rows[0].toMap()["destination"].toString()=="session_0007_copy-test.png");
+            }
+            state->phase=452;
+        } else if (state->phase==452 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog.png");
+            copyTrace->insert("language",controller->language()); controller->setLanguage("en_US");
+            resizeForSmoke(window,1180,720);
+            state->phase=453;
+        } else if (state->phase==453 && ready) {
+            if (auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog"))) {
+                const auto parent=dialog->property("parent").value<QQuickItem *>();
+                copyTrace->insert("dialog_x",dialog->property("x").toDouble());
+                copyTrace->insert("dialog_y",dialog->property("y").toDouble());
+                copyTrace->insert("parent_width",parent ? parent->width() : -1);
+                copyTrace->insert("parent_height",parent ? parent->height() : -1);
+                copyTrace->insert("window_width",window->width());
+                copyTrace->insert("window_height",window->height());
+                copyTrace->insert("host_width",dialog->property("hostWidth").toDouble());
+                copyTrace->insert("host_height",dialog->property("hostHeight").toDouble());
+                copyTrace->insert("qml_window_width",window->property("width").toDouble());
+                copyTrace->insert("dialog_centered",std::abs(dialog->property("x").toDouble()-(window->width()-dialog->property("width").toDouble())/2)<=1
+                    && std::abs(dialog->property("y").toDouble()-(window->height()-dialog->property("height").toDouble())/2)<=1);
+            }
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog-en.png");
+            copyTrace->insert("started",clickItem(window,visualChild(window->contentItem(),"copyImportApply")));
+            controller->setLanguage(copyTrace->value("language").toString()); resizeForSmoke(window,1540,920); state->phase=46;
         } else if (state->phase==46 && ready && !controller->copyImportBusy()) {
-            QFile source(importFixture->filePath("copy-test.png")),destination(importFixture->filePath("copies/copy-test.png"));
+            QFile source(importFixture->filePath("copy-test.png")),destination(importFixture->filePath("copies/session_0007_copy-test.png"));
             copyTrace->insert("content_equal",source.open(QIODevice::ReadOnly) && destination.open(QIODevice::ReadOnly) && source.readAll()==destination.readAll());
             copyTrace->insert("catalog_added",controller->library().size()==copyTrace->value("before").toInt()+1);
             transferTrace->insert("source_index",controller->currentIndex());
@@ -311,11 +359,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if (state->phase==48 && ready) {
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog.png");
             transferTrace->insert("language",controller->language());
-            controller->setLanguage("en_US"); window->resize(1180,720); state->phase=481;
+            controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=481;
         } else if (state->phase==481 && ready) {
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog-en.png");
             transferTrace->insert("applied",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferApplyButton"))));
-            controller->setLanguage(transferTrace->value("language").toString()); window->resize(1540,920);
+            controller->setLanguage(transferTrace->value("language").toString()); resizeForSmoke(window,1540,920);
             state->phase=49;
         } else if (state->phase==49 && ready) {
             auto *dialog=window->findChild<QObject *>(QStringLiteral("adjustmentTransferDialog"));
@@ -343,6 +391,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed && state->straightenPassed;
         const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
+            && copyTrace->value("prepared").toBool() && copyTrace->value("dialog_visible").toBool() && copyTrace->value("custom_clicked").toBool()
+            && copyTrace->value("dialog_centered").toBool() && copyTrace->value("preview_valid").toBool()
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
         bool transferOk=true;
         for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})

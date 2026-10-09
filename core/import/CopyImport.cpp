@@ -12,7 +12,7 @@
 #include <limits>
 
 CopyImportResult copyImportFiles(const QStringList &sources,const QString &directory,
-                                 const CancelToken &cancel,const CopyImportProgress &progress) {
+                                 const CancelToken &cancel,const CopyImportProgress &progress,const ImportNaming &naming) {
     CopyImportResult result;
     auto fail=[&](const QString &error) { result.error=error; result.wasCancelled=cancelled(cancel); return result; };
     auto stopped=[&] { result.wasCancelled=true; return result; };
@@ -22,6 +22,8 @@ CopyImportResult copyImportFiles(const QStringList &sources,const QString &direc
         if (!folder.isDir() || !folder.isWritable() || sources.isEmpty() || sources.size()>1000)
             return fail("Choose an existing writable folder and 1–1000 source files");
         const QDir destination(folder.canonicalFilePath());
+        const auto names=planImportNames(sources,naming);
+        if (!names.error.isEmpty()) return fail(names.error);
         struct Entry { QString source,target; qint64 size; QDateTime modified; };
         QVector<Entry> plan; QSet<QString> seenSources,seenNames;
         // Case-fold existing names too: a portable import must not create two
@@ -29,10 +31,11 @@ CopyImportResult copyImportFiles(const QStringList &sources,const QString &direc
         for (const auto &name : destination.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot))
             seenNames.insert(name.normalized(QString::NormalizationForm_C).toCaseFolded());
         qint64 totalBytes=0;
-        for (const auto &path : sources) {
+        for (int index=0;index<sources.size();++index) {
+            const auto &path=sources[index];
             if (cancelled(cancel)) return stopped();
             const QFileInfo info(path); const auto identity=info.canonicalFilePath();
-            const auto name=info.fileName(), folded=name.normalized(QString::NormalizationForm_C).toCaseFolded();
+            const auto name=names.names[index], folded=name.normalized(QString::NormalizationForm_C).toCaseFolded();
             if (!info.isFile() || !info.isReadable() || identity.isEmpty() || seenSources.contains(identity))
                 return fail("Unreadable or duplicate source: "+path);
             if (!RawDecoder::isRawFile(path)) {
@@ -97,6 +100,10 @@ CopyImportResult copyImportFiles(const QStringList &sources,const QString &direc
                 return fail("Source content changed during import: "+entry.source);
             confirm.close();
             if (cancelled(cancel)) return stopped();
+            const auto targetFolded=QFileInfo(entry.target).fileName().normalized(QString::NormalizationForm_C).toCaseFolded();
+            for (const auto &name : destination.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot))
+                if (name.normalized(QString::NormalizationForm_C).toCaseFolded()==targetFolded)
+                    return fail("Destination name appeared during import: "+entry.target);
             // All native handles are closed before same-filesystem publication.
             if (!QFile::rename(stagedPath,entry.target)) return fail("Destination exists or publication failed: "+entry.target);
             result.completed.push_back({entry.source,entry.target,QString::fromLatin1(sourceHash.result().toHex())});

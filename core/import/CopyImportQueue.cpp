@@ -9,15 +9,15 @@ CopyImportQueue::~CopyImportQueue() {
     disconnect(&m_watcher,nullptr,this,nullptr); cancel();
     m_watcher.waitForFinished(); m_pool.waitForDone();
 }
-bool CopyImportQueue::start(QStringList sources,QString directory) {
+bool CopyImportQueue::start(QStringList sources,QString directory,ImportNaming naming) {
     if (m_busy || sources.isEmpty()) return false;
     m_busy=true; m_cancel=std::make_shared<std::atomic_bool>(false); const auto token=m_cancel;
-    m_watcher.setFuture(QtConcurrent::run(&m_pool,[this,sources=std::move(sources),directory=std::move(directory),token] {
+    m_watcher.setFuture(QtConcurrent::run(&m_pool,[this,sources=std::move(sources),directory=std::move(directory),naming=std::move(naming),token] {
         return copyImportFiles(sources,directory,token,[this,token](qint64 copied,qint64 total,int done,int files,const QString &stage) {
             QMetaObject::invokeMethod(this,[this,token,copied,total,done,files,stage] {
                 if (m_busy && token==m_cancel) emit progress(copied,total,done,files,stage);
             },Qt::QueuedConnection);
-        });
+        },naming);
     }));
     return true;
 }

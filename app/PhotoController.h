@@ -219,7 +219,9 @@ public:
 
     Q_INVOKABLE void openImportDialog();
     Q_INVOKABLE void openCopyImportDialog();
-    Q_INVOKABLE bool copyImport(const QVariantList &urls,const QUrl &directory);
+    Q_INVOKABLE bool copyImport(const QVariantList &urls,const QUrl &directory,
+                                const QString &pattern=QString(),int sequenceStart=1);
+    Q_INVOKABLE QVariantMap previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) const;
     Q_INVOKABLE void cancelCopyImport();
     Q_INVOKABLE bool prepareToClose();
     bool copyImportBusy() const { return m_copyImportQueue && m_copyImportQueue->busy(); }
@@ -298,6 +300,7 @@ public:
 signals:
     void adjustmentClipboardChanged();
     void copyImportChanged();
+    void copyImportRequested(const QVariantList &urls);
     void scopePlotChanged();
     void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
