@@ -16,6 +16,7 @@ Rectangle {
     property bool exifExpanded: false
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
+    property bool blackWhiteExpanded: false
     color: "#15191f"
     border.color: "#292f37"
 
@@ -29,6 +30,7 @@ Rectangle {
         property alias exifExpanded: root.exifExpanded
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
+        property alias blackWhiteExpanded: root.blackWhiteExpanded
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -278,6 +280,48 @@ Rectangle {
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色相", "Hue"); from: -180; to: 180; value: root.controller.hue; onEdited: root.controller.hue = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("饱和度", "Saturation"); value: root.controller.saturation; onEdited: root.controller.saturation = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("自然饱和度", "Vibrance"); value: root.controller.vibrance; onEdited: root.controller.vibrance = newValue }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "blackWhitePanelToggle"; Layout.fillWidth: true; font.bold: true
+                        text: (root.blackWhiteExpanded ? "▾ " : "▸ ") + root.t("黑白 / 颜色混合", "BLACK & WHITE MIX")
+                        onClicked: root.blackWhiteExpanded = !root.blackWhiteExpanded
+                    }
+                    Button {
+                        objectName: "blackWhiteReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetBlackWhite()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 6; visible: root.blackWhiteExpanded
+                    CheckBox {
+                        objectName: "blackWhiteEnable"
+                        text: root.t("启用黑白模式", "Enable monochrome")
+                        checked: root.controller.blackWhite
+                        enabled: root.controller.hasImage
+                        onToggled: root.controller.blackWhite = checked
+                    }
+                    Repeater {
+                        model: 8
+                        delegate: AdjustmentSlider {
+                            required property int index
+                            Layout.fillWidth: true
+                            enabled: root.controller.hasImage && root.controller.blackWhite
+                            label: [root.t("红色", "Red"),root.t("橙色", "Orange"),root.t("黄色", "Yellow"),
+                                    root.t("绿色", "Green"),root.t("青色", "Aqua"),root.t("蓝色", "Blue"),
+                                    root.t("紫色", "Purple"),root.t("洋红", "Magenta")][index]
+                            from: -100; to: 100
+                            value: root.controller.blackWhiteMix[index]
+                            onEdited: root.controller.setBlackWhiteMix(index,newValue)
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("每个颜色通道调整黑白亮度（±1 EV）；保留 Sony 外观，后续 RGB 曲线或 LUT 可能着色。",
+                                     "Eight hue-weighted luminance bands (±1 EV); Sony Look is preserved. Later RGB curves or LUTs may tint the result.")
+                    }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

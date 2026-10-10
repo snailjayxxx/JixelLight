@@ -510,6 +510,7 @@ QVariantList PhotoController::toVariantList(const AdjustmentState::CurveArray &v
     for (double v : values) out.push_back(v);
     return out;
 }
+QVariantList PhotoController::blackWhiteMix() const { return toVariantList(currentState().bwMix); }
 QVariantList PhotoController::hslHue() const { return toVariantList(currentState().hslHue); }
 QVariantList PhotoController::hslSaturation() const { return toVariantList(currentState().hslSaturation); }
 QVariantList PhotoController::hslLuminance() const { return toVariantList(currentState().hslLuminance); }
@@ -521,7 +522,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
@@ -579,6 +580,28 @@ void PhotoController::resetVignette() {
     auto *state=mutableCurrentState(); if (!state || (state->vignetteAmount==0 && state->vignetteMidpoint==.5 && state->vignetteFeather==1)) return;
     m_photos[m_currentIndex].history.finish(); CommandRegistry::execute(*state,{{"command","vignette.reset"}});
     persistAndApply("vignette_reset");
+}
+
+void PhotoController::setBlackWhite(bool enabled) {
+    auto *state=mutableCurrentState(); if (!state || state->blackWhite==enabled) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","bw.enable"},{"enabled",enabled}})) return;
+    persistAndApply("black_white_mode",{{"enabled",enabled}});
+}
+void PhotoController::setBlackWhiteMix(int band,double value) {
+    auto *state=mutableCurrentState();
+    if (!state || band<0 || band>=AdjustmentState::ColorBandCount || !std::isfinite(value)) return;
+    value=std::clamp(value,-100.0,100.0);
+    if (qFuzzyCompare(state->bwMix[std::size_t(band)]+1.0,value+1.0)) return;
+    if (!CommandRegistry::execute(*state,{{"command","bw.set"},{"band",band},{"value",value}})) return;
+    persistAndApply("black_white_mix",{{"band",band},{"value",value}});
+}
+void PhotoController::resetBlackWhite() {
+    auto *state=mutableCurrentState(); if (!state) return;
+    if (!state->blackWhite && std::all_of(state->bwMix.begin(),state->bwMix.end(),[](double v){return v==0;})) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","bw.reset"}})) return;
+    persistAndApply("black_white_reset");
 }
 
 void PhotoController::setColorMix(int band, int component, double value) {

@@ -206,6 +206,26 @@ private slots:
         ordinary.vignetteAmount=-3;
         QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
     }
+    void blackWhiteMixCpuGpuParityAndNativeCompute() {
+        QImage source(47,39,QImage::Format_RGBA64);
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x) {
+            const quint16 r=quint16((x*9421+y*1283)%65536);
+            const quint16 g=quint16((x*2837+y*7431)%65536);
+            const quint16 b=quint16((x*5213+y*6151)%65536);
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(r,g,b,alpha[(x+y)%4]);
+        }
+        for(bool sony : {false,true}) for(int encoding=0;encoding<2;++encoding)
+            for(int space=0;space<4;++space) {
+                AdjustmentState state; state.blackWhite=true; state.exposure=.15;
+                state.bwMix={75,-30,45,-25,15,-55,30,65};
+                if(sony){state.look.mode="manual";state.look.code="BW";}
+                verifyParity(source,state,ImagePipeline::InputEncoding(encoding),
+                             ColorManagement::OutputSpace(space),true,"eight-band B&W mix");
+                if(QTest::currentTestFailed()) return;
+                QVERIFY(!engine->lastProcessUsedCpuFallback());
+            }
+    }
     void vignetteCpuGpuParityIncludesFullFrameAndViewportCoordinates() {
         QImage source(71,93,QImage::Format_RGBA64);
         const std::array<quint16,4> alpha{0,1,23456,65535};

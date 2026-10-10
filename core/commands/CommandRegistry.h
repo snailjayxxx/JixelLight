@@ -78,6 +78,20 @@ struct CommandRegistry {
             if (!fields(command,{})) return fail();
             state.vignetteAmount=0; state.vignetteMidpoint=.5; state.vignetteFeather=1; return true;
         }
+        if (name == "bw.enable") {
+            if (!fields(command,{"enabled"}) || !command["enabled"].isBool()) return fail();
+            state.blackWhite=command["enabled"].toBool(); return true;
+        }
+        if (name == "bw.set") {
+            if (!fields(command,{"band","value"}) || !integer(command,"band",0,7)
+                || !number(command,"value")) return fail();
+            state.bwMix[std::size_t(command["band"].toInt())]=std::clamp(command["value"].toDouble(),-100.0,100.0);
+            return true;
+        }
+        if (name == "bw.reset") {
+            if (!fields(command,{})) return fail();
+            state.blackWhite=false; state.bwMix={}; return true;
+        }
         if (name == "geometry.crop") {
             if (!fields(command,{"x","y","width","height"}) || !number(command,"x") || !number(command,"y")
                 || !number(command,"width") || !number(command,"height")) return fail();
@@ -140,6 +154,9 @@ struct CommandRegistry {
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
             QJsonObject{{"name","vignette.reset"},{"fields",QJsonArray{}},{"operation","reset post-crop vignette amount/midpoint/feather; preserve other edits"}},
+            QJsonObject{{"name","bw.enable"},{"fields",QJsonArray{"enabled"}},{"operation","toggle monochrome without discarding 8 color-channel luminance values"}},
+            QJsonObject{{"name","bw.set"},{"fields",QJsonArray{"band","value"}},{"band",QJsonArray{0,7}},{"value",QJsonArray{-100,100}},{"range_policy","clamp"},{"unit","1/100 EV"}},
+            QJsonObject{{"name","bw.reset"},{"fields",QJsonArray{}},{"operation","disable monochrome and reset all 8 channel mixes"}},
             QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized corrected grid after lens/perspective/straighten, before quarter-turns and flips"}},
             QJsonObject{{"name","geometry.straighten"},{"fields",QJsonArray{"degrees"}},{"degrees",QJsonArray{-45,45}},{"operation","absolute clockwise angle before quarter-turns/flips; inscribed crop, no upscale; out-of-range rejected"}},
             QJsonObject{{"name","geometry.set"},{"fields",QJsonArray{"parameter","value"}},{"parameters",geometryDescriptors},{"range_policy","reject"},

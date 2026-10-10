@@ -123,6 +123,120 @@ private slots:
         const auto prepared=preparePreview(request,{}); QCOMPARE(prepared.normal,source); QCOMPARE(prepared.gpu,floating);
         const auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::floatSource(source,token).isNull()); QVERIFY(ImagePipeline::rgba64Source(floating,token).isNull());
     }
+    void blackWhiteMixPreservesColorDefaultAndPixels() {
+        QImage source(3,1,QImage::Format_RGBA64);
+        auto *px=reinterpret_cast<QRgba64 *>(source.scanLine(0));
+        px[0]=QRgba64::fromRgba64(42000,3000,3000,65535);
+        px[1]=QRgba64::fromRgba64(2000,3000,40000,23456);
+        px[2]=QRgba64::fromRgba64(20000,20000,20000,0);
+        auto render=[&](const AdjustmentState &state) {
+            return ImagePipeline::processWithPlan(source,ProcessingPlan::compile(
+                state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,false,0));
+        };
+        const auto original=render({});
+        AdjustmentState mixDisabled; mixDisabled.bwMix[0]=100;
+        QCOMPARE(render(mixDisabled),original);
+        QVERIFY(!AdjustmentState{}.toJson().contains("blackAndWhite"));
+
+        AdjustmentState state; state.blackWhite=true;
+        const auto neutral=render(state);
+        QVERIFY(neutral!=original);
+        for(int x=0;x<source.width();++x) {
+            const auto color=neutral.pixelColor(x,0).rgba64();
+            QVERIFY(std::abs(int(color.red())-int(color.green()))<=100);
+            QVERIFY(std::abs(int(color.green())-int(color.blue()))<=100);
+            QCOMPARE(color.alpha(),source.pixelColor(x,0).rgba64().alpha());
+        }
+        state.bwMix[0]=100;
+        const auto boosted=render(state);
+        QVERIFY(boosted.pixelColor(0,0).rgba64().red()>neutral.pixelColor(0,0).rgba64().red()+500);
+        QCOMPARE(boosted.pixelColor(1,0),neutral.pixelColor(1,0));
+        QCOMPARE(boosted.pixelColor(2,0),neutral.pixelColor(2,0));
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(plan.data[ProcessingPlan::BlackWhite].x>0);
+        QCOMPARE(plan.data[ProcessingPlan::BlackWhiteMix0].x,1.0f);
+        QCOMPARE(ImagePipeline::diagnoseWithPlan(source,plan).image,boosted);
+        const auto key=StageGraph::renderKey(source,plan);
+        QCOMPARE(ImagePipeline::processRegion(source,plan,{0,0,source.width(),source.height()}),boosted);
+        state.bwMix[0]=0;
+        QVERIFY(StageGraph::renderKey(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,false,0))!=key);
+        QCOMPARE(render(state),neutral);
+    }
+    void blackWhiteMixSnapshotsCliHistoryPresetsAndXmp() {
+        AdjustmentState state;
+        QVERIFY(CommandRegistry::execute(state,{{"command","bw.enable"},{"enabled",true}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","bw.set"},{"band",0},{"value",65}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","bw.set"},{"band",5},{"value",-34}}));
+        QCOMPARE(state.bwMix[0],65.0);
+        QVERIFY(!CommandRegistry::execute(state,{{"command","bw.enable"},{"enabled",1}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","bw.set"},{"band",8},{"value",10}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","bw.set"},{"band",0},{"value",3},{"extra",0}}));
+        const auto json=state.toJson();
+        QVERIFY(AdjustmentState::validBlackAndWhiteJson(json));
+        QCOMPARE(AdjustmentState::fromJson(json).toJson(),json);
+        auto target=AdjustmentState{}; target.exposure=1.5;
+        QVERIFY(AdjustmentTransfer::apply(target,state,{"color"}));
+        QCOMPARE(target.toJson()["blackAndWhite"],json["blackAndWhite"]);
+        QCOMPARE(target.exposure,1.5);
+        EditHistory history; history.initialize({}); history.record(state,"black_white_mix");
+        EditHistory restored; QVERIFY(restored.restore(history.toJson(),state));
+        QVERIFY(!restored.undo().blackWhite); QCOMPARE(restored.redo().toJson(),json);
+        for(const auto *missing:{"schema","enabled","mix"}) {
+            auto invalid=json; auto section=invalid["blackAndWhite"].toObject();
+            section.remove(missing); invalid["blackAndWhite"]=section;
+            QVERIFY(!AdjustmentState::validBlackAndWhiteJson(invalid));
+        }
+        for(int invalidMix=0;invalidMix<3;++invalidMix) {
+            auto invalid=json; auto section=invalid["blackAndWhite"].toObject();
+            if(invalidMix==0) section["mix"]=QJsonArray{1,2};
+            if(invalidMix==1) section["mix"]=QJsonArray{101,0,0,0,0,0,0,0};
+            if(invalidMix==2) section["schema"]=2;
+            invalid["blackAndWhite"]=section;
+            QVERIFY(!AdjustmentState::validBlackAndWhiteJson(invalid));
+        }
+        QVERIFY(CommandRegistry::execute(target,{{"command","bw.reset"}}));
+        QVERIFY(!target.toJson().contains("blackAndWhite"));
+        QCOMPARE(target.exposure,1.5);
+        QTemporaryDir dir; QString error;
+        NamedPresets presets(dir.filePath("mono-presets.json"));
+        QVERIFY2(presets.load(&error),qPrintable(error));
+        QVERIFY2(presets.save("Monochrome",state,&error),qPrintable(error));
+        NamedPresets reloaded(dir.filePath("mono-presets.json"));
+        QVERIFY2(reloaded.load(&error),qPrintable(error));
+        AdjustmentState preset; QVERIFY(reloaded.get("Monochrome",&preset)); QCOMPARE(preset.toJson(),json);
+        const auto exported=dir.filePath("bw-preset.json");
+        QVERIFY2(reloaded.exportFile("Monochrome",exported,&error),qPrintable(error));
+        QVERIFY2(reloaded.importFile(exported,"Monochrome imported",&error),qPrintable(error));
+        QVERIFY(reloaded.get("Monochrome imported",&preset)); QCOMPARE(preset.toJson(),json);
+        const auto xmp=dir.filePath("bw.xmp");
+        QVERIFY2(XmpSidecar::writeNew(xmp,state,{},0,"none",&error),qPrintable(error));
+        XmpSidecar::Document imported;
+        QVERIFY2(XmpSidecar::read(xmp,&imported,&error),qPrintable(error));
+        QCOMPARE(imported.adjustments.toJson(),json);
+    }
+    void blackWhiteMixControllerProjectAndUndoRedo() {
+        QTemporaryDir dir; QImage image(41,33,QImage::Format_RGB32); image.fill(QColor(90,120,190));
+        const auto path=dir.filePath("bw.png"); QVERIFY(image.save(path));
+        PhotoController controller(nullptr); controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.rendering(),15000);
+        controller.setBlackWhite(true);
+        controller.setBlackWhiteMix(0,75); controller.setBlackWhiteMix(0,85); controller.finishInteraction();
+        QCOMPARE(controller.editHistory().last().toMap()["action"].toString(),QString("black_white_mix"));
+        controller.setBlackWhiteMix(5,-25); controller.finishInteraction();
+        QVERIFY(controller.blackWhite()); QCOMPARE(controller.blackWhiteMix().at(5).toDouble(),-25.0);
+        auto snapshot=controller.gpuPlan(true).state.toJson();
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"Monochrome"));
+        QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false);
+        QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),snapshot);
+        reopened.undo(); QCOMPARE(reopened.blackWhiteMix().at(5).toDouble(),0.0);
+        reopened.redo(); QCOMPARE(reopened.gpuPlan(true).state.toJson(),snapshot);
+        reopened.resetBlackWhite();
+        QVERIFY(!reopened.blackWhite()); QCOMPARE(reopened.blackWhiteMix().at(0).toDouble(),0.0);
+        reopened.undo(); QCOMPARE(reopened.gpuPlan(true).state.toJson(),snapshot);
+    }
     void vignetteUsesKnownSceneExposureAndPreservesDefaultsAndAlpha() {
         QImage source(9,9,QImage::Format_RGBA64); source.fill(QColor::fromRgba64(10000,10000,10000,32768));
         const auto plain=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);

@@ -26,7 +26,10 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         else if (group=="tone") {
             target.contrast=source.contrast; target.highlights=source.highlights; target.shadows=source.shadows;
             target.whites=source.whites; target.blacks=source.blacks; target.highlightRecovery=source.highlightRecovery;
-        } else if (group=="color") { target.hue=source.hue; target.saturation=source.saturation; target.vibrance=source.vibrance; }
+        } else if (group=="color") {
+            target.hue=source.hue; target.saturation=source.saturation; target.vibrance=source.vibrance;
+            target.blackWhite=source.blackWhite; target.bwMix=source.bwMix;
+        }
         else if (group=="hsl") { target.hslHue=source.hslHue; target.hslSaturation=source.hslSaturation; target.hslLuminance=source.hslLuminance; }
         else if (group=="curves") { target.masterCurve=source.masterCurve; target.redCurve=source.redCurve; target.greenCurve=source.greenCurve; target.blueCurve=source.blueCurve; }
         else if (group=="sony_look") target.look=source.look;

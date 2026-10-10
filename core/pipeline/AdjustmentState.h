@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QString>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include "core/look/LookState.h"
 #include "core/pipeline/GeometryState.h"
@@ -33,6 +34,11 @@ struct AdjustmentState {
     double vignetteAmount = 0.0; // EV at the outer ellipse; negative darkens.
     double vignetteMidpoint = 0.5;
     double vignetteFeather = 1.0;
+
+    // Independent monochrome rendering and eight hue-weighted luminance controls.
+    // Values -100..100 map to -1..+1 EV; they do not modify Sony Look state.
+    bool blackWhite = false;
+    ColorBandArray bwMix{};
 
     ColorBandArray hslHue{};
     ColorBandArray hslSaturation{};
@@ -74,6 +80,9 @@ struct AdjustmentState {
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
+        const bool hasMix = std::any_of(bwMix.begin(), bwMix.end(), [](double v){ return v != 0.0; });
+        if (blackWhite || hasMix)
+            result["blackAndWhite"] = QJsonObject{{"schema", 1}, {"enabled", blackWhite}, {"mix", toJsonArray(bwMix)}};
         return result;
     }
 
@@ -87,6 +96,23 @@ struct AdjustmentState {
         };
         return valid("amount",-3,3) && valid("midpoint",0,.95) && valid("feather",.01,1)
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
+    }
+
+    static bool validBlackAndWhiteJson(const QJsonObject &object) {
+        if (!object.contains("blackAndWhite")) return true;
+        if (!object.value("blackAndWhite").isObject()) return false;
+        const auto b = object.value("blackAndWhite").toObject();
+        if (b.size() != 3 || !b.value("schema").isDouble() || b.value("schema").toDouble() != 1
+            || !b.value("enabled").isBool() || !b.value("mix").isArray()) return false;
+        const auto values = b.value("mix").toArray();
+        if (values.size() != ColorBandCount) return false;
+        bool hasMix = false;
+        for (const auto &entry : values) {
+            if (!entry.isDouble() || !std::isfinite(entry.toDouble())
+                || entry.toDouble() < -100 || entry.toDouble() > 100) return false;
+            hasMix |= entry.toDouble() != 0;
+        }
+        return b.value("enabled").toBool() || hasMix;
     }
 
     static AdjustmentState fromJson(const QJsonObject &o) {
@@ -108,6 +134,11 @@ struct AdjustmentState {
         if (o.contains("vignette") && validVignetteJson(o)) {
             const auto v=o["vignette"].toObject(); s.vignetteAmount=v["amount"].toDouble();
             s.vignetteMidpoint=v["midpoint"].toDouble(); s.vignetteFeather=v["feather"].toDouble();
+        }
+        if (o.contains("blackAndWhite") && validBlackAndWhiteJson(o)) {
+            const auto b = o.value("blackAndWhite").toObject();
+            s.blackWhite = b.value("enabled").toBool();
+            readJsonArray(b, "mix", s.bwMix);
         }
         readJsonArray(o, "hslHue", s.hslHue);
         readJsonArray(o, "hslSaturation", s.hslSaturation);

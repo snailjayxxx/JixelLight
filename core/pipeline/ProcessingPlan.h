@@ -21,7 +21,8 @@ struct ProcessingPlan {
                 Bands=11, Curves=19, Dimensions=24,
                 Input0=25, Input1=26, Input2=27,
                 Working0=28, Working1=29, Working2=30, LookStyle=31, LookDetail=32, LookOptions=33,
-                LutOut0=34, LutOut1=35, LutOut2=36, Vignette=37, FrameRect=38, PixelMap=39, SlotCount=40 };
+                LutOut0=34, LutOut1=35, LutOut2=36, Vignette=37, FrameRect=38, PixelMap=39,
+                BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42, SlotCount=43 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -52,4 +53,4 @@ struct ProcessingPlan {
                                   float baseExposureStops);
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 640);
+static_assert(sizeof(ProcessingPlan::data) == 688);

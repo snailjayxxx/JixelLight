@@ -2,6 +2,18 @@
 
 # JixelLight
 
+> **Development branch status (2026-10-10):** `design/lightcraft-fusion-20261008`,
+> PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
+> **Jixel Neutral v2 and no universal RAW +2.5 EV**. The alpha.10 descriptions
+> below are retained for historical reference and **must not be interpreted as
+> the current RAW rendering behavior**.
+>
+> **F4 work in progress:** an independent B&W mode with eight color-channel
+> luminance sliders (±1 EV), CPU/GPU parity tests, persistent history, presets,
+> XMP and offline CLI `bw.enable`, `bw.set`, `bw.reset` commands. New features
+> remain subject to exact-commit CI, not yet merged to `main`.
+
+
 JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
 当前开发版本：**v0.1.0-alpha.10**
@@ -133,6 +145,10 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - 可折叠的双语手动透视与镜头面板：横向/纵向透视各 ±40%、径向畸变 ±30%、红/蓝相对绿通道倍率各 ±2%。这些是手动模型参数，不是角度或自动镜头配置文件。校正与拉直共用一次 CPU 重采样；保守收边覆盖所有通道和曲线边缘，输出尺寸不大于来源。
 - 预览、全分辨率统计及 JPEG/PNG/TIFF/WebP 导出共用几何处理，保留 Undo/Redo、项目历史和 XMP；连续拉直拖动合并为一条历史。
 - 所有校正为零保留旧像素路径：无拉直为 schema 1，仅拉直为 schema 2；启用透视/镜头时使用完整 schema 3。旧项目不自动应用校正；未知、缺字段或越界几何拒绝加载。CLI 支持 `{"command":"geometry.straighten","degrees":5.5}` 和 `{"command":"geometry.set","parameter":"distortion","value":0.1}`；`geometry.resetCorrections` 仅重置五项新参数，保留拉直、裁切与方向。自动镜头配置、切向畸变和自动垂直线识别仍未实现。
+
+### 黑白色彩混合（融合开发分支，待 CI 验收）
+
+独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
 
 ### 暗角（融合开发分支）
 

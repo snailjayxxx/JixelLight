@@ -92,6 +92,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteAmount READ vignetteAmount WRITE setVignetteAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteMidpoint READ vignetteMidpoint WRITE setVignetteMidpoint NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool blackWhite READ blackWhite WRITE setBlackWhite NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantList blackWhiteMix READ blackWhiteMix NOTIFY adjustmentsChanged)
 
     Q_PROPERTY(QVariantList hslHue READ hslHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList hslSaturation READ hslSaturation NOTIFY adjustmentsChanged)
@@ -226,6 +228,8 @@ public:
     double highlights() const; double shadows() const; double whites() const; double blacks() const;
     double highlightRecovery() const; double hue() const; double saturation() const; double vibrance() const;
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
+    bool blackWhite() const { return currentState().blackWhite; }
+    QVariantList blackWhiteMix() const;
     QVariantList hslHue() const; QVariantList hslSaturation() const; QVariantList hslLuminance() const;
     QVariantList masterCurve() const; QVariantList redCurve() const; QVariantList greenCurve() const; QVariantList blueCurve() const;
     QString statusMessage() const { return m_statusMessage; }
@@ -234,6 +238,9 @@ public:
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
     void setHighlightRecovery(double v); void setHue(double v); void setSaturation(double v); void setVibrance(double v);
     void setVignetteAmount(double v); void setVignetteMidpoint(double v); void setVignetteFeather(double v);
+    void setBlackWhite(bool enabled);
+    Q_INVOKABLE void setBlackWhiteMix(int band,double value);
+    Q_INVOKABLE void resetBlackWhite();
     Q_INVOKABLE void setLanguage(const QString &language);
 
     Q_INVOKABLE void openImportDialog();

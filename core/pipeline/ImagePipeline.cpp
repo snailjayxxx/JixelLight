@@ -391,13 +391,35 @@ inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
     else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
         auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,plan.data[ProcessingPlan::LookOptions].w); v = oklabToLinearSrgb(lab);
     }
+    const Vec3 bwSource = v; // retain color hue before Sony monochrome/sepia
     if(style.x>0) {
         const float y=(.2126f*v.x+.7152f*v.y)+.0722f*v.z;
         v=style.x>=1 ? Vec3{y,y,y} : Vec3{v.x+(y-v.x)*style.x,v.y+(y-v.y)*style.x,v.z+(y-v.z)*style.x};
         if(style.y>0)v={v.x*(1+.09f*style.y),v.y*(1-.01f*style.y),v.z*(1-.22f*style.y)};
     }
+    if (plan.data[ProcessingPlan::BlackWhite].x > 0.5f) {
+        // A weighted EV change on neutral scene-linear luminance. The hue is
+        // sampled before Sony mono styling so BW/SE looks still allow mixing.
+        const auto lab = linearSrgbToOklab(bwSource);
+        const float chroma = chromaLength(lab.a, lab.b);
+        float weightedEv = 0.0f, totalWeight = 0.0f;
+        if (chroma > 1.0e-6f) {
+            const float hue = wrapHue(std::atan2(lab.b,lab.a)*180.0f/kPi);
+            for (int i=0; i<AdjustmentState::ColorBandCount; ++i) {
+                const float weight = hueBandWeight(hue,plan.data[ProcessingPlan::Bands+i].w);
+                const auto mix = plan.data[ProcessingPlan::BlackWhiteMix0+i/4];
+                const float amount = i%4==0?mix.x:i%4==1?mix.y:i%4==2?mix.z:mix.w;
+                weightedEv += weight*amount;
+                totalWeight += weight;
+            }
+        }
+        // Fade hue response near gray, where atan2 is numerically unstable.
+        const float ev = smooth(chroma/.035f)*weightedEv/std::max(1.0f,totalWeight);
+        const float gray = std::max(0.0f,orderedDot(.2126f,.7152f,.0722f,v))*std::exp2(ev);
+        v = {gray,gray,gray};
+    }
     return v;
-}
+
 // This boundary is used by both template instantiations. GCC otherwise outlines
 // it, adding a per-pixel call to the neutral serial path after stage splitting.
 Q_ALWAYS_INLINE Vec3 outputLinear(Vec3 v, const ColorKernel &kernel) {
@@ -476,6 +498,13 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[FrameRect]={0,0,1,1};
     plan.rawSource = rawSource;
     plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;
+    plan.data[BlackWhite]={state.blackWhite?1.0f:0.0f,0,0,0};
+    for (int i=0; i<8; ++i) {
+        const float stops=finite(state.bwMix[std::size_t(i)],0,-100,100)/100.0f;
+        auto &slot=plan.data[BlackWhiteMix0+i/4];
+        switch (i%4) { case 0: slot.x=stops; break; case 1: slot.y=stops; break;
+                       case 2: slot.z=stops; break; default: slot.w=stops; break; }
+    }
     const auto style=LookProfiles::style(original.look),detail=LookProfiles::detail(original.look);
     plan.data[LookStyle]={style[0],style[1],style[2],style[3]};
     plan.data[LookDetail]={detail[0],detail[1],detail[2],detail[3]};
