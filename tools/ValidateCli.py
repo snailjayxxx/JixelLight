@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import struct
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,7 @@ def main():
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
+        assert schema['catalog']['name_template']['missing_capture_time'] == 'reject whole plan'
         commands = root / 'commands.json'
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
         destination = root / 'result.png'
@@ -290,6 +292,67 @@ def main():
             assert [r['adjustments']['exposure'] for r in raster['results']] == [.25, -.5]
             assert all(Path(r['destination']).suffix == suffix for r in raster['results'])
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        named_output = root / 'catalog-named'
+        named_output.mkdir()
+        named = json.loads(run('--catalog', catalog, '--output-dir', named_output,
+                               '--name-template', '{name}_{version}_{seq:4}', '--sequence-start', 9).stdout)
+        assert [Path(r['destination']).name for r in named['results']] == ['original_Original_0009.png', 'original_Alternative_0010.png']
+        assert [r['adjustments']['exposure'] for r in named['results']] == [.25, -.5]
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        rejected_names = root / 'catalog-name-rejected'
+        rejected_names.mkdir()
+        for pattern in ('{name}', '../{name}', '{name', '{unknown}', '{seq:0}', '{seq:10}', 'CON', 'name.', 'name ', '{capture_date}_{seq}'):
+            run('--catalog', catalog, '--output-dir', rejected_names, '--name-template', pattern, success=False)
+            assert not list(rejected_names.iterdir())
+            assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        for sequence in ('0', '999999999', '1000000000', 'not-a-number'):
+            run('--catalog', catalog, '--output-dir', rejected_names, '--name-template', '{seq}', '--sequence-start', sequence, success=False)
+            assert not list(rejected_names.iterdir())
+        run('--catalog', catalog, '--output-dir', rejected_names, '--sequence-start', 9, success=False)
+        run('--name-template', '{seq}', source, root/'no-catalog.png', success=False)
+        occupied = rejected_names / '1.PNG'
+        occupied.write_bytes(b'keep existing')
+        run('--catalog', catalog, '--output-dir', rejected_names, '--name-template', '{seq}', success=False)
+        assert occupied.read_bytes() == b'keep existing' and list(rejected_names.iterdir()) == [occupied]
+        occupied.unlink()
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        # Independent PNG eXIf fixture: DateTimeOriginal is a camera wall clock.
+        dated_source = root / 'dated.png'
+        exif = (b'II' + struct.pack('<HIH', 42, 8, 1) + struct.pack('<HHII', 0x8769, 4, 1, 26) + struct.pack('<IH', 0, 1)
+                + struct.pack('<HHII', 0x9003, 2, 20, 44) + struct.pack('<I', 0) + b'2025:01:02 03:04:05\0')
+        data = source.read_bytes()
+        dated_source.write_bytes(data[:33] + chunk(b'eXIf', exif) + data[33:])
+        dated_catalog = root / 'Dated.jlp'
+        dated_catalog.mkdir()
+        dated_db = dated_catalog / 'Project.db'
+        shutil.copyfile(db_path, dated_db)
+        with open_database(dated_db) as db:
+            db.execute('UPDATE photos SET path=? WHERE path=?', ('../dated.png', '../original.png'))
+            db.execute('UPDATE virtual_sources SET json=? WHERE key=?',
+                       (json.dumps({'schema': 1, 'source': '../dated.png', 'name': 'Alternative'}), key))
+        dated_hash, dated_source_hash = hashlib.sha256(dated_db.read_bytes()).hexdigest(), hashlib.sha256(dated_source.read_bytes()).hexdigest()
+        dated_output = root / 'dated-output'
+        dated_output.mkdir()
+        dated = json.loads(run('--catalog', dated_catalog, '--output-dir', dated_output,
+                               '--name-template', '{capture_date}_{capture_time}_{version}_{seq:3}', '--sequence-start', 9).stdout)
+        assert [Path(r['destination']).name for r in dated['results']] == ['20250102_030405_Original_009.png', '20250102_030405_Alternative_010.png']
+        assert hashlib.sha256(dated_db.read_bytes()).hexdigest() == dated_hash
+        assert set(p.name for p in dated_catalog.iterdir()) == {'Project.db'}
+        assert hashlib.sha256(dated_source.read_bytes()).hexdigest() == dated_source_hash
+        # A saved checked capture record takes precedence; no host timezone shift.
+        with open_database(dated_db) as db:
+            db.execute('CREATE TABLE catalog_dates(path TEXT PRIMARY KEY,json TEXT)')
+            timeline = {'schema': 1, 'capture': '2024-12-31 23:59:59', 'captureChecked': True, 'imported': 0, 'edited': 0}
+            for path in ('../dated.png', key):
+                db.execute('INSERT INTO catalog_dates VALUES(?,?)', (path, json.dumps(timeline)))
+        dated_hash = hashlib.sha256(dated_db.read_bytes()).hexdigest()
+        recorded_output = root / 'recorded-output'
+        recorded_output.mkdir()
+        recorded = json.loads(run('--catalog', dated_catalog, '--output-dir', recorded_output,
+                                  '--name-template', '{capture_date}_{capture_time}_{seq}').stdout)
+        assert [Path(r['destination']).name for r in recorded['results']] == ['20241231_235959_1.png', '20241231_235959_2.png']
+        assert hashlib.sha256(dated_db.read_bytes()).hexdigest() == dated_hash
+        assert hashlib.sha256(dated_source.read_bytes()).hexdigest() == dated_source_hash
         bad_output = root / 'catalog-rejected'
         bad_output.mkdir()
         for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}},
@@ -304,7 +367,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

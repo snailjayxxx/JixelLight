@@ -80,15 +80,37 @@ ApplicationWindow {
 
     Dialog {
         id: exportSettingsDialog
+        objectName: "exportSettingsDialog"
+        width: 540
         title: window.t("导出设置", "Export Settings")
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
         property bool batchMode: false
-        onOpened: window.localizeDialogButtons(exportSettingsDialog)
+        property alias nameTemplate: batchNameTemplate.text
+        property alias sequenceStart: batchSequence.value
+        readonly property var namingPreview: {
+            const photos = photoController.library
+            const language = photoController.language
+            return photoController.exportNamePreview(nameTemplate, sequenceStart, ["jpeg", "png", "tiff", "webp"][batchFormatBox.currentIndex])
+        }
+        Settings {
+            category: "BatchExportNaming"
+            property alias pattern: exportSettingsDialog.nameTemplate
+            property alias sequenceStart: exportSettingsDialog.sequenceStart
+        }
+        onOpened: {
+            window.localizeDialogButtons(exportSettingsDialog)
+            const ok = standardButton(Dialog.Ok)
+            ok.objectName = "exportSettingsContinue"
+            ok.text = Qt.binding(function() { return exportSettingsDialog.batchMode ? window.t("选择文件夹…", "Choose folder…") : window.t("选择文件…", "Choose file…") })
+            ok.enabled = Qt.binding(function() { return !exportSettingsDialog.batchMode || exportSettingsDialog.namingPreview.valid })
+            standardButton(Dialog.Cancel).objectName = "exportSettingsCancel"
+            standardButton(Dialog.Cancel).text = Qt.binding(function() { return window.t("取消", "Cancel") })
+        }
         onAccepted: batchMode ? batchFolder.open() : exportDialog.open()
-        ColumnLayout {
-            width: 430; spacing: 12
+        contentItem: ColumnLayout {
+            implicitWidth: 500; spacing: 6
             Label { text: window.t("输出色彩空间 / ICC", "Output Color Space / ICC"); color: "#d6dee8"; font.bold: true }
             ComboBox {
                 id: exportSpaceBox
@@ -99,9 +121,69 @@ ApplicationWindow {
             Label { visible: exportSettingsDialog.batchMode; text: window.t("批量输出格式", "Batch output format"); color: "#d6dee8" }
             ComboBox {
                 id: batchFormatBox
+                objectName: "batchExportFormat"
                 visible: exportSettingsDialog.batchMode
                 Layout.fillWidth: true
                 model: ["JPEG", "PNG 16-bit", "TIFF 16-bit", "WebP 8-bit"]
+            }
+            Label {
+                visible: exportSettingsDialog.batchMode
+                text: window.t("文件名模板（留空使用默认命名）", "Filename template (empty keeps default naming)")
+                color: "#d6dee8"
+            }
+            TextField {
+                id: batchNameTemplate
+                objectName: "batchExportTemplate"
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                maximumLength: 160
+                placeholderText: "{name}_{version}_{seq:4}"
+                selectByMouse: true
+            }
+            Label {
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                text: "{name}  {version}  {seq}  {seq:1}…{seq:9}  {capture_date}  {capture_time}"
+                wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
+            }
+            RowLayout {
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                Label { text: window.t("起始序号", "First sequence number"); color: "#d6dee8" }
+                SpinBox {
+                    id: batchSequence
+                    objectName: "batchExportSequence"
+                    from: 1; to: 999999999; value: 1; editable: true
+                    enabled: batchNameTemplate.text.length > 0
+                    Layout.preferredWidth: 170
+                }
+                Item { Layout.fillWidth: true }
+                Button { text: window.t("默认命名", "Default naming"); onClicked: { batchNameTemplate.text = ""; batchSequence.value = 1 } }
+            }
+            Label {
+                objectName: "batchExportNamePreview"
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: exportSettingsDialog.namingPreview.valid
+                    ? window.t("导出 %1 个版本 · 前 3 个名称", "Export %1 versions · First 3 names").arg(exportSettingsDialog.namingPreview.count)
+                        + "\n" + exportSettingsDialog.namingPreview.names.join("\n")
+                    : exportSettingsDialog.namingPreview.error
+                wrapMode: Text.WrapAnywhere
+                maximumLineCount: 4; elide: Text.ElideRight
+                color: exportSettingsDialog.namingPreview.valid ? "#d6dee8" : "#e59a7c"
+                font.pixelSize: 11
+                Layout.maximumHeight: 100
+                ToolTip.visible: exportNamesHover.hovered; ToolTip.text: text
+                HoverHandler { id: exportNamesHover }
+            }
+            Label {
+                visible: exportSettingsDialog.batchMode
+                Layout.fillWidth: true
+                text: window.t(
+                    "拍摄日期为相机记录的 yyyyMMdd，时间为 HHmmss；原版名称为 Original。默认命名自动避开重名；自定义模板重名或缺少拍摄时间时，整批拒绝导出。",
+                    "Capture date is yyyyMMdd and time is HHmmss from the camera record. Original versions use Original. Default names avoid collisions; custom collisions or missing capture times reject the whole batch.")
+                wrapMode: Text.WordWrap; color: "#7f8e9e"; font.pixelSize: 10
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -140,7 +222,7 @@ ApplicationWindow {
         target: photoController
         function onCopyImportRequested(urls) { copyImportDialog.openFor(urls) }
     }
-    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, ["jpeg","png","tiff","webp"][batchFormatBox.currentIndex]) }
+    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, ["jpeg","png","tiff","webp"][batchFormatBox.currentIndex], exportSettingsDialog.nameTemplate, exportSettingsDialog.sequenceStart) }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }
     Dialog {
@@ -171,12 +253,14 @@ ApplicationWindow {
         }
         Menu {
             id: exportActions
+            objectName: "exportActionsMenu"
             MenuItem {
                 text: window.t("导出当前照片", "Export Current Photo")
                 enabled: photoController.hasImage && !photoController.exportBusy
                 onTriggered: { exportSettingsDialog.batchMode = false; exportSettingsDialog.open() }
             }
             MenuItem {
+                objectName: "batchExportAction"
                 text: window.t("批量导出照片", "Batch Export Photos")
                 enabled: photoController.hasImage && !photoController.exportBusy
                 onTriggered: { exportSettingsDialog.batchMode = true; exportSettingsDialog.open() }

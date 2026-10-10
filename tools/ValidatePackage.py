@@ -76,6 +76,7 @@ def main() -> int:
             ok = (code == 0 and data.get('smoke_passed') is True
                   and data.get('preview_ready') is True and data.get('scope_pixels', 0) > 0
                   and data.get('ui_vignette_passed') is True
+                  and data.get('ui_export_naming_passed') is True
                   and data.get('gpu_active') is (mode == 'gpu')
                   and data.get('screenshot_saved') is True and screenshot.is_file())
             ok = (ok and data.get('look_validation_required') is True

@@ -36,6 +36,11 @@ int historyCursor(const PhotoController *controller) {
     for (int i=0;i<history.size();++i) if (history[i].toMap()["current"].toBool()) return i;
     return -1;
 }
+QVariantMap objectMap(QObject *object,const char *property) {
+    if (!object) return {};
+    const auto value=object->property(property);
+    return value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toMap() : value.toMap();
+}
 bool clickItem(QQuickWindow *window,QQuickItem *item) {
     if (!item || !item->isVisible() || !item->isEnabled()) return false;
     const auto point=item->mapToScene(QPointF(item->width()/2,item->height()/2));
@@ -76,6 +81,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto transferTrace=std::make_shared<QJsonObject>();
     auto correctionTrace=std::make_shared<QJsonObject>();
     auto vignetteTrace=std::make_shared<QJsonObject>();
+    auto exportNamesTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -508,6 +514,78 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             controller->setLanguage(vignetteTrace->value("language").toString()); resizeForSmoke(window,1540,920);
             if (auto *toggle=window->findChild<QQuickItem *>("vignetteToggle")) QMetaObject::invokeMethod(toggle,"clicked");
             revealItem(window->findChild<QQuickItem *>("straightenAngle"));
+            state->phase=289;
+        } else if (state->phase==289 && ready) {
+            auto *menu=window->findChild<QObject *>("exportActionsMenu");
+            exportNamesTrace->insert("before",controller->gpuPlan(true).state.toJson());
+            exportNamesTrace->insert("before_cursor",historyCursor(controller));
+            exportNamesTrace->insert("language",controller->language());
+            exportNamesTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
+            state->phase=290;
+        } else if (state->phase==290 && ready) {
+            auto *menu=window->findChild<QObject *>("exportActionsMenu");
+            exportNamesTrace->insert("menu_visible",menu && menu->property("visible").toBool());
+            exportNamesTrace->insert("action_clicked",clickItem(window,window->findChild<QQuickItem *>("batchExportAction")));
+            if (menu) QMetaObject::invokeMethod(menu,"close");
+            state->phase=291;
+        } else if (state->phase==291 && ready) {
+            auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            auto *format=window->findChild<QQuickItem *>("batchExportFormat");
+            exportNamesTrace->insert("dialog_visible",dialog && dialog->property("visible").toBool() && dialog->property("batchMode").toBool());
+            if (dialog && format) {
+                exportNamesTrace->insert("saved_pattern",dialog->property("nameTemplate").toString());
+                exportNamesTrace->insert("saved_sequence",dialog->property("sequenceStart").toInt());
+                exportNamesTrace->insert("saved_format",format->property("currentIndex").toInt());
+                format->setProperty("currentIndex",1);
+                dialog->setProperty("nameTemplate",QString("{name}_{version}_{seq:4}"));
+                dialog->setProperty("sequenceStart",7);
+                const auto preview=objectMap(dialog,"namingPreview"); const auto names=preview["names"].toStringList();
+                exportNamesTrace->insert("preview",QJsonObject::fromVariantMap(preview));
+                exportNamesTrace->insert("preview_valid",preview["valid"].toBool() && preview["count"].toInt()==controller->library().size()
+                    && !names.isEmpty() && names[0].endsWith("_0007.png") && names.size()==std::min(3,int(controller->library().size())));
+                exportNamesTrace->insert("continue_enabled",visualChild(window->contentItem(),"exportSettingsContinue")
+                    && visualChild(window->contentItem(),"exportSettingsContinue")->isEnabled());
+            }
+            state->phase=292;
+        } else if (state->phase==292 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming.png");
+            controller->setLanguage("en_US"); resizeForSmoke(window,1180,720);
+            state->phase=293;
+        } else if (state->phase==293 && ready) {
+            auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-en.png");
+            if (dialog) {
+                const auto x=dialog->property("x").toDouble(),y=dialog->property("y").toDouble();
+                const auto w=dialog->property("width").toDouble(),h=dialog->property("height").toDouble();
+                exportNamesTrace->insert("compact_fit",x>=0 && y>=0 && x+w<=window->width()+1 && y+h<=window->height()+1);
+                const auto *choose=visualChild(window->contentItem(),"exportSettingsContinue"),*cancel=visualChild(window->contentItem(),"exportSettingsCancel");
+                exportNamesTrace->insert("translated_buttons",choose && cancel && choose->property("text").toString()=="Choose folder…" && cancel->property("text").toString()=="Cancel");
+                dialog->setProperty("nameTemplate",QString("../{name}"));
+                auto *ok=visualChild(window->contentItem(),"exportSettingsContinue");
+                exportNamesTrace->insert("invalid_template_blocked",!objectMap(dialog,"namingPreview")["valid"].toBool() && ok && !ok->isEnabled());
+                dialog->setProperty("nameTemplate",QString("{capture_date}_{seq}"));
+                exportNamesTrace->insert("missing_date_blocked",!objectMap(dialog,"namingPreview")["valid"].toBool() && ok && !ok->isEnabled());
+            }
+            state->phase=294;
+        } else if (state->phase==294 && ready) {
+            auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-invalid.png");
+            if (dialog) {
+                dialog->setProperty("nameTemplate",exportNamesTrace->value("saved_pattern").toString());
+                dialog->setProperty("sequenceStart",exportNamesTrace->value("saved_sequence").toInt(1));
+            }
+            if (auto *format=window->findChild<QQuickItem *>("batchExportFormat")) format->setProperty("currentIndex",exportNamesTrace->value("saved_format").toInt());
+            exportNamesTrace->insert("cancel_clicked",clickItem(window,visualChild(window->contentItem(),"exportSettingsCancel")));
+            controller->setLanguage(exportNamesTrace->value("language").toString()); resizeForSmoke(window,1540,920);
+            state->phase=295;
+        } else if (state->phase==295 && ready) {
+            auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            const bool closed=dialog && !dialog->property("visible").toBool();
+            if (!closed && state->elapsed.elapsed()<60000) return;
+            exportNamesTrace->insert("closed",closed);
+            exportNamesTrace->insert("edits_unchanged",controller->gpuPlan(true).state.toJson()==exportNamesTrace->value("before").toObject()
+                && historyCursor(controller)==exportNamesTrace->value("before_cursor").toInt(-1));
+            exportNamesTrace->insert("no_export_queued",!controller->exportBusy());
             controller->selectPhoto(transferTrace->value("source_index").toInt()); state->phase=50;
         } else if (state->phase==50 && ready) {
             // Restoring the source starts a new asynchronous histogram. Preview
@@ -537,7 +615,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         bool vignetteOk=true;
         for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
             vignetteOk=vignetteOk && vignetteTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && (!gpuRequired || controller->gpuActive());
+        bool exportNamesOk=true;
+        for (const auto *key : {"menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
+                               "translated_buttons","invalid_template_blocked","missing_date_blocked","cancel_clicked","closed","edits_unchanged","no_export_queued"})
+            exportNamesOk=exportNamesOk && exportNamesTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && exportNamesOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -561,6 +643,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_geometry_corrections_trace"]=*correctionTrace;
         report["ui_vignette_passed"]=vignetteOk;
         report["ui_vignette_trace"]=*vignetteTrace;
+        report["ui_export_naming_passed"]=exportNamesOk;
+        report["ui_export_naming_trace"]=*exportNamesTrace;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

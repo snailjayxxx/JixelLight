@@ -86,6 +86,7 @@ add_library(JixelLightCore STATIC
     core/export/RasterExporter.cpp
     core/export/JpegExporter.cpp
     core/export/ExportQueue.cpp
+    core/export/ExportNaming.cpp
     diagnostics/ActionTrace.cpp
     diagnostics/LoggingEngine.cpp
     diagnostics/PerformanceRecorder.cpp

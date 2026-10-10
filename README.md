@@ -140,6 +140,18 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 GPU 输入和数值回退使用逐通道 RGBA64 / FP32 转换，保留半透明及透明像素中的未预乘 RGB，避免通用格式转换先在整数空间预乘造成的精度损失；CPU reference、GPU 读回和实拍矩阵使用同一转换语义。RAW 源仍为 RGBA64。
 
+### 批量导出名称（融合开发分支）
+
+批量导出设置显示全部版本数量及前三个名称，支持 `{name}` 原名、`{version}` 版本名、`{seq}` 或 `{seq:1}`～`{seq:9}` 补零序号、`{capture_date}` 拍摄日期和 `{capture_time}` 拍摄时间。扩展名由输出格式确定，原版的版本名为 `Original`；日期/时间来自相机记录的 `yyyyMMdd` / `HHmmss`，不推测时区或使用当前日期。模板最多 160 字符，序号为 1～999999999，最终文件名最多 240 UTF-8 字节。
+
+留空保留既有命名：界面使用原名加 `_JixelLight` 并自动避开重名，CLI 使用既有六位序号命名。自定义模板的重名、非法文件名或所需拍摄时间缺失会在输出前拒绝整批；对比名称时统一 Unicode NFC 并忽略大小写。目标文件夹中的文件、目录及链接均占用名称。导出队列冻结名称与调整，可继续编辑/重命名版本；批量输出使用同文件系统临时目录及不覆盖发布，失败或取消清理当前临时输出。
+
+```sh
+JixelLightCli --catalog Project.jlp --output-dir existing-folder --format png --name-template '{capture_date}_{name}_{version}_{seq:4}' --sequence-start 7
+```
+
+CLI 的命名参数只用于 `--catalog`。目录读取为只读快照；未索引拍摄时间时，只读读取源元数据，不修改原文件或项目。
+
 ### Professional Scopes
 
 - RGB / Luminance Histogram：1024 bins。

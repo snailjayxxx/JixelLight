@@ -295,9 +295,9 @@ Rectangle {
                 }
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 6; visible: root.vignetteExpanded
-                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteAmountSlider"; label: root.t("强度 EV", "Amount EV"); from: -3; to: 3; decimals: 2; value: root.controller.vignetteAmount; onEdited: root.controller.vignetteAmount = newValue }
-                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteMidpointSlider"; label: root.t("中点", "Midpoint"); from: 0; to: .95; decimals: 2; value: root.controller.vignetteMidpoint; onEdited: root.controller.vignetteMidpoint = newValue }
-                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteFeatherSlider"; label: root.t("羽化", "Feather"); from: .01; to: 1; decimals: 2; value: root.controller.vignetteFeather; onEdited: root.controller.vignetteFeather = newValue }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteAmountSlider"; label: root.t("强度 EV", "Amount EV"); from: -3; to: 3; decimals: 2; value: root.controller.vignetteAmount; onEdited: function(newValue) { root.controller.vignetteAmount = newValue } }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteMidpointSlider"; label: root.t("中点", "Midpoint"); from: 0; to: .95; decimals: 2; value: root.controller.vignetteMidpoint; onEdited: function(newValue) { root.controller.vignetteMidpoint = newValue } }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteFeatherSlider"; label: root.t("羽化", "Feather"); from: .01; to: 1; decimals: 2; value: root.controller.vignetteFeather; onEdited: function(newValue) { root.controller.vignetteFeather = newValue } }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("裁切后椭圆暗角；负值压暗边缘，正值提亮。在线性工作空间、明暗映射之前执行。",

@@ -190,7 +190,8 @@ public:
     Q_INVOKABLE void setExactScopes(bool enabled);
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
     Q_INVOKABLE void finishInteraction();
-    Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92, const QString &format = QStringLiteral("jpeg"));
+    Q_INVOKABLE QVariantMap exportNamePreview(const QString &pattern, int sequenceStart=1, const QString &format=QStringLiteral("jpeg")) const;
+    Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92, const QString &format = QStringLiteral("jpeg"), const QString &pattern={}, int sequenceStart=1);
     Q_INVOKABLE void cancelExport();
     Q_INVOKABLE bool flushEdits();
     int currentIndex() const { return m_currentIndex; }

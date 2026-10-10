@@ -1,6 +1,7 @@
 #include "app/PhotoController.h"
 #include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
+#include "core/export/ExportNaming.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
@@ -1036,23 +1037,30 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     return queued; // Accepted, not a claim that the file has already been written.
 }
 
-bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format) {
-    const auto normalized=format.toLower();
-    if (!QStringList{"png","jpeg","jpg","tif","tiff","webp"}.contains(normalized)) return false;
-    const QString extension = normalized=="jpeg" ? ".jpg" : normalized=="tiff" ? ".tif" : "."+normalized;
+QVariantMap PhotoController::exportNamePreview(const QString &pattern, int sequenceStart, const QString &format) const {
+    QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
+    for (const auto &photo : m_photos) sources.push_back({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto plan=planExportNames(sources,{pattern,sequenceStart},format);
+    return {{"valid",plan.error.isEmpty()},{"names",plan.names.mid(0,3)},{"count",m_photos.size()},
+            {"error",uiText(plan.errorZh,plan.error)}};
+}
+
+bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format,
+                                const QString &pattern, int sequenceStart) {
     if (m_photos.isEmpty() || exportBusy() || !folder.isLocalFile()) return false;
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
-    flushEdits();
+    QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
+    for (const auto &photo : m_photos) sources.push_back({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto names=planExportNames(sources,{pattern,sequenceStart},format,
+        directory.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
+    if (!names.error.isEmpty()) { setStatus(uiText(names.errorZh,names.error)); return false; }
+    if (!flushEdits()) return false;
     QVector<ExportRequest> requests;
-    QSet<QString> reserved;
-    for (const auto &photo : m_photos) {
-        QString stem = QFileInfo(photo.path).completeBaseName() + QStringLiteral("_JixelLight");
-        QString path = directory.filePath(stem + extension);
-        int suffix = 1;
-        while (QFileInfo::exists(path) || reserved.contains(path.toCaseFolded())) path = directory.filePath(stem + QStringLiteral("_%1").arg(suffix++) + extension);
-        reserved.insert(path.toCaseFolded());
-        requests.push_back({photo.path, path, {}, photo.state, ColorManagement::fromKey(colorSpaceKey), std::clamp(quality, 1, 100)});
+    for (qsizetype i=0;i<m_photos.size();++i) {
+        const auto &photo=m_photos[i];
+        requests.push_back({photo.path,directory.filePath(names.names[i]),{},photo.state,
+            ColorManagement::fromKey(colorSpaceKey),std::clamp(quality,1,100),true});
     }
     const bool queued = m_exportQueue->start(std::move(requests));
     if (queued) { m_exportProgress = 0; emit exportChanged(); }

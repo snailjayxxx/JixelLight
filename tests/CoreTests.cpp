@@ -30,6 +30,8 @@
 #include "core/cache/ScopePlotCache.h"
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
+#include "core/export/ExportNaming.h"
+#include "core/export/ExportQueue.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/commands/NamedPresets.h"
@@ -300,6 +302,112 @@ private slots:
         const auto source=dir.filePath("a.png"),out=dir.filePath("out"); QVERIFY(image.save(source));
         auto copied=copyImportFiles({source},out,{},{},{"../{name}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
         copied=copyImportFiles({source,source},out,{},{},{"{seq}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+    }
+    void exportNamingUsesRecordedWallClockVersionAndChosenExtension() {
+        const QVector<ExportNameSource> sources{{"/one/photo.v1.ARW",{},"2025-12-31 23:59:59"},
+            {"/one/photo.v1.ARW","黄昏","2026-01-01 00:00:01"}};
+        auto plan=planExportNames(sources,{"{capture_date}_{capture_time}_{seq:4}_{name}_{version}",7},"tiff");
+        QVERIFY2(plan.error.isEmpty(),qPrintable(plan.error));
+        QCOMPARE(plan.names,QStringList({"20251231_235959_0007_photo.v1_Original.tif","20260101_000001_0008_photo.v1_黄昏.tif"}));
+        for (const auto &format : {QString("jpeg"),QString("png"),QString("webp")}) {
+            const auto extension=format=="jpeg"?QString("jpg"):format;
+            plan=planExportNames(sources,{"{seq:2}-{seq}",99},format);
+            QCOMPARE(plan.names,QStringList({"99-99."+extension,"100-100."+extension}));
+        }
+        plan=planExportNames(sources,{"{seq}",999999998},"png");
+        QCOMPARE(plan.names,QStringList({"999999998.png","999999999.png"}));
+        QVector<ExportNameSource> many(1001,{"photo.png",{}, {}});
+        QCOMPARE(planExportNames(many,{"{seq}",1},"png").names.size(),1001); // GUI keeps its existing catalog size support.
+    }
+    void exportNamingAvoidsDefaultCollisionsAndRejectsAmbiguousCustomPlans() {
+        const QVector<ExportNameSource> sources{{"/one/a.ARW",{},{}},{"/one/a.ARW","Version",{}}};
+        auto plan=planExportNames(sources,{},"png",{"A_JIXELLIGHT.PNG","a_JixelLight_1.png"});
+        QCOMPARE(plan.names,QStringList({"a_JixelLight_2.png","a_JixelLight_3.png"}));
+        QCOMPARE(planExportNames(sources,{{},999999999},"png").names,QStringList({"a_JixelLight.png","a_JixelLight_1.png"}));
+        plan=planExportNames(sources,{"{name}",1},"png"); QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+        plan=planExportNames(sources,{"{name}_{version}",1},"png");
+        QCOMPARE(plan.names,QStringList({"a_Original.png","a_Version.png"}));
+        plan=planExportNames({{"a.png",{},{}}},{"{name}",1},"png",{"A.PNG"});
+        QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+        plan=planExportNames({{"é.png",{},{}},{"e\u0301.png",{}, {}}},{"{name}",1},"png");
+        QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+        plan=planExportNames({{"é.png",{}, {}}},{"{name}",1},"png",{"e\u0301.png"});
+        QVERIFY(!plan.error.isEmpty());
+        plan=planExportNames({{"a.png","../unsafe",{}}},{"{version}",1},"png");
+        QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+    }
+    void exportNamingRejectsUnsafeGrammarAndMissingDatesAsAWholePlan() {
+        const QVector<ExportNameSource> source{{"a.ARW",{},"2025-02-28 12:34:56"}};
+        for (const auto &pattern : QStringList{"{name","{unknown}","}","{seq:0}","{seq:10}","{seq:01}","../{name}",
+             "C:{name}","{name}\\x","CON","LPT¹","NUL.tar","x.","x ","..",QString(161,'x'),QString(100,QChar(0x82b1)),QString("x")+QChar(1)}) {
+            const auto plan=planExportNames(source,{pattern,1},"png");
+            QVERIFY2(!plan.error.isEmpty(),qPrintable(pattern)); QVERIFY(!plan.errorZh.isEmpty()); QVERIFY(plan.names.isEmpty());
+        }
+        for (const auto &date : QStringList{{},"2025-02-29 12:34:56","2025-02-28 24:34:56","2025:02:28 12:34:56","2025-2-28 12:34:56"}) {
+            auto mixed=source; mixed.push_back({"b.ARW",{},date});
+            const auto plan=planExportNames(mixed,{"{seq}_{capture_date}_{capture_time}",1},"png");
+            QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+        }
+        QVERIFY(!planExportNames(source,{"{seq}",0}).error.isEmpty());
+        QVERIFY(!planExportNames(source,{"{seq}",1000000000}).error.isEmpty());
+        auto twice=source; twice+=source;
+        QVERIFY(!planExportNames(twice,{"{seq}",999999999}).error.isEmpty());
+        QVERIFY(!planExportNames(source,{},"pdf").error.isEmpty());
+        QVERIFY(!planExportNames({}).error.isEmpty());
+    }
+    void batchExportNamesPreflightEntireCatalogAndFreezeVersionSnapshots() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto jpeg=dir.filePath("dated.jpg"),out=dir.filePath("out");
+        QImage image(32,24,QImage::Format_RGB32); image.fill(QColor(64,128,192)); QVERIFY(image.save(jpeg));
+        { auto photo=Exiv2::ImageFactory::open(jpeg.toStdString()); QVERIFY(photo.get()); photo->readMetadata();
+          auto exif=photo->exifData(); exif["Exif.Photo.DateTimeOriginal"]="2025:01:02 03:04:05"; photo->setExifData(exif); photo->writeMetadata(); }
+        QFile original(jpeg); QVERIFY(original.open(QIODevice::ReadOnly)); const auto bytes=original.readAll(); original.close();
+        PhotoController controller(nullptr); QVERIFY(controller.importFile(QUrl::fromLocalFile(jpeg)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.library()[0].toMap()["captureChecked"].toBool(),10000);
+        QVERIFY(!controller.exportAll(QUrl::fromLocalFile(dir.path()),"srgb",92,"jpeg","{name}"));
+        controller.setExposure(.25); controller.finishInteraction();
+        QVERIFY(controller.createVirtualCopy("Evening")); controller.setExposure(-.5); controller.finishInteraction();
+        const auto history=controller.editHistory(); const auto state=controller.gpuPlan(true).state.toJson();
+        auto preview=controller.exportNamePreview("{capture_date}_{capture_time}_{version}_{seq:3}",9,"png");
+        QVERIFY(preview["valid"].toBool()); QCOMPARE(preview["count"].toInt(),2);
+        QCOMPARE(preview["names"].toStringList(),QStringList({"20250102_030405_Original_009.png","20250102_030405_Evening_010.png"}));
+        QVERIFY(!controller.exportNamePreview("{name}",1,"png")["valid"].toBool());
+        QCOMPARE(controller.editHistory(),history); QCOMPARE(controller.gpuPlan(true).state.toJson(),state);
+        QSignalSpy finished(&controller,&PhotoController::exportFinished);
+        QVERIFY(!controller.exportAll(QUrl::fromLocalFile(out),"srgb",92,"png","{name}"));
+        QVERIFY(QDir(out).isEmpty()); QVERIFY(!controller.exportBusy()); QCOMPARE(finished.size(),0);
+        QVERIFY(controller.exportAll(QUrl::fromLocalFile(out),"srgb",92,"png","{capture_date}_{capture_time}_{version}_{seq:3}",9));
+        controller.setExposure(2); controller.finishInteraction(); QVERIFY(controller.renameCurrentVirtualCopy("Later"));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000); QCOMPARE(finished[0][0].toInt(),2); QCOMPARE(finished[0][1].toInt(),0);
+        SourceCache cache(4*1024*1024,dir.filePath("cache")); const auto decoded=loadSource(cache,jpeg,{}); QVERIFY(!decoded.image.isNull());
+        for (int i=0;i<2;++i) {
+            AdjustmentState expected; expected.exposure=i==0?.25:-.5;
+            const auto path=QDir(out).filePath(preview["names"].toStringList()[i]);
+            QCOMPARE(QImage(path).convertToFormat(QImage::Format_RGBA64),ImagePipeline::processWithPlan(decoded.image,
+                ProcessingPlan::compile(expected,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)));
+        }
+        QCOMPARE(QDir(out).entryList({"*.png"},QDir::Files).size(),2);
+        QVERIFY(QDir(out).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+        const auto undated=dir.filePath("undated.png"); QVERIFY(image.save(undated)); QVERIFY(controller.importFile(QUrl::fromLocalFile(undated)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.library()[2].toMap()["captureChecked"].toBool(),10000);
+        QVERIFY(!controller.exportNamePreview("{capture_date}_{seq}",1,"png")["valid"].toBool());
+        QVERIFY(!controller.exportAll(QUrl::fromLocalFile(out),"srgb",92,"png","{capture_date}_{seq}"));
+        QCOMPARE(finished.size(),1); QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(),bytes);
+    }
+    void newFileExportQueuePreservesExistingTargetsAndCleansStaging() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const auto existing=dir.filePath("existing.png"),fresh=dir.filePath("fresh.png");
+        QFile protectedFile(existing); QVERIFY(protectedFile.open(QIODevice::WriteOnly)); QCOMPARE(protectedFile.write("preserve"),8); protectedFile.close();
+        QImage image(8,8,QImage::Format_RGBA64); image.fill(QColor(64,128,192));
+        ExportQueue queue(std::make_shared<SourceCache>(1024*1024,dir.filePath("cache")));
+        QSignalSpy finished(&queue,&ExportQueue::finished),files(&queue,&ExportQueue::fileFinished);
+        QVERIFY(queue.start({{"fixture.png",existing,image,{},ColorManagement::OutputSpace::SRgb,92,true},
+                             {"fixture.png",fresh,image,{},ColorManagement::OutputSpace::SRgb,92,true}}));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000); QCOMPARE(finished[0][0].toInt(),1); QCOMPARE(finished[0][1].toInt(),1);
+        QCOMPARE(files.size(),2); QVERIFY(!files[0][2].toBool()); QVERIFY(files[1][2].toBool());
+        QVERIFY(protectedFile.open(QIODevice::ReadOnly)); QCOMPARE(protectedFile.readAll(),QByteArray("preserve"));
+        QVERIFY(!QImage(fresh).isNull());
+        QVERIFY(QDir(dir.path()).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
     }
     void namedCopyImportRetainsBytesAndHandlesConflictsCancellationAndRaces() {
         QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QVERIFY(QDir(dir.path()).mkdir("other"));

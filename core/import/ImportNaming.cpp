@@ -1,22 +1,10 @@
 #include "ImportNaming.h"
+#include "core/files/FileNames.h"
 #include <QFileInfo>
 #include <QSet>
 #include <QVector>
 
 namespace {
-bool portableName(const QString &name) {
-    if (name.isEmpty() || name=="." || name==".." || name.endsWith('.') || name.endsWith(' ')
-        || name.size()>240 || name.toUtf8().size()>240) return false;
-    for (const auto c : name)
-        if (c.unicode()<32 || c.unicode()==127 || QStringLiteral("<>:\"/\\|?*").contains(c)) return false;
-    const auto device=name.section('.',0,0).trimmed().toUpper();
-    if (QStringList{"CON","PRN","AUX","NUL","CONIN$","CONOUT$"}.contains(device)) return false;
-    if (device.size()==4 && (device.startsWith("COM") || device.startsWith("LPT"))) {
-        const auto digit=device[3];
-        if ((digit>='1' && digit<='9') || QString::fromUtf8("¹²³").contains(digit)) return false;
-    }
-    return true;
-}
 struct Part { QString literal; int width=-1; bool name=false; };
 }
 
@@ -58,11 +46,11 @@ ImportNames planImportNames(const QStringList &sources,const ImportNaming &namin
             }
             // Reject unsafe stems even if an appended extension could hide a
             // trailing dot/space or a directory traversal marker.
-            if (!portableName(stem)) return fail("Unsafe or too long filename stem: "+stem);
+            if (!FileNames::portable(stem)) return fail("Unsafe or too long filename stem: "+stem);
             name=(stem+(source.suffix().isEmpty() ? QString() : "."+source.suffix())).normalized(QString::NormalizationForm_C);
         }
-        if (!portableName(name)) return fail("Unsafe or too long destination filename: "+name);
-        const auto folded=name.normalized(QString::NormalizationForm_C).toCaseFolded();
+        if (!FileNames::portable(name)) return fail("Unsafe or too long destination filename: "+name);
+        const auto folded=FileNames::folded(name);
         if (seen.contains(folded)) return fail("Duplicate destination filename: "+name);
         seen.insert(folded); result.names.push_back(name);
     }

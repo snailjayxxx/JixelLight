@@ -3,6 +3,8 @@
 #include "core/export/JpegExporter.h"
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
+#include "core/export/ExportNaming.h"
+#include "core/metadata/MetadataReader.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
 #include "core/project/ProjectDatabase.h"
@@ -78,7 +80,7 @@ bool readBatch(const QString &path, const QString &defaultSpace, QVector<ExportJ
 }
 
 bool readCatalog(const QString &path, const QString &destination, const QString &space, const QString &format,
-                 QVector<ExportJob> *jobs, QString *error) {
+                 const ExportNaming &naming, QVector<ExportJob> *jobs, QString *error) {
     if (!QStringList{"png","jpeg","jpg","tif","tiff","webp"}.contains(format)) { *error="Catalog format must be JPEG, PNG, TIFF or WebP"; return false; }
     if (destination.trimmed().isEmpty() || !QFileInfo(destination).isDir()) { *error="Choose an existing --output-dir for catalog exports"; return false; }
     ProjectDatabase catalog; QVector<ProjectDatabase::SavedPhoto> photos;
@@ -86,9 +88,25 @@ bool readCatalog(const QString &path, const QString &destination, const QString 
     if (photos.isEmpty() || photos.size()>1000) { *error="Catalog export requires 1 to 1000 saved versions"; return false; }
     const QDir base(QFileInfo(path).absoluteFilePath()), output(QFileInfo(destination).absoluteFilePath());
     const auto extension=format=="jpeg" ? QStringLiteral("jpg") : format=="tiff" ? QStringLiteral("tif") : format;
+    ExportNames names;
+    if (!naming.pattern.isEmpty()) {
+        QVector<ExportNameSource> sources; QHash<QString,QString> captured;
+        for (const auto &photo : photos) {
+            const auto source=base.absoluteFilePath(photo.path); auto time=photo.timeline.captureTime;
+            if (exportTemplateNeedsCaptureTime(naming.pattern) && !photo.timeline.captureChecked) {
+                if (!captured.contains(source)) captured.insert(source,PhotoTimeline::cameraTime(MetadataReader::read(source).value("captureTime").toString()));
+                time=captured.value(source);
+            }
+            sources.push_back({source,photo.versionName,time});
+        }
+        names=planExportNames(sources,naming,format,output.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
+        if (!names.error.isEmpty()) { *error=names.error; return false; }
+    }
     for (qsizetype i=0;i<photos.size();++i) {
         const auto &photo=photos[i]; const auto source=base.absoluteFilePath(photo.path);
-        const auto filename=QString("%1_%2_JixelLight.%3").arg(i+1,6,10,QChar('0')).arg(QFileInfo(source).completeBaseName().left(120)).arg(extension);
+        const auto filename=naming.pattern.isEmpty()
+            ? QString("%1_%2_JixelLight.%3").arg(i+1,6,10,QChar('0')).arg(QFileInfo(source).completeBaseName().left(120)).arg(extension)
+            : names.names[i];
         jobs->push_back({source,output.filePath(filename),space,photo.adjustments,
             photo.copyKey.isEmpty()?photo.path:photo.copyKey,photo.versionName});
     }
@@ -163,6 +181,8 @@ int main(int argc, char **argv) {
     parser.addOption({"catalog","Export all saved catalog versions from a read-only snapshot.","project.jlp"});
     parser.addOption({"output-dir","Existing output directory for --catalog.","directory"});
     parser.addOption({"format","Catalog output format: png, jpeg, tiff, webp (JPEG/WebP quality 92).","format","png"});
+    parser.addOption({"name-template","Catalog filename stem: {name}, {version}, {seq}, {seq:1}..{seq:9}, {capture_date}, {capture_time}. Empty keeps existing names.","template"});
+    parser.addOption({"sequence-start","First sequence number for --name-template (1–999999999).","number","1"});
     parser.addOption({"space","Output ICC space: srgb, display-p3, adobe-rgb, prophoto-rgb.","space","srgb"});
     parser.addPositionalArgument("source","Input photograph.");
     parser.addPositionalArgument("destination","New JPEG, 16-bit PNG/TIFF or 8-bit WebP path.");
@@ -176,7 +196,11 @@ int main(int argc, char **argv) {
             {"job_optional_fields",QJsonArray{"space"}},{"maximum_jobs",1000},{"maximum_bytes",4*1024*1024},
             {"relative_paths","manifest directory"},{"runtime_failure","stop; completed outputs retained"}};
         schema["catalog"]=QJsonObject{{"read_only",true},{"selection","all saved originals and virtual versions"},
-            {"maximum_versions",1000},{"optional_commands","applied to each saved snapshot without changing catalog"}};
+            {"maximum_versions",1000},{"optional_commands","applied to each saved snapshot without changing catalog"},
+            {"name_template",QJsonObject{{"tokens",QJsonArray{"name","version","seq","seq:1..9","capture_date","capture_time"}},
+                {"maximum_characters",160},{"sequence_range",QJsonArray{1,999999999}},
+                {"capture_date","yyyyMMdd, recorded camera wall clock"},{"capture_time","HHmmss, recorded camera wall clock"},
+                {"missing_capture_time","reject whole plan"},{"collision","reject whole plan"},{"original_version","Original"}}}};
         QTextStream(stdout)<<QJsonDocument(schema).toJson(); return 0;
     }
     if (!ColorManagement::keys().contains(parser.value("space"))) return fail("Unknown output color space");
@@ -184,10 +208,15 @@ int main(int argc, char **argv) {
     const bool batch=parser.isSet("batch"), catalog=parser.isSet("catalog"), multi=batch||catalog;
     QVector<ExportJob> jobs; QString error;
     if (batch && catalog) return fail("Choose either --batch or --catalog");
-    if (!catalog && (parser.isSet("output-dir") || parser.isSet("format"))) return fail("--output-dir and --format require --catalog");
+    if (!catalog && (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")))
+        return fail("--output-dir, --format, --name-template and --sequence-start require --catalog");
     if (catalog) {
         if (!paths.isEmpty()) return fail("Catalog cannot be combined with positional paths");
-        if (!readCatalog(parser.value("catalog"),parser.value("output-dir"),parser.value("space"),parser.value("format").toLower(),&jobs,&error)) return fail(error);
+        bool validSequence=false; const auto sequence=parser.value("sequence-start").toInt(&validSequence);
+        if (!validSequence || sequence<1 || sequence>999999999) return fail("Sequence start must be within 1–999999999");
+        if (parser.isSet("sequence-start") && parser.value("name-template").isEmpty()) return fail("--sequence-start requires a nonempty --name-template");
+        if (!readCatalog(parser.value("catalog"),parser.value("output-dir"),parser.value("space"),parser.value("format").toLower(),
+                         {parser.value("name-template"),sequence},&jobs,&error)) return fail(error);
         if (parser.isSet("commands")) {
             QJsonDocument document;
             if (!readJson(parser.value("commands"),1024*1024,&document,&error)) return fail(error);
