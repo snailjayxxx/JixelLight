@@ -419,6 +419,7 @@ inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
         v = {gray,gray,gray};
     }
     return v;
+}
 
 // This boundary is used by both template instantiations. GCC otherwise outlines
 // it, adding a per-pixel call to the neutral serial path after stage splitting.
