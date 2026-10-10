@@ -75,6 +75,7 @@ add_library(JixelLightCore STATIC
     core/pipeline/ImagePipeline.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
+    core/pipeline/GeometryCorrections.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp

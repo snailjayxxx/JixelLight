@@ -40,6 +40,26 @@ bool clickItem(QQuickWindow *window,QQuickItem *item) {
     QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
     QCoreApplication::sendEvent(window,&release); return true;
 }
+bool revealItem(QQuickItem *item) {
+    if (!item) return false;
+    for (auto *parent=item->parentItem();parent;parent=parent->parentItem()) {
+        if (parent->metaObject()->indexOfProperty("contentY")<0) continue;
+        const auto y=item->mapToItem(parent,QPointF(0,item->height()/2)).y();
+        const double maximum=std::max(0.0,parent->property("contentHeight").toDouble()-parent->height());
+        parent->setProperty("contentY",std::clamp(parent->property("contentY").toDouble()+y-parent->height()/2,0.0,maximum));
+        return true;
+    }
+    return false;
+}
+bool clickSlider(QQuickWindow *window,QQuickItem *item,double fraction) {
+    if (!item || !item->isVisible() || !item->isEnabled()) return false;
+    const auto point=item->mapToScene(QPointF(item->width()*fraction,item->height()/2));
+    const auto global=window->mapToGlobal(point.toPoint());
+    QMouseEvent press(QEvent::MouseButtonPress,point,point,global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&press);
+    QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&release); return true;
+}
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
@@ -49,6 +69,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto scopePlots=std::make_shared<QJsonObject>();
     auto copyTrace=std::make_shared<QJsonObject>();
     auto transferTrace=std::make_shared<QJsonObject>();
+    auto correctionTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -373,8 +394,58 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const bool changed=controller->exposure()==expected && controller->saturation()==0 && controller->canUndo();
             controller->undo(); const bool undone=controller->exposure()==0; controller->redo();
             transferTrace->insert("isolated_undo",changed && undone && controller->exposure()==expected);
-            controller->selectPhoto(transferTrace->value("source_index").toInt());
-            state->phase=50;
+            // Exercise the new manual controls on the imported PNG. The
+            // existing RAW/full-resolution checks and 60 s deadline stay intact.
+            state->phase=27;
+        } else if (state->phase==27 && ready) {
+            correctionTrace->insert("source_is_raw",controller->currentIsRaw());
+            correctionTrace->insert("before",QJsonObject::fromVariantMap(controller->geometry()));
+            correctionTrace->insert("history_size",controller->editHistory().size());
+            correctionTrace->insert("toggle_revealed",revealItem(window->findChild<QQuickItem *>("geometryCorrectionsToggle")));
+            state->phase=271;
+        } else if (state->phase==271 && ready) {
+            const auto slider=visualChild(window->contentItem(),"geometry_perspectiveHorizontal");
+            correctionTrace->insert("opened",(slider && slider->isVisible()) || clickItem(window,window->findChild<QQuickItem *>("geometryCorrectionsToggle")));
+            state->phase=272;
+        } else if (state->phase==272 && ready) {
+            bool controls=true;
+            for (const auto *key : {"perspectiveHorizontal","perspectiveVertical","distortion","redCa","blueCa"})
+                controls=controls && visualChild(window->contentItem(),QString("geometry_")+key);
+            correctionTrace->insert("controls_found",controls);
+            correctionTrace->insert("perspective_revealed",revealItem(visualChild(window->contentItem(),"geometry_perspectiveHorizontal")));
+            state->phase=273;
+        } else if (state->phase==273 && ready) {
+            correctionTrace->insert("perspective_clicked",clickSlider(window,visualChild(window->contentItem(),"geometry_perspectiveHorizontal"),.57));
+            correctionTrace->insert("perspective_changed",std::abs(controller->geometry()["perspectiveHorizontal"].toDouble())>.005);
+            state->phase=274;
+        } else if (state->phase==274 && ready) {
+            correctionTrace->insert("ca_revealed",revealItem(visualChild(window->contentItem(),"geometry_redCa")));
+            state->phase=275;
+        } else if (state->phase==275 && ready) {
+            correctionTrace->insert("ca_clicked",clickSlider(window,visualChild(window->contentItem(),"geometry_redCa"),.67));
+            correctionTrace->insert("ca_changed",std::abs(controller->geometry()["redCa"].toDouble())>.05);
+            const bool values=controller->setGeometryAdjustment("perspectiveVertical",-.04)
+                && controller->setGeometryAdjustment("distortion",.08) && controller->setGeometryAdjustment("blueCa",-.8);
+            controller->finishInteraction(); correctionTrace->insert("other_values_set",values); state->phase=276;
+        } else if (state->phase==276 && ready) {
+            const auto g=GeometryState::fromJson(QJsonObject::fromVariantMap(controller->geometry())); const auto meta=controller->currentMetadata();
+            const auto size=g.correctedSize({meta["pixelWidth"].toInt(),meta["pixelHeight"].toInt()});
+            if (controller->scopesPixelCount()==quint64(size.width())*size.height()
+                && (controller->scopesStatus().contains("Full-resolution statistics") || controller->scopesStatus().contains(QStringLiteral("全分辨率统计")))) {
+                correctionTrace->insert("full_scopes",true); correctionTrace->insert("scope_pixels",qint64(controller->scopesPixelCount()));
+                correctionTrace->insert("settings",g.toJson());
+                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".corrections.png");
+                correctionTrace->insert("language",controller->language()); controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=277;
+            }
+        } else if (state->phase==277 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".corrections-en.png");
+            controller->setLanguage(correctionTrace->value("language").toString()); resizeForSmoke(window,1540,920);
+            const int edits=controller->editHistory().size()-correctionTrace->value("history_size").toInt();
+            for (int i=0;i<edits;++i) controller->undo();
+            correctionTrace->insert("undo_restored",edits>0 && QJsonObject::fromVariantMap(controller->geometry())==correctionTrace->value("before").toObject());
+            if (auto *toggle=window->findChild<QQuickItem *>("geometryCorrectionsToggle")) QMetaObject::invokeMethod(toggle,"clicked");
+            revealItem(window->findChild<QQuickItem *>("straightenAngle"));
+            controller->selectPhoto(transferTrace->value("source_index").toInt()); state->phase=50;
         } else if (state->phase==50 && ready) {
             // Restoring the source starts a new asynchronous histogram. Preview
             // readiness alone does not mean its full-resolution counts arrived.
@@ -397,7 +468,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         bool transferOk=true;
         for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
             transferOk=transferOk && transferTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && (!gpuRequired || controller->gpuActive());
+        bool correctionOk=true;
+        for (const auto *key : {"toggle_revealed","opened","controls_found","perspective_revealed","perspective_clicked","perspective_changed","ca_revealed","ca_clicked","ca_changed","other_values_set","full_scopes","undo_restored"})
+            correctionOk=correctionOk && correctionTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -417,6 +491,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_copy_import_trace"]=*copyTrace;
         report["ui_selective_sync_passed"]=transferOk;
         report["ui_selective_sync_trace"]=*transferTrace;
+        report["ui_geometry_corrections_passed"]=correctionOk;
+        report["ui_geometry_corrections_trace"]=*correctionTrace;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

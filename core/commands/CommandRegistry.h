@@ -8,6 +8,17 @@
 // UI and offline CLI share parameter names, finite checks and existing ranges.
 struct CommandRegistry {
     struct Parameter { const char *name; double AdjustmentState::*member; double minimum, maximum; };
+    struct GeometryParameter { const char *name; double GeometryState::*member; double minimum, maximum; };
+    static const auto &geometryParameters() {
+        static const std::array<GeometryParameter,5> descriptors{{
+            {"perspectiveHorizontal",&GeometryState::perspectiveHorizontal,-.4,.4},
+            {"perspectiveVertical",&GeometryState::perspectiveVertical,-.4,.4},
+            {"distortion",&GeometryState::distortion,-.3,.3},
+            {"redCa",&GeometryState::redCa,-2,2},
+            {"blueCa",&GeometryState::blueCa,-2,2}
+        }};
+        return descriptors;
+    }
     static const auto &parameters() {
         static const std::array<Parameter,12> descriptors{{
             {"exposure",&AdjustmentState::exposure,-5,5},
@@ -74,6 +85,18 @@ struct CommandRegistry {
             if (!fields(command,{"degrees"}) || !number(command,"degrees") || !GeometryState::validStraighten(command["degrees"].toDouble())) return fail();
             state.geometry.straighten=command["degrees"].toDouble(); return true;
         }
+        if (name == "geometry.set") {
+            if (!fields(command,{"parameter","value"}) || !command["parameter"].isString() || !number(command,"value")) return fail();
+            const auto parameter=command["parameter"].toString(); const double value=command["value"].toDouble();
+            if (!GeometryState::validCorrection(parameter,value)) return fail();
+            for (const auto &p : geometryParameters()) if (parameter==QLatin1String(p.name)) { state.geometry.*p.member=value; return true; }
+            return fail();
+        }
+        if (name == "geometry.resetCorrections") {
+            if (!fields(command,{})) return fail();
+            for (const auto &p : geometryParameters()) state.geometry.*p.member=0;
+            return true;
+        }
         if (name == "geometry.flip") {
             if (!fields(command,{"axis"}) || !command["axis"].isString()) return fail();
             const auto axis=command["axis"].toString();
@@ -103,13 +126,17 @@ struct CommandRegistry {
         return fail();
     }
     static QJsonObject schema() {
-        QJsonArray descriptors;
+        QJsonArray descriptors,geometryDescriptors;
         for (const auto &p : parameters()) descriptors.append(QJsonObject{{"name",p.name},{"minimum",p.minimum},{"maximum",p.maximum}});
+        for (const auto &p : geometryParameters()) geometryDescriptors.append(QJsonObject{{"name",p.name},{"minimum",p.minimum},{"maximum",p.maximum}});
         const QJsonArray commands{
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
-            QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized source after optional straighten, before quarter-turns and flips"}},
+            QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized corrected grid after lens/perspective/straighten, before quarter-turns and flips"}},
             QJsonObject{{"name","geometry.straighten"},{"fields",QJsonArray{"degrees"}},{"degrees",QJsonArray{-45,45}},{"operation","absolute clockwise angle before quarter-turns/flips; inscribed crop, no upscale; out-of-range rejected"}},
+            QJsonObject{{"name","geometry.set"},{"fields",QJsonArray{"parameter","value"}},{"parameters",geometryDescriptors},{"range_policy","reject"},
+                {"operation","manual lens/CA -> perspective -> straighten; one CPU resample, auto trim, dimensions never enlarged"}},
+            QJsonObject{{"name","geometry.resetCorrections"},{"fields",QJsonArray{}},{"operation","reset manual perspective/lens/CA; preserve straighten/crop/orientation"}},
             QJsonObject{{"name","geometry.rotate"},{"fields",QJsonArray{"quarterTurns"}},{"operation","relative clockwise quarter turns, int32"}},
             QJsonObject{{"name","geometry.flip"},{"fields",QJsonArray{"axis"}},{"axis",QJsonArray{"horizontal","vertical"}},{"operation","toggle after rotation"}},
             QJsonObject{{"name","geometry.reset"},{"fields",QJsonArray{}}},

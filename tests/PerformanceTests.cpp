@@ -43,6 +43,21 @@ ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement:
 class PerformanceTests:public QObject {
     Q_OBJECT
 private slots:
+    void manualGeometryIsDeterministicAcrossCpuBudgetsAndCancellation() {
+        const QImage source=fixture(1100,800); const auto before=source.copy();
+        GeometryState g; g.perspectiveHorizontal=.12; g.perspectiveVertical=-.08; g.distortion=.15;
+        g.redCa=1; g.blueCa=-1; g.straighten=3;
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS"); const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        qputenv("JIXELLIGHT_CPU_THREADS","1"); const auto serial=g.apply(source);
+        qputenv("JIXELLIGHT_CPU_THREADS","8"); const auto parallel=g.apply(source);
+        if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous); else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        QVERIFY(!serial.isNull()); QCOMPARE(parallel,serial); QCOMPARE(source,before);
+        const auto token=std::make_shared<std::atomic_bool>(false);
+        auto future=QtConcurrent::run([&] { return g.apply(source,token); });
+        QThread::msleep(2); token->store(true);
+        future.waitForFinished(); QVERIFY(future.result().isNull()); QCOMPARE(source,before);
+        QVERIFY(g.apply(source,token).isNull());
+    }
     void parallelIsDeterministic() {
         const QImage image=fixture(800,512);
         AdjustmentState state; state.exposure=.6; state.temperature=30;state.tint=-15;state.saturation=12;state.hslHue[0]=28;state.masterCurve[2]=.56;

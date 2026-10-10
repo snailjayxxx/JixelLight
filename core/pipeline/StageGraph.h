@@ -70,6 +70,10 @@ struct StageGraph {
         return {{"schema", 1}, {"source", sourceKey}, {"prepare", prepared}, {"render", rendered},
                 {"scopes", digest((rendered + ":1024:rgb-luma:pre-monitor").toUtf8())},
                 {"source_storage", "RGBA64; GPU staging FP32"},
+                {"geometry",QJsonObject{{"backend","cpu"},{"settings",request.geometry.toJson()},
+                    {"order","manual lens/CA -> perspective -> straighten -> crop -> orientation -> color"},
+                    {"corrections_active",request.geometry.hasCorrections()},{"sampling","premultiplied-alpha bilinear RGBA64; conservative inscribed trim"},
+                    {"lens_profile",false},{"monitor_icc",false}}},
                 {"monitor_icc", "presentation-only; excluded from render/scopes keys"}};
     }
     static QString fullScopesKey(const ScopeRequest &request) {

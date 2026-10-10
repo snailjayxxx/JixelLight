@@ -18,10 +18,13 @@ QSize GeometryState::straightenedSize(QSize source) const {
 }
 
 QImage GeometryState::apply(const QImage &source, const CancelToken &cancel) const {
-    if (source.isNull() || cancelled(cancel) || !validStraighten(straighten)
+    if (source.isNull() || cancelled(cancel) || !validStraighten(straighten) || !validCorrections()
         || !validCrop(crop.x(),crop.y(),crop.width(),crop.height())) return {};
     QImage result=source;
-    if (straighten!=0) {
+    if (hasCorrections()) {
+        result=resampleCorrections(source,cancel);
+        if (result.isNull()) return {};
+    } else if (straighten!=0) {
         PerformanceSpan timer("geometry_straighten",{{"degrees",straighten},{"source_pixels",qint64(source.width())*source.height()}});
         const auto input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
         if (input.isNull() || cancelled(cancel)) return {};

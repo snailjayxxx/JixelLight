@@ -156,6 +156,7 @@ private slots:
             else if (it.value().isArray()) { auto a=it.value().toArray(); for (int i=0;i<a.size();++i) a[i]=.1+i*.15; it.value()=a; }
         }
         source=AdjustmentState::fromJson(json); source.geometry.crop={.1,.2,.7,.6}; source.geometry.straighten=4;
+        source.geometry.perspectiveHorizontal=.1; source.geometry.perspectiveVertical=-.2; source.geometry.distortion=.15; source.geometry.redCa=.7; source.geometry.blueCa=-.6;
         source.look.mode="calibrated"; source.look.lut=LookLut::identity(); source.look.strength=.7;
         const QMap<QString,QStringList> groups{
             {"exposure",{"exposure"}},{"white_balance",{"temperature","tint"}},
@@ -334,6 +335,164 @@ private slots:
         QVERIFY(controller.copyImport({QUrl::fromLocalFile(third)},QUrl::fromLocalFile(out)));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.copyImportBusy(),10000); QVERIFY(QFileInfo::exists(QDir(out).filePath("third.png")));
         QVERIFY(controller.prepareToClose());
+    }
+    void manualGeometrySamplesKnownProjectiveRadialAndCaCoordinates() {
+        QImage source(101,61,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
+        source.setText("JixelLightSource","RAW"); source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000);
+        for (int y=0;y<61;++y) for (int x=0;x<101;++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(1001+101*x+37*y,2003+53*x+211*y,3007+13*x+17*y,65535);
+        const auto before=StageGraph::outputFingerprint(source);
+        for (double h : {-.4,0.0,.4}) for (double v : {-.4,0.0,.4}) for (double k : {-.3,.3}) for (double angle : {-31.0,0.0,37.0}) {
+            GeometryState g; g.perspectiveHorizontal=h; g.perspectiveVertical=v; g.distortion=k;
+            g.redCa=2; g.blueCa=-2; g.straighten=angle;
+            const auto out=g.apply(source); QVERIFY(!out.isNull()); QCOMPARE(out.size(),g.correctedSize(source.size()));
+            QCOMPARE(out.format(),QImage::Format_RGBA64); QCOMPARE(out.colorSpace(),source.colorSpace());
+            QCOMPARE(out.text("JixelLightSource"),QString("RAW")); QCOMPARE(out.devicePixelRatio(),2.0); QCOMPARE(out.dotsPerMeterX(),3000);
+            QVERIFY(out.width()<=101 && out.height()<=61);
+            const double radians=angle*std::acos(-1)/180,c=std::cos(radians),s=std::sin(radians);
+            for (int y=0;y<out.height();++y) for (int x=0;x<out.width();++x) {
+                const double dx=x-(out.width()-1)/2.0,dy=y-(out.height()-1)/2.0;
+                const double rx=c*dx+s*dy,ry=-s*dx+c*dy,denominator=1+h*rx/50+v*ry/30;
+                QVERIFY(denominator>0); const double ux=rx/denominator,uy=ry/denominator;
+                const double factor=1+k*(ux*ux+uy*uy)/3400;
+                const double gx=50+ux*factor,gy=30+uy*factor;
+                const double redX=50+ux*factor*1.02,redY=30+uy*factor*1.02;
+                const double blueX=50+ux*factor*.98,blueY=30+uy*factor*.98;
+                for (double value : {gx,redX,blueX}) QVERIFY(value>=-1e-8 && value<=100+1e-8);
+                for (double value : {gy,redY,blueY}) QVERIFY(value>=-1e-8 && value<=60+1e-8);
+                const auto p=reinterpret_cast<const QRgba64 *>(out.constScanLine(y))[x];
+                QVERIFY(std::abs(int(p.red())-std::lround(1001+101*redX+37*redY))<=1);
+                QVERIFY(std::abs(int(p.green())-std::lround(2003+53*gx+211*gy))<=1);
+                QVERIFY(std::abs(int(p.blue())-std::lround(3007+13*blueX+17*blueY))<=1); QCOMPARE(p.alpha(),quint16(65535));
+            }
+        }
+        QCOMPARE(StageGraph::outputFingerprint(source),before);
+    }
+    void manualGeometryTrimsOpaqueEdgesAndRetainsAssociatedAlpha() {
+        const auto color=QRgba64::fromRgba64(12345,23456,34567,65535);
+        for (QSize size : {QSize(101,61),QSize(61,101),QSize(1,9),QSize(9,1),QSize(1,1)})
+        for (double angle : {-45.0,0.0,45.0}) for (double k : {-.3,.3}) for (double ca : {-2.0,2.0}) {
+            QImage input(size,QImage::Format_RGBA64); input.fill(QColor::fromRgba64(color));
+            GeometryState g; g.straighten=angle; g.perspectiveHorizontal=.4; g.perspectiveVertical=-.4;
+            g.distortion=k; g.redCa=ca; g.blueCa=-ca;
+            const auto out=g.apply(input); QVERIFY(!out.isNull());
+            QVERIFY(out.width()<=size.width() && out.height()<=size.height());
+            for (int y=0;y<out.height();++y) for (int x=0;x<out.width();++x)
+                QCOMPARE(reinterpret_cast<const QRgba64 *>(out.constScanLine(y))[x],color);
+        }
+        QImage transparent(2,2,QImage::Format_RGBA64); transparent.fill(QColor(0,0,255,0));
+        reinterpret_cast<QRgba64 *>(transparent.scanLine(0))[0]=QRgba64::fromRgba64(65535,0,0,65535);
+        GeometryState g; g.redCa=2; const auto center=g.apply(transparent); QCOMPARE(center.size(),QSize(1,1));
+        const auto p=reinterpret_cast<const QRgba64 *>(center.constScanLine(0))[0];
+        QCOMPARE(p.red(),quint16(65535)); QCOMPARE(p.green(),quint16(0)); QCOMPARE(p.blue(),quint16(0)); QCOMPARE(p.alpha(),quint16(16384));
+        g.distortion=std::numeric_limits<double>::quiet_NaN(); QVERIFY(g.apply(transparent).isNull());
+    }
+    void radialCaCorrectsKnownChannelMagnification() {
+        QImage source(201,151,QImage::Format_RGBA64);
+        auto value=[](double x,double y) { return quint16(std::lround(25000+100*x+60*y)); };
+        for (int y=0;y<151;++y) for (int x=0;x<201;++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(value((x-100)/1.02,(y-75)/1.02),value(x-100,y-75),value((x-100)/.98,(y-75)/.98),65535);
+        const auto edge=source.pixelColor(0,0).rgba64(); QVERIFY(std::abs(int(edge.red())-int(edge.green()))>200);
+        GeometryState g; g.redCa=2; g.blueCa=-2; const auto corrected=g.apply(source); QVERIFY(!corrected.isNull());
+        for (int y=0;y<corrected.height();++y) for (int x=0;x<corrected.width();++x) {
+            const auto p=reinterpret_cast<const QRgba64 *>(corrected.constScanLine(y))[x];
+            QVERIFY(std::abs(int(p.red())-int(p.green()))<=1); QVERIFY(std::abs(int(p.blue())-int(p.green()))<=1);
+        }
+    }
+    void manualGeometrySharesPreparationCacheScopesAndExports() {
+        QImage source(31,23,QImage::Format_RGBA64);
+        for (int y=0;y<23;++y) for (int x=0;x<31;++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(1000+x*1701,500+y*2101,100+x*991+y*601,65535);
+        AdjustmentState state; state.exposure=.3; auto &g=state.geometry;
+        g.perspectiveHorizontal=.13; g.perspectiveVertical=-.11; g.distortion=.18; g.redCa=.6; g.blueCa=-.8; g.straighten=7;
+        const auto corrected=g.apply(source); QVERIFY(!corrected.isNull());
+        auto cropped=g; cropped.crop={.2,.1,.6,.8}; cropped.quarterTurns=1; cropped.flipHorizontal=true;
+        GeometryState rest; rest.crop=cropped.crop; rest.quarterTurns=1; rest.flipHorizontal=true;
+        QCOMPARE(cropped.apply(source),rest.apply(corrected));
+        PrepareRequest prepare; prepare.image=source; prepare.geometry=g; prepare.viewport={4096,4096};
+        const auto preview=preparePreview(prepare,{}); QCOMPARE(preview.normal,corrected);
+        QCOMPARE(preview.gpu.convertToFormat(QImage::Format_RGBA64),corrected);
+        const auto key=StageGraph::prepareKey(prepare);
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto);
+        ScopeRequest request{source,plan,1,true,g}; const auto scopesKey=StageGraph::fullScopesKey(request);
+        for (const auto &p : CommandRegistry::geometryParameters()) {
+            prepare.geometry=g; prepare.geometry.*p.member+=.01; QVERIFY(StageGraph::prepareKey(prepare)!=key);
+            request.geometry=prepare.geometry; QVERIFY(StageGraph::fullScopesKey(request)!=scopesKey);
+        }
+        QTemporaryDir dir; FullScopesCache cache;
+        for (bool raw : {false,true}) for (auto space : {ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3,ColorManagement::OutputSpace::AdobeRgb,ColorManagement::OutputSpace::ProPhotoRgb}) {
+            request.plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,raw,0); request.geometry=g;
+            const auto counts=cache.analyze(request),fresh=ScopesEngine::analyzeFull(corrected,request.plan);
+            QCOMPARE(counts.red,fresh.red); QCOMPARE(counts.green,fresh.green); QCOMPARE(counts.blue,fresh.blue); QCOMPARE(counts.luma,fresh.luma);
+            QCOMPARE(counts.pixelCount,quint64(corrected.width())*corrected.height());
+            ++request.revision; const auto hit=cache.analyze(request); QCOMPARE(hit.red.constData(),counts.red.constData());
+            const auto rendered=ImagePipeline::processWithPlan(corrected,request.plan);
+            for (auto format : {RasterFormat::Png16,RasterFormat::Tiff16,RasterFormat::WebP8}) {
+                const auto path=dir.filePath(format==RasterFormat::Png16 ? "out.png" : format==RasterFormat::Tiff16 ? "out.tif" : "out.webp"); QString error;
+                QVERIFY2(exportRaster(source,state,path,space,format,100,{},&error,raw),qPrintable(error));
+                const auto actual=QImageReader(path).read(); QCOMPARE(actual.size(),rendered.size()); QCOMPARE(actual.colorSpace().iccProfile(),rendered.colorSpace().iccProfile());
+                if (format==RasterFormat::WebP8) QCOMPARE(actual.convertToFormat(QImage::Format_RGBA8888),rendered.convertToFormat(QImage::Format_RGBA8888));
+                else QCOMPARE(actual.convertToFormat(QImage::Format_RGBA64),rendered);
+            }
+        }
+        const auto rendered=ImagePipeline::processWithPlan(corrected,plan);
+        const auto plot=renderScopePlot({source,plan,g,"waveform",1,true},{}); ScopePlotCounts reference("waveform"); QVERIFY(reference.add(rendered));
+        QCOMPARE(plot.image,reference.image()); QCOMPARE(plot.pixels,quint64(corrected.width())*corrected.height());
+        QVERIFY(g.apply(source,std::make_shared<std::atomic_bool>(true)).isNull());
+    }
+    void manualGeometryHistoryProjectCopiesAndCropRemainIndependent() {
+        QTemporaryDir dir; QImage image(80,60,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto path=dir.filePath("source.png"); QVERIFY(image.save(path)); QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes=file.readAll(); file.close();
+        PhotoController c(nullptr); c.setGpuEnabled(false); QVERIFY(c.importFile(QUrl::fromLocalFile(path))); QTRY_VERIFY(c.previewReady() && !c.rendering());
+        const auto initial=c.editHistory().size();
+        for (double v : {.01,.08,.13}) QVERIFY(c.setGeometryAdjustment("perspectiveHorizontal",v)); c.finishInteraction();
+        QCOMPARE(c.editHistory().size(),initial+1);
+        for (const auto &p : CommandRegistry::geometryParameters()) { QVERIFY(c.setGeometryAdjustment(p.name,p.minimum/2)); c.finishInteraction(); }
+        auto saved=c.geometry(); QCOMPARE(saved["schema"].toInt(),3);
+        QVERIFY(!c.setGeometryAdjustment("redCa",2.01)); QCOMPARE(c.geometry(),saved);
+        c.setExactScopes(true); auto geometry=GeometryState::fromJson(QJsonObject::fromVariantMap(saved)); const auto size=geometry.correctedSize(image.size());
+        QTRY_COMPARE_WITH_TIMEOUT(c.scopesPixelCount(),quint64(size.width())*size.height(),10000);
+        QTRY_VERIFY(!c.rendering()); QVERIFY(c.beginCrop()); QTRY_VERIFY(!c.rendering()); QCOMPARE(c.gpuSource().size(),size);
+        QVERIFY(!c.setGeometryAdjustment("distortion",.1)); QVERIFY(c.applyCrop(.25,0,.5,1)); c.undo(); QCOMPARE(c.geometry(),saved);
+        c.setCropAspect(1.5); const auto crop=c.geometry();
+        const double expectedWidth=std::min(1.0,1.5*size.height()/size.width());
+        const double expectedHeight=std::min(1.0,double(size.width())/size.height()/1.5);
+        QCOMPARE(crop["width"].toDouble(),expectedWidth); QCOMPARE(crop["height"].toDouble(),expectedHeight); c.undo(); QCOMPARE(c.geometry(),saved);
+        const auto diagnostic=c.reportBug(); QVERIFY(!diagnostic.isEmpty());
+        const auto dependencies=QJsonDocument::fromJson(storedZipEntry(diagnostic,"performance.json")).object()["values"].toObject()["stage_dependencies"].toObject()["geometry"].toObject();
+        QCOMPARE(dependencies["settings"].toObject(),QJsonObject::fromVariantMap(saved)); QCOMPARE(dependencies["backend"].toString(),QString("cpu"));
+        QVERIFY(dependencies["corrections_active"].toBool()); QVERIFY(!dependencies["lens_profile"].toBool());
+        const auto outputs=QJsonDocument::fromJson(storedZipEntry(diagnostic,"stage_outputs.json")).object();
+        QCOMPARE(outputs["prepared_preview"].toObject()["width"].toInt(),size.width()); QVERIFY(QFile::remove(diagnostic));
+        QVERIFY(c.createVirtualCopy("Corrected")); QCOMPARE(c.geometry(),saved); c.resetGeometryCorrections(); QCOMPARE(c.geometry()["schema"].toInt(),1);
+        c.finishInteraction(); c.undo(); QCOMPARE(c.geometry(),saved); c.selectPhoto(0); QCOMPARE(c.geometry(),saved);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Corrected")); QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath()))); QCOMPARE(reopened.geometry(),saved);
+        reopened.selectPhoto(1); QCOMPARE(reopened.geometry(),saved); QVERIFY(reopened.canRedo()); reopened.redo(); QCOMPARE(reopened.geometry()["schema"].toInt(),1);
+        reopened.selectPhoto(0); QCOMPARE(reopened.geometry(),saved);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),bytes);
+    }
+    void manualGeometryCommandsAndSchemaRejectInvalidSnapshots() {
+        AdjustmentState state; state.geometry.straighten=5; state.geometry.crop={.1,.2,.6,.7}; state.geometry.quarterTurns=1;
+        for (const auto &p : CommandRegistry::geometryParameters()) {
+            QVERIFY(CommandRegistry::execute(state,{{"command","geometry.set"},{"parameter",p.name},{"value",p.maximum}}));
+            QCOMPARE(state.geometry.*p.member,p.maximum);
+            QVERIFY(GeometryState::validJson(state.geometry.toJson())); QCOMPARE(AdjustmentState::fromJson(state.toJson()).toJson(),state.toJson());
+            const auto before=state.toJson();
+            for (const QJsonValue &value : {QJsonValue(p.minimum-.001),QJsonValue(p.maximum+.001),QJsonValue("1"),QJsonValue()}) {
+                QVERIFY(!CommandRegistry::execute(state,{{"command","geometry.set"},{"parameter",p.name},{"value",value}})); QCOMPARE(state.toJson(),before);
+            }
+            auto json=state.geometry.toJson(); json.remove(p.name); QVERIFY(!GeometryState::validJson(json));
+            json=state.geometry.toJson(); json[p.name]=p.maximum+.001; QVERIFY(!GeometryState::validJson(json));
+        }
+        const auto before=state.toJson();
+        for (auto command : {QJsonObject{{"command","geometry.set"},{"parameter","unknown"},{"value",1}},
+                QJsonObject{{"command","geometry.set"},{"parameter","redCa"},{"value",1},{"extra",1}},QJsonObject{{"command","geometry.resetCorrections"},{"extra",1}}}) {
+            QVERIFY(!CommandRegistry::execute(state,command)); QCOMPARE(state.toJson(),before);
+        }
+        auto future=state.geometry.toJson(); future["schema"]=4; QVERIFY(!GeometryState::validJson(future));
+        QVERIFY(CommandRegistry::execute(state,{{"command","geometry.resetCorrections"}}));
+        QCOMPARE(state.geometry.toJson()["schema"].toInt(),2); QCOMPARE(state.geometry.straighten,5.0); QCOMPARE(state.geometry.crop,QRectF(.1,.2,.6,.7)); QCOMPARE(state.geometry.quarterTurns,1);
     }
     void straightenResamplesLinear16BitWithoutBlackCornersOrUpscaling() {
         QImage source(101,61,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
@@ -562,6 +721,7 @@ private slots:
         QTemporaryDir dir; QString error; const auto path = dir.filePath("photo.ARW.xmp");
         AdjustmentState state; state.exposure = .75; state.look.mode = "as-shot";
         state.geometry.crop = {.1,.2,.7,.6}; state.geometry.quarterTurns = 3; state.geometry.flipHorizontal = true; state.geometry.straighten=7.5;
+        state.geometry.perspectiveHorizontal=.1; state.geometry.distortion=-.15; state.geometry.redCa=.4; state.geometry.blueCa=-.6;
         CatalogTags tags; tags.keywords = {"A & B","旅行 <日本>"}; tags.albums = {"旅行"}; tags.label = "red";
         QVERIFY(CatalogTags::normalize(&tags.keywords,64));
         QVERIFY2(XmpSidecar::writeNew(path,state,tags,4,"reject",&error),qPrintable(error));

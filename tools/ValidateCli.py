@@ -37,7 +37,8 @@ def main():
             return process
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 12
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'hsl.set', 'curve.set', 'develop.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset'}
+        assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         commands = root / 'commands.json'
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
@@ -110,11 +111,32 @@ def main():
         result = json.loads(run('--commands', commands, source, straightened).stdout)
         assert struct.unpack('>II', straightened.read_bytes()[16:24]) == (2, 1)
         assert result['adjustments']['geometry']['schema'] == 2 and result['adjustments']['geometry']['straighten'] == 15
+        corrections = [{'command': 'geometry.set', 'parameter': key, 'value': value}
+                       for key, value in {'perspectiveHorizontal': .12, 'perspectiveVertical': -.08,
+                                          'distortion': .1, 'redCa': 1, 'blueCa': -1}.items()]
+        commands.write_text(json.dumps(corrections))
+        corrected = root / 'corrected.png'
+        result = json.loads(run('--commands', commands, source, corrected).stdout)
+        assert result['adjustments']['geometry']['schema'] == 3
+        assert all(result['adjustments']['geometry'][c['parameter']] == c['value'] for c in corrections)
+        width, height = struct.unpack('>II', corrected.read_bytes()[16:24])
+        assert 0 < width <= 4 and 0 < height <= 2 and corrected.read_bytes()[24] == 16
+        commands.write_text(json.dumps(corrections + [{'command': 'geometry.resetCorrections'}]))
+        reset = root / 'corrections-reset.png'
+        result = json.loads(run('--commands', commands, source, reset).stdout)
+        assert result['adjustments']['geometry']['schema'] == 1
+        assert struct.unpack('>II', reset.read_bytes()[16:24]) == (4, 2)
         for bad in [
             {'command': 'geometry.crop', 'x': .8, 'y': 0, 'width': .5, 'height': 1},
             {'command': 'geometry.rotate', 'quarterTurns': .5},
             {'command': 'geometry.straighten', 'degrees': 45.1},
             {'command': 'geometry.straighten', 'degrees': '15'},
+            {'command': 'geometry.set', 'parameter': 'perspectiveHorizontal', 'value': .401},
+            {'command': 'geometry.set', 'parameter': 'distortion', 'value': -.301},
+            {'command': 'geometry.set', 'parameter': 'redCa', 'value': 2.01},
+            {'command': 'geometry.set', 'parameter': 'blueCa', 'value': '1'},
+            {'command': 'geometry.set', 'parameter': 'unknown', 'value': 0},
+            {'command': 'geometry.resetCorrections', 'extra': 1},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
             {'command': 'hsl.set', 'band': 8, 'component': 'saturation', 'value': 25},
             {'command': 'curve.set', 'channel': 'red', 'point': -1, 'value': .6},
@@ -252,7 +274,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

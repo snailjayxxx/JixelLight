@@ -14,6 +14,7 @@ Rectangle {
     property bool mixerExpanded: false
     property bool curveExpanded: false
     property bool exifExpanded: false
+    property bool correctionsExpanded: false
     color: "#15191f"
     border.color: "#292f37"
 
@@ -25,6 +26,7 @@ Rectangle {
         property alias mixerExpanded: root.mixerExpanded
         property alias curveExpanded: root.curveExpanded
         property alias exifExpanded: root.exifExpanded
+        property alias correctionsExpanded: root.correctionsExpanded
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -168,7 +170,7 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true
                     enabled: root.controller.previewReady && !root.controller.cropEditing
-                    Label { text: root.t("拉直", "Straighten"); color: "#a3b2c1"; Layout.preferredWidth: 48 }
+                    Label { text: root.t("拉直", "Straighten"); color: "#a3b2c1"; Layout.preferredWidth: 70 }
                     Slider {
                         objectName: "straightenAngle"; Layout.fillWidth: true
                         from: -45; to: 45; stepSize: .1; value: Number(root.controller.geometry.straighten || 0)
@@ -181,6 +183,47 @@ Rectangle {
                 Label {
                     Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#738293"; font.pixelSize: 10
                     text: root.t("拉直自动收边；随后在校正画面上裁切。", "Straighten trims edges; crop the corrected image.")
+                }
+                ToolButton {
+                    objectName: "geometryCorrectionsToggle"; Layout.fillWidth: true
+                    text: (root.correctionsExpanded ? "▾ " : "▸ ") + root.t("透视 / 手动镜头校正（CPU）", "PERSPECTIVE / MANUAL LENS (CPU)")
+                    onClicked: root.correctionsExpanded = !root.correctionsExpanded
+                    font.bold: true
+                }
+                ColumnLayout {
+                    visible: root.correctionsExpanded; Layout.fillWidth: true; spacing: 3
+                    enabled: root.controller.previewReady && !root.controller.cropEditing
+                    Repeater {
+                        model: [
+                            { key: "perspectiveHorizontal", zh: "横向透视", en: "Horizontal", limit: .4, scale: 100, decimals: 1 },
+                            { key: "perspectiveVertical", zh: "纵向透视", en: "Vertical", limit: .4, scale: 100, decimals: 1 },
+                            { key: "distortion", zh: "畸变", en: "Distortion", limit: .3, scale: 100, decimals: 1 },
+                            { key: "redCa", zh: "红色色差", en: "Red CA", limit: 2, scale: 1, decimals: 2 },
+                            { key: "blueCa", zh: "蓝色色差", en: "Blue CA", limit: 2, scale: 1, decimals: 2 }
+                        ]
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Label { text: root.t(modelData.zh, modelData.en); color: "#a3b2c1"; Layout.preferredWidth: 66; font.pixelSize: 11 }
+                            Slider {
+                                objectName: "geometry_"+modelData.key; Layout.fillWidth: true
+                                from: -modelData.limit; to: modelData.limit; stepSize: modelData.scale===100 ? .001 : .01
+                                value: Number(root.controller.geometry[modelData.key] || 0)
+                                onMoved: root.controller.setGeometryAdjustment(modelData.key, Number(value.toFixed(modelData.scale===100 ? 3 : 2)))
+                                onPressedChanged: if (!pressed) root.controller.finishInteraction()
+                            }
+                            Label { text: (Number(root.controller.geometry[modelData.key] || 0)*modelData.scale).toFixed(modelData.decimals)+"%"; color: "#aeb9c7"; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
+                        }
+                    }
+                    Button {
+                        objectName: "resetGeometryCorrections"; Layout.fillWidth: true
+                        text: root.t("重置透视与镜头校正", "Reset perspective / lens")
+                        onClicked: { root.controller.finishInteraction(); root.controller.resetGeometryCorrections(); root.controller.finishInteraction() }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#738293"; font.pixelSize: 10
+                        text: root.t("手动校正，自动收边。红／蓝色差调整相对绿通道的径向倍率；不使用镜头配置文件。", "Manual correction with automatic edge trim. Red / blue CA sets radial magnification relative to green; no lens profile is applied.")
+                    }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {

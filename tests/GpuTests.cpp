@@ -130,6 +130,23 @@ private slots:
         QVERIFY(!render(image,ordinary,false).image.isNull());
         QVERIFY(!engine->lastProcessUsedCpuFallback());
     }
+    void cpuCorrectedGeometryFeedsGpuWithoutRelaxingParity() {
+        QImage source(131,97,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(2000+x*301,1000+y*503,3000+x*179+y*137,65535);
+        for (int mode=0;mode<5;++mode) {
+            AdjustmentState state; state.exposure=.4; state.temperature=15; state.saturation=12;
+            auto &g=state.geometry;
+            if (mode==0) g.perspectiveHorizontal=.15;
+            if (mode==1) g.perspectiveVertical=-.12;
+            if (mode==2) g.distortion=.2;
+            if (mode==3) { g.redCa=1.2; g.blueCa=-1.1; }
+            if (mode==4) { g.perspectiveHorizontal=.1; g.perspectiveVertical=-.08; g.distortion=-.15; g.redCa=.7; g.blueCa=-.6; g.straighten=5; g.crop={.1,.2,.7,.6}; g.quarterTurns=1; }
+            const auto prepared=g.apply(source); QVERIFY(!prepared.isNull());
+            for (auto space : {ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3,ColorManagement::OutputSpace::AdobeRgb,ColorManagement::OutputSpace::ProPhotoRgb})
+                verifyParity(prepared,state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,"CPU manual geometry -> GPU color");
+        }
+    }
     void cleanupTestCase() { engine.reset(); rhi.reset(); surface.reset(); }
     void pixelsAndHistogramMatchCpu() {
         // Retain the historical fixture as well as the explicitly ordered new

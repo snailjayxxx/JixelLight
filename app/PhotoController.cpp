@@ -132,7 +132,8 @@ void PhotoController::setCrop(double x, double y, double width, double height) {
 void PhotoController::setCropAspect(double aspect) {
     if (!hasImage() || m_loadedPreview.isNull() || !std::isfinite(aspect) || aspect <= 0) return;
     if (currentState().geometry.quarterTurns % 2) aspect = 1 / aspect;
-    const auto size=currentState().geometry.straightenedSize(m_loadedPreview.size());
+    const auto size=currentState().geometry.correctedSize(m_loadedPreview.size());
+    if (size.isEmpty()) return;
     const double original = double(size.width()) / size.height();
     const double width = std::min(1.0, aspect/original), height = std::min(1.0, original/aspect);
     setCrop((1-width)/2, (1-height)/2, width, height);
@@ -142,6 +143,22 @@ void PhotoController::setStraighten(double degrees) {
     auto *state=mutableCurrentState(); if (!state || state->geometry.straighten==degrees) return;
     if (!CommandRegistry::execute(*state,{{"command","geometry.straighten"},{"degrees",degrees}})) return;
     persistAndApply("geometry_straighten",{{"value",degrees}});
+}
+bool PhotoController::setGeometryAdjustment(const QString &parameter,double value) {
+    if (m_cropEditing || !GeometryState::validCorrection(parameter,value)) return false;
+    auto *state=mutableCurrentState(); if (!state) return false;
+    auto staged=*state;
+    if (!CommandRegistry::execute(staged,{{"command","geometry.set"},{"parameter",parameter},{"value",value}})) return false;
+    if (staged.geometry.toJson()==state->geometry.toJson()) return true;
+    *state=std::move(staged);
+    persistAndApply("geometry_correction",{{"parameter",parameter},{"value",value}}); return true;
+}
+void PhotoController::resetGeometryCorrections() {
+    if (m_cropEditing) return;
+    if (auto *state=mutableCurrentState(); state && state->geometry.hasCorrections()) {
+        CommandRegistry::execute(*state,{{"command","geometry.resetCorrections"}});
+        persistAndApply("geometry_corrections_reset");
+    }
 }
 void PhotoController::resetGeometry() {
     if (auto *state = mutableCurrentState()) { CommandRegistry::execute(*state,{{"command","geometry.reset"}}); persistAndApply("geometry_reset"); }
@@ -492,7 +509,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten") {
+    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
