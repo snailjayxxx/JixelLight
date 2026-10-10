@@ -144,6 +144,8 @@ jobs:
         run: |
           $process = Start-Process -FilePath ./build/bin/Release/JixelLight.exe -ArgumentList @('--smoke-report','gui-gpu.json','--screenshot','gui-gpu.png',"$env:RUNNER_TEMP/JixelLight-test.DNG") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw 'GUI Direct3D validation failed' }
+          python tools/ValidateDiagnostic.py ./build/bin/Release/JixelLight.exe --mode gpu
+          if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D diagnostic capture failed' }
       - name: GUI Metal integration
         if: runner.os == 'macOS'
         shell: bash
@@ -154,6 +156,7 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           "$APP/Contents/MacOS/JixelLight" --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/JixelLight-test.DNG"
+          python tools/ValidateDiagnostic.py "$APP/Contents/MacOS/JixelLight" --mode gpu
       - name: Synthetic CPU benchmark
         shell: bash
         run: |
@@ -190,6 +193,7 @@ jobs:
             display-color-gpu-validation.txt
             gui-*.json
             gui-*.png
+            diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
       - name: Deploy and validate Windows package
@@ -294,12 +298,16 @@ jobs:
           QSG_RHI_BACKEND: opengl
           LIBGL_ALWAYS_SOFTWARE: '1'
           JIXELLIGHT_REQUIRE_GPU: '1'
-        run: xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+        run: |
+          xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+          xvfb-run -a python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode gpu
       - name: GUI CPU fallback
         env:
           QT_QPA_PLATFORM: offscreen
           JIXELLIGHT_FORCE_CPU: '1'
-        run: ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+        run: |
+          ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+          python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode cpu
       - name: Print validation summaries
         if: always()
         run: |
@@ -319,4 +327,5 @@ jobs:
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
+            diagnostic-validation/
             raw-render-matrix.log

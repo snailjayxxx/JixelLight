@@ -37,8 +37,10 @@ int main(int argc, char *argv[]) {
     arguments.addHelpOption();arguments.addVersionOption();
     arguments.addPositionalArgument("photos", "Photographs to import", "[photos...]");
     arguments.addOption({"smoke-report", "Run deterministic GUI validation and write a JSON report", "file"});
+    arguments.addOption({"diagnostic-smoke-report", "Validate a frozen diagnostic snapshot using an owned small image", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
+    if (arguments.isSet("smoke-report") && arguments.isSet("diagnostic-smoke-report")) return 2;
 
     LoggingEngine::install();
     CrashReporter::install();
@@ -99,6 +101,10 @@ int main(int argc, char *argv[]) {
     if (arguments.isSet("smoke-report")) {
         if (!window || photos.isEmpty()) return 2;
         startSmokeRun(&controller,window,arguments.value("smoke-report"),arguments.value("screenshot"));
+    }
+    if (arguments.isSet("diagnostic-smoke-report")) {
+        if (!window || !photos.isEmpty()) return 2;
+        startDiagnosticSmokeRun(&controller,window,arguments.value("diagnostic-smoke-report"));
     }
     return app.exec();
 }

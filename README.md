@@ -183,7 +183,7 @@ Bug ZIP / Action Trace 当前覆盖：
 - Export ICC target / profile bytes / JPEG quality。
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
-- `stage_outputs.json`：源图、准备预览、CPU 输出指纹；九个 CPU 色彩阶段（含暗角）的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
+- `stage_outputs.json`：冻结文件、图像、参数、几何和统计版本；九个 CPU 色彩阶段（含暗角）的 FP32 RGB 哈希/范围、量化和 Sony 细节边界。交互式报告另外按需读回显示器 ICC 之前的 GPU 最终工作输出，记录 FP32 RGBA 指纹/范围、实际 GPU 或 CPU 上传来源；64 MiB 上限和3秒响应期限，失败仍生成 CPU 报告。同步 `reportBug()` 保留 CPU reference。正常编辑仅读回16,400字节直方图，RAW 输入仍为 RGBA64，内部 GPU 阶段尚未捕获。
 - `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存、16 MiB 可选示波器缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时和示波器共享渲染次数。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算。直方图缓存不保留图像帧；示波器缓存不保留源图或已调色照片。
 - 手动几何在 `geometry_corrections` 记录 CPU 请求耗时和五项参数；`stage_dependencies.geometry` 记录完整参数、操作顺序、取样与收边方法，明确没有应用镜头配置文件。校正后的准备预览同时送往 CPU/GPU 调色；几何重采样本身仍是 CPU。
 

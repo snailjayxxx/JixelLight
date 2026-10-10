@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from ValidateDiagnostic import validate_diagnostic
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -99,6 +100,7 @@ def main() -> int:
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)
+            results.append(validate_diagnostic(executable, env, home, reports, mode))
     sony_check = None
     if args.sony_probe:
         probe = args.sony_probe.resolve()

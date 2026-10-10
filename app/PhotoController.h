@@ -124,6 +124,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
     Q_PROPERTY(qulonglong renderRevision READ renderRevision NOTIFY gpuFrameChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
+    Q_PROPERTY(bool diagnosticBusy READ diagnosticBusy NOTIFY diagnosticChanged)
 
 public:
     QVariantMap sonyLook() const { return m_currentMetadata.value("sonyLook").toMap(); }
@@ -188,6 +189,11 @@ public:
     void gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels);
     void gpuFailed(const QString &message);
     void setDisplayColorLut(const QImage &atlas, const QString &key);
+    bool diagnosticBusy() const { return m_diagnosticBusy; }
+    quint64 diagnosticRequestId() const;
+    quint64 diagnosticRevision() const;
+    qint64 diagnosticSourceKey() const;
+    void gpuDiagnosticReady(quint64 request, QJsonObject output);
     Q_INVOKABLE void setGpuEnabled(bool enabled);
     Q_INVOKABLE void setExactScopes(bool enabled);
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
@@ -313,9 +319,12 @@ public:
     Q_INVOKABLE void resetCurve(int channel);
     Q_INVOKABLE bool exportCurrent(const QUrl &destination, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92);
     Q_INVOKABLE QString reportBug();
+    Q_INVOKABLE qulonglong requestBugReport();
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void diagnosticChanged();
+    void diagnosticFinished(const QString &path);
     void adjustmentClipboardChanged();
     void copyImportChanged();
     void importNamePreviewChanged();
@@ -334,6 +343,27 @@ signals:
     void exportFinished(int succeeded, int failed, bool cancelled);
 
 private:
+    struct BugSnapshot {
+        quint64 request = 0, revision = 0, photoEpoch = 0;
+        bool requestGpu = false;
+        PrepareRequest prepare;
+        ProcessingPlan plan, visiblePlan;
+        QImage gpuSource;
+        QRectF gpuFrameRect;
+        AdjustmentState state;
+        QString file, project, pipeline;
+        double shadowClip = 0, highlightClip = 0;
+        QJsonObject scopeContext, performanceValues;
+    };
+    BugSnapshot freezeBugSnapshot() const;
+    QString createBugReport(const BugSnapshot &snapshot, QJsonObject gpuOutput);
+    quint64 startBugReport(bool showDialog);
+    void finishBugReport(QJsonObject gpuOutput);
+    void showBugReport(const QString &path);
+    std::unique_ptr<BugSnapshot> m_pendingBug;
+    quint64 m_nextDiagnosticRequest = 0;
+    bool m_diagnosticBusy = false, m_diagnosticDialog = false;
+    QTimer m_diagnosticTimer;
     struct PhotoEntry {
         QString path; QString name; AdjustmentState state; bool raw = false;
         int rating = 0; QString flag = QStringLiteral("none");

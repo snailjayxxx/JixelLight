@@ -73,6 +73,52 @@ bool clickSlider(QQuickWindow *window,QQuickItem *item,double fraction) {
 }
 }
 
+void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath) {
+    struct State { QElapsedTimer elapsed; int phase=0; quint64 revision=0; qint64 sourceKey=0; QSize size; QJsonObject adjustments; bool finished=false; };
+    const auto state=std::make_shared<State>();state->elapsed.start();
+    const auto fixture=std::make_shared<QTemporaryDir>();
+    auto *timer=new QTimer(controller);timer->setInterval(50);
+    const auto finish=[=](const QString &path,const QString &error) {
+        if(state->finished)return;
+        state->finished=true;timer->stop();
+        const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
+        const bool passed=!path.isEmpty()&&error.isEmpty()&&state->elapsed.elapsed()<15000&&(!gpuRequired||controller->gpuActive());
+        const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+            {"engine",ProcessingPlan::EngineVersion},{"elapsed_ms",state->elapsed.elapsed()},
+            {"gpu_active",controller->gpuActive()},{"backend",controller->processingBackend()},
+            {"bundle",path},{"error",error},{"parameter_revision",qint64(state->revision)},
+            {"source_cache_key",QString::number(state->sourceKey)},
+            {"width",state->size.width()},{"height",state->size.height()},{"adjustments",state->adjustments}};
+        QSaveFile output(reportPath);
+        const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
+        const bool saved=output.open(QIODevice::WriteOnly)&&output.write(data)==data.size()&&output.commit();
+        QCoreApplication::exit(passed&&saved?0:1);
+    };
+    QObject::connect(controller,&PhotoController::diagnosticFinished,timer,[=](const QString &path){finish(path,{});});
+    QObject::connect(timer,&QTimer::timeout,controller,[=] {
+        if(!fixture->isValid()){finish({},QStringLiteral("Diagnostic fixture unavailable"));return;}
+        if(state->elapsed.elapsed()>=15000){finish({},QStringLiteral("Diagnostic integration timed out"));return;}
+        const bool ready=controller->previewReady()&&!controller->loading()&&!controller->rendering()&&!controller->gpuSource().isNull();
+        if(!ready)return;
+        if(state->phase==0) {
+            controller->setExposure(.4);controller->setVignetteAmount(-.75);state->phase=1;
+        } else if(state->phase==1) {
+            if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")&&!controller->gpuActive())return;
+            state->revision=controller->renderRevision();state->sourceKey=controller->gpuSource().cacheKey();
+            state->size=controller->gpuSource().size();state->adjustments=controller->gpuPlan(true).state.toJson();
+            state->phase=2;
+            if(!controller->requestBugReport())finish({},QStringLiteral("Diagnostic request refused"));
+        }
+    });
+    window->setProperty("workspaceIndex",1);
+    QImage image(64,48,QImage::Format_RGB32);
+    for(int y=0;y<48;++y)for(int x=0;x<64;++x)image.setPixel(x,y,qRgb(32+x*3,16+y*4,48+(x+y)%128));
+    const QString source=fixture->filePath("diagnostic-owned.png");
+    if(!fixture->isValid()||!image.save(source)||!controller->importFile(QUrl::fromLocalFile(source)))
+        finish({},QStringLiteral("Cannot create diagnostic fixture"));
+    else timer->start();
+}
+
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
     struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();

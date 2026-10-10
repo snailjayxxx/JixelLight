@@ -357,7 +357,8 @@ ApplicationWindow {
                 onActivated: photoController.setLanguage(currentIndex === 0 ? "zh_CN" : "en_US")
             }
             ToolButton {
-                text: window.t("🐞 报告问题", "🐞 Report")
+                text: photoController.diagnosticBusy ? window.t("诊断中…", "Capturing…") : window.t("🐞 报告问题", "🐞 Report")
+                enabled: !photoController.diagnosticBusy
                 onClicked: photoController.reportBugWithDialog()
             }
         }

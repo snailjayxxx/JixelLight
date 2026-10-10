@@ -7,6 +7,7 @@
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
@@ -22,6 +23,7 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUuid>
@@ -44,6 +46,10 @@ PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *pare
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
     initializeLookJobs();
+    m_diagnosticTimer.setSingleShot(true);
+    connect(&m_diagnosticTimer, &QTimer::timeout, this, [this] {
+        if (m_pendingBug) finishBugReport({{"available", false}, {"error", "GPU diagnostic readback timed out"}});
+    });
 }
 
 QString PhotoController::uiText(const QString &zh, const QString &en) const {
@@ -1093,56 +1099,138 @@ bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey
 }
 void PhotoController::cancelExport() { m_exportQueue->cancel(); }
 
-QString PhotoController::reportBug() {
-    ActionTrace::instance().record("bug_snapshot_requested", {{"file", currentFile()}, {"pipeline", pipelineDescription()}});
-    // Explicit, one-off reference capture. Never label a previous revision's
-    // asynchronously displayed pixels as the current parameters.
-    QImage capture;
-    PrepareRequest stageRequest;
-    stageRequest.image = m_fullSource.isNull() ? m_loadedPreview : m_fullSource;
-    stageRequest.viewport = m_viewport;
-    stageRequest.zoom = m_zoom; stageRequest.centerX = m_centerX; stageRequest.centerY = m_centerY;
-    stageRequest.fullResolution = m_sourceIsFull;
-    stageRequest.geometry = currentState().geometry;
-    // Geometry may still be preparing asynchronously; capture the current
-    // snapshot rather than labeling the previous viewport as this revision.
-    const auto diagnosticPreview = preparePreview(stageRequest, {});
-    auto diagnosticPlan=gpuPlan(true); diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
-    const auto colorCapture=ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal,diagnosticPlan);
-    capture=colorCapture.image;
+PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
+    BugSnapshot snapshot;
+    snapshot.revision = m_requestedRevision; snapshot.photoEpoch = m_photoEpoch;
+    snapshot.state = currentState();
+    snapshot.file = currentFile(); snapshot.project = projectPath(); snapshot.pipeline = pipelineDescription();
+    snapshot.prepare.image = m_fullSource.isNull() ? m_loadedPreview : m_fullSource;
+    snapshot.prepare.viewport = m_viewport;
+    snapshot.prepare.zoom = m_zoom; snapshot.prepare.centerX = m_centerX; snapshot.prepare.centerY = m_centerY;
+    snapshot.prepare.fullResolution = m_sourceIsFull; snapshot.prepare.geometry = snapshot.state.geometry;
+    snapshot.plan = gpuPlan(true); snapshot.visiblePlan = gpuPlan();
+    snapshot.gpuSource = gpuSource(); snapshot.gpuFrameRect = m_previewFrameRect;
+    snapshot.shadowClip = m_scopes.shadowClipPercent; snapshot.highlightClip = m_scopes.highlightClipPercent;
+    snapshot.scopeContext = {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
+        {"parameter_revision", qint64(snapshot.revision)}, {"statistics_revision", qint64(m_scopesRevision)},
+        {"is_current", m_scopesRevision == snapshot.revision}, {"viewport_preparing", m_preparing}};
+    auto &values = snapshot.performanceValues;
+    values["stage_dependencies"] = StageGraph::describe(m_loadedKey, snapshot.prepare, snapshot.state, currentIsRaw(), rawBaseExposureStops());
+    if (m_renderCache) values["render_cache"] = m_renderCache->snapshot();
+    if (m_fullScopesCache) values["full_scopes_cache"] = m_fullScopesCache->snapshot();
+    if (m_scopePlotCache) values["scope_plot_cache"] = m_scopePlotCache->snapshot();
+    values["controller_state"] = QJsonObject{{"requested_revision", qint64(snapshot.revision)},
+        {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()},
+        {"backend", processingBackend()}, {"loading", m_loading}, {"photo_epoch", qint64(snapshot.photoEpoch)}};
+    values["scope_plot"] = QJsonObject{{"mode", m_scopeMode}, {"revision", qint64(m_plotRevision)},
+        {"pixels", qint64(m_scopePlot.pixels)}, {"full_resolution", m_plotFull}, {"is_current", scopePlotCurrent()},
+        {"error", m_scopePlot.error}, {"encoding", "sRGB encoded, before monitor ICC"}};
+    values["look_context"] = QJsonObject::fromVariantMap({{"asShot", sonyLook()}, {"current", lookState()},
+        {"reference", m_referenceInfo}, {"calibration", m_calibrationReport}});
+    return snapshot;
+}
+
+QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObject gpuOutput) {
+    // Both the CPU oracle and the bundle metadata use the initial request,
+    // even if a photo, viewport, or parameter changes while the GPU responds.
+    const auto diagnosticPreview = preparePreview(snapshot.prepare, {});
+    auto diagnosticPlan = snapshot.plan; diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
+    const auto colorCapture = ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal, diagnosticPlan);
+    const QImage capture = colorCapture.image;
     QElapsedTimer hashTimer; hashTimer.start();
-    const QJsonObject stageOutputs{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
-        {"parameter_revision",qint64(m_requestedRevision)},{"source_is_full_resolution",m_sourceIsFull},
-        {"source",StageGraph::outputFingerprint(stageRequest.image)},
+    QJsonObject gpuContext{{"source_cache_key", QString::number(snapshot.gpuSource.cacheKey())},
+        {"frame_rect", QJsonArray{snapshot.gpuFrameRect.x(), snapshot.gpuFrameRect.y(), snapshot.gpuFrameRect.width(), snapshot.gpuFrameRect.height()}},
+        {"source", FloatFrameFingerprint::capture(snapshot.gpuSource)}};
+    if (gpuOutput.value("available").toBool()) {
+        const QImage reference = ImagePipeline::processWithPlan(ImagePipeline::rgba64Source(snapshot.gpuSource), snapshot.visiblePlan);
+        gpuContext["cpu_reference"] = FloatFrameFingerprint::capture(ImagePipeline::floatSource(reference));
+        gpuContext["reference_storage"] = "RGBA64 CPU oracle converted to FP32; identical frozen GPU input and color plan";
+    }
+    gpuOutput["request_id"] = QString::number(snapshot.request);
+    const QJsonObject stageOutputs{{"schema",2},{"engine",ProcessingPlan::EngineVersion},
+        {"parameter_revision",qint64(snapshot.revision)},{"photo_epoch",qint64(snapshot.photoEpoch)},
+        {"source_is_full_resolution",snapshot.prepare.fullResolution},
+        {"source",StageGraph::outputFingerprint(snapshot.prepare.image)},
         {"prepared_preview",StageGraph::outputFingerprint(diagnosticPreview.normal)},
         {"prepared_frame_rect",QJsonArray{diagnosticPreview.frameRect.x(),diagnosticPreview.frameRect.y(),diagnosticPreview.frameRect.width(),diagnosticPreview.frameRect.height()}},
         {"cpu_srgb_output",StageGraph::outputFingerprint(capture)},
         {"color_stages",colorCapture.stages},
+        {"gpu_working_output",gpuOutput},{"gpu_context",gpuContext},
         {"monitor_icc","excluded; hashes precede screen presentation"},
-        {"note","RGBA64/proxy plus CPU color boundaries; float RAW and GPU stage capture remain unavailable"}};
-    PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(stageRequest.image.sizeInBytes())}});
-    PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
-    if (m_renderCache) PerformanceRecorder::value("render_cache", m_renderCache->snapshot());
-    if (m_fullScopesCache) PerformanceRecorder::value("full_scopes_cache", m_fullScopesCache->snapshot());
-    if (m_scopePlotCache) PerformanceRecorder::value("scope_plot_cache", m_scopePlotCache->snapshot());
-    PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
-    PerformanceRecorder::value("scope_plot", QJsonObject{{"mode",m_scopeMode},{"revision",qint64(m_plotRevision)},
-        {"pixels",qint64(m_scopePlot.pixels)},{"full_resolution",m_plotFull},{"is_current",scopePlotCurrent()},
-        {"error",m_scopePlot.error},{"encoding","sRGB encoded, before monitor ICC"}});
-    PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
-    const QString path = DiagnosticBundle::create(capture, currentFile(), projectPath(), currentState(),
-        m_scopes.shadowClipPercent, m_scopes.highlightClipPercent, pipelineDescription(),
-        {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
-         {"parameter_revision", qint64(m_requestedRevision)}, {"statistics_revision", qint64(m_scopesRevision)},
-         {"is_current", m_scopesRevision == m_requestedRevision}, {"viewport_preparing", m_preparing}},stageOutputs);
+        {"note","RGBA64/proxy and CPU color boundaries; explicit GPU final working-output fingerprint only; float RAW and internal GPU boundaries remain unavailable"}};
+    PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(snapshot.prepare.image.sizeInBytes())}});
+    for (auto it = snapshot.performanceValues.begin(); it != snapshot.performanceValues.end(); ++it)
+        PerformanceRecorder::value(it.key(), it.value());
+    const QString path = DiagnosticBundle::create(capture, snapshot.file, snapshot.project, snapshot.state,
+        snapshot.shadowClip, snapshot.highlightClip, snapshot.pipeline, snapshot.scopeContext, stageOutputs);
     ActionTrace::instance().record("bug_snapshot_created", {{"path", path}, {"ok", !path.isEmpty()}});
     setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"), QStringLiteral("Diagnostic bundle failed"))
                              : uiText(QStringLiteral("诊断包：") + path, QStringLiteral("Diagnostic bundle: ") + path));
     return path;
 }
 
+QString PhotoController::reportBug() {
+    ActionTrace::instance().record("bug_snapshot_requested", {{"file", currentFile()}, {"pipeline", pipelineDescription()}});
+    return createBugReport(freezeBugSnapshot(), {{"available", false}, {"error", "Synchronous report uses the CPU reference; GPU readback requires an asynchronous request"}});
+}
+
+quint64 PhotoController::diagnosticRequestId() const {
+    return m_pendingBug && m_pendingBug->requestGpu ? m_pendingBug->request : 0;
+}
+quint64 PhotoController::diagnosticRevision() const { return m_pendingBug ? m_pendingBug->revision : 0; }
+qint64 PhotoController::diagnosticSourceKey() const { return m_pendingBug ? m_pendingBug->gpuSource.cacheKey() : 0; }
+
+quint64 PhotoController::startBugReport(bool showDialog) {
+    if (m_closing || m_diagnosticBusy) return 0;
+    m_pendingBug = std::make_unique<BugSnapshot>(freezeBugSnapshot());
+    m_pendingBug->request = ++m_nextDiagnosticRequest;
+    m_pendingBug->requestGpu = m_gpuEnabled && !m_loading && !m_preparing && !m_pendingBug->gpuSource.isNull();
+    const quint64 request = m_pendingBug->request;
+    m_diagnosticBusy = true; m_diagnosticDialog = showDialog;
+    ActionTrace::instance().record("bug_snapshot_requested", {{"file", m_pendingBug->file}, {"request", QString::number(request)}});
+    const QPointer<PhotoController> guard(this);
+    emit diagnosticChanged();
+    if (!guard || !m_pendingBug) return request;
+    if (m_pendingBug->requestGpu) {
+        setStatus(uiText(QStringLiteral("正在采集诊断快照…"), QStringLiteral("Capturing diagnostic snapshot…")));
+        if (!guard || !m_pendingBug) return request;
+        m_diagnosticTimer.start(3000);
+        emit gpuFrameChanged();
+    } else finishBugReport({{"available", false}, {"error", "GPU preview is disabled or not ready for this snapshot"}});
+    return request;
+}
+
+qulonglong PhotoController::requestBugReport() { return startBugReport(false); }
+
+void PhotoController::gpuDiagnosticReady(quint64 request, QJsonObject output) {
+    if (m_closing || !m_pendingBug || request != m_pendingBug->request) return;
+    if (output.value("available").toBool()
+        && (output.value("parameter_revision").toInteger(-1) != qint64(m_pendingBug->revision)
+            || output.value("source_cache_key").toString() != QString::number(m_pendingBug->gpuSource.cacheKey())))
+        output = {{"available", false}, {"error", "GPU response does not match the frozen revision and source"}};
+    finishBugReport(std::move(output));
+}
+
+void PhotoController::finishBugReport(QJsonObject gpuOutput) {
+    if (m_closing || !m_pendingBug) return;
+    m_diagnosticTimer.stop();
+    const auto snapshot = std::move(m_pendingBug);
+    const bool dialog = m_diagnosticDialog;
+    const QPointer<PhotoController> guard(this);
+    const QString path = createBugReport(*snapshot, std::move(gpuOutput));
+    if (!guard) return;
+    m_diagnosticBusy = false; m_diagnosticDialog = false;
+    emit diagnosticChanged();
+    if (!guard) return;
+    emit diagnosticFinished(path);
+    if (guard && dialog) showBugReport(path);
+}
+
 void PhotoController::reportBugWithDialog() {
-    const QString path = reportBug();
+    startBugReport(true);
+}
+
+void PhotoController::showBugReport(const QString &path) {
     if (path.isEmpty()) {
         QMessageBox::critical(nullptr,
             uiText(QStringLiteral("JixelLight 诊断"), QStringLiteral("JixelLight Diagnostics")),

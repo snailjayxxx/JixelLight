@@ -7,6 +7,8 @@
 #include <cstring>
 #include <cmath>
 #include "core/gpu/GpuEngine.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
@@ -21,10 +23,10 @@ private:
     std::unique_ptr<QRhi> rhi;
     std::unique_ptr<GpuEngine> engine;
     quint64 revision=0;
-    struct Result { QImage image; ScopesResult histogram; };
+    struct Result { QImage image; ScopesResult histogram; QJsonObject diagnostic, independentFingerprint; };
     Result render(const QImage &input,const AdjustmentState &state,bool statistics=true,
                   ImagePipeline::InputEncoding encoding=ImagePipeline::InputEncoding::LinearProPhoto,
-                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb,const QRectF &frameRect={0,0,1,1}) {
+                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb,const QRectF &frameRect={0,0,1,1},bool diagnostic=false) {
         QRhiCommandBuffer *cb=nullptr;
         if (rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess) return {};
         QByteArray counts;
@@ -32,6 +34,10 @@ private:
         const auto callback=statistics ? GpuEngine::HistogramReady([&](quint64,QByteArray data,quint64){ counts=std::move(data); }) : GpuEngine::HistogramReady{};
         auto plan=ProcessingPlan::compile(state,encoding,output); plan.setFrameRect(frameRect);
         const bool ok=engine->process(cb,floatImage,plan,++revision,callback,true);
+        QJsonObject captured;
+        if (ok && diagnostic && !engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){captured=std::move(value);})) {
+            rhi->endOffscreenFrame(); rhi->finish(); return {};
+        }
         QRhiReadbackResult readback; bool done=false;
         if (ok) {
             readback.completed=[&] { done=true; };
@@ -47,7 +53,8 @@ private:
         for(qsizetype i=0;i<readback.data.size()/qsizetype(sizeof(float));++i)
             if(!std::isfinite(values[i])) { qWarning()<<"Non-finite GPU result at"<<i;return {}; }
         QImage image(reinterpret_cast<const uchar *>(readback.data.constData()),input.width(),input.height(),input.width()*16,QImage::Format_RGBA32FPx4);
-        return {ImagePipeline::rgba64Source(image),ScopesEngine::fromGpu(counts,quint64(input.width())*input.height())};
+        return {ImagePipeline::rgba64Source(image),ScopesEngine::fromGpu(counts,quint64(input.width())*input.height()),
+                captured,diagnostic?FloatFrameFingerprint::capture(image):QJsonObject{}};
     }
     void verifyParity(const QImage &input,const AdjustmentState &state,
                       ImagePipeline::InputEncoding encoding,ColorManagement::OutputSpace space,
@@ -114,6 +121,67 @@ private slots:
         }
         engine=std::make_unique<GpuEngine>(rhi.get());
         qInfo()<<engine->backendName();
+    }
+    void diagnosticCaptureMatchesIndependentReadbackAndNamesCpuFallback() {
+        QImage source(23,19,QImage::Format_RGBA64);
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(x*2341,y*3127,12345,(x+y)%2?23456:65535);
+        const bool fallback=rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2;
+        for (int mode=0;mode<3;++mode) {
+            AdjustmentState state; state.exposure=.3; state.vignetteAmount=-1.5;
+            if(mode==1){state.hue=-23;state.hslSaturation[5]=-25;}
+            if(mode==2){state.look.mode="manual";state.look.code="FL";state.look.parameters={{"sharpness",3},{"clarity",2}};}
+            const auto space=mode==2?ColorManagement::OutputSpace::DisplayP3:ColorManagement::OutputSpace::SRgb;
+            const auto result=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,space,{.1,.2,.7,.6},true);
+            QVERIFY(!result.image.isNull()); QVERIFY(result.diagnostic["available"].toBool());
+            for(auto it=result.independentFingerprint.begin();it!=result.independentFingerprint.end();++it)
+                QCOMPARE(result.diagnostic[it.key()],it.value());
+            QCOMPARE(result.diagnostic["parameter_revision"].toInteger(),qint64(revision));
+            QCOMPARE(result.diagnostic["output_space"].toString(),ColorManagement::key(space));
+            QCOMPARE(result.diagnostic["producer"].toString(),QString(mode==1&&fallback?"cpu-reference-upload":"gpu-compute"));
+            QVERIFY(!result.diagnostic["monitor_icc"].toBool());
+            QCOMPARE(result.histogram.pixelCount,quint64(source.width()*source.height()));
+        }
+    }
+    void diagnosticRefusalsDoNotPoisonRenderingOrUploadSource() {
+        QImage source(17,13,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.2,.3,.4));
+        auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
+        QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        QVERIFY(engine->process(cb,source,plan,++revision,{}));
+        const auto uploads=engine->sourceUploads();QString error;QJsonObject output;
+        QVERIFY(!engine->captureWorkingFrame(cb,revision+1,[&](QJsonObject){},&error));QVERIFY(!error.isEmpty());
+        QVERIFY(!engine->captureWorkingFrame(cb,revision,[&](QJsonObject){},&error,17*13*16-1));
+        QVERIFY(!engine->captureWorkingFrame(nullptr,revision,[&](QJsonObject){},&error));
+        QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){output=std::move(value);},&error));QVERIFY(error.isEmpty());
+        QVERIFY(!engine->captureWorkingFrame(cb,revision,[&](QJsonObject){},&error));
+        QCOMPARE(engine->sourceUploads(),uploads);QVERIFY(engine->error().isEmpty());
+        rhi->endOffscreenFrame();rhi->finish();QVERIFY(output["available"].toBool());QVERIFY(!engine->hasPendingReadback());
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QByteArray counts;
+        QVERIFY(engine->process(cb,source,plan,revision,[&](quint64,QByteArray bytes,quint64){counts=std::move(bytes);},true));
+        rhi->endOffscreenFrame();rhi->finish();QCOMPARE(counts.size(),HistogramCounts::GpuWords*int(sizeof(quint32)));
+        QCOMPARE(engine->sourceUploads(),uploads);
+    }
+    void diagnosticReadbackSurvivesTeardownAndIgnoresDisplayLut() {
+        QImage source(11,7,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.3,.4,.5));
+        auto first=render(source,{},false,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,{0,0,1,1},true);
+        QVERIFY(first.diagnostic["available"].toBool());
+        QImage black(33*33,33,QImage::Format_RGBA32FPx4);black.fill(Qt::black);
+        engine->setDisplayColorLut(black,"diagnostic-black-monitor","test monitor");
+        std::unique_ptr<QRhiTexture> color(rhi->newTexture(QRhiTexture::RGBA8,source.size(),1,QRhiTexture::RenderTarget|QRhiTexture::UsedAsTransferSource));
+        QVERIFY(color->create());
+        std::unique_ptr<QRhiTextureRenderTarget> target(rhi->newTextureRenderTarget({QRhiColorAttachment(color.get())}));
+        std::unique_ptr<QRhiRenderPassDescriptor> pass(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());QVERIFY(target->create());
+        QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
+        QVERIFY(engine->process(cb,source,plan,++revision,{}));QJsonObject second;
+        QVERIFY(engine->draw(cb,target.get()));
+        QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){second=std::move(value);}));
+        rhi->endOffscreenFrame();engine.reset(); // Destruction must drain a still-owned result.
+        QVERIFY(second["available"].toBool());QCOMPARE(second["pixel_sha256"],first.diagnostic["pixel_sha256"]);
+        engine=std::make_unique<GpuEngine>(rhi.get());
+        QImage resized(5,3,QImage::Format_RGBA32FPx4);resized.fill(Qt::gray);
+        QVERIFY(!render(resized,{}).image.isNull());
     }
     void numericSafetyFallbackIsScoped() {
         QImage image(32,24,QImage::Format_RGBA64);

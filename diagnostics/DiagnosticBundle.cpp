@@ -51,7 +51,7 @@ QString DiagnosticBundle::create(const QImage &preview, const QString &currentFi
     manifest["scopes"] = scopes;
     manifest["logs_flushed"] = logsFlushed;
     manifest["log_lines_dropped"] = qint64(LoggingEngine::droppedLines());
-    manifest["preview_capture"] = QStringLiteral("CPU reference of current parameters; not a GPU screen capture");
+    manifest["preview_capture"] = QStringLiteral("CPU reference of frozen parameters; GPU working-output fingerprint is separate from current_preview.png");
     if (!stageOutputs.isEmpty()) manifest["stage_outputs"] = stageOutputs;
     bool written = zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
     written &= zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));

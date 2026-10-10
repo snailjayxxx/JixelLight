@@ -6,6 +6,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QJsonDocument>
+#include <QSettings>
 #include "core/project/ProjectDatabase.h"
 #include <QImageReader>
 #include <QRgba64>
@@ -18,6 +19,8 @@
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <limits>
 
 #include "app/PhotoController.h"
 #include "core/color/ColorManagement.h"
@@ -27,6 +30,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
@@ -1765,6 +1769,49 @@ private slots:
         QVERIFY(!StageGraph::outputFingerprint({}).value("available").toBool());
     }
 
+    void floatFrameFingerprintPreservesBitsAndIgnoresPaddingAndIcc() {
+        QByteArray a(96, '\0'), b(96, '\xff');
+        const std::array<float,16> values{-.25f,1.5f,2.75f,1, 0,.5f,4,0, -.5f,2,-1,.25f, .25f,1,3,.75f};
+        for (int y=0;y<2;++y) {
+            std::memcpy(a.data()+y*48,values.data()+y*8,32);
+            std::memcpy(b.data()+y*48,values.data()+y*8,32);
+        }
+        QImage first(reinterpret_cast<uchar *>(a.data()),2,2,48,QImage::Format_RGBA32FPx4);
+        QImage second(reinterpret_cast<uchar *>(b.data()),2,2,48,QImage::Format_RGBA32FPx4);
+        const auto result=FloatFrameFingerprint::capture(first);
+        QVERIFY(result["available"].toBool()); QCOMPARE(result["bytes"].toInteger(),64);
+        QCOMPARE(result,FloatFrameFingerprint::capture(second));
+        QCOMPARE(result["ranges_rgba"].toArray(),(QJsonArray{QJsonArray{-.5,.25},QJsonArray{.5,2},QJsonArray{-1,4},QJsonArray{0,1}}));
+        QCOMPARE(result["nonfinite_rgba"].toArray(),(QJsonArray{0,0,0,0}));
+        second.setColorSpace(QColorSpace::AdobeRgb); QCOMPARE(result,FloatFrameFingerprint::capture(second));
+        float value=std::nextafter(1.5f,2.f); std::memcpy(b.data()+4,&value,4);
+        QVERIFY(result["pixel_sha256"]!=FloatFrameFingerprint::capture(second)["pixel_sha256"]);
+        value=-0.f; std::memcpy(b.data()+16,&value,4); // Equal numeric zero, distinct IEEE bits.
+        std::memcpy(a.data()+4,b.constData()+4,4);
+        QVERIFY(FloatFrameFingerprint::capture(first)["pixel_sha256"]!=FloatFrameFingerprint::capture(second)["pixel_sha256"]);
+    }
+
+    void floatFrameFingerprintReportsNonfiniteAndEnforcesBudget() {
+        QImage frame(1,2,QImage::Format_RGBA32FPx4);
+        const float nan=std::numeric_limits<float>::quiet_NaN(), inf=std::numeric_limits<float>::infinity();
+        const std::array<float,8> values{nan,-inf,1,0, inf,.5f,nan,1};
+        std::memcpy(frame.bits(),values.data(),32);
+        const auto result=FloatFrameFingerprint::capture(frame,32);
+        QVERIFY(result["available"].toBool());
+        QCOMPARE(result["nonfinite_rgba"].toArray(),(QJsonArray{2,1,1,0}));
+        const auto ranges=result["ranges_rgba"].toArray();
+        QVERIFY(ranges[0].toArray()[0].isNull()); QVERIFY(ranges[0].toArray()[1].isNull());
+        QCOMPARE(ranges[1].toArray(),(QJsonArray{.5,.5})); QCOMPARE(ranges[2].toArray(),(QJsonArray{1,1}));
+        QVERIFY(!FloatFrameFingerprint::capture(frame,31)["available"].toBool());
+        QVERIFY(!FloatFrameFingerprint::capture(frame,-1)["available"].toBool());
+        QVERIFY(!FloatFrameFingerprint::capture({})["available"].toBool());
+        QVERIFY(!FloatFrameFingerprint::capture(frame.convertToFormat(QImage::Format_RGBA64))["available"].toBool());
+        // Different NaN payloads must not collapse into the same fingerprint.
+        const auto before=result["pixel_sha256"]; quint32 payload=0x7fc01234;
+        std::memcpy(frame.bits(),&payload,4);
+        QVERIFY(before!=FloatFrameFingerprint::capture(frame)["pixel_sha256"]);
+    }
+
     void colorStageCaptureMatchesNormalRenderingAcrossPlans() {
         QImage source(13,7,QImage::Format_RGBA64);
         for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
@@ -1937,6 +1984,85 @@ private slots:
         QCOMPARE(geometry.value("color_stages").toObject().value("detail_output"),geometry.value("cpu_srgb_output"));
         QImage capture; QVERIFY(capture.loadFromData(storedZipEntry(cropped,"current_preview.png"),"PNG"));
         QCOMPARE(StageGraph::outputFingerprint(capture).value("pixel_sha256"),geometry.value("cpu_srgb_output").toObject().value("pixel_sha256"));
+    }
+
+    void controllerAsyncDiagnosticFreezesPhotoParametersAndRejectsOldRequests() {
+        // Delivery ownership only: the mandatory QRhi suite proves real readback.
+        const auto forced=qgetenv("JIXELLIGHT_FORCE_CPU");
+        const auto enabled=QSettings().value("performance/gpuEnabled");
+        const auto restore=qScopeGuard([&] {
+            if(forced.isNull())qunsetenv("JIXELLIGHT_FORCE_CPU");else qputenv("JIXELLIGHT_FORCE_CPU",forced);
+            QSettings().setValue("performance/gpuEnabled",enabled);
+        });
+        qunsetenv("JIXELLIGHT_FORCE_CPU");
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage image(8,6,QImage::Format_RGB32); image.fill(QColor(64,96,128));
+        const auto source=dir.filePath("first.png"), other=dir.filePath("second.png");
+        QVERIFY(image.save(source)); image.fill(Qt::red); QVERIFY(image.save(other));
+        PhotoController c(nullptr); c.setGpuEnabled(true); QVERIFY(c.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.loading() && !c.gpuSource().isNull(),10000);
+        const auto revision=c.renderRevision(); const auto key=c.gpuSource().cacheKey();
+        const auto state=c.gpuPlan(true).state.toJson();
+        const auto expected=ImagePipeline::processWithPlan(ImagePipeline::rgba64Source(c.gpuSource()),c.gpuPlan());
+        auto output=FloatFrameFingerprint::capture(ImagePipeline::floatSource(expected));
+        output["parameter_revision"]=qint64(revision); output["source_cache_key"]=QString::number(key);
+        output["producer"]="gpu-compute"; output["monitor_icc"]=false;
+        QSignalSpy finished(&c,&PhotoController::diagnosticFinished);
+        const auto request=c.requestBugReport(); QVERIFY(request>0); QVERIFY(c.diagnosticBusy());
+        QCOMPARE(c.requestBugReport(),qulonglong(0));
+        c.gpuDiagnosticReady(request+1,output); QVERIFY(c.diagnosticBusy()); QCOMPARE(finished.size(),0);
+        c.setExposure(1.25); c.setCrop(0,0,.5,1);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(other)));
+        c.selectPhoto(1);
+        QTRY_VERIFY_WITH_TIMEOUT(!c.loading() && c.currentFile()==other,10000);
+        c.gpuDiagnosticReady(request,output);
+        QCOMPARE(finished.size(),1); QVERIFY(!c.diagnosticBusy()); QCOMPARE(c.diagnosticRequestId(),quint64(0));
+        const auto path=finished[0][0].toString(); QVERIFY(!path.isEmpty());
+        const auto cleanup=qScopeGuard([&]{QFile::remove(path);});
+        const auto manifest=QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object();
+        QCOMPARE(manifest["current_file"].toString(),source); QCOMPARE(manifest["adjustments"].toObject(),state);
+        const auto stages=QJsonDocument::fromJson(storedZipEntry(path,"stage_outputs.json")).object();
+        QCOMPARE(stages["parameter_revision"].toInteger(),qint64(revision));
+        QCOMPARE(stages["gpu_working_output"].toObject()["pixel_sha256"],output["pixel_sha256"]);
+        QCOMPARE(stages["gpu_context"].toObject()["cpu_reference"].toObject()["pixel_sha256"],output["pixel_sha256"]);
+        QCOMPARE(stages["cpu_srgb_output"].toObject()["pixel_sha256"],StageGraph::outputFingerprint(expected)["pixel_sha256"]);
+        const auto performance=QJsonDocument::fromJson(storedZipEntry(path,"performance.json")).object()["values"].toObject();
+        QCOMPARE(performance["controller_state"].toObject()["requested_revision"].toInteger(),qint64(revision));
+        c.gpuDiagnosticReady(request,output); QCOMPARE(finished.size(),1);
+    }
+
+    void controllerDiagnosticMismatchTimeoutAndCpuFallbackRemainUseful() {
+        const auto forced=qgetenv("JIXELLIGHT_FORCE_CPU");
+        const auto enabled=QSettings().value("performance/gpuEnabled");
+        const auto restore=qScopeGuard([&] {
+            if(forced.isNull())qunsetenv("JIXELLIGHT_FORCE_CPU");else qputenv("JIXELLIGHT_FORCE_CPU",forced);
+            QSettings().setValue("performance/gpuEnabled",enabled);
+        });
+        qunsetenv("JIXELLIGHT_FORCE_CPU"); QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage image(6,4,QImage::Format_RGB32); image.fill(Qt::gray);
+        const auto source=dir.filePath("source.png"); QVERIFY(image.save(source));
+        PhotoController c(nullptr); c.setGpuEnabled(true); QVERIFY(c.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.loading() && !c.gpuSource().isNull(),10000);
+        QSignalSpy finished(&c,&PhotoController::diagnosticFinished); QStringList paths;
+        const auto cleanup=qScopeGuard([&]{for(const auto &path:paths)QFile::remove(path);});
+        const auto request=c.requestBugReport(); QVERIFY(request>0);
+        c.gpuDiagnosticReady(request,{{"available",true},{"parameter_revision",qint64(c.renderRevision())},
+            {"source_cache_key","wrong-source"},{"pixel_sha256","must-not-appear"}});
+        QCOMPARE(finished.size(),1); paths << finished.last()[0].toString();
+        auto stages=QJsonDocument::fromJson(storedZipEntry(paths.last(),"stage_outputs.json")).object();
+        QVERIFY(!stages["gpu_working_output"].toObject()["available"].toBool());
+        QVERIFY(!stages["gpu_working_output"].toObject().contains("pixel_sha256"));
+        QVERIFY(stages["cpu_srgb_output"].toObject()["available"].toBool());
+        QVERIFY(c.requestBugReport()>request);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),2,5000); paths << finished.last()[0].toString();
+        stages=QJsonDocument::fromJson(storedZipEntry(paths.last(),"stage_outputs.json")).object();
+        QVERIFY(stages["gpu_working_output"].toObject()["error"].toString().contains("timed out"));
+        QVERIFY(stages["cpu_srgb_output"].toObject()["available"].toBool());
+        c.setGpuEnabled(false); QVERIFY(c.requestBugReport()>request); QCOMPARE(finished.size(),3);
+        paths << finished.last()[0].toString(); QVERIFY(!c.diagnosticBusy());
+        stages=QJsonDocument::fromJson(storedZipEntry(paths.last(),"stage_outputs.json")).object();
+        QVERIFY(stages["gpu_working_output"].toObject()["error"].toString().contains("disabled"));
+        QVERIFY(stages["cpu_srgb_output"].toObject()["available"].toBool());
     }
 
     void pngExportPreserves16BitsAndIccAndCancellation() {
