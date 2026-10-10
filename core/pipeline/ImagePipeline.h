@@ -10,6 +10,11 @@ class ImagePipeline {
 public:
     enum class InputEncoding { SRgb, LinearProPhoto };
     struct DiagnosticResult { QImage image; QJsonObject stages; };
+    // Preserve unassociated channels, including hidden RGB at zero alpha.
+    // Qt's generic integer/float conversion can round through premultiplied
+    // RGBA64; staging/readback must use the same channel values as the oracle.
+    static QImage floatSource(const QImage &source,const CancelToken &cancel = {});
+    static QImage rgba64Source(const QImage &source,const CancelToken &cancel = {});
     static QImage process(const QImage &source, const AdjustmentState &state,
                           InputEncoding encoding = InputEncoding::SRgb,
                           ColorManagement::OutputSpace output = ColorManagement::OutputSpace::SRgb,

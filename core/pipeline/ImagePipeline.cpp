@@ -525,6 +525,40 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     for (int i=0; i<5; ++i) plan.data[Curves+i] = {float(state.masterCurve[i]),float(state.redCurve[i]),float(state.greenCurve[i]),float(state.blueCurve[i])};
     return plan;
 }
+namespace {
+void copySourceMetadata(const QImage &source,QImage &target) {
+    target.setColorSpace(source.colorSpace()); target.setDevicePixelRatio(source.devicePixelRatio());
+    target.setDotsPerMeterX(source.dotsPerMeterX()); target.setDotsPerMeterY(source.dotsPerMeterY());
+    for (const auto &key : source.textKeys()) target.setText(key,source.text(key));
+}
+}
+QImage ImagePipeline::floatSource(const QImage &source,const CancelToken &token) {
+    if (source.isNull() || cancelled(token)) return {};
+    if (source.format()==QImage::Format_RGBA32FPx4) return source;
+    const auto input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    QImage out(input.size(),QImage::Format_RGBA32FPx4); if (out.isNull()) return {};
+    const auto *src=input.constBits(); const auto srcStride=input.bytesPerLine(); auto *dst=out.bits(); const auto dstStride=out.bytesPerLine();
+    ParallelRows::run(input.height(),input.width(),token,[&](int y) {
+        const auto *row=reinterpret_cast<const QRgba64 *>(src+y*srcStride); auto *pixels=reinterpret_cast<float *>(dst+y*dstStride);
+        for (int x=0;x<input.width();++x) {
+            pixels[4*x]=row[x].red()/65535.0f; pixels[4*x+1]=row[x].green()/65535.0f;
+            pixels[4*x+2]=row[x].blue()/65535.0f; pixels[4*x+3]=row[x].alpha()/65535.0f;
+        }
+    });
+    if (cancelled(token)) return {}; copySourceMetadata(source,out); return out;
+}
+QImage ImagePipeline::rgba64Source(const QImage &source,const CancelToken &token) {
+    if (source.isNull() || cancelled(token)) return {};
+    if (source.format()!=QImage::Format_RGBA32FPx4) return source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    QImage out(source.size(),QImage::Format_RGBA64); if (out.isNull()) return {};
+    const auto *src=source.constBits(); const auto srcStride=source.bytesPerLine(); auto *dst=out.bits(); const auto dstStride=out.bytesPerLine();
+    const auto quantize=[](float value) { return quint16(std::lround((std::isfinite(value) ? clamp01(value) : 0.0f)*65535.0f)); };
+    ParallelRows::run(source.height(),source.width(),token,[&](int y) {
+        const auto *pixels=reinterpret_cast<const float *>(src+y*srcStride); auto *row=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
+        for (int x=0;x<source.width();++x) row[x]=QRgba64::fromRgba64(quantize(pixels[4*x]),quantize(pixels[4*x+1]),quantize(pixels[4*x+2]),quantize(pixels[4*x+3]));
+    });
+    if (cancelled(token)) return {}; copySourceMetadata(source,out); return out;
+}
 QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state, InputEncoding encoding,
                              ColorManagement::OutputSpace output, const CancelToken &token, bool parallel) {
     return processWithPlan(source, ProcessingPlan::compile(state, encoding, output), token, parallel);
@@ -533,7 +567,7 @@ namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,const QSize &sourceSize,const QPoint &origin) {
     if (source.isNull() || cancelled(token)) return {};
     PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()}, {"parallel",parallel}});
-    const QImage input = source.format() == QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    const QImage input = ImagePipeline::rgba64Source(source,token); if (input.isNull()) return {};
     QImage out(input.size(), QImage::Format_RGBA64);
     if (out.isNull()) return {};
     const uchar *src = input.constBits(); const qsizetype srcStride = input.bytesPerLine();
@@ -555,7 +589,7 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
     if (source.isNull() || cancelled(token)) return result;
     QElapsedTimer timer; timer.start();
-    const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    const QImage input=rgba64Source(source,token); if (input.isNull()) return result;
     QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return result;
     const ColorKernel kernel(plan,input.size());

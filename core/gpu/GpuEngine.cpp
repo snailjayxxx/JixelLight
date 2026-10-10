@@ -170,10 +170,10 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
         plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
         if (m_lastCpuFallback) {
-            const QImage cpuInput = source.convertToFormat(QImage::Format_RGBA64);
+            const QImage cpuInput = ImagePipeline::rgba64Source(source);
             const QImage cpuResult = ImagePipeline::processWithPlan(cpuInput, plan);
             if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
-            m_cpuFallbackFrame = cpuResult.convertToFormat(QImage::Format_RGBA32FPx4);
+            m_cpuFallbackFrame = ImagePipeline::floatSource(cpuResult);
             QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));
             upload.setSourceSize(m_cpuFallbackFrame.size());
             upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));

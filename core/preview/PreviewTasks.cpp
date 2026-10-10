@@ -61,7 +61,7 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
         if (cancelled(cancel)) return {};
         // Float conversion is performed once for a source/viewport change, not
         // once per parameter edit. GPU working textures remain FP32.
-        result.gpu = source.convertToFormat(QImage::Format_RGBA32FPx4);
+        result.gpu = ImagePipeline::floatSource(source,cancel);
         if (result.gpu.isNull()) result.error = QStringLiteral("Unable to allocate GPU source staging image");
         if (cancelled(cancel)) return {};
         if (result.error.isEmpty()) {

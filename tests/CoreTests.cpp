@@ -79,6 +79,30 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
+        QImage source(256,1024,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
+        source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000); source.setDotsPerMeterY(3100); source.setText("JixelLightSource","staging-test");
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x) {
+            const quint16 value=quint16(x+256*(y%256));
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(value,65535-value,quint16(value*37),alpha[y/256]);
+        }
+        const auto before=source.copy(); const auto floating=ImagePipeline::floatSource(source); QCOMPARE(floating.format(),QImage::Format_RGBA32FPx4);
+        for (int y=0;y<source.height();++y) {
+            const auto *original=reinterpret_cast<const QRgba64 *>(source.constScanLine(y)); const auto *pixels=reinterpret_cast<const float *>(floating.constScanLine(y));
+            for (int x=0;x<source.width();++x) {
+                QCOMPARE(pixels[4*x],float(double(original[x].red())/65535)); QCOMPARE(pixels[4*x+1],float(double(original[x].green())/65535));
+                QCOMPARE(pixels[4*x+2],float(double(original[x].blue())/65535)); QCOMPARE(pixels[4*x+3],float(double(original[x].alpha())/65535));
+            }
+        }
+        QCOMPARE(ImagePipeline::rgba64Source(floating),source); QCOMPARE(source,before);
+        QCOMPARE(floating.colorSpace(),source.colorSpace()); QCOMPARE(floating.devicePixelRatio(),2.0);
+        QCOMPARE(floating.dotsPerMeterX(),3000); QCOMPARE(floating.dotsPerMeterY(),3100); QCOMPARE(floating.text("JixelLightSource"),QString("staging-test"));
+        QCOMPARE(ImagePipeline::floatSource(floating).cacheKey(),floating.cacheKey()); QCOMPARE(ImagePipeline::rgba64Source(source).cacheKey(),source.cacheKey());
+        PrepareRequest request; request.image=source; request.viewport=source.size(); request.fullResolution=true; request.zoom=1;
+        const auto prepared=preparePreview(request,{}); QCOMPARE(prepared.normal,source); QCOMPARE(prepared.gpu,floating);
+        const auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::floatSource(source,token).isNull()); QVERIFY(ImagePipeline::rgba64Source(floating,token).isNull());
+    }
     void vignetteUsesKnownSceneExposureAndPreservesDefaultsAndAlpha() {
         QImage source(9,9,QImage::Format_RGBA64); source.fill(QColor::fromRgba64(10000,10000,10000,32768));
         const auto plain=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
