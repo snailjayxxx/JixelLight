@@ -168,7 +168,7 @@ public:
     }
     QImage render(const QImage &input,const ProcessingPlan &plan) {
         QRhiCommandBuffer *cb=nullptr;if(!rhi||rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess)return {};
-        const QImage source=input.convertToFormat(QImage::Format_RGBA32FPx4);
+        const QImage source=ImagePipeline::floatSource(input);
         const bool ok=engine->process(cb,source,plan,++revision,{},false);
         QRhiReadbackResult readback;bool done=false;
         if(ok) {
@@ -178,7 +178,7 @@ public:
         rhi->endOffscreenFrame();rhi->finish();
         if(!ok||!done||readback.data.size()!=input.width()*input.height()*16)return {};
         QImage image(reinterpret_cast<const uchar *>(readback.data.constData()),input.width(),input.height(),input.width()*16,QImage::Format_RGBA32FPx4);
-        QImage out=image.copy().convertToFormat(QImage::Format_RGBA64);out.setColorSpace(QColorSpace::SRgb);return out;
+        QImage out=ImagePipeline::rgba64Source(image);out.setColorSpace(QColorSpace::SRgb);return out;
     }
     QString backend() const{return engine?engine->backendName():QStringLiteral("unavailable");}
 private:

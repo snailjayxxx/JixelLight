@@ -1,8 +1,18 @@
 #include "app/PhotoController.h"
 #include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
+#include "core/export/ExportNaming.h"
+#include "core/files/FileNames.h"
 #include "core/metadata/MetadataReader.h"
+#include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/StageGraph.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/cache/RenderedPreviewCache.h"
+#include "core/cache/FullScopesCache.h"
+#include "core/cache/ScopePlotCache.h"
+#include "core/commands/CommandRegistry.h"
+#include "core/commands/AdjustmentTransfer.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/DiagnosticBundle.h"
@@ -13,7 +23,11 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSettings>
+#include <QStandardPaths>
+#include <QUuid>
+#include "core/commands/NamedPresets.h"
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
@@ -32,6 +46,10 @@ PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *pare
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
     initializeLookJobs();
+    m_diagnosticTimer.setSingleShot(true);
+    connect(&m_diagnosticTimer, &QTimer::timeout, this, [this] {
+        if (m_pendingBug) finishBugReport({{"available", false}, {"error", "GPU diagnostic readback timed out"}});
+    });
 }
 
 QString PhotoController::uiText(const QString &zh, const QString &en) const {
@@ -56,6 +74,21 @@ QVariantList PhotoController::library() const {
         row["name"] = m_photos[i].name;
         row["path"] = m_photos[i].path;
         row["current"] = i == m_currentIndex;
+        row["index"] = i;
+        row["id"] = m_photos[i].storageKey();
+        row["rating"] = m_photos[i].rating;
+        row["flag"] = m_photos[i].flag;
+        row["virtual"] = !m_photos[i].copyKey.isEmpty();
+        row["versionName"] = m_photos[i].versionName;
+        row["selected"] = m_selectedPhotos.contains(i);
+        row["keywords"] = m_photos[i].tags.keywords;
+        row["albums"] = m_photos[i].tags.albums;
+        row["label"] = m_photos[i].tags.label;
+        row["captureTime"] = m_photos[i].timeline.captureTime;
+        row["captureChecked"] = m_photos[i].timeline.captureChecked;
+        row["captureOrder"] = m_photos[i].timeline.captureOrder();
+        row["importedAt"] = m_photos[i].timeline.importedAt;
+        row["editedAt"] = m_photos[i].timeline.editedAt;
         row["raw"] = m_photos[i].raw;
         row["type"] = m_photos[i].raw ? QStringLiteral("RAW") : QFileInfo(m_photos[i].path).suffix().toUpper();
         out.push_back(row);
@@ -79,7 +112,373 @@ QString PhotoController::pipelineDescription() const {
 }
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
-AdjustmentState *PhotoController::mutableCurrentState() { return hasImage() ? &m_photos[m_currentIndex].state : nullptr; }
+AdjustmentState *PhotoController::mutableCurrentState() {
+    if (!hasImage()) return nullptr;
+    auto &photo = m_photos[m_currentIndex];
+    photo.history.initialize(photo.state);
+    return &photo.state;
+}
+
+void PhotoController::rotatePhoto(int turns) {
+    if (auto *state = mutableCurrentState()) {
+        CommandRegistry::execute(*state,{{"command","geometry.rotate"},{"quarterTurns",turns}});
+        persistAndApply("geometry_rotate");
+    }
+}
+void PhotoController::flipPhoto(bool horizontal) {
+    if (auto *state = mutableCurrentState()) {
+        CommandRegistry::execute(*state,{{"command","geometry.flip"},{"axis",horizontal ? "horizontal" : "vertical"}});
+        persistAndApply("geometry_flip");
+    }
+}
+void PhotoController::setCrop(double x, double y, double width, double height) {
+    if (!GeometryState::validCrop(x,y,width,height)) return;
+    if (auto *state = mutableCurrentState()) {
+        CommandRegistry::execute(*state,{{"command","geometry.crop"},{"x",x},{"y",y},{"width",width},{"height",height}});
+        persistAndApply("geometry_crop");
+    }
+}
+void PhotoController::setCropAspect(double aspect) {
+    if (!hasImage() || m_loadedPreview.isNull() || !std::isfinite(aspect) || aspect <= 0) return;
+    if (currentState().geometry.quarterTurns % 2) aspect = 1 / aspect;
+    const auto size=currentState().geometry.correctedSize(m_loadedPreview.size());
+    if (size.isEmpty()) return;
+    const double original = double(size.width()) / size.height();
+    const double width = std::min(1.0, aspect/original), height = std::min(1.0, original/aspect);
+    setCrop((1-width)/2, (1-height)/2, width, height);
+}
+void PhotoController::setStraighten(double degrees) {
+    if (!GeometryState::validStraighten(degrees)) return;
+    auto *state=mutableCurrentState(); if (!state || state->geometry.straighten==degrees) return;
+    if (!CommandRegistry::execute(*state,{{"command","geometry.straighten"},{"degrees",degrees}})) return;
+    persistAndApply("geometry_straighten",{{"value",degrees}});
+}
+bool PhotoController::setGeometryAdjustment(const QString &parameter,double value) {
+    if (m_cropEditing || !GeometryState::validCorrection(parameter,value)) return false;
+    auto *state=mutableCurrentState(); if (!state) return false;
+    auto staged=*state;
+    if (!CommandRegistry::execute(staged,{{"command","geometry.set"},{"parameter",parameter},{"value",value}})) return false;
+    if (staged.geometry.toJson()==state->geometry.toJson()) return true;
+    *state=std::move(staged);
+    persistAndApply("geometry_correction",{{"parameter",parameter},{"value",value}}); return true;
+}
+void PhotoController::resetGeometryCorrections() {
+    if (m_cropEditing) return;
+    if (auto *state=mutableCurrentState(); state && state->geometry.hasCorrections()) {
+        CommandRegistry::execute(*state,{{"command","geometry.resetCorrections"}});
+        persistAndApply("geometry_corrections_reset");
+    }
+}
+void PhotoController::resetGeometry() {
+    if (auto *state = mutableCurrentState()) { CommandRegistry::execute(*state,{{"command","geometry.reset"}}); persistAndApply("geometry_reset"); }
+}
+
+GeometryState PhotoController::previewGeometry() const {
+    auto geometry = currentState().geometry;
+    if (m_cropEditing) geometry.crop = QRectF(0,0,1,1);
+    return geometry;
+}
+bool PhotoController::beginCrop() {
+    if (!hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
+    finishInteraction(); m_cropEditing = true;
+    m_zoom = 0; m_centerX = m_centerY = .5;
+    emit cropEditingChanged(); prepareCurrent(); return true;
+}
+void PhotoController::cancelCrop() {
+    if (!m_cropEditing) return;
+    m_cropEditing = false; emit cropEditingChanged(); prepareCurrent();
+}
+bool PhotoController::applyCrop(double x, double y, double width, double height) {
+    if (!m_cropEditing || !GeometryState::validCrop(x,y,width,height)) return false;
+    const auto crop = currentState().geometry.orientedRect({x,y,width,height},true);
+    if (!GeometryState::validCrop(crop.x(),crop.y(),crop.width(),crop.height())) return false;
+    m_cropEditing = false; emit cropEditingChanged();
+    setCrop(crop.x(),crop.y(),crop.width(),crop.height()); finishInteraction(); return true;
+}
+
+QVariantList PhotoController::selectedIndices() const {
+    auto indices = m_selectedPhotos.values(); std::sort(indices.begin(),indices.end());
+    QVariantList out; for (int index : indices) out.append(index); return out;
+}
+QStringList PhotoController::albumNames() const {
+    QStringList names; for (const auto &photo : m_photos) names.append(photo.tags.albums);
+    names.removeDuplicates(); names.sort(); return names;
+}
+QStringList PhotoController::currentKeywords() const { return hasImage() ? m_photos[m_currentIndex].tags.keywords : QStringList{}; }
+QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
+QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
+bool PhotoController::createVirtualCopy(const QString &name) {
+    if (!hasImage() || !flushEdits()) return false;
+    auto copy = m_photos[m_currentIndex];
+    const auto title = name.trimmed().isEmpty() ? QStringLiteral("Version %1").arg(m_photos.size()+1) : name.trimmed();
+    QStringList checked{title};
+    if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != title || !copy.state.look.error.isEmpty()) return false;
+    copy.copyKey = "jixel-copy:" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    copy.versionName = title; copy.name = QFileInfo(copy.path).fileName() + " · " + title;
+    copy.history = {}; copy.history.initialize(copy.state);
+    copy.timeline.importedAt = QDateTime::currentMSecsSinceEpoch(); copy.timeline.editedAt = 0;
+    EditHistory validated;
+    if (!validated.restore(copy.history.toJson(),copy.state)) return false;
+    if (m_project.isOpen() && !m_project.addVirtualCopy(copy.copyKey,copy.path,title,copy.state,copy.history,copy.tags,{copy.rating,copy.flag},copy.timeline)) {
+        setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
+    }
+    m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
+    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title}});
+    setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
+}
+
+bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+    if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
+    const auto title = name.trimmed(); QStringList checked{title};
+    if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != title) return false;
+    auto &photo = m_photos[m_currentIndex];
+    if (m_project.isOpen() && !m_project.renameVirtualCopy(photo.copyKey,title)) {
+        setStatus(uiText("副本重命名失败：", "Copy rename failed: ") + m_project.lastError()); return false;
+    }
+    photo.versionName = title; photo.name = QFileInfo(photo.path).fileName() + " · " + title;
+    emit libraryChanged();
+    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title}});
+    return true;
+}
+bool PhotoController::removeCurrentVirtualCopy() {
+    if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
+    const int removed = m_currentIndex; const auto photo = m_photos[removed];
+    if (m_project.isOpen() && !m_project.removeVirtualCopy(photo.copyKey)) {
+        setStatus(uiText("副本删除失败：", "Copy deletion failed: ") + m_project.lastError()); return false;
+    }
+    QSet<int> selection;
+    for (int index : m_selectedPhotos) if (index != removed) selection.insert(index > removed ? index-1 : index);
+    m_dirtyEdits.remove(photo.copyKey); m_dirtyHistories.remove(photo.copyKey);
+    m_dirtyTags.remove(photo.copyKey); m_dirtyCuration.remove(photo.copyKey);
+    m_dirtyDates.remove(photo.copyKey);
+    m_photos.removeAt(removed); m_importedPaths.clear();
+    for (const auto &item : m_photos) m_importedPaths.insert(QFileInfo(item.path).canonicalFilePath());
+    // The following version may occupy the same index: force a new epoch.
+    m_currentIndex = -2;
+    selectPhoto(std::min(removed,int(m_photos.size())-1));
+    if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged(); }
+    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path}});
+    setStatus(uiText("已删除虚拟副本：", "Virtual copy deleted: ") + photo.versionName);
+    return true;
+}
+
+bool PhotoController::setPhotoSelection(const QVariantList &indices) {
+    QSet<int> selected;
+    for (const auto &value : indices) {
+        bool valid = false; const int index = value.toInt(&valid);
+        if (!valid || value.toDouble() != index || index < 0 || index >= m_photos.size()) return false;
+        selected.insert(index);
+    }
+    m_selectedPhotos = selected; emit libraryChanged(); return true;
+}
+bool PhotoController::setSelectionRating(int rating) {
+    if (rating < 0 || rating > 5 || m_selectedPhotos.isEmpty()) return false;
+    for (int index : m_selectedPhotos) {
+        auto &photo = m_photos[index]; photo.rating = rating;
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+    }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    ActionTrace::instance().record("selection_rating", {{"count",m_selectedPhotos.size()},{"rating",rating}}); return true;
+}
+bool PhotoController::setSelectionFlag(const QString &flag) {
+    if ((flag != "none" && flag != "pick" && flag != "reject") || m_selectedPhotos.isEmpty()) return false;
+    for (int index : m_selectedPhotos) {
+        auto &photo = m_photos[index]; photo.flag = flag;
+        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+    }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    ActionTrace::instance().record("selection_flag", {{"count",m_selectedPhotos.size()},{"flag",flag}}); return true;
+}
+bool PhotoController::updateSelectedTags(const QString &operation, const QString &value) {
+    if (m_selectedPhotos.isEmpty()) return false;
+    QHash<int, CatalogTags> staged;
+    for (int index : m_selectedPhotos) {
+        auto tags = m_photos[index].tags;
+        if (operation == "keywords") tags.keywords = value.split(',');
+        else if (operation == "label") tags.label = value;
+        else {
+            const auto name = value.trimmed();
+            if (name.isEmpty()) return false;
+            if (operation == "album_add") tags.albums.append(name);
+            else if (operation == "album_remove") tags.albums.removeAll(name);
+            else return false;
+        }
+        if (!CatalogTags::normalize(&tags.keywords,64) || !CatalogTags::normalize(&tags.albums,32)
+            || !CatalogTags::validLabel(tags.label)) return false;
+        staged.insert(index,tags);
+    }
+    for (auto it = staged.begin(); it != staged.end(); ++it) {
+        auto &photo = m_photos[it.key()]; photo.tags = it.value();
+        if (m_project.isOpen()) m_dirtyTags.insert(photo.storageKey(),photo.tags);
+    }
+    enqueueEdits(); emit libraryChanged();
+    ActionTrace::instance().record("selection_" + operation, {{"count",staged.size()}}); return true;
+}
+bool PhotoController::setSelectionKeywords(const QString &text) { return updateSelectedTags("keywords",text); }
+bool PhotoController::setSelectionLabel(const QString &label) { return updateSelectedTags("label",label); }
+bool PhotoController::addSelectionToAlbum(const QString &name) { return updateSelectedTags("album_add",name); }
+bool PhotoController::removeSelectionFromAlbum(const QString &name) { return updateSelectedTags("album_remove",name); }
+
+namespace {
+QString presetFile() {
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("develop-presets.json");
+}
+}
+QStringList PhotoController::presetNames() const {
+    NamedPresets presets(presetFile()); QString error;
+    return presets.load(&error) ? presets.names() : QStringList{};
+}
+bool PhotoController::saveNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.save(name.trimmed(), m_photos[m_currentIndex].state, &error)) {
+        setStatus(uiText("预设保存失败：", "Preset save failed: ") + error); return false;
+    }
+    emit presetsChanged();
+    setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
+}
+bool PhotoController::applyNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error; AdjustmentState state;
+    if (!presets.load(&error) || !presets.get(name, &state)) {
+        setStatus(uiText("无法读取预设：", "Cannot read preset: ") + (error.isEmpty() ? name : error)); return false;
+    }
+    state.geometry = currentState().geometry;
+    m_photos[m_currentIndex].history.finish();
+    *mutableCurrentState() = state;
+    persistAndApply(QStringLiteral("named_preset"));
+    setStatus(uiText("已应用预设：", "Preset applied: ") + name); return true;
+}
+bool PhotoController::removeNamedPreset(const QString &name) {
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.remove(name, &error)) {
+        setStatus(uiText("预设删除失败：", "Preset removal failed: ") + error); return false;
+    }
+    emit presetsChanged(); return true;
+}
+bool PhotoController::renameNamedPreset(const QString &name, const QString &replacement) {
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.rename(name,replacement.trimmed(),&error)) {
+        setStatus(uiText("预设重命名失败：", "Preset rename failed: ")+error); return false;
+    }
+    emit presetsChanged(); return true;
+}
+bool PhotoController::replaceNamedPreset(const QString &name) {
+    if (!hasImage()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.replace(name,m_photos[m_currentIndex].state,&error)) {
+        setStatus(uiText("预设更新失败：", "Preset update failed: ")+error); return false;
+    }
+    emit presetsChanged(); setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
+}
+bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destination) {
+    if (!destination.isLocalFile() || isProtectedPhoto(destination.toLocalFile())) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.exportFile(name,destination.toLocalFile(),&error)) {
+        setStatus(uiText("预设导出失败：", "Preset export failed: ")+error); return false;
+    }
+    setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
+}
+bool PhotoController::importNamedPreset(const QUrl &source, const QString &replacementName) {
+    if (!source.isLocalFile()) return false;
+    NamedPresets presets(presetFile()); QString error;
+    if (!presets.load(&error) || !presets.importFile(source.toLocalFile(),replacementName.trimmed(),&error)) {
+        setStatus(uiText("预设导入失败：", "Preset import failed: ")+error); return false;
+    }
+    emit presetsChanged(); setStatus(uiText("预设已导入", "Preset imported")); return true;
+}
+void PhotoController::openPresetExportDialog(const QString &name) {
+    const auto path=QFileDialog::getSaveFileName(nullptr,uiText("导出 JixelLight 预设", "Export JixelLight preset"),
+        QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).filePath("preset.jixelpreset.json"),"JixelLight preset (*.jixelpreset.json)");
+    if (!path.isEmpty()) exportNamedPreset(name,QUrl::fromLocalFile(path.endsWith(".jixelpreset.json",Qt::CaseInsensitive) ? path : path+".jixelpreset.json"));
+}
+void PhotoController::openPresetImportDialog(const QString &replacementName) {
+    const auto path=QFileDialog::getOpenFileName(nullptr,uiText("导入 JixelLight 预设", "Import JixelLight preset"),{},"JixelLight preset (*.jixelpreset.json)");
+    if (!path.isEmpty()) importNamedPreset(QUrl::fromLocalFile(path),replacementName);
+}
+
+bool PhotoController::exportXmp(const QUrl &destination) {
+    if (!hasImage() || !destination.isLocalFile()) return false;
+    const auto &photo = m_photos[m_currentIndex]; QString error;
+    if (!XmpSidecar::writeNew(destination.toLocalFile(),photo.state,photo.tags,photo.rating,photo.flag,&error)) {
+        setStatus(uiText("XMP 导出失败：", "XMP export failed: ")+error); return false;
+    }
+    setStatus(uiText("XMP 已导出：", "XMP exported: ")+destination.toLocalFile()); return true;
+}
+bool PhotoController::importXmp(const QUrl &source) {
+    if (!hasImage() || !source.isLocalFile()) return false;
+    XmpSidecar::Document document; QString error;
+    if (!XmpSidecar::read(source.toLocalFile(),&document,&error)) {
+        setStatus(uiText("XMP 导入失败：", "XMP import failed: ")+error); return false;
+    }
+    auto &photo = m_photos[m_currentIndex];
+    photo.history.initialize(photo.state); photo.history.finish();
+    if (document.hasRating) photo.rating = document.rating;
+    if (document.hasFlag) photo.flag = document.flag;
+    if (document.hasKeywords) photo.tags.keywords = document.tags.keywords;
+    if (document.hasLabel) photo.tags.label = document.tags.label;
+    if (document.hasAlbums) photo.tags.albums = document.tags.albums;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.storageKey(),{photo.rating,photo.flag});
+        m_dirtyTags.insert(photo.storageKey(),photo.tags);
+    }
+    if (document.hasAdjustments) { photo.state = document.adjustments; persistAndApply("xmp_import"); }
+    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    setStatus(document.warnings.isEmpty() ? uiText("XMP 已应用到当前版本", "XMP applied to current version")
+        : uiText("XMP 已应用；部分外部属性未映射：", "XMP applied; some external properties were not mapped: ")+document.warnings.join("; "));
+    return true;
+}
+void PhotoController::openXmpExportDialog() {
+    if (!hasImage()) return;
+    const auto key = m_photos[m_currentIndex].storageKey();
+    const auto suffix = m_photos[m_currentIndex].copyKey.isEmpty() ? QString{} : "."+m_photos[m_currentIndex].copyKey.mid(11);
+    const auto path = QFileDialog::getSaveFileName(nullptr,uiText("导出新的 XMP 侧车文件", "Export new XMP sidecar"),
+        currentFile()+suffix+".xmp","XMP (*.xmp)");
+    if (!path.isEmpty() && hasImage() && key == m_photos[m_currentIndex].storageKey())
+        exportXmp(QUrl::fromLocalFile(path.endsWith(".xmp",Qt::CaseInsensitive) ? path : path+".xmp"));
+}
+void PhotoController::openXmpImportDialog() {
+    if (!hasImage()) return;
+    const auto key = m_photos[m_currentIndex].storageKey();
+    const auto path = QFileDialog::getOpenFileName(nullptr,uiText("导入 XMP 到当前版本", "Import XMP into current version"),
+        QFileInfo(currentFile()).absolutePath(),"XMP (*.xmp)");
+    if (path.isEmpty()) return;
+    const auto answer = QMessageBox::question(nullptr,uiText("应用 XMP", "Apply XMP"),
+        uiText("应用到当前照片版本？\n文件中已有的评分、标签和关键词会替换当前值。JixelLight 显影可撤销；目录标注不能撤销。Adobe 显影参数不会转换。",
+               "Apply to the current photo version?\nPresent ratings, labels and keywords replace current values. JixelLight Develop edits can be undone; catalog annotations cannot. Adobe Develop settings are not converted."));
+    if (answer == QMessageBox::Yes && hasImage() && key == m_photos[m_currentIndex].storageKey()) importXmp(QUrl::fromLocalFile(path));
+}
+
+bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
+bool PhotoController::canRedo() const { return hasImage() && m_photos[m_currentIndex].history.canRedo(); }
+QVariantList PhotoController::editHistory() const {
+    QVariantList out;
+    if (!hasImage()) return out;
+    const auto &history = m_photos[m_currentIndex].history;
+    for (int i = 0; i < history.entries().size(); ++i)
+        out.push_back(QVariantMap{{"action", history.entries()[i].action}, {"current", i == history.cursor()}});
+    return out;
+}
+void PhotoController::undo() {
+    if (!canUndo()) return;
+    auto &photo = m_photos[m_currentIndex];
+    photo.state = photo.history.undo();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
+    markDirty();
+    ActionTrace::instance().record("edit_undo", {{"file", currentFile()}});
+    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    applyCurrent();
+}
+void PhotoController::redo() {
+    if (!canRedo()) return;
+    auto &photo = m_photos[m_currentIndex];
+    photo.state = photo.history.redo();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
+    markDirty();
+    ActionTrace::instance().record("edit_redo", {{"file", currentFile()}});
+    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    applyCurrent();
+}
 
 #define GETTER(name) double PhotoController::name() const { return currentState().name; }
 GETTER(exposure)
@@ -94,6 +493,9 @@ GETTER(highlightRecovery)
 GETTER(hue)
 GETTER(saturation)
 GETTER(vibrance)
+GETTER(vignetteAmount)
+GETTER(vignetteMidpoint)
+GETTER(vignetteFeather)
 #undef GETTER
 
 QVariantList PhotoController::toVariantList(const AdjustmentState::ColorBandArray &values) {
@@ -108,6 +510,7 @@ QVariantList PhotoController::toVariantList(const AdjustmentState::CurveArray &v
     for (double v : values) out.push_back(v);
     return out;
 }
+QVariantList PhotoController::blackWhiteMix() const { return toVariantList(currentState().bwMix); }
 QVariantList PhotoController::hslHue() const { return toVariantList(currentState().hslHue); }
 QVariantList PhotoController::hslSaturation() const { return toVariantList(currentState().hslSaturation); }
 QVariantList PhotoController::hslLuminance() const { return toVariantList(currentState().hslLuminance); }
@@ -118,20 +521,44 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
+    QString mergeKey;
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+        QVariantMap keyDetails = details;
+        keyDetails.remove("value");
+        mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
+    }
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.history.record(photo.state, action, mergeKey)) {
+        photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();
+        if (mergeKey.isEmpty()) emit libraryChanged();
+    }
+    emit historyChanged();
     QVariantMap payload = details;
     payload["file"] = currentFile();
+    payload["photo_key"] = m_photos[m_currentIndex].storageKey();
     ActionTrace::instance().record(action, payload);
     markDirty();
     emit adjustmentsChanged();
     applyCurrent();
 }
 
+bool PhotoController::executeEditCommand(const QVariantMap &command) {
+    auto *state = mutableCurrentState(); if (!state) return false;
+    QString error; auto staged = *state;
+    if (!CommandRegistry::execute(staged,QJsonObject::fromVariantMap(command),&error)) {
+        setStatus(uiText("命令未执行：", "Command rejected: ") + error); return false;
+    }
+    m_photos[m_currentIndex].history.finish(); *state = std::move(staged);
+    persistAndApply("command_replay",{{"command",command}}); return true;
+}
+
 void PhotoController::setAdjustment(const char *name, double value, double AdjustmentState::*member) {
     auto *state = mutableCurrentState();
     if (!state || !std::isfinite(value) || qFuzzyCompare((*state).*member + 1.0, value + 1.0)) return;
-    value = std::clamp(value, member == &AdjustmentState::exposure ? -5.0 : -180.0, member == &AdjustmentState::exposure ? 5.0 : 180.0);
-    (*state).*member = value;
-    persistAndApply(QStringLiteral("adjustment"), {{"parameter", QString::fromLatin1(name)}, {"value", value}});
+    if (!CommandRegistry::set(*state, QString::fromLatin1(name), value)) return;
+    value = (*state).*member;
+    persistAndApply(QString::fromLatin1(name).startsWith("vignette") ? QStringLiteral("vignette_adjustment") : QStringLiteral("adjustment"),
+        {{"parameter", QString::fromLatin1(name)}, {"value", value}});
 }
 
 void PhotoController::setExposure(double v) { setAdjustment("exposure", v, &AdjustmentState::exposure); }
@@ -146,6 +573,36 @@ void PhotoController::setHighlightRecovery(double v) { setAdjustment("highlightR
 void PhotoController::setHue(double v) { setAdjustment("hue", std::clamp(v, -180.0, 180.0), &AdjustmentState::hue); }
 void PhotoController::setSaturation(double v) { setAdjustment("saturation", std::clamp(v, -100.0, 100.0), &AdjustmentState::saturation); }
 void PhotoController::setVibrance(double v) { setAdjustment("vibrance", std::clamp(v, -100.0, 100.0), &AdjustmentState::vibrance); }
+void PhotoController::setVignetteAmount(double v) { setAdjustment("vignetteAmount",v,&AdjustmentState::vignetteAmount); }
+void PhotoController::setVignetteMidpoint(double v) { setAdjustment("vignetteMidpoint",v,&AdjustmentState::vignetteMidpoint); }
+void PhotoController::setVignetteFeather(double v) { setAdjustment("vignetteFeather",v,&AdjustmentState::vignetteFeather); }
+void PhotoController::resetVignette() {
+    auto *state=mutableCurrentState(); if (!state || (state->vignetteAmount==0 && state->vignetteMidpoint==.5 && state->vignetteFeather==1)) return;
+    m_photos[m_currentIndex].history.finish(); CommandRegistry::execute(*state,{{"command","vignette.reset"}});
+    persistAndApply("vignette_reset");
+}
+
+void PhotoController::setBlackWhite(bool enabled) {
+    auto *state=mutableCurrentState(); if (!state || state->blackWhite==enabled) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","bw.enable"},{"enabled",enabled}})) return;
+    persistAndApply("black_white_mode",{{"enabled",enabled}});
+}
+void PhotoController::setBlackWhiteMix(int band,double value) {
+    auto *state=mutableCurrentState();
+    if (!state || band<0 || band>=AdjustmentState::ColorBandCount || !std::isfinite(value)) return;
+    value=std::clamp(value,-100.0,100.0);
+    if (qFuzzyCompare(state->bwMix[std::size_t(band)]+1.0,value+1.0)) return;
+    if (!CommandRegistry::execute(*state,{{"command","bw.set"},{"band",band},{"value",value}})) return;
+    persistAndApply("black_white_mix",{{"band",band},{"value",value}});
+}
+void PhotoController::resetBlackWhite() {
+    auto *state=mutableCurrentState(); if (!state) return;
+    if (!state->blackWhite && std::all_of(state->bwMix.begin(),state->bwMix.end(),[](double v){return v==0;})) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","bw.reset"}})) return;
+    persistAndApply("black_white_reset");
+}
 
 void PhotoController::setColorMix(int band, int component, double value) {
     auto *state = mutableCurrentState();
@@ -154,7 +611,8 @@ void PhotoController::setColorMix(int band, int component, double value) {
     auto *array = component == 0 ? &state->hslHue : (component == 1 ? &state->hslSaturation : &state->hslLuminance);
     const std::size_t index = static_cast<std::size_t>(band);
     if (qFuzzyCompare((*array)[index] + 1.0, value + 1.0)) return;
-    (*array)[index] = value;
+    const QString componentName = component == 0 ? "hue" : component == 1 ? "saturation" : "luminance";
+    CommandRegistry::execute(*state,{{"command","hsl.set"},{"band",band},{"component",componentName},{"value",value}});
     persistAndApply(QStringLiteral("color_mixer"), {{"band", band}, {"component", component}, {"value", value}});
 }
 
@@ -168,18 +626,16 @@ void PhotoController::setCurvePoint(int channel, int point, double value) {
     else if (channel == 3) curve = &state->blueCurve;
     const std::size_t index = static_cast<std::size_t>(point);
     if (qFuzzyCompare((*curve)[index] + 1.0, value + 1.0)) return;
-    (*curve)[index] = value;
+    const QString channelName = channel == 0 ? "master" : channel == 1 ? "red" : channel == 2 ? "green" : "blue";
+    CommandRegistry::execute(*state,{{"command","curve.set"},{"channel",channelName},{"point",point},{"value",value}});
     persistAndApply(QStringLiteral("curve_point"), {{"channel", channel}, {"point", point}, {"value", value}});
 }
 
 void PhotoController::resetCurve(int channel) {
     auto *state = mutableCurrentState();
     if (!state || channel < 0 || channel > 3) return;
-    const AdjustmentState::CurveArray identity{0.0, 0.25, 0.5, 0.75, 1.0};
-    if (channel == 0) state->masterCurve = identity;
-    else if (channel == 1) state->redCurve = identity;
-    else if (channel == 2) state->greenCurve = identity;
-    else state->blueCurve = identity;
+    const QString channelName = channel == 0 ? "master" : channel == 1 ? "red" : channel == 2 ? "green" : "blue";
+    CommandRegistry::execute(*state,{{"command","curve.reset"},{"channel",channelName}});
     persistAndApply(QStringLiteral("curve_reset"), {{"channel", channel}});
 }
 
@@ -212,10 +668,11 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     }
 
     PhotoEntry entry{info.absoluteFilePath(), info.fileName(), {}, isRaw};
+    entry.timeline.importedAt = QDateTime::currentMSecsSinceEpoch();
     if (isRaw) entry.state.look.mode = "as-shot"; // New imports only; old projects remain off.
     m_photos.push_back(entry);
     m_importedPaths.insert(identity);
-    if (m_project.isOpen()) { m_dirtyEdits.insert(entry.path, entry.state); m_saveTimer.start(); if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start(); }
+    markPhotoDirty(entry); m_catalogDateTimer.start();
     ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
 
     if (notifyImmediately) {
@@ -268,6 +725,76 @@ void PhotoController::openImportDialog() {
     finishImportBatch(added, rawAdded);
 }
 
+QVariantMap PhotoController::previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) {
+    QStringList sources;
+    for (const auto &value : urls) {
+        const auto url=value.canConvert<QUrl>() ? value.toUrl() : QUrl(value.toString());
+        if (!url.isLocalFile()) return {{"valid",false},{"error",uiText("复制导入仅支持本地文件", "Copy import requires local files")},{"rows",QVariantList{}}};
+        sources.push_back(url.toLocalFile());
+    }
+    const ImportNaming naming{pattern,sequenceStart};
+    auto plan=planImportNames(sources,naming); QStringList captureTimes;
+    if (plan.needsCaptureTimes) {
+        QHash<QString,QString> missing;
+        for (const auto &path : sources) {
+            const auto stamp=FileNames::sourceStamp(path);
+            if (stamp.isEmpty()) return {{"valid",false},{"pending",false},{"rows",QVariantList{}},
+                {"error",uiText("无法读取源文件：", "Cannot read source: ")+QFileInfo(path).fileName()}};
+            if (const auto *time=m_importNameTimes.object(stamp)) {
+                captureTimes.push_back(*time); PerformanceRecorder::count("import_name_preview_cache_hits");
+            } else { missing.insert(stamp,QFileInfo(path).canonicalFilePath()); captureTimes.push_back(QString()); }
+        }
+        if (!missing.isEmpty()) {
+            if (missing!=m_importNamePending) { m_importNamePending=missing; m_importNameDatesJob->submit({missing}); }
+            return {{"valid",false},{"pending",true},{"rows",QVariantList{}},{"error",uiText("读取拍摄时间…", "Reading capture times…")}};
+        }
+        plan=planImportNames(sources,naming,captureTimes);
+    } else if (!m_importNamePending.isEmpty()) { m_importNameDatesJob->cancel(); m_importNamePending.clear(); }
+    QVariantList rows;
+    if (plan.error.isEmpty()) for (int i=0;i<sources.size();++i)
+        rows.push_back(QVariantMap{{"source",QFileInfo(sources[i]).fileName()},{"destination",plan.names[i]}});
+    return {{"valid",plan.error.isEmpty()},{"pending",false},{"error",uiText(plan.errorZh,plan.error)},
+            {"rows",rows},{"captureTimes",captureTimes}};
+}
+void PhotoController::cancelImportNamePreview() {
+    m_importNameDatesJob->cancel(); m_importNamePending.clear(); m_importNameTimes.clear();
+    ++m_importNameRevision; emit importNamePreviewChanged();
+}
+bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart) {
+    if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
+    QStringList sources;
+    for (const auto &value : urls) {
+        const auto url=value.canConvert<QUrl>() ? value.toUrl() : QUrl(value.toString());
+        if (!url.isLocalFile()) { setStatus(uiText("复制导入仅支持本地文件", "Copy import requires local files")); return false; }
+        sources.push_back(url.toLocalFile());
+    }
+    const ImportNaming naming{pattern,sequenceStart};
+    const auto preview=previewImportNames(urls,pattern,sequenceStart);
+    if (!preview["valid"].toBool()) { setStatus(uiText("复制名称计划错误：", "Copy name plan error: ")+preview["error"].toString()); return false; }
+    const auto expected=preview["captureTimes"].toStringList();
+    const auto names=planImportNames(sources,naming,expected);
+    if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming,expected)) return false;
+    m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
+    ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},
+        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)}});
+    return true;
+}
+void PhotoController::openCopyImportDialog() {
+    if (copyImportBusy()) return;
+    QSettings settings;
+    const auto files=QFileDialog::getOpenFileNames(nullptr,uiText("选择要复制并导入的照片", "Choose photos to copy and import"),
+        settings.value("ui/lastImportDir").toString(),uiText("照片与 RAW (*)", "Photos and RAW (*)"));
+    if (files.isEmpty()) return;
+    settings.setValue("ui/lastImportDir",QFileInfo(files.first()).absolutePath());
+    QVariantList urls; for (const auto &file : files) urls.push_back(QUrl::fromLocalFile(file));
+    emit copyImportRequested(urls);
+}
+void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel(); }
+bool PhotoController::prepareToClose() {
+    m_copyImportQueue->stopAndCollect();
+    return flushEdits();
+}
+
 bool PhotoController::importFile(const QUrl &url) {
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     return importPath(path, true);
@@ -285,28 +812,37 @@ void PhotoController::importFiles(const QVariantList &urls) {
 }
 
 void PhotoController::selectPhoto(int index) {
-    if (index < 0 || index >= m_photos.size() || index == m_currentIndex) return;
+    if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
+    m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
+    if (index == m_currentIndex) return;
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     enqueueEdits();
+    if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
+    if (hasImage()) m_photos[index].history.initialize(m_photos[index].state);
+    emit historyChanged();
     ++m_photoEpoch;
     resetReference();
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
+    emit scopePlotChanged();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_centerX = m_centerY = .5;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
     m_sourceIsFull = false; m_currentMetadata.clear(); m_scopes = {};
     m_scopesUpdating = true; m_scopesRank = -1; m_displayPixels = {};
-    m_loading = true; m_gpuActive = false; emit backendChanged();
+    m_loading = hasImage(); m_preparing = false; m_gpuActive = false; emit backendChanged();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
-    emit currentIndexChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
+    emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
     emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
     emit activityChanged();
     ActionTrace::instance().record("select_photo", {{"index", index}, {"file", currentFile()}, {"raw", currentIsRaw()}, {"photo_epoch", qint64(m_photoEpoch)}});
-    loadCurrent();
+    if (hasImage()) loadCurrent(); else setBusy(false);
 }
 
 void PhotoController::loadCurrent() {
@@ -317,24 +853,42 @@ void PhotoController::loadCurrent() {
 }
 
 void PhotoController::applyCurrent() {
+    // Another Develop action, including Undo/Redo, abandons an uncommitted box.
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     cancelCalibration();
     ++m_requestedRevision;
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     m_scopesUpdating = true; m_scopesRank = -1;
     m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_exactTimer.stop();
     m_interacting = true;
     m_refineTimer.start();
     emit scopesChanged();
-    scheduleRender(true);
+    if (m_preparedGeometry != previewGeometry().toJson()) prepareCurrent();
+    else scheduleRender(true);
 }
 
 bool PhotoController::createProject(const QUrl &folder, const QString &name) {
+    if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     const QString path = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
     if (!flushEdits()) return false;
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
-        for (const auto &p : m_photos) m_dirtyEdits.insert(p.path, p.state);
+        // A new catalog stores absolute source keys; an opened legacy catalog
+        // keeps its original relative keys until it is explicitly copied here.
+        for (auto &photo : m_photos) if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
+        for (const auto &p : m_photos) {
+            if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag},p.timeline)) {
+                setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError()); return false;
+            }
+            m_dirtyEdits.insert(p.storageKey(), p.state);
+            auto history = p.history; history.initialize(p.state);
+            m_dirtyHistories.insert(p.storageKey(), history);
+            m_dirtyCuration.insert(p.storageKey(), {p.rating, p.flag});
+            m_dirtyTags.insert(p.storageKey(),p.tags);
+            m_dirtyDates.insert(p.storageKey(),p.timeline);
+        }
         enqueueEdits();
         emit projectChanged();
         setStatus(uiText(QStringLiteral("项目已创建：") + m_project.projectName(), QStringLiteral("Project created: ") + m_project.projectName()));
@@ -344,55 +898,171 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     return ok;
 }
 
+bool PhotoController::openProject(const QUrl &url) {
+    if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
+    if (!url.isLocalFile() || !flushEdits()) return false;
+    QVector<ProjectDatabase::SavedPhoto> saved;
+    const QString path = url.toLocalFile();
+    if (!m_project.open(path, &saved)) {
+        const QString error = m_project.lastError();
+        setStatus(uiText(QStringLiteral("无法打开项目：") + error, QStringLiteral("Cannot open project: ") + error));
+        ActionTrace::instance().record("project_open_failed", {{"path", path}, {"error", error}});
+        return false;
+    }
+
+    // All callbacks are generation-guarded: no in-flight task from the old
+    // project may publish a preview or scopes for this project's first photo.
+    m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
+    ++m_photoEpoch;
+    ++m_requestedRevision;
+    ++m_catalogEpoch; m_catalogDatesJob->cancel(); m_catalogDateTimer.stop();
+    m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
+    m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
+    m_saveTimer.stop(); m_saveMaxTimer.stop();
+    m_dirtyEdits.clear(); m_dirtyHistories.clear();
+    m_dirtyCuration.clear(); m_dirtyTags.clear(); m_dirtyDates.clear(); m_selectedPhotos.clear();
+    m_currentIndex = -1;
+    m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
+    m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
+    m_currentMetadata.clear(); m_scopes = {}; m_scopesRank = -1;
+    m_sourceIsFull = false; m_loading = false; m_rendering = false; m_gpuActive = false;
+    m_scopesUpdating = true; m_displayPixels = {};
+    m_referenceFiles.clear();
+    resetReference();
+    if (m_provider) m_provider->setImage({});
+    ++m_previewRevision;
+    m_photos.clear();
+    emit historyChanged();
+    m_importedPaths.clear();
+
+    int missing = 0;
+    for (const auto &record : saved) {
+        const QFileInfo rawPath(record.path);
+        const QFileInfo info(rawPath.isAbsolute() ? record.path : QDir(m_project.projectPath()).filePath(record.path));
+        if (!info.isFile() || !info.isReadable()) { ++missing; continue; }
+        const QString identity = info.canonicalFilePath();
+        if (identity.isEmpty() || (record.copyKey.isEmpty() && m_importedPaths.contains(identity))) continue;
+        const QString absolute = info.absoluteFilePath();
+        m_photos.push_back({absolute, info.fileName() + (record.copyKey.isEmpty() ? QString() : " · " + record.versionName), record.adjustments,
+                            RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString(),record.timeline});
+        if (record.copyKey.isEmpty()) m_importedPaths.insert(identity);
+    }
+    for (const auto &photo : m_photos) m_importedPaths.insert(QFileInfo(photo.path).canonicalFilePath());
+    m_catalogDateTimer.start();
+    QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
+    emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
+    emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
+    emit scopesChanged(); emit adjustmentsChanged(); emit backendChanged();
+    emit scopePlotChanged();
+    emit previewGeometryChanged(); emit activityChanged();
+    if (!m_photos.isEmpty()) selectPhoto(0);
+
+    setStatus(uiText(QStringLiteral("已打开项目：%1 · %2 张照片 · %3 个缺失文件保留在原目录中")
+                          .arg(m_project.projectName()).arg(m_photos.size()).arg(missing),
+                     QStringLiteral("Opened project: %1 · %2 photos · %3 missing files kept in catalog")
+                          .arg(m_project.projectName()).arg(m_photos.size()).arg(missing)));
+    ActionTrace::instance().record("project_opened",
+        {{"project", path}, {"available", m_photos.size()}, {"missing", missing}});
+    return true;
+}
+
+void PhotoController::setRating(int rating) {
+    if (!hasImage()) return;
+    rating = std::clamp(rating, 0, 5);
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.rating == rating) return;
+    photo.rating = rating;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+        m_saveTimer.start();
+        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
+    }
+    ActionTrace::instance().record("photo_rating", {{"file", photo.path}, {"rating", rating}});
+    emit libraryChanged(); emit curationChanged();
+}
+void PhotoController::setFlag(const QString &flag) {
+    if (!hasImage() || (flag != QStringLiteral("none") && flag != QStringLiteral("pick") && flag != QStringLiteral("reject"))) return;
+    auto &photo = m_photos[m_currentIndex];
+    if (photo.flag == flag) return;
+    photo.flag = flag;
+    if (m_project.isOpen()) {
+        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+        m_saveTimer.start();
+        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
+    }
+    ActionTrace::instance().record("photo_flag", {{"file", photo.path}, {"flag", flag}});
+    emit libraryChanged(); emit curationChanged();
+}
+
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
-        *state = {};
-        markDirty();
-        ActionTrace::instance().record("reset_adjustments", {{"file", currentFile()}});
-        emit adjustmentsChanged();
-        applyCurrent();
+        CommandRegistry::execute(*state,{{"command","develop.reset"}});
+        persistAndApply(QStringLiteral("reset_adjustments"));
         setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
     }
 }
 
 void PhotoController::copyAdjustments() {
     if (!hasImage()) return;
-    m_clipboard = currentState();
+    m_clipboard = m_photos[m_currentIndex].state;
+    m_clipboardName = m_photos[m_currentIndex].name;
     m_hasClipboard = true;
+    emit adjustmentClipboardChanged();
     ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()}});
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
 }
 
 void PhotoController::pasteAdjustments() {
-    if (!hasImage() || !m_hasClipboard) return;
-    *mutableCurrentState() = m_clipboard;
-    markDirty();
-    ActionTrace::instance().record("paste_adjustments", {{"file", currentFile()}});
-    emit adjustmentsChanged();
-    applyCurrent();
+    pasteAdjustmentGroups(AdjustmentTransfer::allGroups());
+}
+
+bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+    if (!hasImage() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
+    auto *state=mutableCurrentState();
+    AdjustmentTransfer::apply(*state,m_clipboard,groups);
+    m_photos[m_currentIndex].history.finish();
+    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName}});
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
+    return true;
 }
 
 void PhotoController::syncAdjustmentsToAll() {
-    if (!hasImage()) return;
-    const auto state = currentState();
-    for (auto &photo : m_photos) {
-        photo.state = state;
-        if (m_project.isOpen()) m_dirtyEdits.insert(photo.path, photo.state);
+    syncAdjustmentGroups(AdjustmentTransfer::allGroups(),false);
+}
+
+int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+    if (!hasImage() || !AdjustmentTransfer::validGroups(groups)) return -1;
+    const auto source=m_photos[m_currentIndex].state;
+    const auto sourceKey=m_photos[m_currentIndex].storageKey();
+    QStringList changedKeys; int targets=0;
+    for (int i=0;i<m_photos.size();++i) {
+        if (i==m_currentIndex || (selectedOnly && !m_selectedPhotos.contains(i))) continue;
+        ++targets; auto &photo=m_photos[i];
+        auto state=photo.state; AdjustmentTransfer::apply(state,source,groups);
+        photo.history.initialize(photo.state);
+        photo.history.finish();
+        if (!photo.history.record(state,QStringLiteral("sync_adjustments"))) continue;
+        photo.state=std::move(state); photo.timeline.editedAt=QDateTime::currentMSecsSinceEpoch();
+        markPhotoDirty(photo);
+        changedKeys.append(photo.storageKey());
     }
-    enqueueEdits();
-    ActionTrace::instance().record("sync_adjustments", {{"count", m_photos.size()}});
-    emit libraryChanged();
-    emit adjustmentsChanged();
-    applyCurrent();
-    setStatus(uiText(QStringLiteral("已同步到 %1 张照片").arg(m_photos.size()), QStringLiteral("Synced to %1 image(s)").arg(m_photos.size())));
+    ActionTrace::instance().record("sync_adjustments",QVariantMap{{"source_key",sourceKey},{"groups",groups},
+        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()}});
+    if (!changedKeys.isEmpty()) emit libraryChanged();
+    setStatus(uiText("同步完成：更新 %1 / %2 个目标版本", "Sync complete: updated %1 / %2 target version(s)").arg(changedKeys.size()).arg(targets));
+    // A failed write remains pending via the existing per-photo retry path.
+    // Keep its save-error status visible instead of replacing it with success.
+    if (m_project.isOpen()) flushEdits();
+    return int(changedKeys.size());
 }
 
 bool PhotoController::exportCurrent(const QUrl &destination, const QString &colorSpaceKey, int quality) {
     if (!hasImage() || exportBusy()) return false;
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
-    if (!path.endsWith(".jpg", Qt::CaseInsensitive) && !path.endsWith(".jpeg", Qt::CaseInsensitive)) path += ".jpg";
+    if (!QStringList{"jpg","jpeg","png","tif","tiff","webp"}.contains(QFileInfo(path).suffix().toLower())) path += ".jpg";
     if (isProtectedPhoto(path)) { setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph.")); return false; }
     const auto target = ColorManagement::fromKey(colorSpaceKey);
     // Protect every imported original, not merely the current photograph.
@@ -421,20 +1091,30 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
     return queued; // Accepted, not a claim that the file has already been written.
 }
 
-bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality) {
+QVariantMap PhotoController::exportNamePreview(const QString &pattern, int sequenceStart, const QString &format) const {
+    QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
+    for (const auto &photo : m_photos) sources.push_back({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto plan=planExportNames(sources,{pattern,sequenceStart},format);
+    return {{"valid",plan.error.isEmpty()},{"names",plan.names.mid(0,3)},{"count",m_photos.size()},
+            {"error",uiText(plan.errorZh,plan.error)}};
+}
+
+bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format,
+                                const QString &pattern, int sequenceStart) {
     if (m_photos.isEmpty() || exportBusy() || !folder.isLocalFile()) return false;
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
-    flushEdits();
+    QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
+    for (const auto &photo : m_photos) sources.push_back({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto names=planExportNames(sources,{pattern,sequenceStart},format,
+        directory.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
+    if (!names.error.isEmpty()) { setStatus(uiText(names.errorZh,names.error)); return false; }
+    if (!flushEdits()) return false;
     QVector<ExportRequest> requests;
-    QSet<QString> reserved;
-    for (const auto &photo : m_photos) {
-        QString stem = QFileInfo(photo.path).completeBaseName() + QStringLiteral("_JixelLight");
-        QString path = directory.filePath(stem + ".jpg");
-        int suffix = 1;
-        while (QFileInfo::exists(path) || reserved.contains(path.toCaseFolded())) path = directory.filePath(stem + QStringLiteral("_%1.jpg").arg(suffix++));
-        reserved.insert(path.toCaseFolded());
-        requests.push_back({photo.path, path, {}, photo.state, ColorManagement::fromKey(colorSpaceKey), std::clamp(quality, 1, 100)});
+    for (qsizetype i=0;i<m_photos.size();++i) {
+        const auto &photo=m_photos[i];
+        requests.push_back({photo.path,directory.filePath(names.names[i]),{},photo.state,
+            ColorManagement::fromKey(colorSpaceKey),std::clamp(quality,1,100),true});
     }
     const bool queued = m_exportQueue->start(std::move(requests));
     if (queued) { m_exportProgress = 0; emit exportChanged(); }
@@ -442,28 +1122,138 @@ bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey
 }
 void PhotoController::cancelExport() { m_exportQueue->cancel(); }
 
-QString PhotoController::reportBug() {
-    ActionTrace::instance().record("bug_snapshot_requested", {{"file", currentFile()}, {"pipeline", pipelineDescription()}});
-    // Explicit, one-off reference capture. Never label a previous revision's
-    // asynchronously displayed pixels as the current parameters.
-    QImage capture;
-    if (!m_previewSource.isNull())
-        capture = ImagePipeline::process(m_previewSource, currentState(), ImagePipeline::InputEncoding::LinearProPhoto);
-    PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
-    PerformanceRecorder::value("look_context", QJsonObject::fromVariantMap({{"asShot",sonyLook()},{"current",lookState()},{"reference",m_referenceInfo},{"calibration",m_calibrationReport}}));
-    const QString path = DiagnosticBundle::create(capture, currentFile(), projectPath(), currentState(),
-        m_scopes.shadowClipPercent, m_scopes.highlightClipPercent, pipelineDescription(),
-        {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
-         {"parameter_revision", qint64(m_requestedRevision)}, {"statistics_revision", qint64(m_scopesRevision)},
-         {"is_current", m_scopesRevision == m_requestedRevision}, {"viewport_preparing", m_preparing}});
+PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
+    BugSnapshot snapshot;
+    snapshot.revision = m_requestedRevision; snapshot.photoEpoch = m_photoEpoch;
+    snapshot.state = currentState();
+    snapshot.file = currentFile(); snapshot.project = projectPath(); snapshot.pipeline = pipelineDescription();
+    snapshot.prepare.image = m_fullSource.isNull() ? m_loadedPreview : m_fullSource;
+    snapshot.prepare.viewport = m_viewport;
+    snapshot.prepare.zoom = m_zoom; snapshot.prepare.centerX = m_centerX; snapshot.prepare.centerY = m_centerY;
+    snapshot.prepare.fullResolution = m_sourceIsFull; snapshot.prepare.geometry = snapshot.state.geometry;
+    snapshot.plan = gpuPlan(true); snapshot.visiblePlan = gpuPlan();
+    snapshot.gpuSource = gpuSource(); snapshot.gpuFrameRect = m_previewFrameRect;
+    snapshot.shadowClip = m_scopes.shadowClipPercent; snapshot.highlightClip = m_scopes.highlightClipPercent;
+    snapshot.scopeContext = {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
+        {"parameter_revision", qint64(snapshot.revision)}, {"statistics_revision", qint64(m_scopesRevision)},
+        {"is_current", m_scopesRevision == snapshot.revision}, {"viewport_preparing", m_preparing}};
+    auto &values = snapshot.performanceValues;
+    values["stage_dependencies"] = StageGraph::describe(m_loadedKey, snapshot.prepare, snapshot.state, currentIsRaw(), rawBaseExposureStops());
+    if (m_renderCache) values["render_cache"] = m_renderCache->snapshot();
+    if (m_fullScopesCache) values["full_scopes_cache"] = m_fullScopesCache->snapshot();
+    if (m_scopePlotCache) values["scope_plot_cache"] = m_scopePlotCache->snapshot();
+    values["controller_state"] = QJsonObject{{"requested_revision", qint64(snapshot.revision)},
+        {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()},
+        {"backend", processingBackend()}, {"loading", m_loading}, {"photo_epoch", qint64(snapshot.photoEpoch)}};
+    values["scope_plot"] = QJsonObject{{"mode", m_scopeMode}, {"revision", qint64(m_plotRevision)},
+        {"pixels", qint64(m_scopePlot.pixels)}, {"full_resolution", m_plotFull}, {"is_current", scopePlotCurrent()},
+        {"error", m_scopePlot.error}, {"encoding", "sRGB encoded, before monitor ICC"}};
+    values["look_context"] = QJsonObject::fromVariantMap({{"asShot", sonyLook()}, {"current", lookState()},
+        {"reference", m_referenceInfo}, {"calibration", m_calibrationReport}});
+    return snapshot;
+}
+
+QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObject gpuOutput) {
+    // Both the CPU oracle and the bundle metadata use the initial request,
+    // even if a photo, viewport, or parameter changes while the GPU responds.
+    const auto diagnosticPreview = preparePreview(snapshot.prepare, {});
+    auto diagnosticPlan = snapshot.plan; diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
+    const auto colorCapture = ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal, diagnosticPlan);
+    const QImage capture = colorCapture.image;
+    QElapsedTimer hashTimer; hashTimer.start();
+    QJsonObject gpuContext{{"source_cache_key", QString::number(snapshot.gpuSource.cacheKey())},
+        {"frame_rect", QJsonArray{snapshot.gpuFrameRect.x(), snapshot.gpuFrameRect.y(), snapshot.gpuFrameRect.width(), snapshot.gpuFrameRect.height()}},
+        {"source", FloatFrameFingerprint::capture(snapshot.gpuSource)}};
+    if (gpuOutput.value("available").toBool()) {
+        const QImage reference = ImagePipeline::processWithPlan(ImagePipeline::rgba64Source(snapshot.gpuSource), snapshot.visiblePlan);
+        gpuContext["cpu_reference"] = FloatFrameFingerprint::capture(ImagePipeline::floatSource(reference));
+        gpuContext["reference_storage"] = "RGBA64 CPU oracle converted to FP32; identical frozen GPU input and color plan";
+    }
+    gpuOutput["request_id"] = QString::number(snapshot.request);
+    const QJsonObject stageOutputs{{"schema",2},{"engine",ProcessingPlan::EngineVersion},
+        {"parameter_revision",qint64(snapshot.revision)},{"photo_epoch",qint64(snapshot.photoEpoch)},
+        {"source_is_full_resolution",snapshot.prepare.fullResolution},
+        {"source",StageGraph::outputFingerprint(snapshot.prepare.image)},
+        {"prepared_preview",StageGraph::outputFingerprint(diagnosticPreview.normal)},
+        {"prepared_frame_rect",QJsonArray{diagnosticPreview.frameRect.x(),diagnosticPreview.frameRect.y(),diagnosticPreview.frameRect.width(),diagnosticPreview.frameRect.height()}},
+        {"cpu_srgb_output",StageGraph::outputFingerprint(capture)},
+        {"color_stages",colorCapture.stages},
+        {"gpu_working_output",gpuOutput},{"gpu_context",gpuContext},
+        {"monitor_icc","excluded; hashes precede screen presentation"},
+        {"note","RGBA64/proxy and CPU color boundaries; explicit GPU final working-output fingerprint only; float RAW and internal GPU boundaries remain unavailable"}};
+    PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(snapshot.prepare.image.sizeInBytes())}});
+    for (auto it = snapshot.performanceValues.begin(); it != snapshot.performanceValues.end(); ++it)
+        PerformanceRecorder::value(it.key(), it.value());
+    const QString path = DiagnosticBundle::create(capture, snapshot.file, snapshot.project, snapshot.state,
+        snapshot.shadowClip, snapshot.highlightClip, snapshot.pipeline, snapshot.scopeContext, stageOutputs);
     ActionTrace::instance().record("bug_snapshot_created", {{"path", path}, {"ok", !path.isEmpty()}});
     setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"), QStringLiteral("Diagnostic bundle failed"))
                              : uiText(QStringLiteral("诊断包：") + path, QStringLiteral("Diagnostic bundle: ") + path));
     return path;
 }
 
+QString PhotoController::reportBug() {
+    ActionTrace::instance().record("bug_snapshot_requested", {{"file", currentFile()}, {"pipeline", pipelineDescription()}});
+    return createBugReport(freezeBugSnapshot(), {{"available", false}, {"error", "Synchronous report uses the CPU reference; GPU readback requires an asynchronous request"}});
+}
+
+quint64 PhotoController::diagnosticRequestId() const {
+    return m_pendingBug && m_pendingBug->requestGpu ? m_pendingBug->request : 0;
+}
+quint64 PhotoController::diagnosticRevision() const { return m_pendingBug ? m_pendingBug->revision : 0; }
+qint64 PhotoController::diagnosticSourceKey() const { return m_pendingBug ? m_pendingBug->gpuSource.cacheKey() : 0; }
+
+quint64 PhotoController::startBugReport(bool showDialog) {
+    if (m_closing || m_diagnosticBusy) return 0;
+    m_pendingBug = std::make_unique<BugSnapshot>(freezeBugSnapshot());
+    m_pendingBug->request = ++m_nextDiagnosticRequest;
+    m_pendingBug->requestGpu = m_gpuEnabled && !m_loading && !m_preparing && !m_pendingBug->gpuSource.isNull();
+    const quint64 request = m_pendingBug->request;
+    m_diagnosticBusy = true; m_diagnosticDialog = showDialog;
+    ActionTrace::instance().record("bug_snapshot_requested", {{"file", m_pendingBug->file}, {"request", QString::number(request)}});
+    const QPointer<PhotoController> guard(this);
+    emit diagnosticChanged();
+    if (!guard || !m_pendingBug) return request;
+    if (m_pendingBug->requestGpu) {
+        setStatus(uiText(QStringLiteral("正在采集诊断快照…"), QStringLiteral("Capturing diagnostic snapshot…")));
+        if (!guard || !m_pendingBug) return request;
+        m_diagnosticTimer.start(3000);
+        emit gpuFrameChanged();
+    } else finishBugReport({{"available", false}, {"error", "GPU preview is disabled or not ready for this snapshot"}});
+    return request;
+}
+
+qulonglong PhotoController::requestBugReport() { return startBugReport(false); }
+
+void PhotoController::gpuDiagnosticReady(quint64 request, QJsonObject output) {
+    if (m_closing || !m_pendingBug || request != m_pendingBug->request) return;
+    if (output.value("available").toBool()
+        && (output.value("parameter_revision").toInteger(-1) != qint64(m_pendingBug->revision)
+            || output.value("source_cache_key").toString() != QString::number(m_pendingBug->gpuSource.cacheKey())))
+        output = {{"available", false}, {"error", "GPU response does not match the frozen revision and source"}};
+    finishBugReport(std::move(output));
+}
+
+void PhotoController::finishBugReport(QJsonObject gpuOutput) {
+    if (m_closing || !m_pendingBug) return;
+    m_diagnosticTimer.stop();
+    const auto snapshot = std::move(m_pendingBug);
+    const bool dialog = m_diagnosticDialog;
+    const QPointer<PhotoController> guard(this);
+    const QString path = createBugReport(*snapshot, std::move(gpuOutput));
+    if (!guard) return;
+    m_diagnosticBusy = false; m_diagnosticDialog = false;
+    emit diagnosticChanged();
+    if (!guard) return;
+    emit diagnosticFinished(path);
+    if (guard && dialog) showBugReport(path);
+}
+
 void PhotoController::reportBugWithDialog() {
-    const QString path = reportBug();
+    startBugReport(true);
+}
+
+void PhotoController::showBugReport(const QString &path) {
     if (path.isEmpty()) {
         QMessageBox::critical(nullptr,
             uiText(QStringLiteral("JixelLight 诊断"), QStringLiteral("JixelLight Diagnostics")),
@@ -484,6 +1274,10 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_importNameDatesJob.reset();
+    m_copyImportQueue.reset();
+    m_plotTimer.stop(); m_plotJob.reset();
+    m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
@@ -492,7 +1286,85 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    m_importNameDatesJob=std::make_unique<LatestJob<ImportNameDateRequest,QHash<QString,QString>>>(
+        [](const ImportNameDateRequest &request,const CancelToken &cancel) {
+            QHash<QString,QString> result;
+            for (auto it=request.sources.begin();it!=request.sources.end();++it) {
+                if (cancelled(cancel)) return result;
+                if (FileNames::sourceStamp(it.value())!=it.key()) continue;
+                PerformanceRecorder::count("import_name_preview_metadata_reads");
+                const auto time=PhotoTimeline::cameraTime(MetadataReader::read(it.value()).value("captureTime").toString());
+                if (FileNames::sourceStamp(it.value())==it.key()) result.insert(it.key(),time);
+            }
+            return result;
+        },[this](const ImportNameDateRequest &request,QHash<QString,QString> result) {
+            if (m_closing || request.sources!=m_importNamePending) return;
+            for (auto it=request.sources.begin();it!=request.sources.end();++it)
+                if (FileNames::sourceStamp(it.value())==it.key()) m_importNameTimes.insert(it.key(),new QString(result.value(it.key())));
+            m_importNamePending.clear(); ++m_importNameRevision; emit importNamePreviewChanged();
+        });
+    m_copyImportQueue=std::make_unique<CopyImportQueue>();
+    connect(m_copyImportQueue.get(),&CopyImportQueue::progress,this,[this](qint64 copied,qint64 total,int completed,int files,const QString &stage) {
+        m_copyImportProgress=total>0 ? std::clamp(double(copied)/total,0.0,1.0) : 0;
+        m_copyImportStatus=(stage=="verify" ? uiText("校验副本", "Verifying copy") : uiText("复制导入", "Copy import"))
+            +QString(" · %1/%2").arg(completed).arg(files); emit copyImportChanged();
+    });
+    connect(m_copyImportQueue.get(),&CopyImportQueue::finished,this,[this](const CopyImportResult &result) {
+        if (m_closing) return;
+        int added=0,raw=0;
+        for (const auto &file : result.completed) {
+            if (importPath(file.destination,false)) { ++added; if (RawDecoder::isRawFile(file.destination)) ++raw; }
+            ActionTrace::instance().record("copy_import_published",{{"source",file.source},{"destination",file.destination},{"sha256",file.sha256}});
+        }
+        if (added) finishImportBatch(added,raw);
+        m_copyImportProgress=result.error.isEmpty() && !result.wasCancelled ? 1 : m_copyImportProgress;
+        m_copyImportStatus=uiText("复制完成 %1 个，导入 %2 张", "Copied %1 file(s), imported %2 image(s)").arg(result.completed.size()).arg(added);
+        if (result.wasCancelled) m_copyImportStatus+=uiText(" · 已取消，保留已完成副本", " · cancelled; completed copies retained");
+        if (!result.error.isEmpty()) m_copyImportStatus+=uiText(" · 错误：", " · error: ")+(m_language=="zh_CN" && !result.errorZh.isEmpty()?result.errorZh:result.error);
+        setStatus(m_copyImportStatus); emit copyImportChanged();
+        ActionTrace::instance().record("copy_import_finished",{{"copied",result.completed.size()},{"imported",added},{"cancelled",result.wasCancelled},{"error",result.error}});
+    });
+    m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
+    connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
+    m_scopePlotCache=std::make_shared<ScopePlotCache>();
+    const auto plotCache=m_scopePlotCache;
+    m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(
+        [plotCache](const ScopePlotRequest &request,const CancelToken &cancel) { return plotCache->render(request,cancel); },
+        [this](const ScopePlotRequest &request,ScopePlotResult result) {
+            if (m_closing || request.revision!=m_requestedRevision || request.mode!=m_scopeMode || request.fullResolution!=m_exactScopes || m_preparing) return;
+            if (result.image.isNull() && result.error.isEmpty()) result.error="Scope plot rendering failed";
+            m_scopePlot=std::move(result); m_plotRevision=request.revision; m_plotFull=request.fullResolution; ++m_plotImageId;
+            if (m_provider) m_provider->setScopePlot(m_scopePlot.image);
+            emit scopePlotChanged();
+        });
+    m_catalogDatesJob = std::make_unique<LatestJob<CatalogDateRequest,QHash<QString,QString>>>(
+        [](const CatalogDateRequest &request, const CancelToken &cancel) {
+            QHash<QString,QString> result;
+            for (const auto &path : request.paths) {
+                if (cancelled(cancel)) return result;
+                result.insert(path,MetadataReader::read(path).value("captureTime").toString());
+            }
+            return result;
+        }, [this](const CatalogDateRequest &request, QHash<QString,QString> result) {
+            if (m_closing || request.epoch != m_catalogEpoch) return;
+            bool changed = false;
+            for (auto &photo : m_photos) if (result.contains(photo.path)) {
+                const auto captured = PhotoTimeline::cameraTime(result.value(photo.path));
+                if (photo.timeline.captureChecked && photo.timeline.captureTime == captured) continue;
+                photo.timeline.captureChecked = true; photo.timeline.captureTime = captured;
+                markPhotoDirty(photo); changed = true;
+            }
+            if (changed) emit libraryChanged();
+        });
+    m_catalogDateTimer.setSingleShot(true); m_catalogDateTimer.setInterval(50);
+    connect(&m_catalogDateTimer,&QTimer::timeout,this,[this] {
+        QStringList paths; for (const auto &photo : m_photos) if (!photo.timeline.captureChecked) paths.append(photo.path);
+        paths.removeDuplicates(); paths.sort();
+        if (!paths.isEmpty()) m_catalogDatesJob->submit({m_catalogEpoch,paths});
+    });
     m_sourceCache = std::make_shared<SourceCache>();
+    m_renderCache = std::make_shared<RenderedPreviewCache>();
+    m_fullScopesCache = std::make_shared<FullScopesCache>();
     m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache);
     const auto cache = m_sourceCache;
     m_loader = std::make_unique<LatestJob<LoadRequest, SourceData>>(
@@ -517,6 +1389,7 @@ void PhotoController::initializeJobs() {
                 return;
             }
             m_previewSource = result.normal; m_fastSource = result.fast; m_gpuSource = result.gpu;
+            m_previewFrameRect=result.frameRect;
             m_displayPixels = result.displayPixels; m_viewportOnly = result.viewportOnly;
             emit previewGeometryChanged(); emit activityChanged();
             ++m_requestedRevision;
@@ -525,9 +1398,10 @@ void PhotoController::initializeJobs() {
             scheduleRender(false);
             if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
         });
+    const auto renderCache = m_renderCache;
     m_render = std::make_unique<LatestJob<RenderRequest, QImage>>(
-        [](const RenderRequest &request, const CancelToken &cancel) {
-            try { return ImagePipeline::processWithPlan(request.source, request.plan, cancel); }
+        [renderCache](const RenderRequest &request, const CancelToken &cancel) {
+            try { return renderCache->render(request.source, request.plan, cancel); }
             catch (...) { return QImage{}; }
         }, [this](const RenderRequest &request, QImage image) {
             if (request.revision != m_requestedRevision || m_gpuActive) {
@@ -548,9 +1422,10 @@ void PhotoController::initializeJobs() {
         [this](const ScopeRequest &request, ScopesResult scopes) {
             acceptScopes(request.revision, scopes, 0, m_viewportOnly ? uiText(QStringLiteral("视区预览统计"), QStringLiteral("Viewport preview")) : uiText(QStringLiteral("预览统计"), QStringLiteral("Preview statistics")));
         });
+    const auto fullScopesCache=m_fullScopesCache;
     m_fullScopeJob = std::make_unique<LatestJob<ScopeRequest, ScopesResult>>(
-        [](const ScopeRequest &request, const CancelToken &cancel) {
-            try { return ScopesEngine::analyzeFull(request.image, request.plan, cancel); }
+        [fullScopesCache](const ScopeRequest &request, const CancelToken &cancel) {
+            try { return fullScopesCache->analyze(request, cancel); }
             catch (...) { return ScopesResult{}; }
         }, [this](const ScopeRequest &request, ScopesResult scopes) {
             acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")));
@@ -566,7 +1441,14 @@ void PhotoController::initializeJobs() {
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { flushEdits(); });
     connect(&m_project, &ProjectDatabase::writeFailed, this, [this](const QString &message) {
         // Retain a recoverable in-memory copy after an asynchronous SQL failure.
-        for (const auto &photo : m_photos) m_dirtyEdits.insert(photo.path, photo.state);
+        for (const auto &photo : m_photos) {
+            m_dirtyEdits.insert(photo.storageKey(), photo.state);
+            auto history = photo.history; history.initialize(photo.state);
+            m_dirtyHistories.insert(photo.storageKey(),history);
+            m_dirtyTags.insert(photo.storageKey(),photo.tags);
+            m_dirtyDates.insert(photo.storageKey(),photo.timeline);
+            m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+        }
         setStatus(uiText(QStringLiteral("保存失败（编辑仍保留在内存）：%1").arg(message), QStringLiteral("Save failed (edits retained in memory): %1").arg(message)));
         ActionTrace::instance().record("project_save_failed", {{"error", message}});
     });
@@ -575,7 +1457,7 @@ void PhotoController::initializeJobs() {
         emit exportChanged();
     });
     connect(m_exportQueue.get(), &ExportQueue::fileFinished, this, [this](const QString &source, const QString &destination, bool ok, const QString &error) {
-        ActionTrace::instance().record("export_jpeg", {{"source", source}, {"destination", destination}, {"ok", ok}, {"error", error}});
+        ActionTrace::instance().record("export_image", {{"source", source}, {"destination", destination}, {"ok", ok}, {"error", error}});
         if (!ok) qWarning() << "Export failed" << source << error;
     });
     connect(m_exportQueue.get(), &ExportQueue::finished, this, [this](int succeeded, int failed, bool stopped) {
@@ -609,6 +1491,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
     if (data.key == m_loadedKey && m_loadedPreview.cacheKey() == data.image.cacheKey() && m_sourceIsFull == data.fullResolution) return;
     m_loadedKey = data.key; m_loadedPreview = data.image; m_sourceIsFull = data.fullResolution;
     m_currentMetadata = data.metadata;
+    updateCaptureTime(currentFile(),data.metadata.value("captureTime").toString());
     if (data.fullResolution) {
         m_fullSource = data.image; m_loading = false;
         m_prefetchTimer.start();
@@ -623,17 +1506,21 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
 void PhotoController::prepareCurrent() {
     if (m_loadedPreview.isNull()) return;
     m_preparing = true;
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     ++m_requestedRevision;
     m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
-    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_zoom, m_centerX, m_centerY, m_sourceIsFull});
+    m_preparedGeometry = previewGeometry().toJson();
+    m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_cropEditing ? 0 : m_zoom, m_centerX, m_centerY, m_sourceIsFull, previewGeometry()});
+    emit gpuFrameChanged();
     setBusy(true);
 }
 
 void PhotoController::scheduleRender(bool fast) {
     if (m_previewSource.isNull() || m_preparing) return;
     setBusy(true);
+    emit scopePlotChanged();
     m_renderClock.restart();
     emit gpuFrameChanged();
     if (m_gpuEnabled && m_gpuActive) { m_render->cancel(); return; }
@@ -641,6 +1528,8 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
+    if (hasImage()) m_photos[m_currentIndex].history.finish();
+    emit libraryChanged();
     m_refineTimer.stop();
     m_interacting = false;
     enqueueEdits();
@@ -659,6 +1548,8 @@ void PhotoController::completeFrame(quint64 revision) {
     if (revision != m_requestedRevision) return;
     if (m_renderClock.isValid()) PerformanceRecorder::sample("request_to_result_ms", m_renderClock.nsecsElapsed()/1e6, {{"backend", processingBackend()}, {"revision", qint64(revision)}});
     setBusy(false);
+    if (m_scopeMode!="histogram" && m_plotSubmittedRevision!=m_requestedRevision && !m_plotTimer.isActive()) m_plotTimer.start();
+    emit scopePlotChanged();
 }
 void PhotoController::setBusy(bool busy) {
     if (m_exportQueue) m_exportQueue->setInteractive(busy || m_interacting);
@@ -681,16 +1572,32 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
     emit scopesChanged();
 }
 
+void PhotoController::updateCaptureTime(const QString &path, const QString &time) {
+    const auto captured = PhotoTimeline::cameraTime(time); bool changed = false;
+    for (auto &photo : m_photos) if (photo.path == path && (!photo.timeline.captureChecked || photo.timeline.captureTime != captured)) {
+        photo.timeline.captureChecked = true; photo.timeline.captureTime = captured;
+        markPhotoDirty(photo); changed = true;
+    }
+    if (changed) emit libraryChanged();
+}
 void PhotoController::markDirty() {
-    if (!m_project.isOpen() || !hasImage()) return;
-    m_dirtyEdits.insert(currentFile(), currentState());
+    if (hasImage()) markPhotoDirty(m_photos[m_currentIndex]);
+}
+void PhotoController::markPhotoDirty(const PhotoEntry &photo) {
+    if (!m_project.isOpen()) return;
+    const auto key = photo.storageKey();
+    m_dirtyEdits.insert(key,photo.state);
+    auto history = photo.history; history.initialize(photo.state);
+    m_dirtyHistories.insert(key,history); m_dirtyDates.insert(key,photo.timeline);
     m_saveTimer.start();
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
 }
 void PhotoController::enqueueEdits() {
     m_saveTimer.stop(); m_saveMaxTimer.stop();
-    if (m_dirtyEdits.isEmpty() || !m_project.isOpen()) return;
-    if (m_project.updateBatch(m_dirtyEdits)) m_dirtyEdits.clear();
+    if (!m_project.isOpen()) return;
+    if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories,m_dirtyDates)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); m_dirtyDates.clear(); }
+    if (!m_dirtyCuration.isEmpty() && m_project.updateCurationBatch(m_dirtyCuration)) m_dirtyCuration.clear();
+    if (!m_dirtyTags.isEmpty() && m_project.updateTagsBatch(m_dirtyTags)) m_dirtyTags.clear();
 }
 bool PhotoController::flushEdits() {
     enqueueEdits();
@@ -744,11 +1651,14 @@ void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes,
 QString PhotoController::scopesStatus() const {
     if (m_previewSource.isNull()) return m_scopesLabel.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : m_scopesLabel;
     if (m_scopesRevision != m_requestedRevision) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
-    return m_scopesLabel + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
+    return m_scopesLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
+        + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
 }
 void PhotoController::setExactScopes(bool enabled) {
     if (m_exactScopes == enabled) return;
     m_exactScopes = enabled;
+    m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();
+    if (m_scopeMode!="histogram") m_plotTimer.start();
     m_fullScopeJob->cancel(); m_exactTimer.stop();
     m_scopesUpdating = enabled && m_scopesRank < 1;
     emit scopesChanged();
@@ -756,7 +1666,36 @@ void PhotoController::setExactScopes(bool enabled) {
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
-    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true});
+    m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry()});
+}
+QString PhotoController::scopePlotUrl() const {
+    return m_scopePlot.image.isNull() ? QString{} : QString("image://processed/scopes/%1").arg(m_plotImageId);
+}
+QString PhotoController::scopePlotStatus() const {
+    if (!hasImage()) return uiText("尚无统计", "No statistics");
+    if (!m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && m_plotFull==m_exactScopes)
+        return uiText("CPU 示波器失败：", "CPU scope failed: ")+m_scopePlot.error;
+    if (m_scopeMode=="histogram") return {};
+    if (!scopePlotCurrent()) return uiText("CPU 示波器更新中（旧结果）", "CPU scope updating (previous result)");
+    return uiText("CPU · ","CPU · ")+(m_plotFull ? uiText("全分辨率", "Full resolution") : uiText("当前视区预览", "Current viewport preview"))
+        +QString(" · %1 px").arg(m_scopePlot.pixels)+(m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString());
+}
+void PhotoController::setScopeMode(const QString &mode) {
+    if (!QStringList{"histogram","waveform","parade","vectorscope"}.contains(mode) || mode==m_scopeMode) return;
+    m_scopeMode=mode; m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
+    if (m_provider) m_provider->setScopePlot({});
+    emit scopePlotChanged();
+    if (mode!="histogram") m_plotTimer.start();
+}
+void PhotoController::requestScopePlot() {
+    if (m_closing || m_scopeMode=="histogram" || !hasImage() || m_preparing || m_rendering) return;
+    ScopePlotRequest request;
+    request.source=m_exactScopes ? m_fullSource : m_previewSource;
+    if (request.source.isNull()) return;
+    request.geometry=m_exactScopes ? previewGeometry() : GeometryState{};
+    request.plan=gpuPlan(m_exactScopes); request.mode=m_scopeMode; request.revision=m_requestedRevision; request.fullResolution=m_exactScopes;
+    m_plotSubmittedRevision=request.revision;
+    m_plotJob->submit(std::move(request));
 }
 void PhotoController::prefetchNeighbor() {
     if (!hasImage() || m_loading || exportBusy()) return;

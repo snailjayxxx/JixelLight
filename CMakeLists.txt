@@ -33,6 +33,20 @@ if(NOT TARGET Exiv2::exiv2lib)
 endif()
 find_package(JPEG REQUIRED)
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE JIXELLIGHT_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+# A reused build must not keep the commit from its first configuration. Resolve
+# Git's paths as well, so linked worktrees and detached CI checkouts are covered.
+execute_process(COMMAND git symbolic-ref --quiet HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE JIXELLIGHT_GIT_REF OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+foreach(git_path IN ITEMS HEAD packed-refs "${JIXELLIGHT_GIT_REF}")
+    if(NOT git_path STREQUAL "")
+        execute_process(COMMAND git rev-parse --git-path "${git_path}" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE git_dependency OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT git_dependency STREQUAL "")
+            get_filename_component(git_dependency "${git_dependency}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+            if(EXISTS "${git_dependency}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${git_dependency}")
+            endif()
+        endif()
+    endif()
+endforeach()
 if(NOT JIXELLIGHT_GIT_COMMIT)
     set(JIXELLIGHT_GIT_COMMIT "unknown")
 endif()
@@ -41,10 +55,18 @@ add_library(JixelLightCore STATIC
     app/LookController.cpp
     app/DisplayColorController.cpp
     core/cache/SourceCache.cpp
+    core/cache/RenderedPreviewCache.cpp
+    core/cache/FullScopesCache.cpp
+    core/cache/ScopePlotCache.cpp
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
+    core/image/ThumbnailProvider.cpp
+    core/import/CopyImport.cpp
+    core/import/ImportNaming.cpp
+    core/import/CopyImportQueue.cpp
     core/metadata/MetadataReader.cpp
+    core/metadata/XmpSidecar.cpp
     core/look/SonyLookMetadata.cpp
     core/look/LookLut.cpp
     core/look/LookProfiles.cpp
@@ -52,12 +74,19 @@ add_library(JixelLightCore STATIC
     core/look/CameraReference.cpp
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
+    core/pipeline/ColorStageDiagnostics.cpp
+    core/pipeline/GeometryState.cpp
+    core/pipeline/GeometryCorrections.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
     core/scopes/ScopesEngine.cpp
+    core/scopes/ScopePlot.cpp
+    core/export/PngExporter.cpp
+    core/export/RasterExporter.cpp
     core/export/JpegExporter.cpp
     core/export/ExportQueue.cpp
+    core/export/ExportNaming.cpp
     diagnostics/ActionTrace.cpp
     diagnostics/LoggingEngine.cpp
     diagnostics/PerformanceRecorder.cpp
@@ -72,7 +101,7 @@ if(WIN32)
 endif()
 qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
@@ -148,3 +177,12 @@ set_tests_properties(sony-real-files PROPERTIES TIMEOUT 540 SKIP_RETURN_CODE 77)
 # The native GPU test consumes the actual profile fitted by the real-file test.
 set_tests_properties(gpu-correctness PROPERTIES DEPENDS sony-real-files
     ENVIRONMENT "JIXELLIGHT_TEST_SONY_PROFILE=${CMAKE_BINARY_DIR}/sony-real-reports/dataset/empirical.jlook.json")
+
+# Offline automation uses the same parameter registry and CPU reference engine.
+qt_add_executable(JixelLightCli tools/Cli.cpp)
+target_link_libraries(JixelLightCli PRIVATE JixelLightCore)
+set_target_properties(JixelLightCli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME cli-schema COMMAND JixelLightCli --schema)
+add_test(NAME cli-export-safety COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateCli.py $<TARGET_FILE:JixelLightCli>)
+set_tests_properties(cli-schema cli-export-safety PROPERTIES TIMEOUT 120)

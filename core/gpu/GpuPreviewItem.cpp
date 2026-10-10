@@ -18,6 +18,9 @@ public:
         const auto *view=static_cast<GpuPreviewItem *>(item);
         m_controller=qobject_cast<PhotoController *>(view->controller());
         m_source={};
+        m_diagnosticRequest=m_controller?m_controller->diagnosticRequestId():0;
+        m_diagnosticRevision=m_controller?m_controller->diagnosticRevision():0;
+        m_diagnosticSourceKey=m_controller?m_controller->diagnosticSourceKey():0;
         if (m_engine) m_engine->setDisplayColorLut(view->displayColorLut(), view->displayColorLutKey(), view->displayColorProfileName());
         if (m_controller && m_controller->gpuEnabled()) {
             if (m_failed && m_rhi) {
@@ -31,6 +34,7 @@ public:
     }
     void render(QRhiCommandBuffer *cb) override {
         if (m_source.isNull() || !m_engine || m_failed) {
+            diagnosticUnavailable(QStringLiteral("GPU preview is unavailable for the frozen snapshot"));
             cb->beginPass(renderTarget(), Qt::transparent, {1.0f,0}); cb->endPass();
             return;
         }
@@ -46,11 +50,28 @@ public:
                 },Qt::QueuedConnection);
             });
         if (!processed || !m_engine->draw(cb,renderTarget())) {
+            diagnosticUnavailable(m_engine->error());
             m_failed=true;
             if (controller) QMetaObject::invokeMethod(controller,[controller,error=m_engine->error()] {
                 if (controller) controller->gpuFailed(error);
             },Qt::QueuedConnection);
             return;
+        }
+        if (m_diagnosticRequest && m_handledDiagnosticRequest!=m_diagnosticRequest) {
+            if (m_revision!=m_diagnosticRevision || m_source.cacheKey()!=m_diagnosticSourceKey) {
+                diagnosticUnavailable(QStringLiteral("GPU preview changed before diagnostic capture"));
+            } else {
+                const auto request=m_diagnosticRequest;
+                m_handledDiagnosticRequest=request;
+                QString error;
+                const bool captured=m_engine->captureWorkingFrame(cb,m_diagnosticRevision,
+                    [controller,request](QJsonObject output) {
+                        if (controller) QMetaObject::invokeMethod(controller,[controller,request,output=std::move(output)] {
+                            if (controller) controller->gpuDiagnosticReady(request,output);
+                        },Qt::QueuedConnection);
+                    },&error);
+                if (!captured) sendDiagnostic({{"available",false},{"error",error}});
+            }
         }
         if (m_notified!=m_revision) {
             m_notified=m_revision;
@@ -63,12 +84,26 @@ public:
         if (m_engine->hasPendingReadback()) update();
     }
 private:
+    void sendDiagnostic(QJsonObject output) {
+        const auto controller=m_controller;
+        const auto request=m_diagnosticRequest;
+        if (controller) QMetaObject::invokeMethod(controller,[controller,request,output=std::move(output)] {
+            if (controller) controller->gpuDiagnosticReady(request,output);
+        },Qt::QueuedConnection);
+    }
+    void diagnosticUnavailable(const QString &error) {
+        if (!m_diagnosticRequest || m_handledDiagnosticRequest==m_diagnosticRequest) return;
+        m_handledDiagnosticRequest=m_diagnosticRequest;
+        sendDiagnostic({{"available",false},{"error",error}});
+    }
     QRhi *m_rhi=nullptr;
     std::unique_ptr<GpuEngine> m_engine;
     QPointer<PhotoController> m_controller;
     QImage m_source;
     ProcessingPlan m_plan;
     quint64 m_revision=0,m_notified=0;
+    quint64 m_diagnosticRequest=0,m_diagnosticRevision=0,m_handledDiagnosticRequest=0;
+    qint64 m_diagnosticSourceKey=0;
     bool m_failed=false;
 };
 }

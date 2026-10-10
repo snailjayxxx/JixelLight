@@ -21,10 +21,23 @@ Item {
     onCenterXChanged: geometryTimer.restart()
     onCenterYChanged: geometryTimer.restart()
     Component.onCompleted: refresh()
+    onVisibleChanged: { if (!visible && controller.cropEditing) controller.cancelCrop() }
+    Shortcut { sequence: "Escape"; enabled: root.visible && controller.cropEditing; onActivated: controller.cancelCrop() }
+    Shortcut { sequence: "Return"; enabled: root.visible && controller.cropEditing; onActivated: root.applyCrop() }
+    function applyCrop() {
+        const r=cropOverlay.selection
+        controller.applyCrop(r.x,r.y,r.width,r.height)
+    }
     Timer { id: geometryTimer; interval: 16; onTriggered: root.refresh() }
     Connections {
         target: root.controller
         function onCurrentIndexChanged() { root.centerX=.5;root.centerY=.5;root.refresh() }
+        function onCropEditingChanged() {
+            if (root.controller.cropEditing) {
+                root.zoom=0; cropOverlay.aspectRatio=0; cropAspect.currentIndex=0
+                cropOverlay.selection=root.controller.cropOverlay
+            }
+        }
     }
     Item {
         id: picture
@@ -49,10 +62,17 @@ Item {
             }
             z: 0
         }
+        CropOverlay {
+            id: cropOverlay
+            objectName: "interactiveCropOverlay"
+            anchors.fill: parent; z: 3
+            visible: controller.cropEditing && !controller.rendering
+            enabled: visible
+        }
     }
     MouseArea {
         anchors.fill: parent
-        enabled: root.zoom>0 && controller.previewReady
+        enabled: root.zoom>0 && controller.previewReady && !controller.cropEditing
         property real oldX: 0
         property real oldY: 0
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
@@ -69,9 +89,22 @@ Item {
     }
     Row {
         anchors.left: parent.left; anchors.top: parent.top; spacing: 5
-        Button { text: root.t("适合", "Fit"); onClicked: root.zoom=0 }
-        Button { text: "100%"; enabled: controller.previewReady; onClicked: root.zoom=1 }
-        Button { text: "200%"; enabled: controller.previewReady; onClicked: root.zoom=2 }
+        visible: !controller.cropEditing
+        Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
+        Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
+        Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
+    }
+    Row {
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 24
+        spacing: 4; visible: controller.cropEditing; z: 5
+        ComboBox {
+            id: cropAspect; width: 90
+            model: [root.t("自由", "Free"),"1:1","3:2","4:3","16:9","2:3"]
+            onActivated: cropOverlay.setAspect([0,1,1.5,4/3,16/9,2/3][currentIndex])
+        }
+        Button { text: root.t("全图", "Full"); onClicked: { cropAspect.currentIndex=0; cropOverlay.aspectRatio=0; cropOverlay.selection=Qt.rect(0,0,1,1) } }
+        Button { text: root.t("取消", "Cancel"); onClicked: controller.cancelCrop() }
+        Button { objectName: "applyInteractiveCrop"; text: root.t("应用", "Apply"); enabled: !controller.rendering; onClicked: root.applyCrop() }
     }
     BusyIndicator {
         anchors.right: parent.right; anchors.top: parent.top

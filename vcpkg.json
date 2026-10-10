@@ -12,7 +12,8 @@
     {
       "name": "exiv2",
       "features": [
-        "bmff"
+        "bmff",
+        "png"
       ]
     },
     "libjpeg-turbo"

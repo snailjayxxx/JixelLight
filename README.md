@@ -2,6 +2,18 @@
 
 # JixelLight
 
+> **Development branch status (2026-10-10):** `design/lightcraft-fusion-20261008`,
+> PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
+> **Jixel Neutral v2 and no universal RAW +2.5 EV**. The alpha.10 descriptions
+> below are retained for historical reference and **must not be interpreted as
+> the current RAW rendering behavior**.
+>
+> **F4 work in progress:** an independent B&W mode with eight color-channel
+> luminance sliders (±1 EV), CPU/GPU parity tests, persistent history, presets,
+> XMP and offline CLI `bw.enable`, `bw.set`, `bw.reset` commands. New features
+> remain subject to exact-commit CI, not yet merged to `main`.
+
+
 JixelLight 是面向 Windows / macOS 的专业摄影后期桌面软件，核心工作流以 **RAW 照片、批量后期、非破坏编辑** 为中心。
 
 当前开发版本：**v0.1.0-alpha.10**
@@ -14,7 +26,7 @@ alpha.10 保持 LibRaw `no_auto_bright=1` 和线性输出，不启用逐照片�
 
 处理引擎版本升级为 `jixellight-linear-v4-base1-look4`，旧缓存自动失效。基于旧 RAW 基础显影拟合出的图片专用/多场景 `.jlook.json` 会被拒绝并要求重新拟合；普通用户导入的 `.cube` 不受此限制。Sony ST 实验配置会在新引擎的真实 ARW/JPEG CI 中重新生成，避免继续吸收 alpha.9 的基础显影偏差。
 
-为保证跨平台颜色正确性，Metal 继续使用完整 GPU 感知颜色路径；D3D11 / OpenGL Compute 在两类已验证为数值敏感的情况——复杂 Hue/HSL 混合，以及 RAW 用户曝光达到 +2.5 EV 以上同时调整 Saturation/Vibrance——会自动切换到 CPU reference 颜色计算，再将结果上传 GPU 继续显示与 1024-bin 直方图。这个安全回退不会放宽 CPU/GPU 40/65535 验收门槛，并会写入 performance 诊断。普通曝光、基础颜色、Sony Look/LUT、显示和直方图仍保持 GPU 路径。
+为保证跨平台颜色正确性，Metal 继续使用完整 GPU 感知颜色路径；D3D11 / OpenGL Compute 在两类已验证为数值敏感的情况——复杂 Hue/HSL 混合，以及 LinearProPhoto 输入的用户曝光与正向暗角的合计增益达到 +2.5 EV 以上，同时调整 Saturation/Vibrance——会自动切换到 CPU reference 颜色计算，再将结果上传 GPU 继续显示与 1024-bin 直方图。这个安全回退不会放宽 CPU/GPU 40/65535 验收门槛，并会写入 performance 诊断。普通曝光、基础颜色、Sony Look/LUT、显示和直方图仍保持 GPU 路径。
 
 这次是有意的画面基准修正，旧项目打开后的 RAW 默认亮度可能发生明显变化；原始 RAW 与编辑参数不会被改写。详见 `docs/RAW_BASE_RENDERING_ALPHA10.md`。
 
@@ -103,6 +115,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - Temperature / Tint：相机白平衡 baseline 之后的线性 chromatic-adaptation delta。
 - Contrast / Highlights / Shadows / Whites / Blacks。
 - Highlight Recovery。
+- 裁切后椭圆暗角：强度 −3～+3 EV、中点和羽化，支持 CPU reference / QRhi 调色及独立重置。
 - Global Hue。
 - Saturation。
 - Vibrance。
@@ -118,11 +131,59 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - 5 个可拖动控制点。
 - 曲线参数进入项目数据库、复制/粘贴、批量同步和 Bug Snapshot。
 
+### 按参数组粘贴与同步（融合开发分支）
+
+“复制”保存当前版本的调整快照；“粘贴…”选择要替换的参数组。“同步…”可对已选版本或图库全部版本应用当前来源的曝光、白平衡偏移、明暗、整体颜色、HSL、曲线、Sony 外观、效果（暗角）或几何参数。默认不勾选裁切/透视/镜头/方向；来源版本不会被同步修改，每个目标保留独立撤销。评分、关键词和相册不参与同步。
+
+### 安全复制导入（融合开发分支）
+
+导入菜单提供“添加现有照片”和“复制到文件夹并导入”。选择文件后可在名称预览中保留原名，或使用 `{name}`、`{seq}`、`{seq:4}` 模板及起始序号；扩展名自动保留，序号按选择顺序递增。`{capture_date}` / `{capture_time}` 使用相机记录的 `yyyyMMdd` / `HHmmss`，不猜测时区或使用当前日期；后台读取拍摄元数据，缺失时禁用开始并拒绝整批，改模板或序号可复用最多 1000 条记录的缓存。复制前重新检查预览日期，校验后的副本日期须与名称一致。复制在后台执行，先检查整批来源和目标，再逐文件校验 SHA-256、以不覆盖方式发布；取消清理当前临时副本，已完成副本保留并加入当前项目。非法模板、路径字符、保留名称和重名整批拒绝。原文件只读；尚不支持 Move。
+
+### 非破坏几何（融合开发分支）
+
+- 画布裁切、90° 旋转/翻转及 ±45° 拉直；拉直使用线性 16-bit CPU 插值，自动收边、不放大，随后可在校正画面上裁切。
+- 可折叠的双语手动透视与镜头面板：横向/纵向透视各 ±40%、径向畸变 ±30%、红/蓝相对绿通道倍率各 ±2%。这些是手动模型参数，不是角度或自动镜头配置文件。校正与拉直共用一次 CPU 重采样；保守收边覆盖所有通道和曲线边缘，输出尺寸不大于来源。
+- 预览、全分辨率统计及 JPEG/PNG/TIFF/WebP 导出共用几何处理，保留 Undo/Redo、项目历史和 XMP；连续拉直拖动合并为一条历史。
+- 所有校正为零保留旧像素路径：无拉直为 schema 1，仅拉直为 schema 2；启用透视/镜头时使用完整 schema 3。旧项目不自动应用校正；未知、缺字段或越界几何拒绝加载。CLI 支持 `{"command":"geometry.straighten","degrees":5.5}` 和 `{"command":"geometry.set","parameter":"distortion","value":0.1}`；`geometry.resetCorrections` 仅重置五项新参数，保留拉直、裁切与方向。自动镜头配置、切向畸变和自动垂直线识别仍未实现。
+
+### 黑白色彩混合（融合开发分支，待 CI 验收）
+
+独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
+
+### 暗角（融合开发分支）
+
+暗角以裁切和方向确认后的整幅照片为坐标，放大与平移时保留同一位置。负值压暗边缘，正值提亮；椭圆权重通过中点和羽化控制，在线性工作空间、白平衡/曝光之后及高光恢复/明暗映射之前执行，Alpha 保持不变。它是手动效果，不使用镜头配置。三项参数支持项目历史、虚拟副本、预设、XMP、选择性“效果”同步及 CLI `develop.set`；`vignette.reset` 仅重置暗角。默认零强度保留原有输出，完整默认状态不向旧快照添加字段；启用后保存 schema 1 的可选 `vignette` 对象，未知版本、缺字段及越界快照拒绝加载。裁切编辑期间使用当前未裁切照片，应用裁切后重新定位暗角。
+
+GPU 输入和数值回退使用逐通道 RGBA64 / FP32 转换，保留半透明及透明像素中的未预乘 RGB，避免通用格式转换先在整数空间预乘造成的精度损失；CPU reference、GPU 读回和实拍矩阵使用同一转换语义。RAW 源仍为 RGBA64。
+
+### 批量导出名称（融合开发分支）
+
+批量导出设置显示全部版本数量及前三个名称，支持 `{name}` 原名、`{version}` 版本名、`{seq}` 或 `{seq:1}`～`{seq:9}` 补零序号、`{capture_date}` 拍摄日期和 `{capture_time}` 拍摄时间。扩展名由输出格式确定，原版的版本名为 `Original`；日期/时间来自相机记录的 `yyyyMMdd` / `HHmmss`，不推测时区或使用当前日期。模板最多 160 字符，序号为 1～999999999，最终文件名最多 240 UTF-8 字节。
+
+留空保留既有命名：界面使用原名加 `_JixelLight` 并自动避开重名，CLI 使用既有六位序号命名。自定义模板的重名、非法文件名或所需拍摄时间缺失会在输出前拒绝整批；对比名称时统一 Unicode NFC 并忽略大小写。目标文件夹中的文件、目录及链接均占用名称。导出队列冻结名称与调整，可继续编辑/重命名版本；批量输出使用同文件系统临时目录及不覆盖发布，失败或取消清理当前临时输出。
+
+```sh
+JixelLightCli --catalog Project.jlp --output-dir existing-folder --format png --name-template '{capture_date}_{name}_{version}_{seq:4}' --sequence-start 7
+```
+
+CLI 的命名参数只用于 `--catalog`。目录读取为只读快照；未索引拍摄时间时，只读读取源元数据，不修改原文件或项目。
+
+先用 `--catalog Project.jlp --list-catalog` 查询保存的原版/副本标识 `catalog_key`、路径、版本名、评分/Flag、标签和日期记录。查询不读取原片元数据或解码，在原片离线时也可查看；空目录返回空列表。
+
+`--catalog-key` 可重复指定列表中的精确标识，只导出所选版本，保持目录保存顺序。未知、重复或空标识整批拒绝；导出仍限制 1–1000 个所选版本，可以从更大的目录选少量版本。`--list-catalog` 不能与输出设置或调整命令混用。
+
+```sh
+JixelLightCli --catalog Project.jlp --list-catalog
+JixelLightCli --catalog Project.jlp --catalog-key "从列表复制的 catalog_key" --output-dir existing-folder --format png
+```
+
 ### Professional Scopes
 
 - RGB / Luminance Histogram：1024 bins。
 - Histogram 读取**当前最终显示结果**，所以曝光、HSL、饱和度、曲线变化都会实时反映。
 - Shadow / Highlight clipping 百分比。
+- 可选亮度波形 / RGB Parade / 矢量示波器：异步 CPU 参考计算，支持当前视区预览和全分辨率；波形/Parade 保留 1024 级，矢量图统计编码 sRGB 的 Cb/Cr，均在 monitor ICC 之前。旧结果变暗并标记更新中，默认 GPU 直方图保持不变。
+- 三种可选示波器共享一次 128 行分块调色，保留各自原有计数和显示算法；16 MiB LRU 只保存已完成的三张示波器图和必要的 LUT 数据，同一来源/参数/几何下切换模式可直接复用。取消、过期照片和未完成计算不会交付旧结果。
 - 架构保留以后切换 RAW Source / Working / Display scopes 的能力。
 
 ### Diagnostics
@@ -138,6 +199,9 @@ Bug ZIP / Action Trace 当前覆盖：
 - Export ICC target / profile bytes / JPEG quality。
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
+- `stage_outputs.json`：冻结文件、图像、参数、几何和统计版本；九个 CPU 色彩阶段（含暗角）的 FP32 RGB 哈希/范围、量化和 Sony 细节边界。交互式报告另外按需读回显示器 ICC 之前的 GPU 最终工作输出，记录 FP32 RGBA 指纹/范围、实际 GPU 或 CPU 上传来源；64 MiB 上限和3秒响应期限，失败仍生成 CPU 报告。同步 `reportBug()` 保留 CPU reference。正常编辑仅读回16,400字节直方图，RAW 输入仍为 RGBA64，内部 GPU 阶段尚未捕获。
+- `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存、16 MiB 可选示波器缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时和示波器共享渲染次数。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算。直方图缓存不保留图像帧；示波器缓存不保留源图或已调色照片。
+- 手动几何在 `geometry_corrections` 记录 CPU 请求耗时和五项参数；`stage_dependencies.geometry` 记录完整参数、操作顺序、取样与收边方法，明确没有应用镜头配置文件。校正后的准备预览同时送往 CPU/GPU 调色；几何重采样本身仍是 CPU。
 
 程序内 RAW 状态直接显示 `RAW · Linear ProPhoto · 16-bit`。
 
@@ -163,7 +227,7 @@ Bug ZIP / Action Trace 当前覆盖：
 
 - CMake 3.24+
 - C++20
-- **Qt 6.8.3**（包含 Qt Shader Tools 和 Qt Gui private headers；QRhi 属于有限兼容 API，升级需重新验证）
+- **Qt 6.8.3**（包含 Qt Shader Tools、Qt Image Formats 和 Qt Gui private headers；TIFF / WebP 需要 imageformats 插件；QRhi 属于有限兼容 API，升级需重新验证）
 - LibRaw（vcpkg manifest）
 - LittleCMS 2（vcpkg `lcms`）
 - libjpeg-turbo（分块 JPEG 写入）
