@@ -66,6 +66,8 @@ jobs:
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-
       - name: Configure
         id: configure
         shell: bash
