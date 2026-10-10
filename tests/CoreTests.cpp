@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QColorSpace>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -45,6 +46,18 @@
 #include "diagnostics/PerformanceRecorder.h"
 
 namespace {
+// Only test-owned image fixtures are assigned capture records.
+bool fixtureCaptureTime(const QString &path,const char *time) {
+    try {
+        auto image=Exiv2::ImageFactory::open(path.toStdString());
+        if (!image.get()) return false;
+        image->readMetadata(); auto exif=image->exifData();
+        exif["Exif.Photo.DateTimeOriginal"]=time; image->setExifData(exif); image->writeMetadata(); return true;
+    } catch (...) { return false; }
+}
+QByteArray fixtureBytes(const QString &path) {
+    QFile file(path); return file.open(QIODevice::ReadOnly)?file.readAll():QByteArray();
+}
 int channelSpread(const QColor &c) {
     const int hi = std::max({c.red(), c.green(), c.blue()});
     const int lo = std::min({c.red(), c.green(), c.blue()});
@@ -302,6 +315,109 @@ private slots:
         const auto source=dir.filePath("a.png"),out=dir.filePath("out"); QVERIFY(image.save(source));
         auto copied=copyImportFiles({source},out,{},{},{"../{name}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
         copied=copyImportFiles({source,source},out,{},{},{"{seq}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+    }
+    void importCaptureNamesUseStrictRecordedTimeAndPreserveExtensions() {
+        const QStringList sources{"/one/photo.v1.ARW","/two/花.PNG"};
+        const ImportNaming naming{"{capture_date}_{capture_time}_{seq:4}_{name}",7};
+        const auto probe=planImportNames(sources,naming); QVERIFY(probe.needsCaptureTimes); QVERIFY(probe.names.isEmpty());
+        auto plan=planImportNames(sources,naming,{"2025-12-31 23:59:59","2026-01-01 00:00:01"});
+        QVERIFY2(plan.error.isEmpty(),qPrintable(plan.error));
+        QCOMPARE(plan.names,QStringList({"20251231_235959_0007_photo.v1.ARW","20260101_000001_0008_花.PNG"}));
+        for (const auto &date : {QString(),QString("2025:01:02 03:04:05"),QString("2025-02-29 03:04:05"),QString("2025-01-02T03:04:05Z"),QString("2025-01-02 24:00:00")}) {
+            plan=planImportNames({"a.jpg"},naming,{date}); QVERIFY(!plan.error.isEmpty()); QVERIFY(!plan.errorZh.isEmpty()); QVERIFY(plan.names.isEmpty());
+        }
+        for (const auto &pattern : {QString("{capture_date}/x"),QString("{capture_time}_{date}"),QString("{capture_date:8}")}) {
+            plan=planImportNames({"a.jpg"},{pattern,1}); QVERIFY(!plan.error.isEmpty()); QVERIFY(!plan.needsCaptureTimes);
+        }
+        plan=planImportNames({"a.jpg","b.jpg"},{"{capture_date}",1},{"2025-01-02 03:04:05","2025-01-02 03:04:05"});
+        QVERIFY(!plan.error.isEmpty()); QVERIFY(plan.names.isEmpty());
+        plan=planImportNames({"a.jpg","b.png"},{"",999999999}); QVERIFY(plan.error.isEmpty()); QCOMPARE(plan.names,QStringList({"a.jpg","b.png"}));
+    }
+    void captureCopyVerifiesDatedBytesAndRejectsMissingOrChangedSnapshot() {
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out"));
+        QImage image(16,12,QImage::Format_RGB32); image.fill(Qt::green);
+        const auto a=dir.filePath("a.jpg"),b=dir.filePath("b.PNG"),missing=dir.filePath("undated.png"),out=dir.filePath("out");
+        QVERIFY(image.save(a)); QVERIFY(image.save(b)); QVERIFY(image.save(missing));
+        QVERIFY(fixtureCaptureTime(a,"2025:01:02 03:04:05")); QVERIFY(fixtureCaptureTime(b,"2024:12:31 23:59:59"));
+        const auto aBytes=fixtureBytes(a),bBytes=fixtureBytes(b); QVERIFY(!aBytes.isEmpty()); QVERIFY(!bBytes.isEmpty());
+        const ImportNaming naming{"{capture_date}_{capture_time}_{seq:4}_{name}",7};
+        auto result=copyImportFiles({a,missing},out,{},{},naming); QVERIFY(!result.error.isEmpty()); QVERIFY(!result.errorZh.isEmpty()); QVERIFY(result.completed.isEmpty()); QVERIFY(QDir(out).isEmpty());
+        result=copyImportFiles({a,b},out,{},{},naming,{"2025-01-02 03:04:06","2024-12-31 23:59:59"});
+        QVERIFY(result.error.contains("changed after preview")); QVERIFY(result.completed.isEmpty()); QVERIFY(QDir(out).isEmpty());
+        result=copyImportFiles({a,b},out,{},{},naming,{"2025-01-02 03:04:05","2024-12-31 23:59:59"});
+        QVERIFY2(result.error.isEmpty(),qPrintable(result.error)); QCOMPARE(result.completed.size(),2);
+        QCOMPARE(QFileInfo(result.completed[0].destination).fileName(),QString("20250102_030405_0007_a.jpg"));
+        QCOMPARE(QFileInfo(result.completed[1].destination).fileName(),QString("20241231_235959_0008_b.PNG"));
+        QCOMPARE(fixtureBytes(result.completed[0].destination),aBytes); QCOMPARE(fixtureBytes(result.completed[1].destination),bBytes);
+        QCOMPARE(result.completed[0].sha256,QString::fromLatin1(QCryptographicHash::hash(aBytes,QCryptographicHash::Sha256).toHex()));
+        QVERIFY(!copyImportFiles({a,b},out,{},{},naming).error.isEmpty());
+        auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(copyImportFiles({a},out,token,{},{"cancel_{capture_date}",1}).wasCancelled);
+        QVERIFY(QDir(out).entryList({".jixellight-import-*"},QDir::Dirs|QDir::Hidden).isEmpty());
+        QCOMPARE(fixtureBytes(a),aBytes); QCOMPARE(fixtureBytes(b),bBytes);
+    }
+    void captureImportPreviewIsAsynchronousCachedAndFreshForLatestSelection() {
+        QTemporaryDir dir; QImage image(16,12,QImage::Format_RGB32); image.fill(Qt::blue);
+        const auto a=dir.filePath("a.jpg"),b=dir.filePath("b.jpg"); QVERIFY(image.save(a)); QVERIFY(image.save(b));
+        QVERIFY(fixtureCaptureTime(a,"2025:01:02 03:04:05")); QVERIFY(fixtureCaptureTime(b,"2024:12:31 23:59:59"));
+        const auto bytes=fixtureBytes(a); PhotoController c(nullptr); c.setGpuEnabled(false);
+        const auto before=c.editHistory(); QSignalSpy edits(&c,&PhotoController::adjustmentsChanged);
+        const auto counter=[] { return PerformanceRecorder::snapshot()["counters"].toObject()["import_name_preview_metadata_reads"].toInteger(); };
+        QSignalSpy changed(&c,&PhotoController::importNamePreviewChanged);
+        const QVariantList first{QUrl::fromLocalFile(a)},second{QUrl::fromLocalFile(b)};
+        auto preview=c.previewImportNames(first,"{capture_date}_{capture_time}_{name}",1); QVERIFY(preview["pending"].toBool()); QVERIFY(!preview["valid"].toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(),10000);
+        preview=c.previewImportNames(first,"{capture_date}_{capture_time}_{name}",1); QVERIFY(preview["valid"].toBool());
+        QCOMPARE(preview["rows"].toList().first().toMap()["destination"].toString(),QString("20250102_030405_a.jpg"));
+        const auto cached=counter();
+        preview=c.previewImportNames(first,"prefix_{capture_date}_{seq:4}",9); QVERIFY(preview["valid"].toBool()); QCOMPARE(counter(),cached);
+        QCOMPARE(preview["rows"].toList().first().toMap()["destination"].toString(),QString("prefix_20250102_0009.jpg"));
+        c.cancelImportNamePreview(); changed.clear();
+        QVERIFY(c.previewImportNames(first,"{capture_date}",1)["pending"].toBool());
+        QVERIFY(c.previewImportNames(second,"{capture_date}",1)["pending"].toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(),10000);
+        preview=c.previewImportNames(second,"{capture_date}_{name}",1); QVERIFY(preview["valid"].toBool());
+        QCOMPARE(preview["rows"].toList().first().toMap()["destination"].toString(),QString("20241231_b.jpg"));
+        const auto originalModified=QFileInfo(b).lastModified(); QVERIFY(fixtureCaptureTime(b,"2026:07:08 09:10:11"));
+        QFile file(b); QVERIFY(file.open(QIODevice::ReadWrite)); QVERIFY(file.setFileTime(originalModified.addSecs(2),QFileDevice::FileModificationTime)); file.close();
+        changed.clear(); QVERIFY(c.previewImportNames(second,"{capture_date}_{capture_time}",1)["pending"].toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(),10000);
+        preview=c.previewImportNames(second,"{capture_date}_{capture_time}",1); QVERIFY(preview["valid"].toBool());
+        QCOMPARE(preview["rows"].toList().first().toMap()["destination"].toString(),QString("20260708_091011.jpg"));
+        c.cancelImportNamePreview(); QVERIFY(c.previewImportNames(first,"{name}",1)["valid"].toBool());
+        QCOMPARE(c.editHistory(),before); QVERIFY(edits.isEmpty()); QVERIFY(c.library().isEmpty()); QCOMPARE(fixtureBytes(a),bytes);
+    }
+    void captureImportControllerQueuesPreviewSnapshotAndPersistsCopies() {
+        QTemporaryDir dir; QVERIFY(QDir(dir.path()).mkdir("out")); QImage image(16,12,QImage::Format_RGB32); image.fill(Qt::red);
+        const auto source=dir.filePath("a.jpg"),missing=dir.filePath("missing.png"),out=dir.filePath("out");
+        QVERIFY(image.save(source)); QVERIFY(image.save(missing)); QVERIFY(fixtureCaptureTime(source,"2025:01:02 03:04:05")); const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr); c.setGpuEnabled(false); QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Capture"));
+        const QVariantList urls{QUrl::fromLocalFile(source)},undated{QUrl::fromLocalFile(missing)};
+        const QString pattern="{capture_date}_{capture_time}_{seq:4}_{name}"; QSignalSpy changed(&c,&PhotoController::importNamePreviewChanged);
+        QVERIFY(!c.copyImport(urls,QUrl::fromLocalFile(out),pattern,7)); QVERIFY(!c.copyImportBusy()); QVERIFY(QDir(out).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(),10000);
+        const auto preview=c.previewImportNames(urls,pattern,7); QVERIFY(preview["valid"].toBool());
+        // Same-size metadata changes with a preserved mtime can leave a GUI
+        // preview cached. The copy worker must still reject its stale date.
+        const auto modified=QFileInfo(source).lastModified(); const auto size=QFileInfo(source).size();
+        QVERIFY(fixtureCaptureTime(source,"2025:01:02 03:04:06"));
+        QFile fixture(source); QVERIFY(fixture.open(QIODevice::ReadWrite)); QVERIFY(fixture.setFileTime(modified,QFileDevice::FileModificationTime)); fixture.close();
+        QCOMPARE(QFileInfo(source).size(),size);
+        QCOMPARE(c.previewImportNames(urls,pattern,7)["captureTimes"].toStringList(),QStringList({"2025-01-02 03:04:05"}));
+        QVERIFY(c.copyImport(urls,QUrl::fromLocalFile(out),pattern,7));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000); QVERIFY(c.library().isEmpty()); QVERIFY(QDir(out).isEmpty());
+        QVERIFY(fixtureCaptureTime(source,"2025:01:02 03:04:05"));
+        QVERIFY(fixture.open(QIODevice::ReadWrite)); QVERIFY(fixture.setFileTime(modified,QFileDevice::FileModificationTime)); fixture.close();
+        QCOMPARE(fixtureBytes(source),bytes);
+        QVERIFY(c.copyImport(urls,QUrl::fromLocalFile(out),pattern,7)); c.cancelImportNamePreview();
+        QVERIFY(c.previewImportNames(urls,"other_{name}_{seq}",99)["valid"].toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000); QCOMPARE(c.library().size(),1);
+        const auto target=QDir(out).filePath("20250102_030405_0007_a.jpg"); QCOMPARE(c.library().first().toMap()["path"].toString(),target);
+        QCOMPARE(fixtureBytes(target),bytes); QCOMPARE(fixtureBytes(source),bytes);
+        changed.clear(); QVERIFY(c.previewImportNames(undated,pattern,1)["pending"].toBool()); QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(),10000);
+        QVERIFY(!c.previewImportNames(undated,pattern,1)["valid"].toBool()); QVERIFY(!c.copyImport(undated,QUrl::fromLocalFile(out),pattern,1)); QCOMPARE(c.library().size(),1);
+        QVERIFY(c.prepareToClose()); const auto project=c.projectPath();
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false); QVERIFY(reopened.openProject(QUrl::fromLocalFile(project)));
+        QCOMPARE(reopened.library().size(),1); QCOMPARE(reopened.library().first().toMap()["path"].toString(),target); QCOMPARE(fixtureBytes(source),bytes);
     }
     void exportNamingUsesRecordedWallClockVersionAndChosenExtension() {
         const QVector<ExportNameSource> sources{{"/one/photo.v1.ARW",{},"2025-12-31 23:59:59"},

@@ -2,6 +2,7 @@
 #include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/export/ExportNaming.h"
+#include "core/files/FileNames.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
@@ -695,18 +696,40 @@ void PhotoController::openImportDialog() {
     finishImportBatch(added, rawAdded);
 }
 
-QVariantMap PhotoController::previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) const {
+QVariantMap PhotoController::previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) {
     QStringList sources;
     for (const auto &value : urls) {
         const auto url=value.canConvert<QUrl>() ? value.toUrl() : QUrl(value.toString());
         if (!url.isLocalFile()) return {{"valid",false},{"error",uiText("复制导入仅支持本地文件", "Copy import requires local files")},{"rows",QVariantList{}}};
         sources.push_back(url.toLocalFile());
     }
-    const auto plan=planImportNames(sources,{pattern,sequenceStart});
+    const ImportNaming naming{pattern,sequenceStart};
+    auto plan=planImportNames(sources,naming); QStringList captureTimes;
+    if (plan.needsCaptureTimes) {
+        QHash<QString,QString> missing;
+        for (const auto &path : sources) {
+            const auto stamp=FileNames::sourceStamp(path);
+            if (stamp.isEmpty()) return {{"valid",false},{"pending",false},{"rows",QVariantList{}},
+                {"error",uiText("无法读取源文件：", "Cannot read source: ")+QFileInfo(path).fileName()}};
+            if (const auto *time=m_importNameTimes.object(stamp)) {
+                captureTimes.push_back(*time); PerformanceRecorder::count("import_name_preview_cache_hits");
+            } else { missing.insert(stamp,QFileInfo(path).canonicalFilePath()); captureTimes.push_back(QString()); }
+        }
+        if (!missing.isEmpty()) {
+            if (missing!=m_importNamePending) { m_importNamePending=missing; m_importNameDatesJob->submit({missing}); }
+            return {{"valid",false},{"pending",true},{"rows",QVariantList{}},{"error",uiText("读取拍摄时间…", "Reading capture times…")}};
+        }
+        plan=planImportNames(sources,naming,captureTimes);
+    } else if (!m_importNamePending.isEmpty()) { m_importNameDatesJob->cancel(); m_importNamePending.clear(); }
     QVariantList rows;
     if (plan.error.isEmpty()) for (int i=0;i<sources.size();++i)
         rows.push_back(QVariantMap{{"source",QFileInfo(sources[i]).fileName()},{"destination",plan.names[i]}});
-    return {{"valid",plan.error.isEmpty()},{"error",plan.error},{"rows",rows}};
+    return {{"valid",plan.error.isEmpty()},{"pending",false},{"error",uiText(plan.errorZh,plan.error)},
+            {"rows",rows},{"captureTimes",captureTimes}};
+}
+void PhotoController::cancelImportNamePreview() {
+    m_importNameDatesJob->cancel(); m_importNamePending.clear(); m_importNameTimes.clear();
+    ++m_importNameRevision; emit importNamePreviewChanged();
 }
 bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart) {
     if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
@@ -717,9 +740,11 @@ bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,
         sources.push_back(url.toLocalFile());
     }
     const ImportNaming naming{pattern,sequenceStart};
-    const auto names=planImportNames(sources,naming);
-    if (!names.error.isEmpty()) { setStatus(uiText("复制名称计划错误：", "Copy name plan error: ")+names.error); return false; }
-    if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming)) return false;
+    const auto preview=previewImportNames(urls,pattern,sequenceStart);
+    if (!preview["valid"].toBool()) { setStatus(uiText("复制名称计划错误：", "Copy name plan error: ")+preview["error"].toString()); return false; }
+    const auto expected=preview["captureTimes"].toStringList();
+    const auto names=planImportNames(sources,naming,expected);
+    if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming,expected)) return false;
     m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
     ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},
         {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)}});
@@ -1138,6 +1163,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_importNameDatesJob.reset();
     m_copyImportQueue.reset();
     m_plotTimer.stop(); m_plotJob.reset();
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
@@ -1149,6 +1175,23 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    m_importNameDatesJob=std::make_unique<LatestJob<ImportNameDateRequest,QHash<QString,QString>>>(
+        [](const ImportNameDateRequest &request,const CancelToken &cancel) {
+            QHash<QString,QString> result;
+            for (auto it=request.sources.begin();it!=request.sources.end();++it) {
+                if (cancelled(cancel)) return result;
+                if (FileNames::sourceStamp(it.value())!=it.key()) continue;
+                PerformanceRecorder::count("import_name_preview_metadata_reads");
+                const auto time=PhotoTimeline::cameraTime(MetadataReader::read(it.value()).value("captureTime").toString());
+                if (FileNames::sourceStamp(it.value())==it.key()) result.insert(it.key(),time);
+            }
+            return result;
+        },[this](const ImportNameDateRequest &request,QHash<QString,QString> result) {
+            if (m_closing || request.sources!=m_importNamePending) return;
+            for (auto it=request.sources.begin();it!=request.sources.end();++it)
+                if (FileNames::sourceStamp(it.value())==it.key()) m_importNameTimes.insert(it.key(),new QString(result.value(it.key())));
+            m_importNamePending.clear(); ++m_importNameRevision; emit importNamePreviewChanged();
+        });
     m_copyImportQueue=std::make_unique<CopyImportQueue>();
     connect(m_copyImportQueue.get(),&CopyImportQueue::progress,this,[this](qint64 copied,qint64 total,int completed,int files,const QString &stage) {
         m_copyImportProgress=total>0 ? std::clamp(double(copied)/total,0.0,1.0) : 0;
@@ -1166,7 +1209,7 @@ void PhotoController::initializeJobs() {
         m_copyImportProgress=result.error.isEmpty() && !result.wasCancelled ? 1 : m_copyImportProgress;
         m_copyImportStatus=uiText("复制完成 %1 个，导入 %2 张", "Copied %1 file(s), imported %2 image(s)").arg(result.completed.size()).arg(added);
         if (result.wasCancelled) m_copyImportStatus+=uiText(" · 已取消，保留已完成副本", " · cancelled; completed copies retained");
-        if (!result.error.isEmpty()) m_copyImportStatus+=uiText(" · 错误：", " · error: ")+result.error;
+        if (!result.error.isEmpty()) m_copyImportStatus+=uiText(" · 错误：", " · error: ")+(m_language=="zh_CN" && !result.errorZh.isEmpty()?result.errorZh:result.error);
         setStatus(m_copyImportStatus); emit copyImportChanged();
         ActionTrace::instance().record("copy_import_finished",{{"copied",result.completed.size()},{"imported",added},{"cancelled",result.wasCancelled},{"error",result.error}});
     });

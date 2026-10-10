@@ -20,9 +20,14 @@ Dialog {
     property bool customNames: false
     property string pattern: "{name}_{seq:4}"
     property int sequenceStart: 1
-    readonly property var preview: customNames && pattern.length === 0
-        ? ({ valid: false, rows: [], error: t("请输入名称模板", "Enter a filename template") })
-        : controller.previewImportNames(sources, customNames ? pattern : "", sequenceStart)
+    readonly property var preview: {
+        const revision = controller.importNameRevision
+        const language = controller.language
+        if (!visible) return { valid: false, pending: false, rows: [], error: "" }
+        if (customNames && pattern.length === 0)
+            return { valid: false, pending: false, rows: [], error: t("请输入名称模板", "Enter a filename template") }
+        return controller.previewImportNames(sources, customNames ? pattern : "", sequenceStart)
+    }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function openFor(urls) { sources = urls; open() }
     Settings {
@@ -47,6 +52,8 @@ Dialog {
         standardButton(Dialog.Cancel).text = Qt.binding(function() { return root.t("取消", "Cancel") })
     }
     onAccepted: controller.copyImport(sources, destination, customNames ? pattern : "", sequenceStart)
+    // Accepted queues its immutable metadata snapshot before the cache clears.
+    onClosed: Qt.callLater(function() { if (!root.visible) root.controller.cancelImportNamePreview() })
     contentItem: ColumnLayout {
         implicitWidth: 660
         spacing: 10
@@ -95,10 +102,16 @@ Dialog {
         }
         Label {
             Layout.fillWidth: true
+            text: root.t("{capture_date}：yyyyMMdd；{capture_time}：HHmmss。使用相机记录的拍摄时间，缺失时整批拒绝。",
+                "{capture_date}: yyyyMMdd; {capture_time}: HHmmss. Camera capture time is required for every file.")
+            wrapMode: Text.WordWrap; color: "#a3b2c1"
+        }
+        Label {
+            Layout.fillWidth: true
             text: root.preview.valid ? root.t("名称预览 · %1 个文件", "Name preview · %1 file(s)").arg(root.sources.length)
-                : root.t("名称计划错误：", "Name plan error: ") + root.preview.error
+                : root.preview.pending ? root.preview.error : root.t("名称计划错误：", "Name plan error: ") + root.preview.error
             textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere
-            color: root.preview.valid ? "#d7dde6" : "#f0a58c"
+            color: root.preview.valid || root.preview.pending ? "#d7dde6" : "#f0a58c"
         }
         Frame {
             Layout.fillWidth: true

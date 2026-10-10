@@ -9,7 +9,7 @@ class CopyImportQueue final : public QObject {
 public:
     explicit CopyImportQueue(QObject *parent=nullptr);
     ~CopyImportQueue() override;
-    bool start(QStringList sources,QString directory,ImportNaming naming={});
+    bool start(QStringList sources,QString directory,ImportNaming naming={},QStringList expectedCaptureTimes={});
     void cancel();
     // Normal window close consumes completed copies before catalog flushing.
     void stopAndCollect();

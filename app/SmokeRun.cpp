@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include <exiv2/exiv2.hpp>
 #include <memory>
 #include <cmath>
 
@@ -330,6 +331,14 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             if (menu) QMetaObject::invokeMethod(menu,"close");
             QImage fixture(64,48,QImage::Format_RGB32); fixture.fill(QColor("#658797"));
             const bool prepared=importFixture->isValid() && QDir(importFixture->path()).mkdir("copies") && fixture.save(importFixture->filePath("copy-test.png"));
+            bool datedPrepared=fixture.save(importFixture->filePath("dated-test.jpg"));
+            try {
+                auto image=Exiv2::ImageFactory::open(importFixture->filePath("dated-test.jpg").toStdString());
+                if (!image.get()) datedPrepared=false;
+                else { image->readMetadata(); auto exif=image->exifData(); exif["Exif.Photo.DateTimeOriginal"]="2025:01:02 03:04:05";
+                    image->setExifData(exif); image->writeMetadata(); }
+            } catch (...) { datedPrepared=false; }
+            copyTrace->insert("dated_prepared",datedPrepared);
             copyTrace->insert("before",controller->library().size());
             copyTrace->insert("prepared",prepared);
             controller->copyImportRequested({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
@@ -350,6 +359,18 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             }
             state->phase=452;
         } else if (state->phase==452 && ready) {
+            if (auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog"))) {
+                dialog->setProperty("sources",QVariantList{QUrl::fromLocalFile(importFixture->filePath("dated-test.jpg"))});
+                dialog->setProperty("pattern",QString("{capture_date}_{capture_time}_{seq:4}_{name}"));
+            }
+            state->phase=4521;
+        } else if (state->phase==4521 && ready) {
+            auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog"));
+            const auto preview=objectMap(dialog,"preview");
+            if (preview["pending"].toBool() && state->elapsed.elapsed()<60000) return;
+            const auto rows=preview["rows"].toList();
+            copyTrace->insert("capture_preview",preview["valid"].toBool() && rows.size()==1
+                && rows[0].toMap()["destination"].toString()=="20250102_030405_0007_dated-test.jpg");
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog.png");
             copyTrace->insert("language",controller->language()); controller->setLanguage("en_US");
             resizeForSmoke(window,1180,720);
@@ -370,10 +391,26 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                     && std::abs(dialog->property("y").toDouble()-(window->height()-dialog->property("height").toDouble())/2)<=1);
             }
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog-en.png");
+            if (auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog")))
+                dialog->setProperty("sources",QVariantList{QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
+            state->phase=4531;
+        } else if (state->phase==4531 && ready) {
+            auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog"));
+            const auto preview=objectMap(dialog,"preview");
+            if (preview["pending"].toBool() && state->elapsed.elapsed()<60000) return;
+            auto *apply=visualChild(window->contentItem(),"copyImportApply");
+            copyTrace->insert("missing_capture_blocked",!preview["valid"].toBool() && !preview["error"].toString().isEmpty()
+                && apply && !apply->isEnabled() && !controller->copyImportBusy());
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog-missing-date.png");
+            if (dialog) dialog->setProperty("sources",QVariantList{QUrl::fromLocalFile(importFixture->filePath("dated-test.jpg"))});
+            state->phase=4532;
+        } else if (state->phase==4532 && ready) {
+            const auto preview=objectMap(window->findChild<QObject *>(QStringLiteral("copyImportDialog")),"preview");
+            if (preview["pending"].toBool() && state->elapsed.elapsed()<60000) return;
             copyTrace->insert("started",clickItem(window,visualChild(window->contentItem(),"copyImportApply")));
             controller->setLanguage(copyTrace->value("language").toString()); resizeForSmoke(window,1540,920); state->phase=46;
         } else if (state->phase==46 && ready && !controller->copyImportBusy()) {
-            QFile source(importFixture->filePath("copy-test.png")),destination(importFixture->filePath("copies/session_0007_copy-test.png"));
+            QFile source(importFixture->filePath("dated-test.jpg")),destination(importFixture->filePath("copies/20250102_030405_0007_dated-test.jpg"));
             copyTrace->insert("content_equal",source.open(QIODevice::ReadOnly) && destination.open(QIODevice::ReadOnly) && source.readAll()==destination.readAll());
             copyTrace->insert("catalog_added",controller->library().size()==copyTrace->value("before").toInt()+1);
             transferTrace->insert("source_index",controller->currentIndex());
@@ -516,6 +553,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             revealItem(window->findChild<QQuickItem *>("straightenAngle"));
             state->phase=289;
         } else if (state->phase==289 && ready) {
+            // The actual Copy test now publishes a dated JPEG. Keep an
+            // independent undated fixture for the export refusal check.
+            const auto before=controller->library().size();
+            controller->importFiles({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
+            exportNamesTrace->insert("missing_date_fixture_added",controller->library().size()==before+1);
             auto *menu=window->findChild<QObject *>("exportActionsMenu");
             exportNamesTrace->insert("before",controller->gpuPlan(true).state.toJson());
             exportNamesTrace->insert("before_cursor",historyCursor(controller));
@@ -605,6 +647,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
             && copyTrace->value("prepared").toBool() && copyTrace->value("dialog_visible").toBool() && copyTrace->value("custom_clicked").toBool()
             && copyTrace->value("dialog_centered").toBool() && copyTrace->value("preview_valid").toBool()
+            && copyTrace->value("dated_prepared").toBool() && copyTrace->value("capture_preview").toBool() && copyTrace->value("missing_capture_blocked").toBool()
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
         bool transferOk=true;
         for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
@@ -616,7 +659,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
             vignetteOk=vignetteOk && vignetteTrace->value(key).toBool();
         bool exportNamesOk=true;
-        for (const auto *key : {"menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
+        for (const auto *key : {"missing_date_fixture_added","menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
                                "translated_buttons","invalid_template_blocked","missing_date_blocked","cancel_clicked","closed","edits_unchanged","no_export_queued"})
             exportNamesOk=exportNamesOk && exportNamesTrace->value(key).toBool();
         bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && exportNamesOk && (!gpuRequired || controller->gpuActive());

@@ -9,6 +9,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QSet>
+#include <QCache>
 #include <algorithm>
 #include <cmath>
 #include "core/preview/PreviewTasks.h"
@@ -117,6 +118,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
     Q_PROPERTY(bool copyImportBusy READ copyImportBusy NOTIFY copyImportChanged)
+    Q_PROPERTY(quint64 importNameRevision READ importNameRevision NOTIFY importNamePreviewChanged)
     Q_PROPERTY(double copyImportProgress READ copyImportProgress NOTIFY copyImportChanged)
     Q_PROPERTY(QString copyImportStatus READ copyImportStatus NOTIFY copyImportChanged)
     Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
@@ -232,7 +234,9 @@ public:
     Q_INVOKABLE void openCopyImportDialog();
     Q_INVOKABLE bool copyImport(const QVariantList &urls,const QUrl &directory,
                                 const QString &pattern=QString(),int sequenceStart=1);
-    Q_INVOKABLE QVariantMap previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) const;
+    Q_INVOKABLE QVariantMap previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart);
+    Q_INVOKABLE void cancelImportNamePreview();
+    quint64 importNameRevision() const { return m_importNameRevision; }
     Q_INVOKABLE void cancelCopyImport();
     Q_INVOKABLE bool prepareToClose();
     bool copyImportBusy() const { return m_copyImportQueue && m_copyImportQueue->busy(); }
@@ -314,6 +318,7 @@ public:
 signals:
     void adjustmentClipboardChanged();
     void copyImportChanged();
+    void importNamePreviewChanged();
     void copyImportRequested(const QVariantList &urls);
     void scopePlotChanged();
     void cropEditingChanged();
@@ -358,6 +363,11 @@ private:
     std::shared_ptr<ScopePlotCache> m_scopePlotCache;
     std::unique_ptr<ExportQueue> m_exportQueue;
     std::unique_ptr<CopyImportQueue> m_copyImportQueue;
+    struct ImportNameDateRequest { QHash<QString,QString> sources; };
+    QCache<QString,QString> m_importNameTimes{1000};
+    QHash<QString,QString> m_importNamePending;
+    quint64 m_importNameRevision=0;
+    std::unique_ptr<LatestJob<ImportNameDateRequest,QHash<QString,QString>>> m_importNameDatesJob;
     double m_copyImportProgress=0;
     QString m_copyImportStatus;
     QImage m_fastSource, m_gpuSource, m_loadedPreview;
