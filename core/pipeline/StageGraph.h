@@ -72,4 +72,12 @@ struct StageGraph {
                 {"source_storage", "RGBA64; GPU staging FP32"},
                 {"monitor_icc", "presentation-only; excluded from render/scopes keys"}};
     }
+    static QString fullScopesKey(const ScopeRequest &request) {
+        QByteArray bytes;
+        QDataStream stream(&bytes,QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
+        stream << QStringLiteral("full-scopes-v1:1024:rgb-luma:pre-monitor")
+               << renderKey(request.image,request.plan)
+               << QJsonDocument(request.geometry.toJson()).toJson(QJsonDocument::Compact);
+        return digest(bytes);
+    }
 };

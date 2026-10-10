@@ -154,7 +154,7 @@ Bug ZIP / Action Trace 当前覆盖：
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
 - `stage_outputs.json`：源图、准备预览、CPU 输出指纹；八个 CPU 色彩阶段的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
-- `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时。Undo/Redo 可复用已计算结果；显示器 ICC 在结果交付之后应用，导出、全分辨率统计和阶段诊断独立计算。
+- `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算，直方图缓存不保留图像帧。
 
 程序内 RAW 状态直接显示 `RAW · Linear ProPhoto · 16-bit`。
 

@@ -26,6 +26,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/cache/RenderedPreviewCache.h"
+#include "core/cache/FullScopesCache.h"
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/commands/CommandRegistry.h"
@@ -1024,6 +1025,74 @@ private slots:
         QCOMPARE(provider.requestImage("current",&size,{}),baseline);
     }
 
+    void fullScopesCacheMatchesFreshCountsAcrossPlansAndGeometry() {
+        FullScopesCache cache;
+        QImage source(23,17,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*5003+y*1001)%65536,(x*2417+y*997)%65536,(x*1777+y*7307)%65536,x%2?12345:65535);
+        for (int encoding=0;encoding<2;++encoding) for (int raw=0;raw<2;++raw)
+        for (int space=0;space<4;++space) for (int geometry=0;geometry<3;++geometry) {
+            AdjustmentState state; state.exposure=.4; state.temperature=13; state.saturation=17; state.redCurve[2]=.58;
+            state.look.mode="manual"; state.look.code=raw ? "FL" : "BW";
+            ScopeRequest request; request.image=source; request.fullResolution=true;
+            request.plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),raw,.3f);
+            if (geometry==1) { request.geometry.crop={.1,.2,.6,.7}; request.geometry.quarterTurns=1; }
+            if (geometry==2) { request.geometry.straighten=7; request.geometry.flipHorizontal=true; }
+            const auto transformed=request.geometry.apply(source);
+            const auto expected=ScopesEngine::analyzeFull(transformed,request.plan);
+            const auto first=cache.analyze(request); request.revision=99;
+            const auto second=cache.analyze(request);
+            for (const auto *actual:{&first,&second}) {
+                QCOMPARE(actual->red,expected.red); QCOMPARE(actual->green,expected.green);
+                QCOMPARE(actual->blue,expected.blue); QCOMPARE(actual->luma,expected.luma);
+                QCOMPARE(actual->pixelCount,quint64(transformed.width())*transformed.height());
+                QCOMPARE(actual->shadowClipPercent,expected.shadowClipPercent); QCOMPARE(actual->highlightClipPercent,expected.highlightClipPercent);
+            }
+            QCOMPARE(first.red.constData(),second.red.constData()); // Reuses complete histogram storage.
+            auto modified=second; modified.red[0]=qulonglong(999999);
+            QCOMPARE(cache.analyze(request).red,expected.red);
+            QVERIFY(cache.snapshot().value("charged_bytes").toInteger()<=cache.snapshot().value("budget_bytes").toInteger());
+        }
+        QCOMPARE(cache.snapshot().value("misses").toInteger(),48);
+        QCOMPARE(cache.snapshot().value("hits").toInteger(),96);
+        ScopeRequest request; request.image=source; request.plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb);
+        const auto key=StageGraph::fullScopesKey(request);
+        request.geometry.crop={0,0,.5,1}; QVERIFY(StageGraph::fullScopesKey(request)!=key);
+        const auto cropped=cache.analyze(request); QCOMPARE(cropped.pixelCount,quint64(12*17));
+        request.geometry={}; request.plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,.5f);
+        QVERIFY(StageGraph::fullScopesKey(request)!=key);
+        QCOMPARE(cache.analyze(request).red,ScopesEngine::analyzeFull(source,request.plan).red);
+        request.image.setPixelColor(0,0,Qt::white); QVERIFY(StageGraph::fullScopesKey(request)!=key);
+        QCOMPARE(cache.analyze(request).red,ScopesEngine::analyzeFull(request.image,request.plan).red);
+    }
+
+    void controllerFullScopesReusesCompletedSourceAfterVersionSwitch() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage source(96,80,QImage::Format_RGB32); source.fill(QColor(80,110,160));
+        const auto path=dir.filePath("source.png"); QVERIFY(source.save(path));
+        ProcessedImageProvider provider; PhotoController controller(&provider); controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.loading() && !controller.rendering(),10000);
+        controller.setExactScopes(true);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.scopesStatus()==QString("全分辨率统计") || controller.scopesStatus()==QString("Full-resolution statistics"),10000);
+        const auto hits=PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger();
+        QVERIFY(controller.createVirtualCopy("Stats copy"));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.loading() && !controller.rendering(),10000);
+        QTRY_VERIFY_WITH_TIMEOUT(PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger()>hits,10000);
+        QCOMPARE(controller.scopesPixelCount(),qulonglong(96*80));
+        const auto reused=PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger();
+        QImage blackAtlas(33*33,33,QImage::Format_RGBA32FPx4); blackAtlas.fill(Qt::black);
+        controller.setDisplayColorLut(blackAtlas,"stats-monitor");
+        controller.selectPhoto(0);
+        QTRY_VERIFY_WITH_TIMEOUT(PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger()>reused,10000);
+        QCOMPARE(controller.scopesPixelCount(),qulonglong(96*80));
+        controller.setCrop(0,0,.5,1);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.scopesPixelCount(),qulonglong(48*80),10000);
+        controller.undo();
+        QTRY_COMPARE_WITH_TIMEOUT(controller.scopesPixelCount(),qulonglong(96*80),10000);
+    }
+
     void stageOutputFingerprintsIgnoreRowPaddingAndSeparateIcc() {
         QByteArray a(24,'\0'), b(24,'\0');
         for (int row=0;row<2;++row) for (int byte=0;byte<9;++byte) a[row*12+byte]=b[row*12+byte]=char(20+byte);
@@ -1184,6 +1253,9 @@ private slots:
         QCOMPARE(cache.value("backend").toString(),QString("cpu-preview"));
         QCOMPARE(cache.value("budget_bytes").toInteger(),qint64(64*1024*1024));
         QVERIFY(cache.value("charged_bytes").toInteger()<=cache.value("budget_bytes").toInteger());
+        const auto scopesCache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()
+            .value("values").toObject().value("full_scopes_cache").toObject();
+        QCOMPARE(scopesCache.value("budget_bytes").toInteger(),qint64(4*1024*1024));
         QVERIFY(before.value("source").toObject().value("available").toBool());
         QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
         QVERIFY(before.value("color_stages").toObject().value("available").toBool());

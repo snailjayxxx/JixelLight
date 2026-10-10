@@ -19,6 +19,8 @@
 #include "core/async/LatestJob.h"
 #include "core/cache/SourceCache.h"
 #include "core/cache/RenderedPreviewCache.h"
+#include "core/cache/FullScopesCache.h"
+#include "core/preview/PreviewTasks.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
 #include "core/scopes/ScopesEngine.h"
@@ -213,6 +215,50 @@ private slots:
         const auto cached=cache.render(source,plan);
         QCOMPARE(cache.render(source,plan).cacheKey(),cached.cacheKey());
         QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),qint64(source.sizeInBytes())*2);
+    }
+    void fullScopesCacheRetainsLruCountsAndBypassesOversizeLuts() {
+        ScopeRequest request; request.image=fixture(32,16); request.plan=nonRawLinearPlan(); request.fullResolution=true;
+        FullScopesCache probe; probe.analyze(request);
+        const auto cost=probe.snapshot().value("charged_bytes").toInteger(); QVERIFY(cost>0);
+        FullScopesCache cache(cost*2);
+        const auto a=cache.analyze(request); const auto planA=request.plan;
+        AdjustmentState state; state.exposure=.2; request.plan=nonRawLinearPlan(state);
+        const auto b=cache.analyze(request); const auto planB=request.plan;
+        request.plan=planA; QCOMPARE(cache.analyze(request).red.constData(),a.red.constData());
+        state.exposure=.4; request.plan=nonRawLinearPlan(state); cache.analyze(request);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2); QCOMPARE(cache.snapshot().value("evictions").toInteger(),1);
+        request.plan=planA; QCOMPARE(cache.analyze(request).red.constData(),a.red.constData());
+        request.plan=planB; const auto newB=cache.analyze(request);
+        QCOMPARE(newB.red,b.red); QVERIFY(newB.red.constData()!=b.red.constData());
+        state.look.mode="calibrated"; state.look.lut=LookLut::identity(33); request.plan=nonRawLinearPlan(state);
+        const auto oversize=cache.analyze(request);
+        QCOMPARE(oversize.red,ScopesEngine::analyzeFull(request.image,request.plan).red);
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),1);
+        QVERIFY(cache.snapshot().value("charged_bytes").toInteger()<=cost*2);
+        FullScopesCache disabled(0); QCOMPARE(disabled.analyze(request).red,oversize.red);
+        QCOMPARE(disabled.snapshot().value("entries").toInt(),0);
+    }
+    void fullScopesCacheDoesNotStoreCancelledCounts() {
+        FullScopesCache cache;
+        ScopeRequest request; request.image=fixture(16,8); request.plan=nonRawLinearPlan(); request.fullResolution=true;
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QCOMPARE(cache.analyze(request,token).pixelCount,quint64(0));
+        const auto complete=cache.analyze(request); QVERIFY(complete.pixelCount>0);
+        QCOMPARE(cache.analyze(request,token).pixelCount,quint64(0));
+        QCOMPARE(cache.analyze(request).red.constData(),complete.red.constData());
+        request.image=fixture(2048,1536);
+        AdjustmentState state; state.hue=13; state.saturation=27; state.hslHue[0]=19; request.plan=nonRawLinearPlan(state);
+        token->store(false); const auto misses=cache.snapshot().value("misses").toInteger();
+        auto future=QtConcurrent::run([&] { return cache.analyze(request,token); });
+        QElapsedTimer wait; wait.start();
+        while (cache.snapshot().value("misses").toInteger()==misses && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=cache.snapshot().value("misses").toInteger()>misses;
+        token->store(true); future.waitForFinished(); QVERIFY(started); QCOMPARE(future.result().pixelCount,quint64(0));
+        QCOMPARE(cache.snapshot().value("entries").toInt(),1);
+        token->store(false); const auto retry=cache.analyze(request,token);
+        QCOMPARE(retry.pixelCount,quint64(2048*1536)); QCOMPARE(cache.snapshot().value("misses").toInteger(),misses+2);
+        QCOMPARE(cache.analyze(request).red.constData(),retry.red.constData());
+        QCOMPARE(cache.snapshot().value("cancelled_requests").toInteger(),3);
     }
     void databaseBatchPersistsFinalSnapshot() {
         QTemporaryDir dir;ProjectDatabase store;QVERIFY(store.create(dir.path(),"test"));
