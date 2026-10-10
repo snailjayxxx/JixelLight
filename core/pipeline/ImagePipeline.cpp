@@ -1,5 +1,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/ColorStageDiagnostics.h"
+#include "core/pipeline/StageGraph.h"
 #include "core/async/ParallelRows.h"
 #include "core/look/LookProfiles.h"
 #include "core/look/LookDetail.h"
@@ -7,11 +9,13 @@
 
 #include <QColorSpace>
 #include <QRgba64>
+#include <QElapsedTimer>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <bit>
 #include <cstdint>
+#include <utility>
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -326,6 +330,119 @@ float encodeOutput(float v, ColorManagement::OutputSpace space) {
 bool identity(const AdjustmentState::CurveArray &curve) {
     return curve == AdjustmentState::CurveArray{0, .25, .5, .75, 1};
 }
+
+// Stage boundaries preserve the v5/base2/look4 operation order and rounding.
+// Normal and diagnostic paths instantiate the same color kernel; the no-op
+// observer is inlined away, with no diagnostic allocation on the render path.
+struct ColorKernel {
+    const ProcessingPlan &plan;
+    Float4 tone, tonal, color, flags, lum, style;
+    ColorManagement::OutputSpace kernelOutput;
+    std::shared_ptr<const LookLut> lut;
+    explicit ColorKernel(const ProcessingPlan &p) : plan(p),
+        tone(p.data[ProcessingPlan::Tone]), tonal(p.data[ProcessingPlan::Tonal]),
+        color(p.data[ProcessingPlan::Color]), flags(p.data[ProcessingPlan::Flags]),
+        lum(p.data[ProcessingPlan::Luminance]), style(p.data[ProcessingPlan::LookStyle]),
+        kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr) {}
+};
+inline Vec3 inputLinear(QRgba64 original, const ColorKernel &kernel) {
+    Vec3 v{original.red()/65535.0f, original.green()/65535.0f, original.blue()/65535.0f};
+    if (kernel.plan.encoding == ImagePipeline::InputEncoding::SRgb) {
+        v = {srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
+        v = multiply(kernel.plan.data.data()+ProcessingPlan::Input0,v);
+    }
+    return v;
+}
+inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
+    v = multiply(kernel.plan.data.data()+ProcessingPlan::Wb0,v);
+    if (kernel.flags.w > 0.0f) v = scale(v, kernel.flags.w); // camera/model exposure zero-point only
+    return v;
+}
+inline Vec3 toneNeutral(Vec3 v, const ColorKernel &kernel) {
+    const auto tonal=kernel.tonal, flags=kernel.flags;
+    if (kernel.color.w != 0) {
+        const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
+        const float stops = tonal.y*(1-smooth(Y/.32f)) + tonal.x*smooth((Y-.26f)/.82f)
+                          + tonal.z*smooth((Y-.62f)/.70f)*.75f + tonal.w*(1-smooth(Y/.16f))*.75f;
+        v = scale(v,std::exp2(stops));
+    }
+    if (flags.x == 0) {
+        const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
+        if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,kernel.tone.x)/Y);
+    }
+    if (flags.w > 0.0f) v = applyRawNeutralTone(v);
+    return v;
+}
+inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
+    const auto &plan=kernel.plan; const auto style=kernel.style;
+    v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
+    if (kernel.color.z != 0) v = applyPerceptualColor(v,plan);
+    else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
+        auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,plan.data[ProcessingPlan::LookOptions].w); v = oklabToLinearSrgb(lab);
+    }
+    if(style.x>0) {
+        const float y=(.2126f*v.x+.7152f*v.y)+.0722f*v.z;
+        v=style.x>=1 ? Vec3{y,y,y} : Vec3{v.x+(y-v.x)*style.x,v.y+(y-v.y)*style.x,v.z+(y-v.z)*style.x};
+        if(style.y>0)v={v.x*(1+.09f*style.y),v.y*(1-.01f*style.y),v.z*(1-.22f*style.y)};
+    }
+    return v;
+}
+// This boundary is used by both template instantiations. GCC otherwise outlines
+// it, adding a per-pixel call to the neutral serial path after stage splitting.
+Q_ALWAYS_INLINE Vec3 outputLinear(Vec3 v, const ColorKernel &kernel) {
+    const auto &plan=kernel.plan; const auto flags=kernel.flags, style=kernel.style;
+    v = multiply(plan.data.data()+ProcessingPlan::Out0,v);
+    v = compressNegativeGamut(v,kernel.lum);
+    v = {displayShoulder(v.x,kernel.tone.y),displayShoulder(v.y,kernel.tone.y),displayShoulder(v.z,kernel.tone.y)};
+    if (flags.y == 0) v = applyMasterCurve(v,plan.state.masterCurve,kernel.lum);
+    if (flags.z == 0) v = {curveSample(plan.state.redCurve,v.x),curveSample(plan.state.greenCurve,v.y),curveSample(plan.state.blueCurve,v.z)};
+    if(style.z>0)v={v.x*(1-style.z)+style.z,v.y*(1-style.z)+style.z,v.z*(1-style.z)+style.z};
+    return v;
+}
+inline Vec3 outputTransfer(Vec3 v, const ColorKernel &kernel) {
+    return {encodeOutput(v.x,kernel.kernelOutput),encodeOutput(v.y,kernel.kernelOutput),encodeOutput(v.z,kernel.kernelOutput)};
+}
+inline Vec3 lookLut(Vec3 v, const ColorKernel &kernel) {
+    const auto &plan=kernel.plan;
+    if(kernel.lut) {
+        const auto mapped=kernel.lut->sample(v.x,v.y,v.z);const float w=plan.data[ProcessingPlan::LookOptions].z;
+        v={v.x+(mapped[0]-v.x)*w,v.y+(mapped[1]-v.y)*w,v.z+(mapped[2]-v.z)*w};
+        if(plan.output!=ColorManagement::OutputSpace::SRgb) {
+            v={srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
+            v=multiply(plan.data.data()+ProcessingPlan::LutOut0,v);
+            v={encodeOutput(v.x,plan.output),encodeOutput(v.y,plan.output),encodeOutput(v.z,plan.output)};
+        }
+    }
+    return v;
+}
+struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
+template<class Observer> inline QRgba64 colorPixel(QRgba64 original, const ColorKernel &kernel, Observer observe) {
+    Vec3 v=inputLinear(original,kernel); observe(ColorStage::InputLinear,v);
+    v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
+    v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
+    v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
+    v=perceptualLook(v,kernel); observe(ColorStage::PerceptualLook,v);
+    v=outputLinear(v,kernel); observe(ColorStage::OutputLinear,v);
+    v=outputTransfer(v,kernel); observe(ColorStage::OutputTransfer,v);
+    v=lookLut(v,kernel); observe(ColorStage::LookLut,v);
+    const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
+    return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),original.alpha());
+}
+QImage finishColor(QImage out, const ProcessingPlan &plan, const CancelToken &token) {
+    if (out.isNull() || cancelled(token)) return {};
+    const auto d=plan.data[ProcessingPlan::LookDetail];
+    out=LookDetail::apply(out,{d.x,d.y,d.z,d.w},token);
+    if(out.isNull())return {};
+    out.setColorSpace(ColorManagement::colorSpace(plan.output));
+    out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
+    out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
+    out.setText(QStringLiteral("JixelLightBaseRendering"),
+                plan.rawSource
+                    ? QStringLiteral("Jixel Neutral v2 / camera baseline %1 EV / luminance tone placement / soft display shoulder")
+                          .arg(QString::number(plan.baseExposureStops, 'f', 3))
+                    : QStringLiteral("none"));
+    return out;
+}
 }
 
 ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePipeline::InputEncoding encoding,
@@ -405,81 +522,49 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
     if (out.isNull()) return {};
     const uchar *src = input.constBits(); const qsizetype srcStride = input.bytesPerLine();
     uchar *dst = out.bits(); const qsizetype dstStride = out.bytesPerLine();
-    const auto tone = plan.data[ProcessingPlan::Tone];
-    const auto tonal = plan.data[ProcessingPlan::Tonal];
-    const auto color = plan.data[ProcessingPlan::Color];
-    const auto flags = plan.data[ProcessingPlan::Flags];
-    const auto lum = plan.data[ProcessingPlan::Luminance];
-    const auto style=plan.data[ProcessingPlan::LookStyle];
-    const auto kernelOutput=ColorManagement::OutputSpace(int(lum.w));
-    const auto lut=style.w>0?plan.state.look.lut:nullptr;
+    const ColorKernel kernel(plan);
     ParallelRows::run(out.height(), out.width(), token, [&](int y) {
         const auto *in = reinterpret_cast<const QRgba64 *>(src+y*srcStride);
         auto *line = reinterpret_cast<QRgba64 *>(dst+y*dstStride);
-        for (int x=0; x<out.width(); ++x) {
-            const QRgba64 original = in[x];
-            Vec3 v{original.red()/65535.0f, original.green()/65535.0f, original.blue()/65535.0f};
-            if (plan.encoding == InputEncoding::SRgb) {
-                v = {srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
-                v = multiply(plan.data.data()+ProcessingPlan::Input0,v);
-            }
-            v = multiply(plan.data.data()+ProcessingPlan::Wb0,v);
-            if (flags.w > 0.0f) v = scale(v, flags.w); // camera/model exposure zero-point only
-            v = applyHighlightRecovery(v,tone.y);
-            if (color.w != 0) {
-                const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
-                const float stops = tonal.y*(1-smooth(Y/.32f)) + tonal.x*smooth((Y-.26f)/.82f)
-                                  + tonal.z*smooth((Y-.62f)/.70f)*.75f + tonal.w*(1-smooth(Y/.16f))*.75f;
-                v = scale(v,std::exp2(stops));
-            }
-            if (flags.x == 0) {
-                const float Y = std::max(0.0f,proPhotoToXyzD50(v).y);
-                if (Y > 1.0e-6f) v = scale(v,middleGrayContrast(Y,tone.x)/Y);
-            }
-            if (flags.w > 0.0f) v = applyRawNeutralTone(v);
-            v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
-            if (color.z != 0) v = applyPerceptualColor(v,plan);
-            else if (std::max({v.x,v.y,v.z}) > 3.3f || std::min({v.x,v.y,v.z}) < 0) {
-                auto lab = linearSrgbToOklab(v); lab.L = std::clamp(lab.L,0.0f,plan.data[ProcessingPlan::LookOptions].w); v = oklabToLinearSrgb(lab);
-            }
-            if(style.x>0) {
-                const float y=(.2126f*v.x+.7152f*v.y)+.0722f*v.z;
-                v=style.x>=1 ? Vec3{y,y,y} : Vec3{v.x+(y-v.x)*style.x,v.y+(y-v.y)*style.x,v.z+(y-v.z)*style.x};
-                if(style.y>0)v={v.x*(1+.09f*style.y),v.y*(1-.01f*style.y),v.z*(1-.22f*style.y)};
-            }
-            v = multiply(plan.data.data()+ProcessingPlan::Out0,v);
-            v = compressNegativeGamut(v,lum);
-            v = {displayShoulder(v.x,tone.y),displayShoulder(v.y,tone.y),displayShoulder(v.z,tone.y)};
-            if (flags.y == 0) v = applyMasterCurve(v,plan.state.masterCurve,lum);
-            if (flags.z == 0) v = {curveSample(plan.state.redCurve,v.x),curveSample(plan.state.greenCurve,v.y),curveSample(plan.state.blueCurve,v.z)};
-            if(style.z>0)v={v.x*(1-style.z)+style.z,v.y*(1-style.z)+style.z,v.z*(1-style.z)+style.z};
-            v={encodeOutput(v.x,kernelOutput),encodeOutput(v.y,kernelOutput),encodeOutput(v.z,kernelOutput)};
-            if(lut) {
-                const auto mapped=lut->sample(v.x,v.y,v.z);const float w=plan.data[ProcessingPlan::LookOptions].z;
-                v={v.x+(mapped[0]-v.x)*w,v.y+(mapped[1]-v.y)*w,v.z+(mapped[2]-v.z)*w};
-                if(plan.output!=ColorManagement::OutputSpace::SRgb) {
-                    v={srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
-                    v=multiply(plan.data.data()+ProcessingPlan::LutOut0,v);
-                    v={encodeOutput(v.x,plan.output),encodeOutput(v.y,plan.output),encodeOutput(v.z,plan.output)};
-                }
-            }
-            const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
-            line[x] = QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),original.alpha());
-        }
+        for (int x=0; x<out.width(); ++x) line[x]=colorPixel(in[x],kernel,NoColorObservation{});
     }, parallel);
-    if (cancelled(token)) return {};
-    const auto d=plan.data[ProcessingPlan::LookDetail];
-    out=LookDetail::apply(out,{d.x,d.y,d.z,d.w},token);
-    if(out.isNull())return {};
-    out.setColorSpace(ColorManagement::colorSpace(plan.output));
-    out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
-    out.setText(QStringLiteral("JixelLightICCManaged"), QStringLiteral("true"));
-    out.setText(QStringLiteral("JixelLightBaseRendering"),
-                plan.rawSource
-                    ? QStringLiteral("Jixel Neutral v2 / camera baseline %1 EV / luminance tone placement / soft display shoulder")
-                          .arg(QString::number(plan.baseExposureStops, 'f', 3))
-                    : QStringLiteral("none"));
-    return out;
+    return finishColor(std::move(out),plan,token);
+}
+
+ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
+    DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
+    if (source.isNull() || cancelled(token)) return result;
+    QElapsedTimer timer; timer.start();
+    const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    QImage out(input.size(),QImage::Format_RGBA64);
+    if (out.isNull()) return result;
+    const ColorKernel kernel(plan);
+    ColorStageDiagnostics stages(input.width(),input.height(),plan);
+    // Serial row order makes streaming hashes independent of worker scheduling.
+    // Cancellation between rows discards incomplete images and all their hashes.
+    for (int y=0;y<input.height();++y) {
+        if (cancelled(token)) return result;
+        const auto *in=reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
+        auto *line=reinterpret_cast<QRgba64 *>(out.scanLine(y));
+        for (int x=0;x<input.width();++x) line[x]=colorPixel(in[x],kernel,[&](ColorStage stage, Vec3 v) {
+            stages.observe(stage,x,v.x,v.y,v.z);
+        });
+        stages.finishRow();
+    }
+    if (cancelled(token)) return result;
+    const auto quantized=StageGraph::outputFingerprint(out);
+    result.image=finishColor(std::move(out),plan,token);
+    if (result.image.isNull() || cancelled(token)) { result.image={}; return result; }
+    result.stages=stages.result();
+    result.stages.insert("quantized_color",quantized);
+    result.stages.insert("detail_output",StageGraph::outputFingerprint(result.image));
+    const auto detail=plan.data[ProcessingPlan::LookDetail];
+    result.stages.insert("detail_active",LookDetail::halo({detail.x,detail.y,detail.z,detail.w})>0);
+    result.stages.insert("capture_elapsed_ms",timer.nsecsElapsed()/1e6);
+    result.stages.insert("timing_scope","whole CPU capture including observation, detail and hashing; not individual kernel time");
+    PerformanceRecorder::sample("diagnostic_color_capture_ms",timer.nsecsElapsed()/1e6,
+        {{"pixels",qint64(input.width())*input.height()},{"row_buffer_bytes",result.stages.value("row_buffer_bytes")}});
+    return result;
 }
 
 QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &token) {

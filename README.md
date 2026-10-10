@@ -153,6 +153,7 @@ Bug ZIP / Action Trace 当前覆盖：
 - Export ICC target / profile bytes / JPEG quality。
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
+- `stage_outputs.json`：源图、准备预览、CPU 输出指纹；八个 CPU 色彩阶段的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
 
 程序内 RAW 状态直接显示 `RAW · Linear ProPhoto · 16-bit`。
 

@@ -1042,15 +1042,17 @@ QString PhotoController::reportBug() {
     // Geometry may still be preparing asynchronously; capture the current
     // snapshot rather than labeling the previous viewport as this revision.
     const auto diagnosticPreview = preparePreview(stageRequest, {});
-    if (!diagnosticPreview.normal.isNull()) capture = ImagePipeline::processWithPlan(diagnosticPreview.normal, gpuPlan());
+    const auto colorCapture=ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal,gpuPlan());
+    capture=colorCapture.image;
     QElapsedTimer hashTimer; hashTimer.start();
     const QJsonObject stageOutputs{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
         {"parameter_revision",qint64(m_requestedRevision)},{"source_is_full_resolution",m_sourceIsFull},
         {"source",StageGraph::outputFingerprint(stageRequest.image)},
         {"prepared_preview",StageGraph::outputFingerprint(diagnosticPreview.normal)},
         {"cpu_srgb_output",StageGraph::outputFingerprint(capture)},
+        {"color_stages",colorCapture.stages},
         {"monitor_icc","excluded; hashes precede screen presentation"},
-        {"note","actual RGBA64/proxy boundaries; not per-color-kernel or float-RAW stage hashes"}};
+        {"note","RGBA64/proxy plus CPU color boundaries; float RAW and GPU stage capture remain unavailable"}};
     PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(stageRequest.image.sizeInBytes())}});
     PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});

@@ -51,6 +51,11 @@ QImage sceneGrayImage(double value) {
     px[0] = QRgba64::fromRgba64(code, code, code, 65535);
     return image;
 }
+QJsonObject colorStage(const QJsonObject &trace, const QString &id) {
+    for (const auto &entry:trace.value("entries").toArray())
+        if (entry.toObject().value("id").toString()==id) return entry.toObject();
+    return {};
+}
 QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
     QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {};
     const auto bytes=file.readAll(); qsizetype offset=0;
@@ -915,6 +920,129 @@ private slots:
         QVERIFY(!StageGraph::outputFingerprint({}).value("available").toBool());
     }
 
+    void colorStageCaptureMatchesNormalRenderingAcrossPlans() {
+        QImage source(13,7,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*5003+y*1001)%65536,(x*2417+y*997)%65536,(x*1777+y*7307)%65536,x%2?12345:65535);
+        for (int encoding=0;encoding<2;++encoding) for (int raw=0;raw<2;++raw)
+        for (int space=0;space<4;++space) for (int look=0;look<5;++look) {
+            AdjustmentState state; state.exposure=.6; state.temperature=19; state.tint=-13;
+            state.shadows=21; state.highlights=-17; state.contrast=11; state.highlightRecovery=23;
+            state.saturation=7; state.vibrance=13; state.hue=-9; state.hslHue[2]=5;
+            state.redCurve[2]=.61; state.masterCurve[3]=.81;
+            if (look>0 && look<4) {
+                state.look.mode="manual"; state.look.code=QStringList{"","FL","BW","SE"}[look];
+                state.look.parameters={{"sharpness",4},{"clarity",3},{"fade",2}};
+            }
+            if (look==4) { state.look.mode="calibrated"; state.look.lut=LookLut::identity(5); state.look.strength=.7; }
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),raw,.3f);
+            const auto captured=ImagePipeline::diagnoseWithPlan(source,plan);
+            QVERIFY(captured.stages.value("available").toBool());
+            QCOMPARE(captured.image,ImagePipeline::processWithPlan(source,plan,{},true));
+            QCOMPARE(captured.image.colorSpace(),ColorManagement::colorSpace(plan.output));
+            QCOMPARE(captured.stages.value("entries").toArray().size(),8);
+            QCOMPARE(captured.stages.value("row_buffer_bytes").toInteger(),qint64(8*13*3*4));
+            QCOMPARE(captured.stages.value("detail_output").toObject().value("pixel_sha256"),StageGraph::outputFingerprint(captured.image).value("pixel_sha256"));
+            for (const auto &entry:captured.stages.value("entries").toArray()) {
+                QCOMPARE(entry.toObject().value("pixels").toInteger(),qint64(13*7));
+                QCOMPARE(entry.toObject().value("non_finite_values").toInteger(),qint64(0));
+                QCOMPARE(entry.toObject().value("pixel_sha256").toString().size(),64);
+            }
+            QCOMPARE(reinterpret_cast<const QRgba64 *>(captured.image.constScanLine(0))[1].alpha(),quint16(12345));
+        }
+    }
+
+    void colorStageCapturePreservesLinearValuesAndExposure() {
+        QImage source(1,1,QImage::Format_RGBA64);
+        reinterpret_cast<QRgba64 *>(source.scanLine(0))[0]=QRgba64::fromRgba64(12000,23000,34000,4567);
+        AdjustmentState state; state.exposure=2;
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,.5f);
+        const auto captured=ImagePipeline::diagnoseWithPlan(source,plan);
+        const auto input=colorStage(captured.stages,"input_linear").value("first_rgb").toArray();
+        const auto exposed=colorStage(captured.stages,"wb_exposure").value("first_rgb").toArray();
+        const int codes[]{12000,23000,34000};
+        for (int c=0;c<3;++c) {
+            QVERIFY(std::abs(input[c].toDouble()-codes[c]/65535.0)<1e-7);
+            QVERIFY(std::abs(exposed[c].toDouble()-codes[c]/65535.0*std::exp2(2.5))<4e-7);
+        }
+        QVERIFY(exposed[2].toDouble()>1); // No diagnostic clipping of scene values.
+        // Known RGB bytes and descriptor are independently encoded in the
+        // golden digest; changing channel order or endian order breaks it.
+        QCOMPARE(colorStage(captured.stages,"input_linear").value("pixel_sha256").toString(),QString("d1e0e0ad560c75c945ad5c23c9acfeaf8d88af748af15bac30a3552ce2c1830e"));
+        plan.data[ProcessingPlan::Wb0]={-2,0,0,0};
+        const auto negative=ImagePipeline::diagnoseWithPlan(source,plan);
+        QVERIFY(colorStage(negative.stages,"wb_exposure").value("minimum_rgb").toArray()[0].toDouble()<0);
+        // Encoded gray independently checks sRGB transfer + the input matrix.
+        source=sceneGrayImage(.5);
+        const auto srgb=ImagePipeline::diagnoseWithPlan(source,ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb));
+        const double encoded=32768/65535.0, linear=std::pow((encoded+.055)/1.055,2.4);
+        for (const auto &v:colorStage(srgb.stages,"input_linear").value("first_rgb").toArray())
+            QVERIFY(std::abs(v.toDouble()-linear)<.0001);
+    }
+
+    void colorStageCaptureSeparatesUpstreamAndDownstreamChanges() {
+        const auto source=sceneGrayImage(.18); AdjustmentState state;
+        const auto capture=[&](const AdjustmentState &s,ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) {
+            return ImagePipeline::diagnoseWithPlan(source,ProcessingPlan::compile(s,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0));
+        };
+        const auto before=capture(state), repeated=capture(state);
+        QCOMPARE(before.stages.value("entries"),repeated.stages.value("entries"));
+        const auto hash=[](const QJsonObject &s,const char *id) { return colorStage(s,id).value("pixel_sha256"); };
+        state.exposure=.5; const auto exposed=capture(state);
+        QCOMPARE(hash(before.stages,"input_linear"),hash(exposed.stages,"input_linear"));
+        QVERIFY(hash(before.stages,"wb_exposure")!=hash(exposed.stages,"wb_exposure"));
+        state={}; state.redCurve[1]=.1; const auto curved=capture(state);
+        const auto p3=capture({},ColorManagement::OutputSpace::DisplayP3);
+        for (const char *id:{"input_linear","wb_exposure","highlight_recovery","tone_neutral","perceptual_look"}) {
+            QCOMPARE(hash(before.stages,id),hash(curved.stages,id));
+            QCOMPARE(hash(before.stages,id),hash(p3.stages,id));
+        }
+        QVERIFY(hash(before.stages,"output_linear")!=hash(curved.stages,"output_linear"));
+        QVERIFY(hash(before.stages,"output_linear")!=hash(p3.stages,"output_linear"));
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(3));
+        for (qsizetype i=0;i<lut->rgb.size();i+=3) lut->rgb[i]=1-lut->rgb[i];
+        lut->updateDigest(); state={}; state.look.mode="calibrated"; state.look.lut=lut; state.look.strength=.2;
+        const auto weak=capture(state); state.look.strength=.8; const auto strong=capture(state);
+        for (const char *id:{"input_linear","wb_exposure","highlight_recovery","tone_neutral","perceptual_look","output_linear","output_transfer"})
+            QCOMPARE(hash(weak.stages,id),hash(strong.stages,id));
+        QVERIFY(hash(weak.stages,"look_lut")!=hash(strong.stages,"look_lut"));
+        QImage detailSource(17,9,QImage::Format_RGBA64);
+        for (int y=0;y<detailSource.height();++y) for (int x=0;x<detailSource.width();++x)
+            detailSource.setPixelColor(x,y,QColor((x*57+y*23)%256,(x*11+y*61)%256,(x*41+y*17)%256));
+        auto detailPlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb);
+        const auto noDetail=ImagePipeline::diagnoseWithPlan(detailSource,detailPlan);
+        detailPlan.data[ProcessingPlan::LookDetail]={.7f,.4f,2,3};
+        const auto withDetail=ImagePipeline::diagnoseWithPlan(detailSource,detailPlan);
+        QCOMPARE(noDetail.stages.value("entries"),withDetail.stages.value("entries"));
+        QCOMPARE(noDetail.stages.value("quantized_color"),withDetail.stages.value("quantized_color"));
+        QVERIFY(noDetail.stages.value("detail_output")!=withDetail.stages.value("detail_output"));
+        QVERIFY(!noDetail.stages.value("detail_active").toBool()); QVERIFY(withDetail.stages.value("detail_active").toBool());
+    }
+
+    void colorStageCaptureIgnoresPaddingAlphaAndMonitorIcc() {
+        QByteArray a(64,'\0'),b(64,char(0xff));
+        for (int y=0;y<2;++y) for (int x=0;x<3;++x) {
+            const auto pixel=QRgba64::fromRgba64(9000+x*7000,21000+y*3000,43000,65535);
+            memcpy(a.data()+y*32+x*8,&pixel,8); memcpy(b.data()+y*32+x*8,&pixel,8);
+        }
+        QImage first(reinterpret_cast<uchar *>(a.data()),3,2,32,QImage::Format_RGBA64);
+        QImage second(reinterpret_cast<uchar *>(b.data()),3,2,32,QImage::Format_RGBA64);
+        first.setColorSpace(QColorSpace::SRgb); second.setColorSpace(QColorSpace::AdobeRgb);
+        const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto before=ImagePipeline::diagnoseWithPlan(first,plan), tagged=ImagePipeline::diagnoseWithPlan(second,plan);
+        QCOMPARE(before.stages.value("entries"),tagged.stages.value("entries")); QCOMPARE(before.image,tagged.image);
+        auto *pixel=reinterpret_cast<QRgba64 *>(second.scanLine(0)); pixel[0].setAlpha(3210);
+        const auto alpha=ImagePipeline::diagnoseWithPlan(second,plan);
+        QCOMPARE(before.stages.value("entries"),alpha.stages.value("entries"));
+        QVERIFY(before.stages.value("quantized_color")!=alpha.stages.value("quantized_color"));
+        QCOMPARE(reinterpret_cast<const QRgba64 *>(alpha.image.constScanLine(0))[0].alpha(),quint16(3210));
+        const auto empty=ImagePipeline::diagnoseWithPlan({},plan);
+        QVERIFY(empty.image.isNull()); QVERIFY(!empty.stages.value("available").toBool()); QVERIFY(!empty.stages.contains("entries"));
+        const auto cancelled=ImagePipeline::diagnoseWithPlan(first,plan,std::make_shared<std::atomic_bool>(true));
+        QVERIFY(cancelled.image.isNull()); QVERIFY(!cancelled.stages.value("available").toBool()); QVERIFY(!cancelled.stages.contains("entries"));
+    }
+
     void diagnosticZipContainsStructuredStageOutputs() {
         QImage image(2,2,QImage::Format_RGBA64); image.fill(Qt::gray);
         const QJsonObject outputs{{"schema",1},{"source",StageGraph::outputFingerprint(image)}};
@@ -934,10 +1062,14 @@ private slots:
         const auto before=QJsonDocument::fromJson(storedZipEntry(baseline,"stage_outputs.json")).object();
         QVERIFY(before.value("source").toObject().value("available").toBool());
         QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
+        QVERIFY(before.value("color_stages").toObject().value("available").toBool());
+        QCOMPARE(before.value("color_stages").toObject().value("backend").toString(),QString("cpu-reference"));
         controller.setExposure(.5); // Deliberately capture before asynchronous display refinement.
         const auto edited=controller.reportBug(); paths << edited; QVERIFY(!edited.isEmpty()); QVERIFY(edited!=baseline);
         const auto after=QJsonDocument::fromJson(storedZipEntry(edited,"stage_outputs.json")).object();
         QCOMPARE(after.value("source"),before.value("source")); QCOMPARE(after.value("prepared_preview"),before.value("prepared_preview"));
+        QCOMPARE(colorStage(after.value("color_stages").toObject(),"input_linear"),colorStage(before.value("color_stages").toObject(),"input_linear"));
+        QVERIFY(colorStage(after.value("color_stages").toObject(),"wb_exposure")!=colorStage(before.value("color_stages").toObject(),"wb_exposure"));
         QVERIFY(after.value("cpu_srgb_output").toObject().value("pixel_sha256")!=before.value("cpu_srgb_output").toObject().value("pixel_sha256"));
         QCOMPARE(QJsonDocument::fromJson(storedZipEntry(edited,"manifest.json")).object().value("adjustments").toObject().value("exposure").toDouble(),.5);
         controller.setCrop(0,0,.5,1);
@@ -946,6 +1078,8 @@ private slots:
         QCOMPARE(geometry.value("source"),before.value("source"));
         QCOMPARE(geometry.value("prepared_preview").toObject().value("width").toInt(),2);
         QCOMPARE(geometry.value("cpu_srgb_output").toObject().value("width").toInt(),2);
+        QCOMPARE(geometry.value("color_stages").toObject().value("width").toInt(),2);
+        QCOMPARE(geometry.value("color_stages").toObject().value("detail_output"),geometry.value("cpu_srgb_output"));
         QImage capture; QVERIFY(capture.loadFromData(storedZipEntry(cropped,"current_preview.png"),"PNG"));
         QCOMPARE(StageGraph::outputFingerprint(capture).value("pixel_sha256"),geometry.value("cpu_srgb_output").toObject().value("pixel_sha256"));
     }
