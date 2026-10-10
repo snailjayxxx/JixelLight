@@ -23,6 +23,7 @@
 #include "core/color/ColorManagement.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
+#include "core/library/CatalogSelection.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
@@ -315,6 +316,29 @@ private slots:
         const auto source=dir.filePath("a.png"),out=dir.filePath("out"); QVERIFY(image.save(source));
         auto copied=copyImportFiles({source},out,{},{},{"../{name}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
         copied=copyImportFiles({source,source},out,{},{},{"{seq}",1}); QVERIFY(!copied.error.isEmpty()); QVERIFY(QDir(out).isEmpty());
+    }
+    void catalogVersionSelectionPreservesSavedOrderAndExactIdentity() {
+        const QStringList keys{"../original.png","jixel-copy:one","A.png","a.png","é.png","e\u0301.png"};
+        auto selected=selectCatalogVersions(keys,{"a.png","jixel-copy:one","../original.png"});
+        QVERIFY(selected.error.isEmpty()); QCOMPARE(selected.indices,QVector<qsizetype>({0,1,3}));
+        selected=selectCatalogVersions(keys,{"e\u0301.png","é.png"}); QVERIFY(selected.error.isEmpty()); QCOMPARE(selected.indices,QVector<qsizetype>({4,5}));
+        selected=selectCatalogVersions(keys); QCOMPARE(selected.indices,QVector<qsizetype>({0,1,2,3,4,5}));
+        selected=selectCatalogVersions({}); QVERIFY(selected.error.isEmpty()); QVERIFY(selected.indices.isEmpty());
+        QStringList large; for (int i=0;i<1001;++i) large.push_back(QString("version-%1").arg(i));
+        selected=selectCatalogVersions(large,{"version-1000"}); QVERIFY(selected.error.isEmpty()); QCOMPARE(selected.indices,QVector<qsizetype>({1000}));
+        selected=selectCatalogVersions(large); QVERIFY(selected.error.isEmpty()); QCOMPARE(selected.indices.size(),1001);
+    }
+    void catalogVersionSelectionRejectsUnknownDuplicateAndAmbiguousKeys() {
+        const QStringList keys{"../original.png","jixel-copy:one"};
+        for (const QStringList &requested : {QStringList{"missing"},QStringList{"../original.png","missing"},QStringList{""},
+            QStringList{"jixel-copy:one","jixel-copy:one"},QStringList{"JIXEL-COPY:one"},QStringList{" ../original.png"}}) {
+            const auto selected=selectCatalogVersions(keys,requested); QVERIFY(!selected.error.isEmpty()); QVERIFY(selected.indices.isEmpty());
+        }
+        for (const QStringList &invalid : {QStringList{""},QStringList{"same","same"}}) {
+            const auto selected=selectCatalogVersions(invalid); QVERIFY(!selected.error.isEmpty()); QVERIFY(selected.indices.isEmpty());
+        }
+        QStringList large; for (int i=0;i<1001;++i) large.push_back(QString("version-%1").arg(i));
+        const auto selected=selectCatalogVersions(large,large); QVERIFY(!selected.error.isEmpty()); QVERIFY(selected.indices.isEmpty());
     }
     void importCaptureNamesUseStrictRecordedTimeAndPreserveExtensions() {
         const QStringList sources{"/one/photo.v1.ARW","/two/花.PNG"};

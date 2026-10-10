@@ -152,6 +152,15 @@ JixelLightCli --catalog Project.jlp --output-dir existing-folder --format png --
 
 CLI 的命名参数只用于 `--catalog`。目录读取为只读快照；未索引拍摄时间时，只读读取源元数据，不修改原文件或项目。
 
+先用 `--catalog Project.jlp --list-catalog` 查询保存的原版/副本标识 `catalog_key`、路径、版本名、评分/Flag、标签和日期记录。查询不读取原片元数据或解码，在原片离线时也可查看；空目录返回空列表。
+
+`--catalog-key` 可重复指定列表中的精确标识，只导出所选版本，保持目录保存顺序。未知、重复或空标识整批拒绝；导出仍限制 1–1000 个所选版本，可以从更大的目录选少量版本。`--list-catalog` 不能与输出设置或调整命令混用。
+
+```sh
+JixelLightCli --catalog Project.jlp --list-catalog
+JixelLightCli --catalog Project.jlp --catalog-key "从列表复制的 catalog_key" --output-dir existing-folder --format png
+```
+
 ### Professional Scopes
 
 - RGB / Luminance Histogram：1024 bins。

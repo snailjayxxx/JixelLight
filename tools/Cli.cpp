@@ -8,6 +8,7 @@
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
 #include "core/project/ProjectDatabase.h"
+#include "core/library/CatalogSelection.h"
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QDir>
@@ -79,12 +80,44 @@ bool readBatch(const QString &path, const QString &defaultSpace, QVector<ExportJ
     return true;
 }
 
+bool readCatalogVersions(const QString &path,const QStringList &keys,QVector<ProjectDatabase::SavedPhoto> *photos,QString *error) {
+    ProjectDatabase catalog; QVector<ProjectDatabase::SavedPhoto> all;
+    if (!catalog.readSnapshot(path,&all)) { *error=catalog.lastError(); return false; }
+    QStringList identities;
+    for (const auto &photo : all) identities.push_back(photo.copyKey.isEmpty()?photo.path:photo.copyKey);
+    const auto selection=selectCatalogVersions(identities,keys);
+    if (!selection.error.isEmpty()) { *error=selection.error; return false; }
+    if (selection.indices.size()==all.size()) *photos=std::move(all);
+    else {
+        photos->clear(); photos->reserve(selection.indices.size());
+        for (const auto index : selection.indices) photos->push_back(std::move(all[index]));
+    }
+    return true;
+}
+
+bool listCatalog(const QString &path,const QStringList &keys,QJsonObject *report,QString *error) {
+    QVector<ProjectDatabase::SavedPhoto> photos;
+    if (!readCatalogVersions(path,keys,&photos,error)) return false;
+    const QDir base(QFileInfo(path).absoluteFilePath()); QJsonArray versions;
+    for (const auto &photo : photos) {
+        versions.append(QJsonObject{{"catalog_key",photo.copyKey.isEmpty()?photo.path:photo.copyKey},
+            {"source",QDir::cleanPath(base.absoluteFilePath(photo.path))},{"version_name",photo.versionName},
+            {"display_name",photo.copyKey.isEmpty()?QStringLiteral("Original"):photo.versionName},
+            {"is_virtual",!photo.copyKey.isEmpty()},{"rating",photo.rating},{"flag",photo.flag},
+            {"tags",photo.tags.toJson()},{"timeline",photo.timeline.toJson()}});
+    }
+    *report={{"schema",1},{"mode","catalog-list"},{"ok",true},{"read_only",true},
+        {"source_commit",JIXELLIGHT_GIT_COMMIT},{"engine",ProcessingPlan::EngineVersion},
+        {"catalog",base.absolutePath()},{"count",qint64(photos.size())},{"versions",versions}};
+    return true;
+}
+
 bool readCatalog(const QString &path, const QString &destination, const QString &space, const QString &format,
-                 const ExportNaming &naming, QVector<ExportJob> *jobs, QString *error) {
+                 const ExportNaming &naming,const QStringList &keys, QVector<ExportJob> *jobs, QString *error) {
     if (!QStringList{"png","jpeg","jpg","tif","tiff","webp"}.contains(format)) { *error="Catalog format must be JPEG, PNG, TIFF or WebP"; return false; }
     if (destination.trimmed().isEmpty() || !QFileInfo(destination).isDir()) { *error="Choose an existing --output-dir for catalog exports"; return false; }
-    ProjectDatabase catalog; QVector<ProjectDatabase::SavedPhoto> photos;
-    if (!catalog.readSnapshot(path,&photos)) { *error=catalog.lastError(); return false; }
+    QVector<ProjectDatabase::SavedPhoto> photos;
+    if (!readCatalogVersions(path,keys,&photos,error)) return false;
     if (photos.isEmpty() || photos.size()>1000) { *error="Catalog export requires 1 to 1000 saved versions"; return false; }
     const QDir base(QFileInfo(path).absoluteFilePath()), output(QFileInfo(destination).absoluteFilePath());
     const auto extension=format=="jpeg" ? QStringLiteral("jpg") : format=="tiff" ? QStringLiteral("tif") : format;
@@ -179,6 +212,8 @@ int main(int argc, char **argv) {
     parser.addOption({"commands","JSON array of shared Develop commands.","file"});
     parser.addOption({"batch","Execute a validated JSON export plan; relative paths use its directory. Stop on runtime failure, retaining completed outputs.","file"});
     parser.addOption({"catalog","Export all saved catalog versions from a read-only snapshot.","project.jlp"});
+    parser.addOption({"list-catalog","List saved catalog version keys and annotations without reading image files. Requires --catalog."});
+    parser.addOption({"catalog-key","Select an exact saved catalog key; repeat for multiple versions. Saved catalog order is retained.","key"});
     parser.addOption({"output-dir","Existing output directory for --catalog.","directory"});
     parser.addOption({"format","Catalog output format: png, jpeg, tiff, webp (JPEG/WebP quality 92).","format","png"});
     parser.addOption({"name-template","Catalog filename stem: {name}, {version}, {seq}, {seq:1}..{seq:9}, {capture_date}, {capture_time}. Empty keeps existing names.","template"});
@@ -196,6 +231,12 @@ int main(int argc, char **argv) {
             {"job_optional_fields",QJsonArray{"space"}},{"maximum_jobs",1000},{"maximum_bytes",4*1024*1024},
             {"relative_paths","manifest directory"},{"runtime_failure","stop; completed outputs retained"}};
         schema["catalog"]=QJsonObject{{"read_only",true},{"selection","all saved originals and virtual versions"},
+            {"selected_keys",QJsonObject{{"option","--catalog-key"},{"repeatable",true},{"maximum_keys",1000},
+                {"matching","exact saved catalog_key; case-sensitive"},{"order","saved catalog order"},
+                {"invalid_selection","reject whole plan before output"}}},
+            {"listing",QJsonObject{{"option","--list-catalog"},{"source_metadata_reads",false},
+                {"contents","saved version identities, source paths, names, curation, tags and timeline"},
+                {"empty_catalog","valid empty list"}}},
             {"maximum_versions",1000},{"optional_commands","applied to each saved snapshot without changing catalog"},
             {"name_template",QJsonObject{{"tokens",QJsonArray{"name","version","seq","seq:1..9","capture_date","capture_time"}},
                 {"maximum_characters",160},{"sequence_range",QJsonArray{1,999999999}},
@@ -208,15 +249,23 @@ int main(int argc, char **argv) {
     const bool batch=parser.isSet("batch"), catalog=parser.isSet("catalog"), multi=batch||catalog;
     QVector<ExportJob> jobs; QString error;
     if (batch && catalog) return fail("Choose either --batch or --catalog");
-    if (!catalog && (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")))
-        return fail("--output-dir, --format, --name-template and --sequence-start require --catalog");
+    if (!catalog && (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")
+        || parser.isSet("list-catalog") || parser.isSet("catalog-key")))
+        return fail("--output-dir, --format, --name-template, --sequence-start, --list-catalog and --catalog-key require --catalog");
     if (catalog) {
         if (!paths.isEmpty()) return fail("Catalog cannot be combined with positional paths");
+        if (parser.isSet("list-catalog")) {
+            if (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")
+                || parser.isSet("commands") || parser.isSet("space")) return fail("--list-catalog cannot be combined with export settings or commands");
+            QJsonObject report;
+            if (!listCatalog(parser.value("catalog"),parser.values("catalog-key"),&report,&error)) return fail(error);
+            QTextStream(stdout)<<QJsonDocument(report).toJson(); return 0;
+        }
         bool validSequence=false; const auto sequence=parser.value("sequence-start").toInt(&validSequence);
         if (!validSequence || sequence<1 || sequence>999999999) return fail("Sequence start must be within 1–999999999");
         if (parser.isSet("sequence-start") && parser.value("name-template").isEmpty()) return fail("--sequence-start requires a nonempty --name-template");
         if (!readCatalog(parser.value("catalog"),parser.value("output-dir"),parser.value("space"),parser.value("format").toLower(),
-                         {parser.value("name-template"),sequence},&jobs,&error)) return fail(error);
+                         {parser.value("name-template"),sequence},parser.values("catalog-key"),&jobs,&error)) return fail(error);
         if (parser.isSet("commands")) {
             QJsonDocument document;
             if (!readJson(parser.value("commands"),1024*1024,&document,&error)) return fail(error);

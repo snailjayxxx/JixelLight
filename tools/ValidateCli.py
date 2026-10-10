@@ -43,6 +43,8 @@ def main():
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         assert schema['catalog']['name_template']['missing_capture_time'] == 'reject whole plan'
+        assert schema['catalog']['selected_keys']['repeatable'] and schema['catalog']['selected_keys']['maximum_keys'] == 1000
+        assert not schema['catalog']['listing']['source_metadata_reads']
         commands = root / 'commands.json'
         commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]))
         destination = root / 'result.png'
@@ -270,6 +272,92 @@ def main():
         assert struct.unpack('>II', Path(snapshot['results'][1]['destination']).read_bytes()[16:24]) == (2, 2)
         assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
         assert set(p.name for p in catalog.iterdir()) == {'Project.db'}  # No migration, backup or WAL switch.
+        listing = json.loads(run('--catalog', catalog, '--list-catalog').stdout)
+        assert listing['ok'] and listing['read_only'] and listing['mode'] == 'catalog-list' and listing['count'] == 2
+        assert [v['catalog_key'] for v in listing['versions']] == ['../original.png', key]
+        assert [v['is_virtual'] for v in listing['versions']] == [False, True]
+        assert [v['display_name'] for v in listing['versions']] == ['Original', 'Alternative']
+        assert all(Path(v['source']) == source for v in listing['versions'])
+        assert all(not v['timeline']['captureChecked'] and not v['timeline']['capture'] for v in listing['versions'])
+        assert all(v['tags']['label'] == 'none' and v['rating'] == 0 and v['flag'] == 'none' for v in listing['versions'])
+        selected_list = json.loads(run('--catalog', catalog, '--list-catalog', '--catalog-key', key).stdout)
+        assert selected_list['count'] == 1 and selected_list['versions'][0]['catalog_key'] == key
+        # Listing is based on saved records and remains useful with offline sources.
+        offline = root / 'offline-source.png'
+        source.rename(offline)
+        try:
+            assert json.loads(run('--catalog', catalog, '--list-catalog').stdout)['count'] == 2
+        finally:
+            offline.rename(source)
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        assert set(p.name for p in catalog.iterdir()) == {'Project.db'}
+        selected_output = root / 'catalog-selected'
+        selected_output.mkdir()
+        selected = json.loads(run('--catalog', catalog, '--output-dir', selected_output, '--catalog-key', key,
+                                  '--name-template', '{version}_{seq:4}', '--sequence-start', 7).stdout)
+        assert selected['ok'] and selected['job_count'] == selected['completed'] == 1
+        assert selected['results'][0]['catalog_key'] == key and selected['results'][0]['adjustments']['exposure'] == -.5
+        assert Path(selected['results'][0]['destination']).name == 'Alternative_0007.png'
+        assert struct.unpack('>II', Path(selected['results'][0]['destination']).read_bytes()[16:24]) == (2, 2)
+        assert png_pixel_stream(Path(selected['results'][0]['destination'])) == png_pixel_stream(Path(snapshot['results'][1]['destination']))
+        ordered_output = root / 'catalog-selected-order'
+        ordered_output.mkdir()
+        ordered = json.loads(run('--catalog', catalog, '--output-dir', ordered_output, '--catalog-key', key,
+                                 '--catalog-key', '../original.png', '--name-template', 'selected_{seq}_{version}').stdout)
+        assert [v['catalog_key'] for v in ordered['results']] == ['../original.png', key]
+        assert [Path(v['destination']).name for v in ordered['results']] == ['selected_1_Original.png', 'selected_2_Alternative.png']
+        rejected_selection = root / 'catalog-selection-rejected'
+        rejected_selection.mkdir()
+        for keys in [('missing',), ('../original.png', 'missing'), (key, key), ('',), (str(source),)]:
+            args = [arg for value in keys for arg in ('--catalog-key', value)]
+            run('--catalog', catalog, '--output-dir', rejected_selection, *args, success=False)
+            run('--catalog', catalog, '--list-catalog', *args, success=False)
+            assert not list(rejected_selection.iterdir())
+            assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        for flag, value in [('output-dir', rejected_selection), ('commands', commands), ('format', 'png'),
+                            ('name-template', '{name}'), ('sequence-start', 1), ('space', 'srgb')]:
+            run('--catalog', catalog, '--list-catalog', '--'+flag, value, success=False)
+        run('--list-catalog', success=False)
+        run('--catalog-key', key, source, root/'no-catalog-selection.png', success=False)
+        run('--catalog', catalog, '--list-catalog', source, root/'no-catalog-list.png', success=False)
+        run('--catalog', catalog, '--list-catalog', '--batch', plan, success=False)
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+        # The 1000-job gate applies to selected exports, not total catalog size.
+        large_catalog = root / 'Large.jlp'
+        large_catalog.mkdir()
+        large_db = large_catalog / 'Project.db'
+        large_db.write_bytes(db_path.read_bytes())
+        with open_database(large_db) as db:
+            for i in range(1000):
+                extra_key = f'jixel-copy:00000000-0000-4000-8000-{i:012d}'
+                db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)', (extra_key, json.dumps(original_state)))
+                db.execute('INSERT INTO virtual_sources(key,json) VALUES(?,?)',
+                           (extra_key, json.dumps({'schema': 1, 'source': '../original.png', 'name': f'Version {i}'})))
+        before_large = hashlib.sha256(large_db.read_bytes()).hexdigest()
+        assert json.loads(run('--catalog', large_catalog, '--list-catalog').stdout)['count'] == 1002
+        large_output = root / 'catalog-large-selected'
+        large_output.mkdir()
+        run('--catalog', large_catalog, '--output-dir', large_output, success=False)
+        assert not list(large_output.iterdir())
+        small = json.loads(run('--catalog', large_catalog, '--catalog-key', key, '--output-dir', large_output).stdout)
+        assert small['ok'] and small['completed'] == 1 and small['results'][0]['catalog_key'] == key
+        assert hashlib.sha256(large_db.read_bytes()).hexdigest() == before_large
+        assert set(p.name for p in large_catalog.iterdir()) == {'Project.db'}
+        empty_catalog = root / 'Empty.jlp'
+        empty_catalog.mkdir()
+        empty_db = empty_catalog / 'Project.db'
+        empty_db.write_bytes(db_path.read_bytes())
+        with open_database(empty_db) as db:
+            db.executescript('DELETE FROM virtual_sources; DELETE FROM photos;')
+        before_empty = hashlib.sha256(empty_db.read_bytes()).hexdigest()
+        empty = json.loads(run('--catalog', empty_catalog, '--list-catalog').stdout)
+        assert empty['ok'] and empty['count'] == 0 and empty['versions'] == []
+        run('--catalog', empty_catalog, '--output-dir', rejected_selection, success=False)
+        assert not list(rejected_selection.iterdir())
+        assert hashlib.sha256(empty_db.read_bytes()).hexdigest() == before_empty
+        assert set(p.name for p in empty_catalog.iterdir()) == {'Project.db'}
         run('--catalog', catalog, '--output-dir', output, success=False)
         run('--catalog', catalog, success=False)
         run('--catalog', catalog, '--batch', plan, success=False)
@@ -367,7 +455,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':
