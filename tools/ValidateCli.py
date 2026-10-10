@@ -36,8 +36,9 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 12
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset'}
+        assert len(schema['parameters']) == 15
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset'}
+        assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         commands = root / 'commands.json'
@@ -126,6 +127,30 @@ def main():
         result = json.loads(run('--commands', commands, source, reset).stdout)
         assert result['adjustments']['geometry']['schema'] == 1
         assert struct.unpack('>II', reset.read_bytes()[16:24]) == (4, 2)
+        vignette = [{'command': 'develop.set', 'parameter': key, 'value': value}
+                    for key, value in {'vignetteAmount': -1.8, 'vignetteMidpoint': .3, 'vignetteFeather': .6}.items()]
+        exposure = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]
+        commands.write_text(json.dumps(exposure))
+        plain = root / 'plain.png'
+        run('--commands', commands, source, plain)
+        commands.write_text(json.dumps(exposure + vignette))
+        darkened = root / 'vignette.png'
+        result = json.loads(run('--commands', commands, source, darkened).stdout)
+        assert result['adjustments']['vignette'] == {'schema': 1, 'amount': -1.8, 'midpoint': .3, 'feather': .6}
+        def png_pixel_stream(path):
+            data, compressed, offset = path.read_bytes(), bytearray(), 8
+            while offset+12 <= len(data):
+                size = struct.unpack_from('>I', data, offset)[0]
+                if data[offset+4:offset+8] == b'IDAT':
+                    compressed.extend(data[offset+8:offset+8+size])
+                offset += size+12
+            return zlib.decompress(compressed)
+        assert png_pixel_stream(darkened) != png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure + vignette + [{'command': 'vignette.reset'}]))
+        reset_vignette = root / 'vignette-reset.png'
+        result = json.loads(run('--commands', commands, source, reset_vignette).stdout)
+        assert 'vignette' not in result['adjustments'] and result['adjustments']['exposure'] == 1
+        assert png_pixel_stream(reset_vignette) == png_pixel_stream(plain)
         for bad in [
             {'command': 'geometry.crop', 'x': .8, 'y': 0, 'width': .5, 'height': 1},
             {'command': 'geometry.rotate', 'quarterTurns': .5},
@@ -137,6 +162,9 @@ def main():
             {'command': 'geometry.set', 'parameter': 'blueCa', 'value': '1'},
             {'command': 'geometry.set', 'parameter': 'unknown', 'value': 0},
             {'command': 'geometry.resetCorrections', 'extra': 1},
+            {'command': 'vignette.reset', 'extra': 1},
+            {'command': 'develop.set', 'parameter': 'vignetteAmount', 'value': '-1'},
+            {'command': 'develop.set', 'parameter': 'vignetteFeather', 'value': None},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
             {'command': 'hsl.set', 'band': 8, 'component': 'saturation', 'value': 25},
             {'command': 'curve.set', 'channel': 'red', 'point': -1, 'value': .6},
@@ -265,7 +293,9 @@ def main():
         bad_output = root / 'catalog-rejected'
         bad_output.mkdir()
         for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}},
-                        {**original_state, 'geometry': {'schema': 3, 'straighten': 5}}]:
+                        {**original_state, 'geometry': {'schema': 3, 'straighten': 5}},
+                        {**original_state, 'vignette': {'schema': 2, 'amount': -1, 'midpoint': .5, 'feather': 1}},
+                        {**original_state, 'vignette': {'schema': 1, 'amount': -4, 'midpoint': .5, 'feather': 1}}]:
             with open_database(db_path) as db:
                 db.execute('UPDATE photos SET adjustment_json=? WHERE path=?', (json.dumps(corrupt), '../original.png'))
             current = hashlib.sha256(db_path.read_bytes()).hexdigest()
@@ -274,7 +304,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-command-overrides', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

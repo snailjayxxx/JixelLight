@@ -15,6 +15,7 @@ Rectangle {
     property bool curveExpanded: false
     property bool exifExpanded: false
     property bool correctionsExpanded: false
+    property bool vignetteExpanded: false
     color: "#15191f"
     border.color: "#292f37"
 
@@ -27,6 +28,7 @@ Rectangle {
         property alias curveExpanded: root.curveExpanded
         property alias exifExpanded: root.exifExpanded
         property alias correctionsExpanded: root.correctionsExpanded
+        property alias vignetteExpanded: root.vignetteExpanded
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -276,6 +278,31 @@ Rectangle {
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色相", "Hue"); from: -180; to: 180; value: root.controller.hue; onEdited: root.controller.hue = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("饱和度", "Saturation"); value: root.controller.saturation; onEdited: root.controller.saturation = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("自然饱和度", "Vibrance"); value: root.controller.vibrance; onEdited: root.controller.vibrance = newValue }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "vignetteToggle"
+                        Layout.fillWidth: true; font.bold: true
+                        text: (root.vignetteExpanded ? "▾ " : "▸ ") + root.t("暗角", "VIGNETTE")
+                        onClicked: root.vignetteExpanded = !root.vignetteExpanded
+                    }
+                    Button {
+                        objectName: "vignetteReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetVignette()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 6; visible: root.vignetteExpanded
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteAmountSlider"; label: root.t("强度 EV", "Amount EV"); from: -3; to: 3; decimals: 2; value: root.controller.vignetteAmount; onEdited: root.controller.vignetteAmount = newValue }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteMidpointSlider"; label: root.t("中点", "Midpoint"); from: 0; to: .95; decimals: 2; value: root.controller.vignetteMidpoint; onEdited: root.controller.vignetteMidpoint = newValue }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "vignetteFeatherSlider"; label: root.t("羽化", "Feather"); from: .01; to: 1; decimals: 2; value: root.controller.vignetteFeather; onEdited: root.controller.vignetteFeather = newValue }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("裁切后椭圆暗角；负值压暗边缘，正值提亮。在线性工作空间、明暗映射之前执行。",
+                            "Post-crop ellipse; negative darkens edges, positive brightens. Applied in linear working space before tone mapping.")
+                    }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

@@ -75,6 +75,13 @@ struct StageGraph {
                     {"order","manual lens/CA -> perspective -> straighten -> crop -> orientation -> color"},
                     {"corrections_active",request.geometry.hasCorrections()},{"sampling","premultiplied-alpha bilinear RGBA64; conservative inscribed trim"},
                     {"lens_profile",false},{"monitor_icc",false}}},
+                {"vignette",QJsonObject{{"schema",1},{"amount_ev",state.vignetteAmount},
+                    {"midpoint",state.vignetteMidpoint},{"feather",state.vignetteFeather},
+                    {"active",state.vignetteAmount!=0},{"backend","CPU reference / QRhi color compute"},
+                    {"order","WB/exposure -> scene-linear vignette -> highlight recovery -> tone"},
+                    {"coordinates","normalized post-geometry, committed crop and orientation; viewport preserves full-image position"},
+                    {"operation","RGB * exp2(amount * smoothstep); alpha unchanged"},
+                    {"lens_profile",false},{"monitor_icc",false}}},
                 {"monitor_icc", "presentation-only; excluded from render/scopes keys"}};
     }
     static QString fullScopesKey(const ScopeRequest &request) {

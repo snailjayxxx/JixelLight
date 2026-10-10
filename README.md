@@ -14,7 +14,7 @@ alpha.10 保持 LibRaw `no_auto_bright=1` 和线性输出，不启用逐照片�
 
 处理引擎版本升级为 `jixellight-linear-v4-base1-look4`，旧缓存自动失效。基于旧 RAW 基础显影拟合出的图片专用/多场景 `.jlook.json` 会被拒绝并要求重新拟合；普通用户导入的 `.cube` 不受此限制。Sony ST 实验配置会在新引擎的真实 ARW/JPEG CI 中重新生成，避免继续吸收 alpha.9 的基础显影偏差。
 
-为保证跨平台颜色正确性，Metal 继续使用完整 GPU 感知颜色路径；D3D11 / OpenGL Compute 在两类已验证为数值敏感的情况——复杂 Hue/HSL 混合，以及 RAW 用户曝光达到 +2.5 EV 以上同时调整 Saturation/Vibrance——会自动切换到 CPU reference 颜色计算，再将结果上传 GPU 继续显示与 1024-bin 直方图。这个安全回退不会放宽 CPU/GPU 40/65535 验收门槛，并会写入 performance 诊断。普通曝光、基础颜色、Sony Look/LUT、显示和直方图仍保持 GPU 路径。
+为保证跨平台颜色正确性，Metal 继续使用完整 GPU 感知颜色路径；D3D11 / OpenGL Compute 在两类已验证为数值敏感的情况——复杂 Hue/HSL 混合，以及 LinearProPhoto 输入的用户曝光与正向暗角的合计增益达到 +2.5 EV 以上，同时调整 Saturation/Vibrance——会自动切换到 CPU reference 颜色计算，再将结果上传 GPU 继续显示与 1024-bin 直方图。这个安全回退不会放宽 CPU/GPU 40/65535 验收门槛，并会写入 performance 诊断。普通曝光、基础颜色、Sony Look/LUT、显示和直方图仍保持 GPU 路径。
 
 这次是有意的画面基准修正，旧项目打开后的 RAW 默认亮度可能发生明显变化；原始 RAW 与编辑参数不会被改写。详见 `docs/RAW_BASE_RENDERING_ALPHA10.md`。
 
@@ -103,6 +103,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - Temperature / Tint：相机白平衡 baseline 之后的线性 chromatic-adaptation delta。
 - Contrast / Highlights / Shadows / Whites / Blacks。
 - Highlight Recovery。
+- 裁切后椭圆暗角：强度 −3～+3 EV、中点和羽化，支持 CPU reference / QRhi 调色及独立重置。
 - Global Hue。
 - Saturation。
 - Vibrance。
@@ -120,7 +121,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 ### 按参数组粘贴与同步（融合开发分支）
 
-“复制”保存当前版本的调整快照；“粘贴…”选择要替换的参数组。“同步…”可对已选版本或图库全部版本应用当前来源的曝光、白平衡偏移、明暗、整体颜色、HSL、曲线、Sony 外观或几何参数。默认不勾选裁切/透视/镜头/方向；来源版本不会被同步修改，每个目标保留独立撤销。评分、关键词和相册不参与同步。
+“复制”保存当前版本的调整快照；“粘贴…”选择要替换的参数组。“同步…”可对已选版本或图库全部版本应用当前来源的曝光、白平衡偏移、明暗、整体颜色、HSL、曲线、Sony 外观、效果（暗角）或几何参数。默认不勾选裁切/透视/镜头/方向；来源版本不会被同步修改，每个目标保留独立撤销。评分、关键词和相册不参与同步。
 
 ### 安全复制导入（融合开发分支）
 
@@ -132,6 +133,10 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - 可折叠的双语手动透视与镜头面板：横向/纵向透视各 ±40%、径向畸变 ±30%、红/蓝相对绿通道倍率各 ±2%。这些是手动模型参数，不是角度或自动镜头配置文件。校正与拉直共用一次 CPU 重采样；保守收边覆盖所有通道和曲线边缘，输出尺寸不大于来源。
 - 预览、全分辨率统计及 JPEG/PNG/TIFF/WebP 导出共用几何处理，保留 Undo/Redo、项目历史和 XMP；连续拉直拖动合并为一条历史。
 - 所有校正为零保留旧像素路径：无拉直为 schema 1，仅拉直为 schema 2；启用透视/镜头时使用完整 schema 3。旧项目不自动应用校正；未知、缺字段或越界几何拒绝加载。CLI 支持 `{"command":"geometry.straighten","degrees":5.5}` 和 `{"command":"geometry.set","parameter":"distortion","value":0.1}`；`geometry.resetCorrections` 仅重置五项新参数，保留拉直、裁切与方向。自动镜头配置、切向畸变和自动垂直线识别仍未实现。
+
+### 暗角（融合开发分支）
+
+暗角以裁切和方向确认后的整幅照片为坐标，放大与平移时保留同一位置。负值压暗边缘，正值提亮；椭圆权重通过中点和羽化控制，在线性工作空间、白平衡/曝光之后及高光恢复/明暗映射之前执行，Alpha 保持不变。它是手动效果，不使用镜头配置。三项参数支持项目历史、虚拟副本、预设、XMP、选择性“效果”同步及 CLI `develop.set`；`vignette.reset` 仅重置暗角。默认零强度保留原有输出，完整默认状态不向旧快照添加字段；启用后保存 schema 1 的可选 `vignette` 对象，未知版本、缺字段及越界快照拒绝加载。裁切编辑期间使用当前未裁切照片，应用裁切后重新定位暗角。
 
 ### Professional Scopes
 
@@ -155,7 +160,7 @@ Bug ZIP / Action Trace 当前覆盖：
 - Export ICC target / profile bytes / JPEG quality。
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
-- `stage_outputs.json`：源图、准备预览、CPU 输出指纹；八个 CPU 色彩阶段的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
+- `stage_outputs.json`：源图、准备预览、CPU 输出指纹；九个 CPU 色彩阶段（含暗角）的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
 - `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存、16 MiB 可选示波器缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时和示波器共享渲染次数。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算。直方图缓存不保留图像帧；示波器缓存不保留源图或已调色照片。
 - 手动几何在 `geometry_corrections` 记录 CPU 请求耗时和五项参数；`stage_dependencies.geometry` 记录完整参数、操作顺序、取样与收边方法，明确没有应用镜头配置文件。校正后的准备预览同时送往 CPU/GPU 调色；几何重采样本身仍是 CPU。
 

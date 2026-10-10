@@ -336,13 +336,16 @@ bool identity(const AdjustmentState::CurveArray &curve) {
 // observer is inlined away, with no diagnostic allocation on the render path.
 struct ColorKernel {
     const ProcessingPlan &plan;
-    Float4 tone, tonal, color, flags, lum, style;
+    Float4 tone, tonal, color, flags, lum, style, vignette, pixelMap;
+    float centerX,centerY;
     ColorManagement::OutputSpace kernelOutput;
     std::shared_ptr<const LookLut> lut;
-    explicit ColorKernel(const ProcessingPlan &p) : plan(p),
+    explicit ColorKernel(const ProcessingPlan &p,const QSize &sourceSize) : plan(p),
         tone(p.data[ProcessingPlan::Tone]), tonal(p.data[ProcessingPlan::Tonal]),
         color(p.data[ProcessingPlan::Color]), flags(p.data[ProcessingPlan::Flags]),
         lum(p.data[ProcessingPlan::Luminance]), style(p.data[ProcessingPlan::LookStyle]),
+        vignette(p.data[ProcessingPlan::Vignette]), pixelMap(p.pixelMap(sourceSize)),
+        centerX((sourceSize.width()-1)*.5f),centerY((sourceSize.height()-1)*.5f),
         kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr) {}
 };
 inline Vec3 inputLinear(QRgba64 original, const ColorKernel &kernel) {
@@ -357,6 +360,14 @@ inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
     v = multiply(kernel.plan.data.data()+ProcessingPlan::Wb0,v);
     if (kernel.flags.w > 0.0f) v = scale(v, kernel.flags.w); // camera/model exposure zero-point only
     return v;
+}
+inline Vec3 applyVignette(Vec3 v,const ColorKernel &kernel,int x,int y) {
+    const auto p=kernel.vignette; if (p.x==0) return v;
+    const auto map=kernel.pixelMap;
+    const float dx=map.x+(float(x)-kernel.centerX)*map.z,dy=map.y+(float(y)-kernel.centerY)*map.w;
+    const float radius=std::sqrt(dx*dx+dy*dy)*.7071067811865475f;
+    const float weight=smooth((radius-p.y)/(p.z*(1-p.y)));
+    return scale(v,std::exp2(p.x*weight));
 }
 inline Vec3 toneNeutral(Vec3 v, const ColorKernel &kernel) {
     const auto tonal=kernel.tonal, flags=kernel.flags;
@@ -416,9 +427,10 @@ inline Vec3 lookLut(Vec3 v, const ColorKernel &kernel) {
     return v;
 }
 struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
-template<class Observer> inline QRgba64 colorPixel(QRgba64 original, const ColorKernel &kernel, Observer observe) {
+template<class Observer> inline QRgba64 colorPixel(QRgba64 original, const ColorKernel &kernel,int x,int y, Observer observe) {
     Vec3 v=inputLinear(original,kernel); observe(ColorStage::InputLinear,v);
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
+    v=applyVignette(v,kernel,x,y); observe(ColorStage::Vignette,v);
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
     v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
     v=perceptualLook(v,kernel); observe(ColorStage::PerceptualLook,v);
@@ -459,6 +471,9 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
                                        float baseExposureStops) {
     const AdjustmentState state=LookProfiles::effective(original);
     ProcessingPlan plan;
+    const auto finite=[](double value,double fallback,double lo,double hi) { return float(std::clamp(std::isfinite(value)?value:fallback,lo,hi)); };
+    plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
+    plan.data[FrameRect]={0,0,1,1};
     plan.rawSource = rawSource;
     plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;
     const auto style=LookProfiles::style(original.look),detail=LookProfiles::detail(original.look);
@@ -514,7 +529,8 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state
                              ColorManagement::OutputSpace output, const CancelToken &token, bool parallel) {
     return processWithPlan(source, ProcessingPlan::compile(state, encoding, output), token, parallel);
 }
-QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
+namespace {
+QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,const QSize &sourceSize,const QPoint &origin) {
     if (source.isNull() || cancelled(token)) return {};
     PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()}, {"parallel",parallel}});
     const QImage input = source.format() == QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
@@ -522,13 +538,17 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
     if (out.isNull()) return {};
     const uchar *src = input.constBits(); const qsizetype srcStride = input.bytesPerLine();
     uchar *dst = out.bits(); const qsizetype dstStride = out.bytesPerLine();
-    const ColorKernel kernel(plan);
+    const ColorKernel kernel(plan,sourceSize);
     ParallelRows::run(out.height(), out.width(), token, [&](int y) {
         const auto *in = reinterpret_cast<const QRgba64 *>(src+y*srcStride);
         auto *line = reinterpret_cast<QRgba64 *>(dst+y*dstStride);
-        for (int x=0; x<out.width(); ++x) line[x]=colorPixel(in[x],kernel,NoColorObservation{});
+        for (int x=0; x<out.width(); ++x) line[x]=colorPixel(in[x],kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
     }, parallel);
     return finishColor(std::move(out),plan,token);
+}
+}
+QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
+    return processColorFrame(source,plan,token,parallel,source.size(),{});
 }
 
 ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
@@ -538,7 +558,7 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
     QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return result;
-    const ColorKernel kernel(plan);
+    const ColorKernel kernel(plan,input.size());
     ColorStageDiagnostics stages(input.width(),input.height(),plan);
     // Serial row order makes streaming hashes independent of worker scheduling.
     // Cancellation between rows discards incomplete images and all their hashes.
@@ -546,7 +566,7 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         if (cancelled(token)) return result;
         const auto *in=reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
         auto *line=reinterpret_cast<QRgba64 *>(out.scanLine(y));
-        for (int x=0;x<input.width();++x) line[x]=colorPixel(in[x],kernel,[&](ColorStage stage, Vec3 v) {
+        for (int x=0;x<input.width();++x) line[x]=colorPixel(in[x],kernel,x,y,[&](ColorStage stage, Vec3 v) {
             stages.observe(stage,x,v.x,v.y,v.z);
         });
         stages.finishRow();
@@ -571,7 +591,7 @@ QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &p
     const QRect roi=region.intersected(source.rect());if(roi.isEmpty())return {};
     const auto d=plan.data[ProcessingPlan::LookDetail];const int pad=LookDetail::halo({d.x,d.y,d.z,d.w});
     const QRect expanded=roi.adjusted(-pad,-pad,pad,pad).intersected(source.rect());
-    const QImage result=processWithPlan(source.copy(expanded),plan,token);
+    const QImage result=processColorFrame(source.copy(expanded),plan,token,true,source.size(),expanded.topLeft());
     if(result.isNull())return {};
     return result.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));
 }

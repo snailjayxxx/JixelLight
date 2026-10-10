@@ -16,6 +16,7 @@ struct PrepareRequest {
 struct PreparedPreview {
     QImage normal, fast, gpu;
     QSizeF displayPixels;
+    QRectF frameRect{0,0,1,1}; // Normalized region in the complete post-geometry image.
     bool viewportOnly = false;
     QString error;
 };

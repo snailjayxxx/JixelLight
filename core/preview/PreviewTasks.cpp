@@ -41,6 +41,7 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
             const int x = std::clamp(int(request.centerX * source.width() - w / 2.0), 0, source.width() - w);
             const int y = std::clamp(int(request.centerY * source.height() - h / 2.0), 0, source.height() - h);
             result.viewportOnly = w != source.width() || h != source.height();
+            result.frameRect={double(x)/source.width(),double(y)/source.height(),double(w)/source.width(),double(h)/source.height()};
             source = source.copy(x, y, w, h);
             result.displayPixels = QSizeF(w * request.zoom, h * request.zoom);
         } else {

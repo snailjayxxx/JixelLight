@@ -24,13 +24,14 @@ private:
     struct Result { QImage image; ScopesResult histogram; };
     Result render(const QImage &input,const AdjustmentState &state,bool statistics=true,
                   ImagePipeline::InputEncoding encoding=ImagePipeline::InputEncoding::LinearProPhoto,
-                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) {
+                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb,const QRectF &frameRect={0,0,1,1}) {
         QRhiCommandBuffer *cb=nullptr;
         if (rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess) return {};
         QByteArray counts;
         const auto floatImage=input.format()==QImage::Format_RGBA32FPx4 ? input : input.convertToFormat(QImage::Format_RGBA32FPx4);
         const auto callback=statistics ? GpuEngine::HistogramReady([&](quint64,QByteArray data,quint64){ counts=std::move(data); }) : GpuEngine::HistogramReady{};
-        const bool ok=engine->process(cb,floatImage,ProcessingPlan::compile(state,encoding,output),++revision,callback,true);
+        auto plan=ProcessingPlan::compile(state,encoding,output); plan.setFrameRect(frameRect);
+        const bool ok=engine->process(cb,floatImage,plan,++revision,callback,true);
         QRhiReadbackResult readback; bool done=false;
         if (ok) {
             readback.completed=[&] { done=true; };
@@ -50,10 +51,11 @@ private:
     }
     void verifyParity(const QImage &input,const AdjustmentState &state,
                       ImagePipeline::InputEncoding encoding,ColorManagement::OutputSpace space,
-                      bool statistics,const char *label) {
-        const auto actual=render(input,state,statistics,encoding,space);
+                      bool statistics,const char *label,const QRectF &frameRect={0,0,1,1}) {
+        const auto actual=render(input,state,statistics,encoding,space,frameRect);
         QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));
-        const auto reference=ImagePipeline::process(input,state,encoding,space);
+        auto plan=ProcessingPlan::compile(state,encoding,space); plan.setFrameRect(frameRect);
+        const auto reference=ImagePipeline::processWithPlan(input,plan);
         int maximum=0,worstX=0,worstY=0;
         quint64 absolute=0,overTolerance=0;
         for(int y=0;y<input.height();++y) {
@@ -129,6 +131,22 @@ private slots:
         AdjustmentState ordinary; ordinary.exposure=.8; ordinary.saturation=18; ordinary.vibrance=22;
         QVERIFY(!render(image,ordinary,false).image.isNull());
         QVERIFY(!engine->lastProcessUsedCpuFallback());
+        ordinary.exposure=.3; ordinary.vignetteAmount=3;
+        QVERIFY(!render(image,ordinary,false).image.isNull()); QCOMPARE(engine->lastProcessUsedCpuFallback(),backendNeedsFallback);
+        ordinary.vignetteAmount=-3;
+        QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
+    }
+    void vignetteCpuGpuParityIncludesFullFrameAndViewportCoordinates() {
+        QImage source(71,93,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64((x*941+y*113)%65536,(x*433+y*277)%65536,(x*1531+y*71)%65536,(x+y)%3?65535:23456);
+        const std::array<std::array<double,3>,4> cases{{{{-3,0,1}},{{-1.5,.4,.7}},{{3,0,.8}},{{2,.95,.01}}}};
+        for (const auto &v : cases) for (const auto &frame : {QRectF(0,0,1,1),QRectF(.13,.18,.52,.43)})
+            for (int encoding=0;encoding<2;++encoding) for (int space=0;space<4;++space) for (bool sony : {false,true}) {
+                AdjustmentState state; state.exposure=.3; state.vignetteAmount=v[0]; state.vignetteMidpoint=v[1]; state.vignetteFeather=v[2];
+                if (sony) { state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"sharpness",3},{"clarity",2}}; }
+                verifyParity(source,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),true,"vignette",frame);
+            }
     }
     void cpuCorrectedGeometryFeedsGpuWithoutRelaxingParity() {
         QImage source(131,97,QImage::Format_RGBA64);

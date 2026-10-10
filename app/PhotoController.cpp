@@ -485,6 +485,9 @@ GETTER(highlightRecovery)
 GETTER(hue)
 GETTER(saturation)
 GETTER(vibrance)
+GETTER(vignetteAmount)
+GETTER(vignetteMidpoint)
+GETTER(vignetteFeather)
 #undef GETTER
 
 QVariantList PhotoController::toVariantList(const AdjustmentState::ColorBandArray &values) {
@@ -510,7 +513,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
@@ -545,7 +548,8 @@ void PhotoController::setAdjustment(const char *name, double value, double Adjus
     if (!state || !std::isfinite(value) || qFuzzyCompare((*state).*member + 1.0, value + 1.0)) return;
     if (!CommandRegistry::set(*state, QString::fromLatin1(name), value)) return;
     value = (*state).*member;
-    persistAndApply(QStringLiteral("adjustment"), {{"parameter", QString::fromLatin1(name)}, {"value", value}});
+    persistAndApply(QString::fromLatin1(name).startsWith("vignette") ? QStringLiteral("vignette_adjustment") : QStringLiteral("adjustment"),
+        {{"parameter", QString::fromLatin1(name)}, {"value", value}});
 }
 
 void PhotoController::setExposure(double v) { setAdjustment("exposure", v, &AdjustmentState::exposure); }
@@ -560,6 +564,14 @@ void PhotoController::setHighlightRecovery(double v) { setAdjustment("highlightR
 void PhotoController::setHue(double v) { setAdjustment("hue", std::clamp(v, -180.0, 180.0), &AdjustmentState::hue); }
 void PhotoController::setSaturation(double v) { setAdjustment("saturation", std::clamp(v, -100.0, 100.0), &AdjustmentState::saturation); }
 void PhotoController::setVibrance(double v) { setAdjustment("vibrance", std::clamp(v, -100.0, 100.0), &AdjustmentState::vibrance); }
+void PhotoController::setVignetteAmount(double v) { setAdjustment("vignetteAmount",v,&AdjustmentState::vignetteAmount); }
+void PhotoController::setVignetteMidpoint(double v) { setAdjustment("vignetteMidpoint",v,&AdjustmentState::vignetteMidpoint); }
+void PhotoController::setVignetteFeather(double v) { setAdjustment("vignetteFeather",v,&AdjustmentState::vignetteFeather); }
+void PhotoController::resetVignette() {
+    auto *state=mutableCurrentState(); if (!state || (state->vignetteAmount==0 && state->vignetteMidpoint==.5 && state->vignetteFeather==1)) return;
+    m_photos[m_currentIndex].history.finish(); CommandRegistry::execute(*state,{{"command","vignette.reset"}});
+    persistAndApply("vignette_reset");
+}
 
 void PhotoController::setColorMix(int band, int component, double value) {
     auto *state = mutableCurrentState();
@@ -1062,13 +1074,15 @@ QString PhotoController::reportBug() {
     // Geometry may still be preparing asynchronously; capture the current
     // snapshot rather than labeling the previous viewport as this revision.
     const auto diagnosticPreview = preparePreview(stageRequest, {});
-    const auto colorCapture=ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal,gpuPlan());
+    auto diagnosticPlan=gpuPlan(true); diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
+    const auto colorCapture=ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal,diagnosticPlan);
     capture=colorCapture.image;
     QElapsedTimer hashTimer; hashTimer.start();
     const QJsonObject stageOutputs{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
         {"parameter_revision",qint64(m_requestedRevision)},{"source_is_full_resolution",m_sourceIsFull},
         {"source",StageGraph::outputFingerprint(stageRequest.image)},
         {"prepared_preview",StageGraph::outputFingerprint(diagnosticPreview.normal)},
+        {"prepared_frame_rect",QJsonArray{diagnosticPreview.frameRect.x(),diagnosticPreview.frameRect.y(),diagnosticPreview.frameRect.width(),diagnosticPreview.frameRect.height()}},
         {"cpu_srgb_output",StageGraph::outputFingerprint(capture)},
         {"color_stages",colorCapture.stages},
         {"monitor_icc","excluded; hashes precede screen presentation"},
@@ -1213,6 +1227,7 @@ void PhotoController::initializeJobs() {
                 return;
             }
             m_previewSource = result.normal; m_fastSource = result.fast; m_gpuSource = result.gpu;
+            m_previewFrameRect=result.frameRect;
             m_displayPixels = result.displayPixels; m_viewportOnly = result.viewportOnly;
             emit previewGeometryChanged(); emit activityChanged();
             ++m_requestedRevision;
@@ -1489,7 +1504,7 @@ void PhotoController::setExactScopes(bool enabled) {
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
-    m_fullScopeJob->submit({m_fullSource, gpuPlan(), m_requestedRevision, true, previewGeometry()});
+    m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry()});
 }
 QString PhotoController::scopePlotUrl() const {
     return m_scopePlot.image.isNull() ? QString{} : QString("image://processed/scopes/%1").arg(m_plotImageId);
@@ -1516,7 +1531,7 @@ void PhotoController::requestScopePlot() {
     request.source=m_exactScopes ? m_fullSource : m_previewSource;
     if (request.source.isNull()) return;
     request.geometry=m_exactScopes ? previewGeometry() : GeometryState{};
-    request.plan=gpuPlan(); request.mode=m_scopeMode; request.revision=m_requestedRevision; request.fullResolution=m_exactScopes;
+    request.plan=gpuPlan(m_exactScopes); request.mode=m_scopeMode; request.revision=m_requestedRevision; request.fullResolution=m_exactScopes;
     m_plotSubmittedRevision=request.revision;
     m_plotJob->submit(std::move(request));
 }

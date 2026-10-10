@@ -20,6 +20,7 @@ Rectangle {
             geometry_correction: ["透视 / 镜头校正", "Perspective / lens correction"],
             geometry_corrections_reset: ["重置透视 / 镜头", "Reset perspective / lens"],
             named_preset: ["命名预设", "Named preset"], command_replay: ["命令编辑", "Command edit"], original: ["起始状态", "Starting state"], adjustment: ["基本调整", "Basic adjustment"],
+            vignette_adjustment: ["暗角", "Vignette"], vignette_reset: ["重置暗角", "Reset vignette"],
             color_mixer: ["混色器", "Color mixer"], curve_point: ["曲线", "Curve"], curve_reset: ["重置曲线", "Reset curve"],
             look_mode: ["外观模式", "Look mode"], look_preset: ["Sony 外观", "Sony Look"],
             look_strength: ["外观强度", "Look strength"], look_parameter: ["外观微调", "Look adjustment"],

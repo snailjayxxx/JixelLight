@@ -1,9 +1,11 @@
 #pragma once
 #include "core/pipeline/ImagePipeline.h"
 #include <array>
+#include <algorithm>
+#include <QRectF>
 
 struct alignas(16) Float4 { float x = 0, y = 0, z = 0, w = 0; };
-// Exactly the std140 layout in the three compute shaders. Matrix ROWS.
+// Exactly the std140 layout in the compute shaders. Matrix ROWS.
 struct ProcessingPlan {
     static constexpr const char *EngineVersion = "jixellight-linear-v5-base2-look4";
     // Jixel Neutral v2 keeps camera exposure calibration separate from the
@@ -19,13 +21,23 @@ struct ProcessingPlan {
                 Bands=11, Curves=19, Dimensions=24,
                 Input0=25, Input1=26, Input2=27,
                 Working0=28, Working1=29, Working2=30, LookStyle=31, LookDetail=32, LookOptions=33,
-                LutOut0=34, LutOut1=35, LutOut2=36, SlotCount=37 };
+                LutOut0=34, LutOut1=35, LutOut2=36, Vignette=37, FrameRect=38, PixelMap=39, SlotCount=40 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
     ColorManagement::OutputSpace output = ColorManagement::OutputSpace::SRgb;
     bool rawSource = false;
     float baseExposureStops = 0.0f;
+
+    void setFrameRect(const QRectF &rect) {
+        if (data[Vignette].x!=0) data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
+    }
+    Float4 pixelMap(const QSize &size) const {
+        const auto rect=data[FrameRect];
+        // Centered ellipse coordinates keep opposite full-image pixels exact
+        // mirrors; both CPU tiles and GPU use this host-computed mapping.
+        return {2*rect.x+rect.z-1,2*rect.y+rect.w-1,2*rect.z/std::max(1,size.width()),2*rect.w/std::max(1,size.height())};
+    }
 
     // Compatibility entry point for tests/tools that historically used
     // LinearProPhoto to mean RAW. Application code should use the explicit
@@ -40,4 +52,4 @@ struct ProcessingPlan {
                                   float baseExposureStops);
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 592);
+static_assert(sizeof(ProcessingPlan::data) == 640);

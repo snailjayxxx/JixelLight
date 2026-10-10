@@ -9,6 +9,7 @@
 #include <QFile>
 #include <atomic>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QDataStream>
 #include <QStandardPaths>
 #include "app/PhotoController.h"
@@ -71,7 +72,8 @@ private slots:
         auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(cache.render(request,token).image.isNull());
         const auto complete=cache.render(request); QVERIFY(cache.render(request,token).image.isNull());
         const auto entries=cache.snapshot()["entries"].toInt(); request.source=fixture(2048,1536);
-        AdjustmentState state; state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}}; request.plan=nonRawLinearPlan(state);
+        AdjustmentState state; state.vignetteAmount=-1.5; state.vignetteMidpoint=.3; state.vignetteFeather=.7;
+        state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}}; request.plan=nonRawLinearPlan(state);
         token->store(false); const auto tiles=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger();
         auto future=QtConcurrent::run([&] { return cache.render(request,token); });
         QElapsedTimer wait; wait.start(); while (PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger()==tiles && !future.isFinished() && wait.elapsed()<5000) QTest::qWait(1);
@@ -82,6 +84,24 @@ private slots:
         for (int i=0;i<6;++i) { auto r=request; r.mode=modes[i%3]; work[i]=QtConcurrent::run([&concurrent,r] { return concurrent.render(r); }); }
         for (int i=0;i<6;++i) { work[i].waitForFinished(); auto r=request; r.mode=modes[i%3]; QCOMPARE(work[i].result().image,renderScopePlot(r,{}).image); QCOMPARE(work[i].result().pixels,quint64(24*17)); }
         QCOMPARE(concurrent.snapshot()["entries"].toInt(),1); QVERIFY(concurrent.snapshot()["charged_bytes"].toInteger()<=concurrent.snapshot()["budget_bytes"].toInteger());
+    }
+    void vignetteIsDeterministicAndViewportCoordinatesInvalidateRenderCache() {
+        const auto source=fixture(319,277); const auto before=source.copy();
+        AdjustmentState state; state.vignetteAmount=-2; state.vignetteMidpoint=.3; state.vignetteFeather=.6;
+        state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}};
+        auto plan=nonRawLinearPlan(state); plan.setFrameRect({.17,.28,.52,.61});
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS"); const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        auto restore=qScopeGuard([&] { if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous); else qunsetenv("JIXELLIGHT_CPU_THREADS"); });
+        qputenv("JIXELLIGHT_CPU_THREADS","1"); const auto serial=ImagePipeline::processWithPlan(source,plan);
+        qputenv("JIXELLIGHT_CPU_THREADS","8"); QCOMPARE(ImagePipeline::processWithPlan(source,plan),serial);
+        for (int y=0;y<source.height();y+=128) {
+            const QRect roi(0,y,source.width(),std::min(128,source.height()-y)); QCOMPARE(ImagePipeline::processRegion(source,plan,roi),serial.copy(roi));
+        }
+        RenderedPreviewCache cache; const auto first=cache.render(source,plan); QCOMPARE(first,serial);
+        auto shifted=plan; shifted.setFrameRect({.2,.28,.52,.61});
+        const auto next=cache.render(source,shifted); QVERIFY(next!=first); QCOMPARE(cache.snapshot()["misses"].toInteger(),2);
+        QCOMPARE(cache.render(source,plan).cacheKey(),first.cacheKey());
+        QCOMPARE(source,before); QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=cache.snapshot()["budget_bytes"].toInteger());
     }
     void manualGeometryIsDeterministicAcrossCpuBudgetsAndCancellation() {
         const QImage source=fixture(1100,800); const auto before=source.copy();

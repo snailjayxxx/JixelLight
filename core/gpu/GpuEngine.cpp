@@ -28,7 +28,7 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
     for (int i=0; i<8; ++i)
         complexHsl = complexHsl || state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;
     const bool extremeBrightPerceptual =
-        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure >= 2.5
+        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure+std::max(0.0f,plan.data[ProcessingPlan::Vignette].x) >= 2.5
         && (state.saturation != 0 || state.vibrance != 0);
     return complexHsl || extremeBrightPerceptual;
 }
@@ -167,6 +167,7 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
             PerformanceRecorder::count("look_lut_uploads");
         }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
+        plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
         if (m_lastCpuFallback) {
             const QImage cpuInput = source.convertToFormat(QImage::Format_RGBA64);

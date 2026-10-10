@@ -79,6 +79,175 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void vignetteUsesKnownSceneExposureAndPreservesDefaultsAndAlpha() {
+        QImage source(9,9,QImage::Format_RGBA64); source.fill(QColor::fromRgba64(10000,10000,10000,32768));
+        const auto plain=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto baseline=ImagePipeline::processWithPlan(source,plain); const auto legacy=AdjustmentState{}.toJson(); QVERIFY(!legacy.contains("vignette"));
+        for (double amount : {-3.0,3.0}) {
+            AdjustmentState state; state.vignetteAmount=amount; state.vignetteMidpoint=0; state.vignetteFeather=1;
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+            const auto actual=ImagePipeline::processWithPlan(source,plan);
+            QCOMPARE(actual.pixelColor(4,4),baseline.pixelColor(4,4));
+            const double r=8.0/9,weight=3*r*r-2*r*r*r;
+            AdjustmentState exposed; exposed.exposure=amount*weight;
+            const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(exposed,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0));
+            const auto a=actual.pixelColor(0,0).rgba64(),b=expected.pixelColor(0,0).rgba64();
+            QVERIFY(std::abs(int(a.red())-int(b.red()))<=2); QVERIFY(std::abs(int(a.green())-int(b.green()))<=2); QVERIFY(std::abs(int(a.blue())-int(b.blue()))<=2);
+            for (int y=0;y<9;++y) for (int x=0;x<9;++x) {
+                QCOMPARE(actual.pixelColor(x,y).rgba64().alpha(),source.pixelColor(x,y).rgba64().alpha());
+                QCOMPARE(actual.pixelColor(x,y),actual.pixelColor(8-x,8-y));
+            }
+            QCOMPARE(ImagePipeline::processWithPlan(source,plan,{},false),actual);
+            const auto capture=ImagePipeline::diagnoseWithPlan(source,plan); QCOMPARE(capture.image,actual);
+            QVERIFY(!colorStage(capture.stages,"vignette").isEmpty());
+            QVERIFY(colorStage(capture.stages,"vignette")["minimum_rgb"]!=colorStage(capture.stages,"wb_exposure")["minimum_rgb"]
+                || colorStage(capture.stages,"vignette")["maximum_rgb"]!=colorStage(capture.stages,"wb_exposure")["maximum_rgb"]);
+        }
+        AdjustmentState disabled; disabled.vignetteMidpoint=.9; disabled.vignetteFeather=.01;
+        QCOMPARE(ImagePipeline::processWithPlan(source,ProcessingPlan::compile(disabled,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)),baseline);
+        QCOMPARE(AdjustmentState::fromJson(legacy).toJson(),legacy);
+        QImage one(1,1,QImage::Format_RGBA64); one.fill(Qt::gray); disabled.vignetteAmount=-3;
+        QCOMPARE(ImagePipeline::process(one,disabled),ImagePipeline::process(one,{}));
+    }
+    void vignetteTilesScopesCacheAndExportsMatchFullReference() {
+        QImage source(37,279,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64((x*1247+y*107)%65536,(x*557+y*311)%65536,(x*937+y*199)%65536,(x+y)%3?65535:23456);
+        const auto before=source.copy();
+        for (bool raw : {false,true}) for (int space=0;space<4;++space) for (int effect=0;effect<2;++effect) {
+            AdjustmentState state; state.vignetteAmount=effect ? 2 : -3; state.vignetteMidpoint=effect ? .95 : .3; state.vignetteFeather=effect ? .01 : .7;
+            state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"sharpness",4},{"clarity",3}};
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),raw,0);
+            const auto full=ImagePipeline::processWithPlan(source,plan); QVERIFY(!full.isNull());
+            for (const auto roi : {QRect(0,0,37,128),QRect(0,128,37,128),QRect(0,256,37,23),QRect(7,83,23,131)})
+                QCOMPARE(ImagePipeline::processRegion(source,plan,roi),full.copy(roi));
+            const auto counts=ScopesEngine::analyzeFull(source,plan); QCOMPARE(counts.red,ScopesEngine::analyze(full).red); QCOMPARE(counts.luma,ScopesEngine::analyze(full).luma);
+            ScopePlotRequest request{source,plan,{},"waveform",1,true}; ScopePlotCache cache; const auto plot=cache.render(request);
+            ScopePlotCounts reference("waveform"); QVERIFY(reference.add(full)); QCOMPARE(plot.image,reference.image());
+            QCOMPARE(cache.render(request).image.cacheKey(),plot.image.cacheKey());
+            auto changed=state; changed.vignetteAmount=0; const auto other=ProcessingPlan::compile(changed,plan.encoding,plan.output,raw,0);
+            QVERIFY(StageGraph::renderKey(source,plan)!=StageGraph::renderKey(source,other));
+        }
+        QCOMPARE(source,before);
+        QTemporaryDir dir; AdjustmentState state; state.vignetteAmount=-1.7; state.vignetteMidpoint=.4; state.vignetteFeather=.6; state.geometry.crop={.1,.2,.8,.6}; state.geometry.quarterTurns=1;
+        const auto expected=ImagePipeline::process(state.geometry.apply(source),state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
+        const auto path=dir.filePath("vignette.png"); QString error;
+        QVERIFY2(exportRaster(source,state,path,ColorManagement::OutputSpace::SRgb,RasterFormat::Png16,100,{},&error,true,0),qPrintable(error));
+        QCOMPARE(QImage(path).convertToFormat(QImage::Format_RGBA64),expected);
+        auto cancelledToken=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto),cancelledToken).isNull());
+    }
+    void vignetteViewportMappingKeepsFullImageLocation() {
+        QImage source(241,193,QImage::Format_RGBA64); source.fill(QColor::fromRgba64(8000,12000,16000,65535));
+        AdjustmentState state; state.vignetteAmount=-2; state.vignetteMidpoint=.2; state.vignetteFeather=.8;
+        const auto fullPlan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto full=ImagePipeline::processWithPlan(source,fullPlan);
+        for (double x : {.2,.8}) {
+            PrepareRequest request; request.image=source; request.viewport={81,69}; request.fullResolution=true; request.zoom=1; request.centerX=x; request.centerY=.7;
+            const auto prepared=preparePreview(request,{}); QVERIFY(prepared.viewportOnly); auto plan=fullPlan; plan.setFrameRect(prepared.frameRect);
+            const auto actual=ImagePipeline::processWithPlan(prepared.normal,plan);
+            const auto roi=QRect(qRound(prepared.frameRect.x()*source.width()),qRound(prepared.frameRect.y()*source.height()),actual.width(),actual.height());
+            const auto reference=full.copy(roi); int maxDelta=0;
+            for (int y=0;y<actual.height();++y) for (int xx=0;xx<actual.width();++xx) {
+                const auto a=actual.pixelColor(xx,y).rgba64(),b=reference.pixelColor(xx,y).rgba64();
+                maxDelta=std::max({maxDelta,std::abs(int(a.red())-int(b.red())),std::abs(int(a.green())-int(b.green())),std::abs(int(a.blue())-int(b.blue()))});
+            }
+            QVERIFY2(maxDelta<=1,qPrintable(QString::number(maxDelta)));
+            QVERIFY(actual!=ImagePipeline::processWithPlan(prepared.normal,fullPlan));
+        }
+    }
+    void vignetteSnapshotCommandsHistoryAndSelectiveTransfer() {
+        AdjustmentState state; const auto original=state.toJson();
+        for (const auto &p : CommandRegistry::parameters()) if (QString::fromLatin1(p.name).startsWith("vignette")) {
+            QVERIFY(CommandRegistry::execute(state,{{"command","develop.set"},{"parameter",p.name},{"value",p.maximum}}));
+            QCOMPARE(state.*p.member,p.maximum);
+        }
+        const auto json=state.toJson(); QVERIFY(AdjustmentState::validVignetteJson(json)); QCOMPARE(AdjustmentState::fromJson(json).toJson(),json);
+        EditHistory history; history.initialize({}); history.record(state,"vignette"); EditHistory restored; QVERIFY(restored.restore(history.toJson(),state)); QCOMPARE(restored.undo().toJson(),original); QCOMPARE(restored.redo().toJson(),json);
+        auto target=AdjustmentState{}; target.exposure=1; target.geometry.straighten=2;
+        QVERIFY(AdjustmentTransfer::apply(target,state,{"effects"})); QCOMPARE(target.vignetteAmount,state.vignetteAmount); QCOMPARE(target.exposure,1.0); QCOMPARE(target.geometry.straighten,2.0);
+        QVERIFY(CommandRegistry::execute(target,{{"command","vignette.reset"}})); QVERIFY(!target.toJson().contains("vignette")); QCOMPARE(target.exposure,1.0); QCOMPARE(target.geometry.straighten,2.0);
+        QVERIFY(!CommandRegistry::execute(target,{{"command","vignette.reset"},{"extra",1}}));
+        for (const auto field : {"schema","amount","midpoint","feather"}) {
+            auto invalid=json; auto v=invalid["vignette"].toObject(); v.remove(field); invalid["vignette"]=v; QVERIFY(!AdjustmentState::validVignetteJson(invalid));
+        }
+        for (const auto key : {"amount","midpoint","feather"}) {
+            auto invalid=json; auto v=invalid["vignette"].toObject(); v[key]=4; invalid["vignette"]=v; QVERIFY(!AdjustmentState::validVignetteJson(invalid));
+        }
+        auto invalid=json; auto v=invalid["vignette"].toObject(); v["schema"]=2; invalid["vignette"]=v; QVERIFY(!AdjustmentState::validVignetteJson(invalid));
+        QTemporaryDir dir; NamedPresets presets(dir.filePath("presets.json")); QString error; QVERIFY2(presets.load(&error),qPrintable(error));
+        QVERIFY2(presets.save("Vignette",state,&error),qPrintable(error));
+        AdjustmentState preset; QVERIFY(presets.get("Vignette",&preset)); QCOMPARE(preset.toJson(),json);
+        NamedPresets reloaded(dir.filePath("presets.json")); QVERIFY2(reloaded.load(&error),qPrintable(error));
+        QVERIFY(reloaded.get("Vignette",&preset)); QCOMPARE(preset.toJson(),json);
+        const auto exported=dir.filePath("vignette-preset.json"); QVERIFY2(reloaded.exportFile("Vignette",exported,&error),qPrintable(error));
+        QVERIFY2(reloaded.importFile(exported,"Imported vignette",&error),qPrintable(error));
+        QVERIFY(reloaded.get("Imported vignette",&preset)); QCOMPARE(preset.toJson(),json);
+        const auto xmp=dir.filePath("vignette.xmp"); QVERIFY2(XmpSidecar::writeNew(xmp,state,{},0,"none",&error),qPrintable(error));
+        XmpSidecar::Document read; QVERIFY2(XmpSidecar::read(xmp,&read,&error),qPrintable(error)); QCOMPARE(read.adjustments.toJson(),json);
+    }
+    void vignetteControllerKeepsViewportScopesHistoryAndProjectConsistent() {
+        QTemporaryDir dir; QImage image(241,193,QImage::Format_RGB32); image.fill(QColor(64,96,128));
+        const auto path=dir.filePath("source.png"); QVERIFY(image.save(path));
+        QFile original(path); QVERIFY(original.open(QIODevice::ReadOnly)); const auto bytes=original.readAll(); original.close();
+        ProcessedImageProvider provider; PhotoController c(&provider); c.setGpuEnabled(false); c.setLanguage("en_US");
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path))); QTRY_VERIFY(c.previewReady() && !c.rendering());
+        const auto fullSource=c.gpuSource().convertToFormat(QImage::Format_RGBA64); QCOMPARE(fullSource.size(),image.size());
+        c.setExposure(.4); c.finishInteraction(); const auto initial=c.editHistory().size();
+        for (double value : {-.3,-.8,-1.5}) c.setVignetteAmount(value); c.finishInteraction();
+        QCOMPARE(c.editHistory().size(),initial+1); QCOMPARE(c.editHistory().last().toMap()["action"].toString(),QString("vignette_adjustment"));
+        c.setVignetteMidpoint(.3); c.finishInteraction(); c.setVignetteFeather(.7); c.finishInteraction();
+        const auto saved=c.gpuPlan(true).state; c.setExactScopes(true);
+        QTRY_VERIFY_WITH_TIMEOUT(!c.rendering() && c.scopesStatus().contains("Full-resolution statistics"),10000);
+        const auto full=ImagePipeline::processWithPlan(fullSource,c.gpuPlan(true)); const auto counts=ScopesEngine::analyze(full);
+        QCOMPARE(c.redHistogram(),counts.red); QCOMPARE(c.lumaHistogram(),counts.luma);
+        c.setViewport(81,69,1,1,.8,.7); QTRY_VERIFY_WITH_TIMEOUT(!c.rendering() && !c.gpuSource().isNull() && c.gpuSource().size()==QSize(81,69),10000);
+        const auto mapped=c.gpuPlan(); QVERIFY(mapped.data[ProcessingPlan::FrameRect].z<1); QCOMPARE(c.gpuPlan(true).data[ProcessingPlan::FrameRect].z,1.f);
+        const auto expected=ImagePipeline::processWithPlan(c.gpuSource().convertToFormat(QImage::Format_RGBA64),mapped);
+        QTRY_COMPARE(StageGraph::outputFingerprint(provider.requestImage("current",nullptr,{}))["pixel_sha256"],StageGraph::outputFingerprint(expected)["pixel_sha256"]);
+        QTRY_VERIFY_WITH_TIMEOUT(c.scopesStatus().contains("Full-resolution statistics"),10000);
+        QCOMPARE(c.redHistogram(),counts.red); QCOMPARE(c.scopesPixelCount(),quint64(image.width())*image.height());
+        c.setScopeMode("waveform"); QTRY_VERIFY_WITH_TIMEOUT(c.scopePlotCurrent(),10000);
+        ScopePlotCounts ink("waveform"); QVERIFY(ink.add(full)); QCOMPARE(provider.requestImage("scopes/current",nullptr,{}),ink.image());
+        QCOMPARE(c.scopePlotPixels(),quint64(image.width())*image.height());
+        const auto diagnostic=c.reportBug(); QVERIFY(!diagnostic.isEmpty());
+        const auto deps=QJsonDocument::fromJson(storedZipEntry(diagnostic,"performance.json")).object()["values"].toObject()["stage_dependencies"].toObject()["vignette"].toObject();
+        QCOMPARE(deps["amount_ev"].toDouble(),saved.vignetteAmount); QVERIFY(deps["active"].toBool()); QVERIFY(!deps["lens_profile"].toBool());
+        const auto outputs=QJsonDocument::fromJson(storedZipEntry(diagnostic,"stage_outputs.json")).object();
+        QVERIFY(outputs["prepared_frame_rect"].toArray()[2].toDouble()<1);
+        QCOMPARE(outputs["cpu_srgb_output"].toObject()["pixel_sha256"],StageGraph::outputFingerprint(expected)["pixel_sha256"]);
+        QVERIFY(!colorStage(outputs["color_stages"].toObject(),"vignette").isEmpty()); QVERIFY(QFile::remove(diagnostic));
+        c.resetVignette(); QCOMPARE(c.vignetteAmount(),0.0); QCOMPARE(c.exposure(),.4); c.undo(); QCOMPARE(c.gpuPlan(true).state.toJson(),saved.toJson());
+        c.redo(); QCOMPARE(c.vignetteMidpoint(),.5); c.undo();
+        QVERIFY(c.createVirtualCopy("Vignette copy")); c.resetVignette(); c.undo(); c.selectPhoto(0); QCOMPARE(c.gpuPlan(true).state.toJson(),saved.toJson());
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Vignette")); QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved.toJson()); reopened.selectPhoto(1); QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved.toJson());
+        QVERIFY(reopened.canRedo()); reopened.redo(); QVERIFY(!reopened.gpuPlan(true).state.toJson().contains("vignette")); QCOMPARE(reopened.exposure(),.4);
+        reopened.selectPhoto(0); QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved.toJson());
+        QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(),bytes);
+    }
+    void invalidVignetteProjectWithoutHistoryPreservesActiveWriterAndBytes() {
+        QTemporaryDir dir; ProjectDatabase active,candidate; QVERIFY(active.create(dir.path(),"Active")); QVERIFY(candidate.create(dir.path(),"Candidate"));
+        AdjustmentState state; state.vignetteAmount=-1; QVERIFY(candidate.addOrUpdatePhoto("source.png",state)); QVERIFY(candidate.flush());
+        const auto activePath=active.projectPath(); const auto dbPath=QDir(candidate.projectPath()).filePath("Project.db");
+        const auto valid=state.toJson()["vignette"].toObject(); QList<QJsonValue> invalid{QJsonArray{},QJsonObject{}};
+        for (const auto *field : {"schema","amount","midpoint","feather"}) { auto v=valid; v.remove(field); invalid.append(v); }
+        for (const auto *field : {"amount","midpoint","feather"}) { auto v=valid; v[field]=4; invalid.append(v); }
+        auto future=valid; future["schema"]=2; invalid.append(future); auto extra=valid; extra["unknown"]=1; invalid.append(extra);
+        invalid.append(QJsonObject{{"schema",1},{"amount",0},{"midpoint",.5},{"feather",1}});
+        for (const auto &v : invalid) {
+            const auto connection=QStringLiteral("invalid-vignette-test");
+            { auto db=QSqlDatabase::addDatabase("QSQLITE",connection); db.setDatabaseName(dbPath); QVERIFY(db.open());
+              auto json=state.toJson(); json["vignette"]=v; QSqlQuery q(db); q.prepare("UPDATE photos SET adjustment_json=?");
+              q.addBindValue(QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact))); QVERIFY(q.exec()); }
+            QSqlDatabase::removeDatabase(connection); QFile file(dbPath); QVERIFY(file.open(QIODevice::ReadOnly)); const auto before=file.readAll(); file.close();
+            QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY(!active.open(candidate.projectPath(),&photos));
+            QVERIFY(active.lastError().contains("vignette")); QCOMPARE(active.projectPath(),activePath); QVERIFY(active.isOpen()); QVERIFY(photos.isEmpty()); QVERIFY(active.flush());
+            QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),before);
+        }
+        // The omitted field in old projects still decodes to the exact defaults.
+        QVERIFY(!AdjustmentState{}.toJson().contains("vignette"));
+    }
     void importNamingPreservesExtensionAndSelectionOrder() {
         const QStringList sources{"/one/photo.v1.ARW","/two/photo.v1.ARW","/two/花.png"};
         auto plan=planImportNames(sources,{"旅行_{seq:4}_{name}",7});
@@ -1345,8 +1514,8 @@ private slots:
             QVERIFY(captured.stages.value("available").toBool());
             QCOMPARE(captured.image,ImagePipeline::processWithPlan(source,plan,{},true));
             QCOMPARE(captured.image.colorSpace(),ColorManagement::colorSpace(plan.output));
-            QCOMPARE(captured.stages.value("entries").toArray().size(),8);
-            QCOMPARE(captured.stages.value("row_buffer_bytes").toInteger(),qint64(8*13*3*4));
+            QCOMPARE(captured.stages.value("entries").toArray().size(),9);
+            QCOMPARE(captured.stages.value("row_buffer_bytes").toInteger(),qint64(9*13*3*4));
             QCOMPARE(captured.stages.value("detail_output").toObject().value("pixel_sha256"),StageGraph::outputFingerprint(captured.image).value("pixel_sha256"));
             for (const auto &entry:captured.stages.value("entries").toArray()) {
                 QCOMPARE(entry.toObject().value("pixels").toInteger(),qint64(13*7));
@@ -1536,7 +1705,7 @@ private slots:
         QVERIFY(!CommandRegistry::set(state,"exposure",std::numeric_limits<double>::infinity(),&error));
         QCOMPARE(state.toJson(),before);
         QVERIFY(!CommandRegistry::execute(state,{{"command","develop.set"},{"parameter","exposure"},{"value","2"}},&error));
-        QCOMPARE(CommandRegistry::schema()["parameters"].toArray().size(),12);
+        QCOMPARE(CommandRegistry::schema()["parameters"].toArray().size(),15);
     }
 
     void geometryPreservesPixelsAndRestoresOldProjectDefaults() {

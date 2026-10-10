@@ -31,6 +31,11 @@ QQuickItem *visualChild(QQuickItem *item, const QString &name) {
     for (auto *child : item->childItems()) if (auto *found=visualChild(child,name)) return found;
     return nullptr;
 }
+int historyCursor(const PhotoController *controller) {
+    const auto history=controller->editHistory();
+    for (int i=0;i<history.size();++i) if (history[i].toMap()["current"].toBool()) return i;
+    return -1;
+}
 bool clickItem(QQuickWindow *window,QQuickItem *item) {
     if (!item || !item->isVisible() || !item->isEnabled()) return false;
     const auto point=item->mapToScene(QPointF(item->width()/2,item->height()/2));
@@ -70,6 +75,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto copyTrace=std::make_shared<QJsonObject>();
     auto transferTrace=std::make_shared<QJsonObject>();
     auto correctionTrace=std::make_shared<QJsonObject>();
+    auto vignetteTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -444,6 +450,63 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             for (int i=0;i<edits;++i) controller->undo();
             correctionTrace->insert("undo_restored",edits>0 && QJsonObject::fromVariantMap(controller->geometry())==correctionTrace->value("before").toObject());
             if (auto *toggle=window->findChild<QQuickItem *>("geometryCorrectionsToggle")) QMetaObject::invokeMethod(toggle,"clicked");
+            state->phase=28;
+        } else if (state->phase==28 && ready) {
+            vignetteTrace->insert("before",controller->gpuPlan(true).state.toJson());
+            vignetteTrace->insert("before_cursor",historyCursor(controller));
+            vignetteTrace->insert("source_is_raw",controller->currentIsRaw());
+            vignetteTrace->insert("toggle_revealed",revealItem(window->findChild<QQuickItem *>("vignetteToggle")));
+            state->phase=281;
+        } else if (state->phase==281 && ready) {
+            const auto slider=visualChild(window->contentItem(),"vignetteAmountSlider");
+            vignetteTrace->insert("opened",(slider && slider->isVisible()) || clickItem(window,window->findChild<QQuickItem *>("vignetteToggle")));
+            state->phase=282;
+        } else if (state->phase==282 && ready) {
+            bool controls=true;
+            for (const auto *name : {"vignetteAmountSlider","vignetteMidpointSlider","vignetteFeatherSlider"})
+                controls=controls && visualChild(window->contentItem(),name);
+            vignetteTrace->insert("controls_found",controls);
+            vignetteTrace->insert("amount_revealed",revealItem(visualChild(window->contentItem(),"vignetteAmountSlider")));
+            state->phase=283;
+        } else if (state->phase==283 && ready) {
+            vignetteTrace->insert("amount_clicked",clickSlider(window,visualChild(window->contentItem(),"vignetteAmountSlider"),.2));
+            vignetteTrace->insert("amount_changed",controller->vignetteAmount()<-.5);
+            vignetteTrace->insert("midpoint_revealed",revealItem(visualChild(window->contentItem(),"vignetteMidpointSlider")));
+            state->phase=284;
+        } else if (state->phase==284 && ready) {
+            vignetteTrace->insert("midpoint_clicked",clickSlider(window,visualChild(window->contentItem(),"vignetteMidpointSlider"),.35));
+            vignetteTrace->insert("midpoint_changed",std::abs(controller->vignetteMidpoint()-.5)>.05);
+            vignetteTrace->insert("feather_revealed",revealItem(visualChild(window->contentItem(),"vignetteFeatherSlider")));
+            state->phase=285;
+        } else if (state->phase==285 && ready) {
+            vignetteTrace->insert("feather_clicked",clickSlider(window,visualChild(window->contentItem(),"vignetteFeatherSlider"),.65));
+            vignetteTrace->insert("feather_changed",controller->vignetteFeather()<.9);
+            controller->finishInteraction(); state->phase=286;
+        } else if (state->phase==286 && ready) {
+            const auto meta=controller->currentMetadata(); const auto expected=meta["pixelWidth"].toULongLong()*meta["pixelHeight"].toULongLong();
+            if (expected>0 && controller->scopesPixelCount()==expected
+                && (controller->scopesStatus().contains("Full-resolution statistics") || controller->scopesStatus().contains(QStringLiteral("全分辨率统计")))) {
+                vignetteTrace->insert("full_scopes",true); vignetteTrace->insert("scope_pixels",qint64(expected));
+                vignetteTrace->insert("active",controller->gpuPlan(true).state.toJson());
+                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".vignette.png");
+                vignetteTrace->insert("language",controller->language()); controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=287;
+            }
+        } else if (state->phase==287 && ready) {
+            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".vignette-en.png");
+            vignetteTrace->insert("reset_revealed",revealItem(window->findChild<QQuickItem *>("vignetteReset"))); state->phase=288;
+        } else if (state->phase==288 && ready) {
+            const auto before=vignetteTrace->value("before").toObject(); const auto active=vignetteTrace->value("active").toObject();
+            vignetteTrace->insert("reset_clicked",clickItem(window,window->findChild<QQuickItem *>("vignetteReset")));
+            const auto reset=controller->gpuPlan(true).state.toJson();
+            const bool isolated=!reset.contains("vignette") && reset["exposure"]==before["exposure"] && reset["geometry"]==before["geometry"];
+            controller->undo(); const bool undo=controller->gpuPlan(true).state.toJson()==active;
+            controller->redo(); const bool redo=controller->gpuPlan(true).state.toJson()==reset;
+            vignetteTrace->insert("isolated_reset_undo_redo",isolated && undo && redo);
+            const int cursor=vignetteTrace->value("before_cursor").toInt(-1);
+            while (controller->canUndo() && historyCursor(controller)>cursor) controller->undo();
+            vignetteTrace->insert("undo_restored",controller->gpuPlan(true).state.toJson()==before && historyCursor(controller)==cursor);
+            controller->setLanguage(vignetteTrace->value("language").toString()); resizeForSmoke(window,1540,920);
+            if (auto *toggle=window->findChild<QQuickItem *>("vignetteToggle")) QMetaObject::invokeMethod(toggle,"clicked");
             revealItem(window->findChild<QQuickItem *>("straightenAngle"));
             controller->selectPhoto(transferTrace->value("source_index").toInt()); state->phase=50;
         } else if (state->phase==50 && ready) {
@@ -471,7 +534,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         bool correctionOk=true;
         for (const auto *key : {"toggle_revealed","opened","controls_found","perspective_revealed","perspective_clicked","perspective_changed","ca_revealed","ca_clicked","ca_changed","other_values_set","full_scopes","undo_restored"})
             correctionOk=correctionOk && correctionTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && (!gpuRequired || controller->gpuActive());
+        bool vignetteOk=true;
+        for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
+            vignetteOk=vignetteOk && vignetteTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -493,6 +559,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_selective_sync_trace"]=*transferTrace;
         report["ui_geometry_corrections_passed"]=correctionOk;
         report["ui_geometry_corrections_trace"]=*correctionTrace;
+        report["ui_vignette_passed"]=vignetteOk;
+        report["ui_vignette_trace"]=*vignetteTrace;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

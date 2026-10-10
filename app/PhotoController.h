@@ -88,6 +88,9 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double hue READ hue WRITE setHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(double saturation READ saturation WRITE setSaturation NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vibrance READ vibrance WRITE setVibrance NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double vignetteAmount READ vignetteAmount WRITE setVignetteAmount NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double vignetteMidpoint READ vignetteMidpoint WRITE setVignetteMidpoint NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
 
     Q_PROPERTY(QVariantList hslHue READ hslHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList hslSaturation READ hslSaturation NOTIFY adjustmentsChanged)
@@ -173,9 +176,11 @@ public:
         const double value = m_currentMetadata.value(QStringLiteral("rawBaseExposureStops"), 0.0).toDouble(&ok);
         return ok && std::isfinite(value) ? float(std::clamp(value, -8.0, 8.0)) : 0.0f;
     }
-    ProcessingPlan gpuPlan() const {
-        return ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
+    ProcessingPlan gpuPlan(bool fullFrame=false) const {
+        auto plan=ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
                                        ColorManagement::OutputSpace::SRgb, currentIsRaw(), rawBaseExposureStops());
+        if (!fullFrame) plan.setFrameRect(m_previewFrameRect);
+        return plan;
     }
     void gpuPresented(quint64 revision, const QString &backend);
     void gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels);
@@ -211,6 +216,7 @@ public:
     double exposure() const; double temperature() const; double tint() const; double contrast() const;
     double highlights() const; double shadows() const; double whites() const; double blacks() const;
     double highlightRecovery() const; double hue() const; double saturation() const; double vibrance() const;
+    double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     QVariantList hslHue() const; QVariantList hslSaturation() const; QVariantList hslLuminance() const;
     QVariantList masterCurve() const; QVariantList redCurve() const; QVariantList greenCurve() const; QVariantList blueCurve() const;
     QString statusMessage() const { return m_statusMessage; }
@@ -218,6 +224,7 @@ public:
     void setExposure(double v); void setTemperature(double v); void setTint(double v); void setContrast(double v);
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
     void setHighlightRecovery(double v); void setHue(double v); void setSaturation(double v); void setVibrance(double v);
+    void setVignetteAmount(double v); void setVignetteMidpoint(double v); void setVignetteFeather(double v);
     Q_INVOKABLE void setLanguage(const QString &language);
 
     Q_INVOKABLE void openImportDialog();
@@ -287,6 +294,7 @@ public:
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();
+    Q_INVOKABLE void resetVignette();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
     Q_INVOKABLE void syncAdjustmentsToAll();
@@ -364,6 +372,7 @@ private:
     int m_scopesRank = -1;
     QSize m_viewport{1600, 1000};
     QSizeF m_displayPixels;
+    QRectF m_previewFrameRect{0,0,1,1};
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
     QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer, m_catalogDateTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;

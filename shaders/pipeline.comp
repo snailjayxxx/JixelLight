@@ -1,6 +1,6 @@
 #version 440
 layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
-layout(std140, binding=0) uniform Plan { vec4 p[37]; };
+layout(std140, binding=0) uniform Plan { vec4 p[40]; };
 layout(rgba32f, binding=1) readonly uniform image2D sourceImage;
 layout(rgba32f, binding=2) writeonly uniform image2D outputImage;
 layout(rgba32f,binding=3) readonly uniform image2D lookLut;
@@ -147,6 +147,12 @@ void main() {
     v=mulRows(0,v);
     // p[10].w is 0 for non-RAW and the camera/model baseline gain for RAW.
     if(p[10].w>0.0) v*=p[10].w;
+    if(p[37].x!=0.0) {
+        precise vec2 delta=p[39].xy+(vec2(coord)-(p[24].xy-vec2(1.0))*.5)*p[39].zw;
+        precise float radius=sqrt(delta.x*delta.x+delta.y*delta.y)*.7071067811865475;
+        float weight=smooth01((radius-p[37].y)/(p[37].z*(1.0-p[37].y)));
+        v*=exp2(p[37].x*weight);
+    }
     float recovery=p[4].y;
     float highest=max(v.r,max(v.g,v.b));
     if(recovery>0.0 && highest>.82) {

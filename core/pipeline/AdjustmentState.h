@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QString>
 #include <array>
+#include <cmath>
 #include "core/look/LookState.h"
 #include "core/pipeline/GeometryState.h"
 
@@ -29,6 +30,9 @@ struct AdjustmentState {
     double hue = 0.0;
     double saturation = 0.0;
     double vibrance = 0.0;
+    double vignetteAmount = 0.0; // EV at the outer ellipse; negative darkens.
+    double vignetteMidpoint = 0.5;
+    double vignetteFeather = 1.0;
 
     ColorBandArray hslHue{};
     ColorBandArray hslSaturation{};
@@ -54,7 +58,7 @@ struct AdjustmentState {
     }
 
     [[nodiscard]] QJsonObject toJson() const {
-        return {
+        QJsonObject result{
             {"geometry", geometry.toJson()}, {"look", look.toJson()}, {"exposure", exposure}, {"temperature", temperature}, {"tint", tint},
             {"contrast", contrast}, {"highlights", highlights}, {"shadows", shadows},
             {"whites", whites}, {"blacks", blacks}, {"highlightRecovery", highlightRecovery},
@@ -67,6 +71,22 @@ struct AdjustmentState {
             {"greenCurve", toJsonArray(greenCurve)},
             {"blueCurve", toJsonArray(blueCurve)}
         };
+        // Keep the exact legacy snapshot when the new tool is at its defaults.
+        if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
+            result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
+        return result;
+    }
+
+    static bool validVignetteJson(const QJsonObject &object) {
+        if (!object.contains("vignette")) return true;
+        if (!object["vignette"].isObject()) return false;
+        const auto v=object["vignette"].toObject();
+        if (v.size()!=4 || !v["schema"].isDouble() || v["schema"].toDouble()!=1) return false;
+        const auto valid=[&](const char *key,double lo,double hi) {
+            return v[key].isDouble() && std::isfinite(v[key].toDouble()) && v[key].toDouble()>=lo && v[key].toDouble()<=hi;
+        };
+        return valid("amount",-3,3) && valid("midpoint",0,.95) && valid("feather",.01,1)
+            && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
     static AdjustmentState fromJson(const QJsonObject &o) {
@@ -85,6 +105,10 @@ struct AdjustmentState {
         s.hue = o.value("hue").toDouble();
         s.saturation = o.value("saturation").toDouble();
         s.vibrance = o.value("vibrance").toDouble();
+        if (o.contains("vignette") && validVignetteJson(o)) {
+            const auto v=o["vignette"].toObject(); s.vignetteAmount=v["amount"].toDouble();
+            s.vignetteMidpoint=v["midpoint"].toDouble(); s.vignetteFeather=v["feather"].toDouble();
+        }
         readJsonArray(o, "hslHue", s.hslHue);
         readJsonArray(o, "hslSaturation", s.hslSaturation);
         readJsonArray(o, "hslLuminance", s.hslLuminance);

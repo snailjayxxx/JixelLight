@@ -6,7 +6,7 @@
 #include <memory>
 
 struct ProcessingPlan;
-enum class ColorStage { InputLinear, WbExposure, HighlightRecovery, ToneNeutral,
+enum class ColorStage { InputLinear, WbExposure, Vignette, HighlightRecovery, ToneNeutral,
                         PerceptualLook, OutputLinear, OutputTransfer, LookLut, Count };
 
 // One RGB FP32 row per boundary, consumed in source row order. No full-frame

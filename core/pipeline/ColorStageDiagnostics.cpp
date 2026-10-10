@@ -11,7 +11,7 @@
 
 namespace {
 constexpr std::array<const char *,int(ColorStage::Count)> StageIds{
-    "input_linear", "wb_exposure", "highlight_recovery", "tone_neutral",
+    "input_linear", "wb_exposure", "vignette", "highlight_recovery", "tone_neutral",
     "perceptual_look", "output_linear", "output_transfer", "look_lut"};
 QJsonArray rgbArray(const std::array<double,3> &rgb) {
     return {rgb[0],rgb[1],rgb[2]}; // QJson represents non-finite numbers as null.
@@ -23,7 +23,7 @@ ColorStageDiagnostics::ColorStageDiagnostics(int width, int height, const Proces
       m_inputEncoding(plan.encoding==ImagePipeline::InputEncoding::SRgb ? "srgb-encoded" : "linear-prophoto-d50") {
     const auto kernelSpace=ColorManagement::OutputSpace(int(plan.data[ProcessingPlan::Luminance].w));
     const auto kernelKey=ColorManagement::key(kernelSpace), targetKey=ColorManagement::key(plan.output);
-    m_spaces={"linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50",
+    m_spaces={"linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50",
               "linear-srgb-d65","linear-"+kernelKey,"encoded-"+kernelKey,"encoded-"+targetKey};
     for (int i=0;i<Count;++i) {
         auto &boundary=m_boundaries[i];
