@@ -25,6 +25,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/cache/RenderedPreviewCache.h"
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/commands/CommandRegistry.h"
@@ -37,6 +38,7 @@
 #include <numeric>
 #include "diagnostics/ZipStoreWriter.h"
 #include "diagnostics/DiagnosticBundle.h"
+#include "diagnostics/PerformanceRecorder.h"
 
 namespace {
 int channelSpread(const QColor &c) {
@@ -905,6 +907,123 @@ private slots:
         QVERIFY(changed.normal != first.normal);
     }
 
+    void renderedPreviewCacheMatchesFreshRenderingAcrossPlans() {
+        RenderedPreviewCache cache;
+        QImage source(13,7,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*5003+y*1001)%65536,(x*2417+y*997)%65536,(x*1777+y*7307)%65536,x%2?12345:65535);
+        const auto sourceFingerprint=StageGraph::outputFingerprint(source);
+        for (int encoding=0;encoding<2;++encoding) for (int raw=0;raw<2;++raw)
+        for (int space=0;space<4;++space) for (int look=0;look<5;++look) {
+            AdjustmentState state; state.exposure=.6; state.temperature=19; state.tint=-13;
+            state.shadows=21; state.highlights=-17; state.contrast=11; state.highlightRecovery=23;
+            state.saturation=7; state.vibrance=13; state.hue=-9; state.hslHue[2]=5;
+            state.redCurve[2]=.61; state.masterCurve[3]=.81;
+            if (look>0 && look<4) {
+                state.look.mode="manual"; state.look.code=QStringList{"","FL","BW","SE"}[look];
+                state.look.parameters={{"sharpness",4},{"clarity",3},{"fade",2}};
+            }
+            if (look==4) { state.look.mode="calibrated"; state.look.lut=LookLut::identity(5); state.look.strength=.7; }
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),raw,.3f);
+            const auto expected=ImagePipeline::processWithPlan(source,plan);
+            const auto first=cache.render(source,plan), second=cache.render(source,plan);
+            QCOMPARE(first,expected); QCOMPARE(second,expected);
+            QCOMPARE(first.cacheKey(),second.cacheKey()); // Actual reuse, not equal re-rendered pixels.
+            QCOMPARE(second.colorSpace(),expected.colorSpace()); QCOMPARE(second.textKeys(),expected.textKeys());
+            for (const auto &key:expected.textKeys()) QCOMPARE(second.text(key),expected.text(key));
+            auto edited=second; edited.fill(Qt::red);
+            QCOMPARE(cache.render(source,plan),expected); // A caller's detached copy cannot poison the cache.
+        }
+        QCOMPARE(cache.snapshot().value("misses").toInteger(),80);
+        QCOMPARE(cache.snapshot().value("hits").toInteger(),160);
+        QCOMPARE(StageGraph::outputFingerprint(source),sourceFingerprint);
+    }
+
+    void renderedPreviewKeysCoverSourceAndActualKernelDependencies() {
+        QImage source(16,8,QImage::Format_RGBA64); source.fill(QColor(70,120,180));
+        const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb);
+        const auto key=StageGraph::renderKey(source,plan);
+        for (int slot=0;slot<ProcessingPlan::SlotCount;++slot) {
+            auto changed=plan; changed.data[slot].x+=.125f;
+            QVERIFY(StageGraph::renderKey(source,changed)!=key);
+        }
+        for (int field=0;field<7;++field) {
+            auto changed=plan;
+            if (field==0) changed.state.hue=std::nextafter(0.,1.);
+            if (field==1) changed.state.saturation=std::nextafter(0.,1.);
+            if (field==2) changed.state.vibrance=std::nextafter(0.,1.);
+            if (field==3) changed.state.masterCurve[2]=std::nextafter(.5,1.);
+            if (field==4) changed.state.redCurve[2]=std::nextafter(.5,1.);
+            if (field==5) changed.state.greenCurve[2]=std::nextafter(.5,1.);
+            if (field==6) changed.state.blueCurve[2]=std::nextafter(.5,1.);
+            QVERIFY(StageGraph::renderKey(source,changed)!=key); // Doubles beyond the packed float precision.
+        }
+        for (int field=0;field<4;++field) {
+            auto changed=plan;
+            if (field==0) changed.encoding=ImagePipeline::InputEncoding::LinearProPhoto;
+            if (field==1) changed.output=ColorManagement::OutputSpace::DisplayP3;
+            if (field==2) changed.rawSource=true;
+            if (field==3) changed.baseExposureStops=.5f;
+            QVERIFY(StageGraph::renderKey(source,changed)!=key);
+        }
+        auto geometryOnly=plan; geometryOnly.state.geometry.quarterTurns=1;
+        QCOMPARE(StageGraph::renderKey(source,geometryOnly),key); // Preparation owns geometry.
+        auto changedSource=source; changedSource.setPixelColor(0,0,Qt::red);
+        QVERIFY(StageGraph::renderKey(changedSource,plan)!=key);
+        QVERIFY(StageGraph::renderKey(source.copy(0,0,8,8),plan)!=key);
+        QVERIFY(StageGraph::renderKey(source.convertToFormat(QImage::Format_RGB32),plan)!=key);
+
+        RenderedPreviewCache cache;
+        const auto before=cache.render(source,plan);
+        QCOMPARE(cache.render(changedSource,plan),ImagePipeline::processWithPlan(changedSource,plan));
+        QVERIFY(cache.render(changedSource,plan)!=before);
+        auto lutA=std::make_shared<LookLut>(*LookLut::identity(2)); lutA->digest.clear();
+        auto lutB=std::make_shared<LookLut>(*lutA);
+        for (auto &value:lutB->rgb) value=1.f-value;
+        AdjustmentState state; state.look.mode="calibrated"; state.look.lut=lutA;
+        const auto planA=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb);
+        state.look.lut=lutB;
+        const auto planB=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb);
+        QVERIFY(StageGraph::renderKey(source,planA)!=StageGraph::renderKey(source,planB));
+        const auto outputA=cache.render(source,planA), outputB=cache.render(source,planB);
+        QCOMPARE(outputA,ImagePipeline::processWithPlan(source,planA));
+        QCOMPARE(outputB,ImagePipeline::processWithPlan(source,planB)); QVERIFY(outputA!=outputB);
+        QCOMPARE(cache.render(source,planA).cacheKey(),outputA.cacheKey());
+    }
+
+    void controllerCpuPreviewCacheReusesUndoRedoWithoutMonitorContamination() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage source(96,80,QImage::Format_RGB32); source.fill(QColor(80,110,160));
+        const auto path=dir.filePath("source.png"); QVERIFY(source.save(path));
+        ProcessedImageProvider provider; PhotoController controller(&provider); controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.loading() && !controller.rendering(),10000);
+        QSize size;
+        const auto baseline=provider.requestImage("current",&size,{});
+        controller.setExposure(.7); controller.finishInteraction();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering(),10000);
+        const auto edited=provider.requestImage("current",&size,{}); QVERIFY(edited!=baseline);
+        const auto hits=PerformanceRecorder::snapshot().value("counters").toObject().value("render_cache_hit").toInteger();
+        controller.undo(); QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering(),10000);
+        QCOMPARE(provider.requestImage("current",&size,{}),baseline);
+        controller.redo(); QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering(),10000);
+        QCOMPARE(provider.requestImage("current",&size,{}),edited);
+        QVERIFY(PerformanceRecorder::snapshot().value("counters").toObject().value("render_cache_hit").toInteger()>=hits+2);
+        // Monitor mapping happens in the provider after cache delivery.
+        QImage blackAtlas(33*33,33,QImage::Format_RGBA32FPx4); blackAtlas.fill(Qt::black);
+        controller.setDisplayColorLut(blackAtlas,"test-monitor");
+        controller.undo(); QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering(),10000);
+        QCOMPARE(provider.requestImage("current",&size,{}).pixelColor(0,0).red(),0);
+        controller.setDisplayColorLut({},"identity-srgb");
+        QCOMPARE(provider.requestImage("current",&size,{}),baseline);
+        controller.setCrop(0,0,.5,1);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering() && provider.requestImage("current",&size,{}).width()==48,10000);
+        controller.undo();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering() && provider.requestImage("current",&size,{}).size()==baseline.size(),10000);
+        QCOMPARE(provider.requestImage("current",&size,{}),baseline);
+    }
+
     void stageOutputFingerprintsIgnoreRowPaddingAndSeparateIcc() {
         QByteArray a(24,'\0'), b(24,'\0');
         for (int row=0;row<2;++row) for (int byte=0;byte<9;++byte) a[row*12+byte]=b[row*12+byte]=char(20+byte);
@@ -1060,6 +1179,11 @@ private slots:
         QStringList paths; const auto cleanup=qScopeGuard([&] { for(const auto &path:paths) QFile::remove(path); });
         const auto baseline=controller.reportBug(); paths << baseline; QVERIFY(!baseline.isEmpty());
         const auto before=QJsonDocument::fromJson(storedZipEntry(baseline,"stage_outputs.json")).object();
+        const auto cache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()
+            .value("values").toObject().value("render_cache").toObject();
+        QCOMPARE(cache.value("backend").toString(),QString("cpu-preview"));
+        QCOMPARE(cache.value("budget_bytes").toInteger(),qint64(64*1024*1024));
+        QVERIFY(cache.value("charged_bytes").toInteger()<=cache.value("budget_bytes").toInteger());
         QVERIFY(before.value("source").toObject().value("available").toBool());
         QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
         QVERIFY(before.value("color_stages").toObject().value("available").toBool());

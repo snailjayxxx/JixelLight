@@ -39,6 +39,26 @@ struct StageGraph {
                << request.viewport << request.zoom << request.centerX << request.centerY << request.fullResolution;
         return digest(bytes);
     }
+    // The CPU kernel reads both packed float slots and selected double-valued
+    // state. Never substitute state.toJson(): it serializes entire LUT payloads.
+    // Geometry is already applied to source; monitor ICC and request revisions
+    // are presentation/delivery concerns, not point-color dependencies.
+    static QString renderKey(const QImage &source, const ProcessingPlan &plan) {
+        QByteArray bytes;
+        QDataStream stream(&bytes, QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_6_8);
+        stream << QStringLiteral("cpu-preview-v1") << QString::fromLatin1(ProcessingPlan::EngineVersion)
+               << source.cacheKey() << source.size() << int(source.format())
+               << int(plan.encoding) << int(plan.output) << plan.rawSource << plan.baseExposureStops;
+        for (const auto &slot : plan.data) stream << slot.x << slot.y << slot.z << slot.w;
+        stream << plan.state.hue << plan.state.saturation << plan.state.vibrance;
+        for (const auto *curve : {&plan.state.masterCurve, &plan.state.redCurve, &plan.state.greenCurve, &plan.state.blueCurve})
+            for (double value : *curve) stream << value;
+        const auto lut = plan.data[ProcessingPlan::LookStyle].w > 0 ? plan.state.look.lut : nullptr;
+        stream << quint64(reinterpret_cast<quintptr>(lut.get()));
+        if (lut) stream << lut->size << lut->digest;
+        return digest(bytes);
+    }
     static QJsonObject describe(const QString &sourceKey, const PrepareRequest &request,
                                 const AdjustmentState &state, bool raw, float baseExposure) {
         const QString prepared = prepareKey(request);

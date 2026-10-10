@@ -18,6 +18,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/async/LatestJob.h"
 #include "core/cache/SourceCache.h"
+#include "core/cache/RenderedPreviewCache.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
 #include "core/scopes/ScopesEngine.h"
@@ -130,6 +131,88 @@ private slots:
         const auto before=SourceCache::fileKey(file.fileName());
         QVERIFY(file.open(QIODevice::WriteOnly));file.write("abd");file.close();
         QVERIFY(before!=SourceCache::fileKey(file.fileName()));
+    }
+    void renderedPreviewCacheHonorsLruAndChargesRetainedLuts() {
+        const QImage image=fixture(16,8); // 1024-byte rendered image.
+        RenderedPreviewCache cache(2048);
+        const auto a=nonRawLinearPlan();
+        AdjustmentState state; state.exposure=.2; const auto b=nonRawLinearPlan(state);
+        state.exposure=.4; const auto c=nonRawLinearPlan(state);
+        const auto imageA=cache.render(image,a), imageB=cache.render(image,b);
+        QCOMPARE(cache.render(image,a).cacheKey(),imageA.cacheKey()); // A becomes most recently used.
+        cache.render(image,c);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2);
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),2048);
+        QCOMPARE(cache.snapshot().value("evictions").toInteger(),1);
+        QCOMPARE(cache.render(image,a).cacheKey(),imageA.cacheKey());
+        const auto newB=cache.render(image,b); QCOMPARE(newB,imageB); QVERIFY(newB.cacheKey()!=imageB.cacheKey());
+        QCOMPARE(cache.snapshot().value("evictions").toInteger(),2);
+        const auto large=fixture(32,16);
+        QCOMPARE(cache.render(large,a),ImagePipeline::processWithPlan(large,a));
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),1);
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),2048); // Oversize doesn't flush useful entries.
+        RenderedPreviewCache disabled(0);
+        QCOMPARE(disabled.render(image,a),ImagePipeline::processWithPlan(image,a));
+        QCOMPARE(disabled.snapshot().value("entries").toInt(),0);
+
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(5)); // 1500-byte retained payload.
+        std::weak_ptr<const LookLut> weak=lut;
+        state.look.mode="calibrated"; state.look.lut=lut;
+        auto lutPlan=nonRawLinearPlan(state);
+        cache.render(image,lutPlan); // 2524 bytes exceeds this cache, even though the image fits.
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),2);
+        RenderedPreviewCache withLut(3072);
+        withLut.render(image,lutPlan);
+        QCOMPARE(withLut.snapshot().value("charged_bytes").toInteger(),3072);
+        state.look.lut.reset(); lutPlan.state.look.lut.reset(); lut.reset();
+        QVERIFY(!weak.expired()); // Pointer-key lifetime is guarded by the entry.
+        withLut.render(image,a); QVERIFY(weak.expired());
+        QVERIFY(withLut.snapshot().value("charged_bytes").toInteger()<=3072);
+    }
+    void renderedPreviewCacheDiscardsCancelledMissAndHit() {
+        RenderedPreviewCache cache;
+        const auto image=fixture(16,8); const auto plan=nonRawLinearPlan();
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(cache.render(image,plan,token).isNull());
+        QCOMPARE(cache.snapshot().value("entries").toInt(),0);
+        const auto complete=cache.render(image,plan);
+        QVERIFY(cache.render(image,plan,token).isNull());
+        QCOMPARE(cache.render(image,plan).cacheKey(),complete.cacheKey());
+        QVERIFY(cache.render({},plan).isNull());
+
+        const auto large=fixture(2048,1536); token->store(false);
+        AdjustmentState complex; complex.hue=13; complex.saturation=27; complex.hslHue[0]=19; complex.masterCurve[2]=.58;
+        const auto expensive=nonRawLinearPlan(complex);
+        const auto misses=cache.snapshot().value("misses").toInteger();
+        auto future=QtConcurrent::run([&] { return cache.render(large,expensive,token); });
+        // Wait until lookup has missed, then cancel the expensive request.
+        QElapsedTimer wait; wait.start();
+        while (cache.snapshot().value("misses").toInteger()==misses && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=cache.snapshot().value("misses").toInteger()>misses;
+        token->store(true); future.waitForFinished(); QVERIFY(future.result().isNull());
+        QVERIFY(started);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),1);
+        token->store(false);
+        const auto retry=cache.render(large,expensive,token); QVERIFY(!retry.isNull());
+        QCOMPARE(cache.snapshot().value("misses").toInteger(),misses+2);
+        QCOMPARE(cache.render(large,expensive).cacheKey(),retry.cacheKey());
+        QCOMPARE(cache.snapshot().value("cancelled_requests").toInteger(),3);
+    }
+    void renderedPreviewCacheSupportsConcurrentImmutableSnapshots() {
+        RenderedPreviewCache cache(2*1024*1024);
+        const auto source=fixture(192,128);
+        AdjustmentState state; state.exposure=.4; state.saturation=17; state.masterCurve[2]=.58;
+        const auto plan=nonRawLinearPlan(state), other=nonRawLinearPlan();
+        const auto expected=ImagePipeline::processWithPlan(source,plan), expectedOther=ImagePipeline::processWithPlan(source,other);
+        QList<QFuture<QImage>> futures;
+        for (int i=0;i<8;++i) futures.append(QtConcurrent::run([&,i] { return cache.render(source,i%2 ? plan : other); }));
+        for (int i=0;i<futures.size();++i) {
+            futures[i].waitForFinished(); QCOMPARE(futures[i].result(),i%2 ? expected : expectedOther);
+        }
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2);
+        const auto cached=cache.render(source,plan);
+        QCOMPARE(cache.render(source,plan).cacheKey(),cached.cacheKey());
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),qint64(source.sizeInBytes())*2);
     }
     void databaseBatchPersistsFinalSnapshot() {
         QTemporaryDir dir;ProjectDatabase store;QVERIFY(store.create(dir.path(),"test"));

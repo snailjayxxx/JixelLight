@@ -5,6 +5,7 @@
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/cache/RenderedPreviewCache.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/raw/RawDecoder.h"
@@ -1055,6 +1056,7 @@ QString PhotoController::reportBug() {
         {"note","RGBA64/proxy plus CPU color boundaries; float RAW and GPU stage capture remain unavailable"}};
     PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(stageRequest.image.sizeInBytes())}});
     PerformanceRecorder::value("stage_dependencies", StageGraph::describe(m_loadedKey, stageRequest, currentState(), currentIsRaw(), rawBaseExposureStops()));
+    if (m_renderCache) PerformanceRecorder::value("render_cache", m_renderCache->snapshot());
     PerformanceRecorder::value("controller_state", QJsonObject{{"requested_revision", qint64(m_requestedRevision)}, {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()}, {"backend", processingBackend()}, {"loading", m_loading}});
     PerformanceRecorder::value("scope_plot", QJsonObject{{"mode",m_scopeMode},{"revision",qint64(m_plotRevision)},
         {"pixels",qint64(m_scopePlot.pixels)},{"full_resolution",m_plotFull},{"is_current",scopePlotCurrent()},
@@ -1161,6 +1163,7 @@ void PhotoController::initializeJobs() {
         if (!paths.isEmpty()) m_catalogDatesJob->submit({m_catalogEpoch,paths});
     });
     m_sourceCache = std::make_shared<SourceCache>();
+    m_renderCache = std::make_shared<RenderedPreviewCache>();
     m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache);
     const auto cache = m_sourceCache;
     m_loader = std::make_unique<LatestJob<LoadRequest, SourceData>>(
@@ -1193,9 +1196,10 @@ void PhotoController::initializeJobs() {
             scheduleRender(false);
             if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
         });
+    const auto renderCache = m_renderCache;
     m_render = std::make_unique<LatestJob<RenderRequest, QImage>>(
-        [](const RenderRequest &request, const CancelToken &cancel) {
-            try { return ImagePipeline::processWithPlan(request.source, request.plan, cancel); }
+        [renderCache](const RenderRequest &request, const CancelToken &cancel) {
+            try { return renderCache->render(request.source, request.plan, cancel); }
             catch (...) { return QImage{}; }
         }, [this](const RenderRequest &request, QImage image) {
             if (request.revision != m_requestedRevision || m_gpuActive) {
