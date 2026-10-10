@@ -127,18 +127,20 @@ private slots:
         for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x)
             reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(x*2341,y*3127,12345,(x+y)%2?23456:65535);
         const bool fallback=rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2;
-        for (int mode=0;mode<3;++mode) {
+        for (int mode=0;mode<4;++mode) {
             AdjustmentState state; state.exposure=.3; state.vignetteAmount=-1.5;
             if(mode==1){state.hue=-23;state.hslSaturation[5]=-25;}
-            if(mode==2){state.look.mode="manual";state.look.code="FL";state.look.parameters={{"sharpness",3},{"clarity",2}};}
-            const auto space=mode==2?ColorManagement::OutputSpace::DisplayP3:ColorManagement::OutputSpace::SRgb;
+            if(mode>=2){state.look.mode="manual";state.look.code=mode==2?"FL":"ST";state.look.parameters={{"sharpness",3},{"clarity",2}};}
+            const auto space=mode>=2?ColorManagement::OutputSpace::DisplayP3:ColorManagement::OutputSpace::SRgb;
             const auto result=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,space,{.1,.2,.7,.6},true);
             QVERIFY(!result.image.isNull()); QVERIFY(result.diagnostic["available"].toBool());
             for(auto it=result.independentFingerprint.begin();it!=result.independentFingerprint.end();++it)
                 QCOMPARE(result.diagnostic[it.key()],it.value());
             QCOMPARE(result.diagnostic["parameter_revision"].toInteger(),qint64(revision));
             QCOMPARE(result.diagnostic["output_space"].toString(),ColorManagement::key(space));
-            QCOMPARE(result.diagnostic["producer"].toString(),QString(mode==1&&fallback?"cpu-reference-upload":"gpu-compute"));
+            // FL compiles HSL band changes, so it uses the same existing
+            // D3D11/OpenGL safety fallback. ST proves native spatial compute.
+            QCOMPARE(result.diagnostic["producer"].toString(),QString((mode==1||mode==2)&&fallback?"cpu-reference-upload":"gpu-compute"));
             QVERIFY(!result.diagnostic["monitor_icc"].toBool());
             QCOMPARE(result.histogram.pixelCount,quint64(source.width()*source.height()));
         }
