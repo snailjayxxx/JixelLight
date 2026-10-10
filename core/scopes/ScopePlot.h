@@ -2,6 +2,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include <QImage>
 #include <QVector>
+#include <array>
 
 // Optional CPU reference plots of the encoded sRGB output, before monitor ICC.
 // Waveform/parade retain 1024 vertical levels; these do not replace histogram.
@@ -25,3 +26,6 @@ struct ScopePlotRequest {
 };
 struct ScopePlotResult { QImage image; quint64 pixels = 0; QString error; };
 ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelToken &cancel);
+// Fixed order: waveform, parade, vectorscope. Shares one bounded tile render;
+// counts and display ink keep exactly the individual-mode algorithms above.
+std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request, const CancelToken &cancel);

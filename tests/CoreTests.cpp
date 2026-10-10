@@ -27,6 +27,7 @@
 #include "core/pipeline/StageGraph.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
+#include "core/cache/ScopePlotCache.h"
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/commands/CommandRegistry.h"
@@ -628,6 +629,55 @@ private slots:
             }
         }
     }
+    void sharedScopePlotsMatchIndividualAndFullReferenceAcrossPlans() {
+        QImage source(35,279,QImage::Format_RGBA64);
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64((x*1777+y*103)%65536,(x*503+y*211)%65536,(x*1301+y*37)%65536,(x+y)%3?65535:23456);
+        ScopePlotCache cache; int batches=0;
+        for (bool raw : {false,true}) for (int geometry=0;geometry<3;++geometry) for (int look=0;look<3;++look) {
+            AdjustmentState state; state.exposure=.4; state.saturation=13;
+            if (look==1) { state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",3},{"sharpness",4},{"fade",2}}; }
+            if (look==2) { state.look.mode="calibrated"; state.look.lut=LookLut::identity(5); }
+            if (geometry==1) { state.geometry.crop={.1,.2,.7,.6}; state.geometry.quarterTurns=1; }
+            if (geometry==2) { state.geometry.perspectiveHorizontal=.1; state.geometry.distortion=.05; state.geometry.redCa=.2; }
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,raw,0);
+            const auto encoded=ImagePipeline::processWithPlan(state.geometry.apply(source),plan);
+            ScopePlotRequest request{source,plan,state.geometry,"waveform",1,true}; const auto shared=renderScopePlots(request,{});
+            const QStringList modes{"waveform","parade","vectorscope"};
+            for (int i=0;i<3;++i) {
+                ScopePlotCounts counts(modes[i]); QVERIFY(counts.add(encoded)); request.mode=modes[i];
+                const auto individual=renderScopePlot(request,{}); const auto actual=cache.render(request);
+                QCOMPARE(shared[i].image,individual.image); QCOMPARE(shared[i].image,counts.image()); QCOMPARE(actual.image,shared[i].image);
+                QCOMPARE(actual.pixels,quint64(encoded.width())*encoded.height()); QCOMPARE(actual.pixels,shared[i].pixels); QVERIFY(actual.error.isEmpty());
+                ++request.revision; const auto hit=cache.render(request); QCOMPARE(hit.image.cacheKey(),actual.image.cacheKey());
+                auto changed=hit.image; changed.fill(Qt::magenta); QCOMPARE(cache.render(request).image,actual.image);
+            }
+            ++batches;
+        }
+        QCOMPARE(cache.snapshot()["misses"].toInteger(),qint64(batches)); QCOMPARE(cache.snapshot()["hits"].toInteger(),qint64(batches*8));
+        QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=cache.snapshot()["budget_bytes"].toInteger());
+    }
+    void scopePlotKeysCoverModeIndependentBatchesAndActualDependencies() {
+        QImage source(12,9,QImage::Format_RGBA64); source.fill(Qt::gray);
+        ScopePlotRequest request{source,ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb),{},"waveform",1,true}; const auto key=StageGraph::scopePlotsKey(request);
+        request.mode="vectorscope"; request.revision=99; QCOMPARE(StageGraph::scopePlotsKey(request),key);
+        request.fullResolution=false; QVERIFY(StageGraph::scopePlotsKey(request)!=key); request.fullResolution=true;
+        for (const auto &p : CommandRegistry::geometryParameters()) {
+            request.geometry={}; request.geometry.*p.member=.01; QVERIFY(StageGraph::scopePlotsKey(request)!=key);
+        }
+        request.geometry={}; request.geometry.crop={0,0,.5,1}; QVERIFY(StageGraph::scopePlotsKey(request)!=key); request.geometry={};
+        auto plan=request.plan; request.plan.data[0].x+=.1f; QVERIFY(StageGraph::scopePlotsKey(request)!=key); request.plan=plan;
+        request.plan.state.hue=1e-12; QVERIFY(StageGraph::scopePlotsKey(request)!=key); request.plan=plan;
+        auto changed=source; changed.setPixelColor(0,0,Qt::red); request.source=changed; QVERIFY(StageGraph::scopePlotsKey(request)!=key); request.source=source;
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(5)); lut->digest.clear();
+        auto different=std::make_shared<LookLut>(*lut); for (auto &value : different->rgb) value=0;
+        AdjustmentState state; state.look.mode="calibrated"; state.look.lut=lut;
+        request.plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb); const auto lutKey=StageGraph::scopePlotsKey(request);
+        ScopePlotCache cache; const auto a=cache.render(request);
+        state.look.lut=different; request.plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb); QVERIFY(StageGraph::scopePlotsKey(request)!=lutKey);
+        const auto b=cache.render(request); QCOMPARE(b.image,renderScopePlot(request,{}).image); QVERIFY(a.image!=b.image);
+        request.mode="histogram"; QVERIFY(cache.render(request).image.isNull()); QCOMPARE(cache.snapshot()["entries"].toInt(),2);
+    }
     void controllerScopePlotRejectsOldEditsAndPhotosAndIgnoresMonitorLut() {
         QTemporaryDir dir; QImage image(80,40,QImage::Format_RGB32); image.fill(Qt::gray);
         const auto first=dir.filePath("first.png"), second=dir.filePath("second.png"); QVERIFY(image.save(first));
@@ -636,6 +686,12 @@ private slots:
         QTRY_VERIFY(controller.previewReady() && !controller.rendering()); controller.setScopeMode("waveform");
         controller.setExactScopes(true); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
         QCOMPARE(controller.scopePlotPixels(),quint64(3200)); QVERIFY(!controller.scopePlotUrl().isEmpty());
+        controller.setScopeMode("parade"); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        const auto parade=provider.requestImage("scopes/plot",nullptr,{}); const auto hits=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_cache_hit"].toInteger();
+        controller.setScopeMode("vectorscope"); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        controller.setScopeMode("parade"); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+        QCOMPARE(provider.requestImage("scopes/plot",nullptr,{}).cacheKey(),parade.cacheKey());
+        QVERIFY(PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_cache_hit"].toInteger()>=hits+2);
         controller.setExposure(.5); QVERIFY(!controller.scopePlotCurrent()); controller.setCrop(0,0,.5,1);
         controller.setScopeMode("parade"); controller.finishInteraction(); QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
         QCOMPARE(controller.scopePlotPixels(),quint64(1600));
@@ -1416,6 +1472,8 @@ private slots:
         const auto scopesCache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()
             .value("values").toObject().value("full_scopes_cache").toObject();
         QCOMPARE(scopesCache.value("budget_bytes").toInteger(),qint64(4*1024*1024));
+        const auto plotCache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()["values"].toObject()["scope_plot_cache"].toObject();
+        QCOMPARE(plotCache["backend"].toString(),QString("cpu-scope-plots")); QCOMPARE(plotCache["budget_bytes"].toInteger(),qint64(16*1024*1024));
         QVERIFY(before.value("source").toObject().value("available").toBool());
         QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
         QVERIFY(before.value("color_stages").toObject().value("available").toBool());

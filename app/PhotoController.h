@@ -26,6 +26,7 @@
 class ProcessedImageProvider;
 class RenderedPreviewCache;
 class FullScopesCache;
+class ScopePlotCache;
 
 class PhotoController final : public QObject {
     Q_OBJECT
@@ -345,6 +346,7 @@ private:
     std::shared_ptr<SourceCache> m_sourceCache;
     std::shared_ptr<RenderedPreviewCache> m_renderCache;
     std::shared_ptr<FullScopesCache> m_fullScopesCache;
+    std::shared_ptr<ScopePlotCache> m_scopePlotCache;
     std::unique_ptr<ExportQueue> m_exportQueue;
     std::unique_ptr<CopyImportQueue> m_copyImportQueue;
     double m_copyImportProgress=0;

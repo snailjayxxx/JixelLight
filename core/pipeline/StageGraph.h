@@ -1,6 +1,7 @@
 #pragma once
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/preview/PreviewTasks.h"
+#include "core/scopes/ScopePlot.h"
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QIODevice>
@@ -83,5 +84,11 @@ struct StageGraph {
                << renderKey(request.image,request.plan)
                << QJsonDocument(request.geometry.toJson()).toJson(QJsonDocument::Compact);
         return digest(bytes);
+    }
+    static QString scopePlotsKey(const ScopePlotRequest &request) {
+        QByteArray bytes; QDataStream stream(&bytes,QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
+        stream << QStringLiteral("scope-plots-v1:wave256x1024:parade768x1024:chroma512x512:pre-monitor")
+            << renderKey(request.source,request.plan) << QJsonDocument(request.geometry.toJson()).toJson(QJsonDocument::Compact) << request.fullResolution;
+        return digest(bytes); // Mode selects ink from the same completed batch; revisions are delivery-only.
     }
 };

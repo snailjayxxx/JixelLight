@@ -20,6 +20,8 @@
 #include "core/cache/SourceCache.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
+#include "core/cache/ScopePlotCache.h"
+#include "diagnostics/PerformanceRecorder.h"
 #include "core/preview/PreviewTasks.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
@@ -43,6 +45,44 @@ ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement:
 class PerformanceTests:public QObject {
     Q_OBJECT
 private slots:
+    void scopePlotCacheHonorsLruOversizeAndRetainedLutCosts() {
+        const auto source=fixture(16,9); ScopePlotRequest a{source,nonRawLinearPlan(),{},"waveform",1,true};
+        ScopePlotCache probe; const auto original=probe.render(a); QVERIFY(!original.image.isNull());
+        const auto cost=probe.snapshot()["charged_bytes"].toInteger(); QVERIFY(cost>=5*1024*1024);
+        ScopePlotCache cache(2*cost); auto b=a,c=a; b.plan.state.exposure=.3; b.plan=nonRawLinearPlan(b.plan.state);
+        c.plan.state.exposure=.6; c.plan=nonRawLinearPlan(c.plan.state);
+        const auto first=cache.render(a); cache.render(b); a.mode="vectorscope"; cache.render(a); cache.render(c);
+        QCOMPARE(cache.snapshot()["entries"].toInt(),2); QCOMPARE(cache.snapshot()["evictions"].toInteger(),1);
+        b.mode="parade"; cache.render(b); QCOMPARE(cache.snapshot()["misses"].toInteger(),4);
+        ScopePlotCache disabled(0); a.mode="waveform"; QCOMPARE(disabled.render(a).image,original.image); QCOMPARE(disabled.snapshot()["entries"].toInt(),0);
+        ScopePlotCache small(cost-1024); QCOMPARE(small.render(a).image,original.image); QCOMPARE(small.snapshot()["bypasses"].toInteger(),1);
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(5)); std::weak_ptr<const LookLut> weak=lut;
+        AdjustmentState state; state.look.mode="calibrated"; state.look.lut=lut; auto withLut=a; withLut.plan=nonRawLinearPlan(state);
+        ScopePlotCache guarded(cost+4096); guarded.render(withLut);
+        QVERIFY(guarded.snapshot()["charged_bytes"].toInteger()>cost); state.look.lut.reset(); withLut.plan.state.look.lut.reset(); lut.reset(); QVERIFY(!weak.expired());
+        guarded.render(a); QVERIFY(weak.expired());
+        auto largeLut=LookLut::identity(33); state.look.lut=largeLut; withLut.plan=nonRawLinearPlan(state);
+        ScopePlotCache oversized(cost); oversized.render(a); const auto held=oversized.render(a).image.cacheKey();
+        QCOMPARE(oversized.render(withLut).image,renderScopePlot(withLut,{}).image); QCOMPARE(oversized.snapshot()["bypasses"].toInteger(),1);
+        QCOMPARE(oversized.render(a).image.cacheKey(),held); QCOMPARE(oversized.snapshot()["entries"].toInt(),1);
+    }
+    void scopePlotCacheDropsCancelledBatchesAndSharesConcurrentModes() {
+        ScopePlotCache cache; const auto source=fixture(24,17); ScopePlotRequest request{source,nonRawLinearPlan(),{},"waveform",1,true};
+        auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(cache.render(request,token).image.isNull());
+        const auto complete=cache.render(request); QVERIFY(cache.render(request,token).image.isNull());
+        const auto entries=cache.snapshot()["entries"].toInt(); request.source=fixture(2048,1536);
+        AdjustmentState state; state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}}; request.plan=nonRawLinearPlan(state);
+        token->store(false); const auto tiles=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger();
+        auto future=QtConcurrent::run([&] { return cache.render(request,token); });
+        QElapsedTimer wait; wait.start(); while (PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger()==tiles && !future.isFinished() && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger()>tiles && !future.isFinished(); token->store(true); future.waitForFinished();
+        QVERIFY(started); QVERIFY(future.result().image.isNull()); QCOMPARE(cache.snapshot()["entries"].toInt(),entries); QCOMPARE(cache.snapshot()["cancelled_requests"].toInteger(),3);
+        request.source=source; request.plan=nonRawLinearPlan(); request.mode="waveform"; QCOMPARE(cache.render(request).image.cacheKey(),complete.image.cacheKey());
+        ScopePlotCache concurrent; std::array<QFuture<ScopePlotResult>,6> work; const QStringList modes{"waveform","parade","vectorscope"};
+        for (int i=0;i<6;++i) { auto r=request; r.mode=modes[i%3]; work[i]=QtConcurrent::run([&concurrent,r] { return concurrent.render(r); }); }
+        for (int i=0;i<6;++i) { work[i].waitForFinished(); auto r=request; r.mode=modes[i%3]; QCOMPARE(work[i].result().image,renderScopePlot(r,{}).image); QCOMPARE(work[i].result().pixels,quint64(24*17)); }
+        QCOMPARE(concurrent.snapshot()["entries"].toInt(),1); QVERIFY(concurrent.snapshot()["charged_bytes"].toInteger()<=concurrent.snapshot()["budget_bytes"].toInteger());
+    }
     void manualGeometryIsDeterministicAcrossCpuBudgetsAndCancellation() {
         const QImage source=fixture(1100,800); const auto before=source.copy();
         GeometryState g; g.perspectiveHorizontal=.12; g.perspectiveVertical=-.08; g.distortion=.15;

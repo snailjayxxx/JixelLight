@@ -91,3 +91,33 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
       catch (...) { result.error="Scope plot allocation or rendering failed"; }
     return result;
 }
+std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request,const CancelToken &cancel) {
+    std::array<ScopePlotResult,3> results;
+    auto fail=[&](const QString &error) {
+        for (auto &result : results) { result={}; result.error=error; }
+        return results;
+    };
+    try {
+        if (request.source.isNull() || cancelled(cancel)) return {};
+        PerformanceSpan timing("cpu_scope_plots_shared",{{"full",request.fullResolution},{"modes",3}});
+        std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
+        const auto source=request.geometry.apply(request.source,cancel);
+        if (source.isNull() || cancelled(cancel)) return {};
+        for (int y=0;y<source.height();y+=128) {
+            if (cancelled(cancel)) return {};
+            const auto tile=ImagePipeline::processRegion(source,request.plan,{0,y,source.width(),std::min(128,source.height()-y)},cancel);
+            for (auto &count : counts) if (!count.add(tile,cancel))
+                return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail("Scope plot rendering failed");
+            PerformanceRecorder::count("scope_plot_shared_tiles");
+        }
+        for (int i=0;i<3;++i) {
+            if (cancelled(cancel)) return {};
+            results[i]={counts[i].image(),counts[i].pixels,{}};
+            if (results[i].image.isNull()) return fail("Scope plot image allocation failed");
+        }
+        if (cancelled(cancel)) return {};
+        PerformanceRecorder::count("scope_plot_shared_passes");
+    } catch (const std::exception &e) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(QString::fromUtf8(e.what())); }
+      catch (...) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail("Scope plot allocation or rendering failed"); }
+    return results;
+}

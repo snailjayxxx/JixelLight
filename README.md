@@ -139,6 +139,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 - Histogram 读取**当前最终显示结果**，所以曝光、HSL、饱和度、曲线变化都会实时反映。
 - Shadow / Highlight clipping 百分比。
 - 可选亮度波形 / RGB Parade / 矢量示波器：异步 CPU 参考计算，支持当前视区预览和全分辨率；波形/Parade 保留 1024 级，矢量图统计编码 sRGB 的 Cb/Cr，均在 monitor ICC 之前。旧结果变暗并标记更新中，默认 GPU 直方图保持不变。
+- 三种可选示波器共享一次 128 行分块调色，保留各自原有计数和显示算法；16 MiB LRU 只保存已完成的三张示波器图和必要的 LUT 数据，同一来源/参数/几何下切换模式可直接复用。取消、过期照片和未完成计算不会交付旧结果。
 - 架构保留以后切换 RAW Source / Working / Display scopes 的能力。
 
 ### Diagnostics
@@ -155,7 +156,7 @@ Bug ZIP / Action Trace 当前覆盖：
 - 1024-bin scopes 阶段。
 - Session Log / Action Trace / Preview。
 - `stage_outputs.json`：源图、准备预览、CPU 输出指纹；八个 CPU 色彩阶段的 FP32 RGB 哈希/范围，以及量化和 Sony 细节边界。仅生成诊断时捕获当前参数/几何，普通滑块路径不分配阶段缓冲；明确标记 CPU reference，RAW 输入仍为 RGBA64。
-- `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算，直方图缓存不保留图像帧。
+- `performance.json`：准备预览缓存、64 MiB CPU 显影预览结果缓存、4 MiB 精确直方图结果缓存、16 MiB 可选示波器缓存的命中/未命中/旁路/淘汰、占用与预算，以及请求耗时和示波器共享渲染次数。Undo/Redo 和版本切换可复用相同来源/参数/几何的已完成结果；显示器 ICC 在结果交付之后应用，导出和阶段诊断独立计算。直方图缓存不保留图像帧；示波器缓存不保留源图或已调色照片。
 - 手动几何在 `geometry_corrections` 记录 CPU 请求耗时和五项参数；`stage_dependencies.geometry` 记录完整参数、操作顺序、取样与收边方法，明确没有应用镜头配置文件。校正后的准备预览同时送往 CPU/GPU 调色；几何重采样本身仍是 CPU。
 
 程序内 RAW 状态直接显示 `RAW · Linear ProPhoto · 16-bit`。

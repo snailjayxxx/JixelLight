@@ -57,6 +57,7 @@ add_library(JixelLightCore STATIC
     core/cache/SourceCache.cpp
     core/cache/RenderedPreviewCache.cpp
     core/cache/FullScopesCache.cpp
+    core/cache/ScopePlotCache.cpp
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
