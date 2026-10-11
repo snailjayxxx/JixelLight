@@ -511,6 +511,13 @@ QVariantList PhotoController::toVariantList(const AdjustmentState::CurveArray &v
     return out;
 }
 QVariantList PhotoController::blackWhiteMix() const { return toVariantList(currentState().bwMix); }
+QVariantList PhotoController::toVariantList(const AdjustmentState::GradingArray &values) {
+    QVariantList out; out.reserve(AdjustmentState::GradingRegionCount);
+    for (double v:values) out.push_back(v);
+    return out;
+}
+QVariantList PhotoController::gradingHue() const { return toVariantList(currentState().gradingHue); }
+QVariantList PhotoController::gradingSaturation() const { return toVariantList(currentState().gradingSaturation); }
 QVariantList PhotoController::hslHue() const { return toVariantList(currentState().hslHue); }
 QVariantList PhotoController::hslSaturation() const { return toVariantList(currentState().hslSaturation); }
 QVariantList PhotoController::hslLuminance() const { return toVariantList(currentState().hslLuminance); }
@@ -522,9 +529,10 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
+        if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
     }
     auto &photo = m_photos[m_currentIndex];
@@ -602,6 +610,58 @@ void PhotoController::resetBlackWhite() {
     m_photos[m_currentIndex].history.finish();
     if (!CommandRegistry::execute(*state,{{"command","bw.reset"}})) return;
     persistAndApply("black_white_reset");
+}
+
+void PhotoController::setGradingEnabled(bool enabled) {
+    auto *state=mutableCurrentState();
+    if (!state || state->gradingEnabled==enabled) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","grading.enable"},{"enabled",enabled}})) return;
+    persistAndApply("color_grading_mode",{{"enabled",enabled}});
+}
+void PhotoController::setGradingControl(int region,int component,double value) {
+    auto *state=mutableCurrentState();
+    if (!state || region<0 || region>=AdjustmentState::GradingRegionCount
+        || component<0 || component>1 || !std::isfinite(value)) return;
+    value=std::clamp(value,0.0,component==0?360.0:100.0);
+    auto *array=component==0?&state->gradingHue:&state->gradingSaturation;
+    if (qFuzzyCompare((*array)[std::size_t(region)]+1.0,value+1.0)) return;
+    const QString name=component==0?QStringLiteral("hue"):QStringLiteral("saturation");
+    if (!CommandRegistry::execute(*state,{{"command","grading.set"},{"region",region},
+                                         {"component",name},{"value",value}})) return;
+    persistAndApply("color_grading_control",{{"region",region},{"component",component},{"value",value}});
+}
+void PhotoController::setGradingWheel(int region,double hue,double saturation) {
+    auto *state=mutableCurrentState();
+    if (!state || region<0 || region>=AdjustmentState::GradingRegionCount
+        || !std::isfinite(hue) || !std::isfinite(saturation)) return;
+    hue=std::clamp(hue,0.0,360.0);
+    saturation=std::clamp(saturation,0.0,100.0);
+    if (qFuzzyCompare(state->gradingHue[std::size_t(region)]+1.0,hue+1.0)
+        && qFuzzyCompare(state->gradingSaturation[std::size_t(region)]+1.0,saturation+1.0)) return;
+    auto next=*state;
+    if (!CommandRegistry::execute(next,{{"command","grading.set"},{"region",region},
+                                         {"component","hue"},{"value",hue}})
+        || !CommandRegistry::execute(next,{{"command","grading.set"},{"region",region},
+                                            {"component","saturation"},{"value",saturation}})) return;
+    *state=std::move(next);
+    persistAndApply("color_grading_wheel",{{"region",region},{"hue",hue},{"saturation",saturation}});
+}
+void PhotoController::setGradingBalance(double value) {
+    auto *state=mutableCurrentState();
+    if (!state || !std::isfinite(value)) return;
+    value=std::clamp(value,-100.0,100.0);
+    if (qFuzzyCompare(state->gradingBalance+1.0,value+1.0)) return;
+    if (!CommandRegistry::execute(*state,{{"command","grading.balance"},{"value",value}})) return;
+    persistAndApply("color_grading_balance",{{"value",value}});
+}
+void PhotoController::resetColorGrading() {
+    auto *state=mutableCurrentState();
+    if (!state) return;
+    if (!state->toJson().contains("colorGrading")) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","grading.reset"}})) return;
+    persistAndApply("color_grading_reset");
 }
 
 void PhotoController::setColorMix(int band, int component, double value) {

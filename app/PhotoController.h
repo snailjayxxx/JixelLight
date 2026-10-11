@@ -94,6 +94,10 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool blackWhite READ blackWhite WRITE setBlackWhite NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList blackWhiteMix READ blackWhiteMix NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool gradingEnabled READ gradingEnabled WRITE setGradingEnabled NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantList gradingHue READ gradingHue NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantList gradingSaturation READ gradingSaturation NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double gradingBalance READ gradingBalance WRITE setGradingBalance NOTIFY adjustmentsChanged)
 
     Q_PROPERTY(QVariantList hslHue READ hslHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList hslSaturation READ hslSaturation NOTIFY adjustmentsChanged)
@@ -230,6 +234,9 @@ public:
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     bool blackWhite() const { return currentState().blackWhite; }
     QVariantList blackWhiteMix() const;
+    bool gradingEnabled() const { return currentState().gradingEnabled; }
+    QVariantList gradingHue() const; QVariantList gradingSaturation() const;
+    double gradingBalance() const { return currentState().gradingBalance; }
     QVariantList hslHue() const; QVariantList hslSaturation() const; QVariantList hslLuminance() const;
     QVariantList masterCurve() const; QVariantList redCurve() const; QVariantList greenCurve() const; QVariantList blueCurve() const;
     QString statusMessage() const { return m_statusMessage; }
@@ -241,6 +248,11 @@ public:
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();
+    void setGradingEnabled(bool enabled);
+    void setGradingBalance(double value);
+    Q_INVOKABLE void setGradingControl(int region,int component,double value);
+    Q_INVOKABLE void setGradingWheel(int region,double hue,double saturation);
+    Q_INVOKABLE void resetColorGrading();
     Q_INVOKABLE void setLanguage(const QString &language);
 
     Q_INVOKABLE void openImportDialog();
@@ -486,4 +498,5 @@ private:
 
     static QVariantList toVariantList(const AdjustmentState::ColorBandArray &values);
     static QVariantList toVariantList(const AdjustmentState::CurveArray &values);
+    static QVariantList toVariantList(const AdjustmentState::GradingArray &values);
 };

@@ -29,6 +29,8 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         } else if (group=="color") {
             target.hue=source.hue; target.saturation=source.saturation; target.vibrance=source.vibrance;
             target.blackWhite=source.blackWhite; target.bwMix=source.bwMix;
+            target.gradingEnabled=source.gradingEnabled; target.gradingHue=source.gradingHue;
+            target.gradingSaturation=source.gradingSaturation; target.gradingBalance=source.gradingBalance;
         }
         else if (group=="hsl") { target.hslHue=source.hslHue; target.hslSaturation=source.hslSaturation; target.hslLuminance=source.hslLuminance; }
         else if (group=="curves") { target.masterCurve=source.masterCurve; target.redCurve=source.redCurve; target.greenCurve=source.greenCurve; target.blueCurve=source.blueCurve; }

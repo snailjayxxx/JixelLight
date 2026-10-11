@@ -17,6 +17,7 @@ Rectangle {
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
     property bool blackWhiteExpanded: false
+    property bool colorGradingExpanded: false
     color: "#15191f"
     border.color: "#292f37"
 
@@ -31,6 +32,7 @@ Rectangle {
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
+        property alias colorGradingExpanded: root.colorGradingExpanded
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -321,6 +323,143 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("每个颜色通道调整黑白亮度（±1 EV）；保留 Sony 外观，后续 RGB 曲线或 LUT 可能着色。",
                                      "Eight hue-weighted luminance bands (±1 EV); Sony Look is preserved. Later RGB curves or LUTs may tint the result.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "colorGradingToggle"; Layout.fillWidth: true; font.bold: true
+                        text: (root.colorGradingExpanded ? "▾ " : "▸ ") + root.t("色彩分级 / 三色轮", "COLOR GRADING / THREE WHEELS")
+                        onClicked: root.colorGradingExpanded = !root.colorGradingExpanded
+                    }
+                    Button {
+                        objectName: "colorGradingReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetColorGrading()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 5; visible: root.colorGradingExpanded
+                    CheckBox {
+                        objectName: "colorGradingEnable"
+                        text: root.t("启用色彩分级", "Enable color grading")
+                        checked: root.controller.gradingEnabled
+                        enabled: root.controller.hasImage
+                        onToggled: root.controller.gradingEnabled = checked
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 3
+                        Repeater {
+                            model: 3
+                            delegate: ColumnLayout {
+                                id: gradeWheelColumn
+                                required property int index
+                                readonly property real hue: Number(root.controller.gradingHue[index] || 0)
+                                readonly property real saturation: Number(root.controller.gradingSaturation[index] || 0)
+                                Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 3
+                                Label {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    font.pixelSize: 10; color: "#b8c6d7"
+                                    text: [root.t("阴影","Shadows"),root.t("中间调","Midtones"),
+                                           root.t("高光","Highlights")][gradeWheelColumn.index]
+                                }
+                                Item {
+                                    id: gradeWheelArea
+                                    Layout.alignment: Qt.AlignHCenter
+                                    Layout.preferredWidth: 76; Layout.preferredHeight: 76
+                                    opacity: root.controller.gradingEnabled ? 1 : .5
+                                    Canvas {
+                                        id: gradeWheelCanvas
+                                        anchors.fill: parent
+                                        onPaint: {
+                                            const c = getContext("2d")
+                                            const radius = width / 2 - 4
+                                            const cx = width / 2, cy = height / 2
+                                            c.clearRect(0,0,width,height)
+                                            for (let deg=0; deg<360; deg+=4) {
+                                                c.beginPath()
+                                                c.moveTo(cx,cy)
+                                                c.arc(cx,cy,radius,(deg-2.1)*Math.PI/180,(deg+2.1)*Math.PI/180)
+                                                c.closePath()
+                                                c.fillStyle = "hsl("+deg+",100%,55%)"
+                                                c.fill()
+                                            }
+                                            const fade=c.createRadialGradient(cx,cy,0,cx,cy,radius)
+                                            fade.addColorStop(0,"rgba(255,255,255,1)")
+                                            fade.addColorStop(1,"rgba(255,255,255,0)")
+                                            c.beginPath(); c.arc(cx,cy,radius,0,Math.PI*2)
+                                            c.fillStyle=fade; c.fill()
+                                            c.beginPath(); c.arc(cx,cy,radius,0,Math.PI*2)
+                                            c.lineWidth=1; c.strokeStyle="#c4d2e1"; c.stroke()
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: 10; height: 10; radius: 5
+                                        color: Qt.hsla(gradeWheelColumn.hue/360,
+                                                       gradeWheelColumn.saturation/100,.55,1)
+                                        border.color: "#17202a"; border.width: 2
+                                        x: gradeWheelArea.width/2 + Math.cos(gradeWheelColumn.hue*Math.PI/180)
+                                           * (gradeWheelArea.width/2 - 4) * gradeWheelColumn.saturation/100 - width/2
+                                        y: gradeWheelArea.height/2 + Math.sin(gradeWheelColumn.hue*Math.PI/180)
+                                           * (gradeWheelArea.height/2 - 4) * gradeWheelColumn.saturation/100 - height/2
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: root.controller.hasImage && root.controller.gradingEnabled
+                                        function updateWheel(px,py) {
+                                            const dx=px-gradeWheelArea.width/2, dy=py-gradeWheelArea.height/2
+                                            const hue=Math.round((Math.atan2(dy,dx)*180/Math.PI+360)%360)
+                                            const sat=Math.round(100*Math.min(1,Math.sqrt(dx*dx+dy*dy)/(gradeWheelArea.width/2-4)))
+                                            root.controller.setGradingWheel(gradeWheelColumn.index,hue,sat)
+                                        }
+                                        onPressed: function(mouse) { updateWheel(mouse.x,mouse.y) }
+                                        onPositionChanged: function(mouse) { if (pressed) updateWheel(mouse.x,mouse.y) }
+                                        onReleased: root.controller.finishInteraction()
+                                    }
+                                }
+                                Label {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    font.pixelSize: 9; color: "#93a3b5"
+                                    text: Math.round(gradeWheelColumn.hue)+"° / "+Math.round(gradeWheelColumn.saturation)+"%"
+                                }
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: 3
+                        delegate: ColumnLayout {
+                            required property int index
+                            Layout.fillWidth: true; spacing: 2
+                            enabled: root.controller.hasImage && root.controller.gradingEnabled
+                            AdjustmentSlider {
+                                Layout.fillWidth: true
+                                label: [root.t("阴影色相","Shadow hue"),root.t("中间调色相","Mid hue"),
+                                        root.t("高光色相","Highlight hue")][index]
+                                from: 0; to: 360; decimals: 0
+                                value: root.controller.gradingHue[index]
+                                onEdited: root.controller.setGradingControl(index,0,newValue)
+                            }
+                            AdjustmentSlider {
+                                Layout.fillWidth: true
+                                label: [root.t("阴影饱和度","Shadow sat"),root.t("中间调饱和度","Mid sat"),
+                                        root.t("高光饱和度","Highlight sat")][index]
+                                from: 0; to: 100; decimals: 0
+                                value: root.controller.gradingSaturation[index]
+                                onEdited: root.controller.setGradingControl(index,1,newValue)
+                            }
+                        }
+                    }
+                    AdjustmentSlider {
+                        objectName: "gradingBalanceSlider"; Layout.fillWidth: true
+                        enabled: root.controller.hasImage && root.controller.gradingEnabled
+                        label: root.t("明暗平衡","Balance"); from: -100; to: 100; decimals: 0
+                        value: root.controller.gradingBalance
+                        onEdited: root.controller.gradingBalance = newValue
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("三段平滑权重，Oklab 色彩分级；负平衡偏向阴影，正平衡偏向高光。位于黑白混合之后、输出色域转换之前。",
+                                     "Smooth three-zone Oklab grading; negative balance favors shadows, positive favors highlights. After B&W, before output transform.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

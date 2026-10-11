@@ -56,13 +56,23 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 
 ## Actual implemented scope
 
-**Current next batch (not yet accepted):** independent Black & White mode and eight
-hue-weighted luminance bands (−100..+100 = −1..+1 EV) in CPU reference and QRhi
-compute, preserving legacy disabled pixels, alpha, Sony Look, color management,
-history, presets, XMP, catalog and color-group synchronization. New strict `bw.enable`,
-`bw.set`, and `bw.reset` CLI/shared commands, bilingual Develop panel, C++ core/GPU
-parity and project persistence tests. The GPU parity limit remains **40/65535**.
-This batch still requires its own exact-HEAD CI acceptance.
+**Accepted F4 black-and-white mixer:** `b8b26634f960381e0a92aaa46098daf421515294`,
+[run 38059711744](https://github.com/snailjayxxx/JixelLight/actions/runs/38059711744),
+succeeded on Windows x64, macOS arm64 and Linux GPU including desktop package
+validations. 126 core and 25 performance checks passed per platform; 16 B&W parity
+fixtures per platform showed maximum channel delta **1/65535**, no GPU skip.
+
+**Current F4 batch (awaiting its own exact-head CI):** optional three-way Color
+Grading after Sony/B&W, before gamut/output; shadow/midtone/highlight hue and
+saturation, tone balance, perceptual smooth weighting and precompiled Oklab
+vectors. CPU reference and QRhi remain paired, with zero-default bypass, original
+alpha/scopes/ICC intact. Develop offers three interactive wheels and precise
+sliders, all parameters survive versioned project snapshots, virtual copies,
+undo/redo, presets, XMP and color-group copy/sync. CLI commands:
+`grading.enable`, `grading.set`, `grading.balance`, `grading.reset`.
+New tests cover old-photo identity, strict schema, tint/tonal range, GPU parity,
+project/history/metadata and CLI. **40/65535 GPU parity and 60-second RAW GUI
+smoke thresholds are unchanged.**
 
 
 | Phase | Working code | Remaining scope |
@@ -71,7 +81,7 @@ This batch still requires its own exact-HEAD CI acceptance.
 | F1 | Library/Develop shell, Filmstrip, asynchronous thumbnails, collapsible editing panels | Additional compact-window and layout polish |
 | F2 | Independent named virtual copies with per-version Develop/history/curation/annotations, transactional rename/delete, shared read-only source and unique batch export destinations; collection albums, keywords, color labels, combined filename/keyword/album/label/curation filters; catalog/filename/rating and capture/import/Develop-date sorting (missing dates last); background metadata indexing; Ctrl/Meta and Shift selection; batch rating/flag/keywords/label/album assignment; WAL-consistent backup before legacy annotations/date migration; project restore; exclusive new-project creation and failed-create writer preservation; ratings, Pick/Reject; per-photo durable project history, Undo/Redo, 128 undo steps; slider gestures coalesced; full immutable Sony LUT snapshots; reset/paste/sync covered; bilingual history UI; user-local named Develop presets with rename, explicit replacement and portable import/export (Sony Look/effects included, crop/curation excluded); explicit XMP standard rating/color-label/keyword import and new-file export, validated JixelLight Develop/Sony/geometry/catalog snapshots | Automatic sidecar discovery and conflict-aware in-place merging; no Adobe Develop translation |
 | F3 | Source cache retained; independent 128 MiB prepared-preview LRU, per-controller 64 MiB CPU rendered-preview LRU, 4 MiB exact-histogram result LRU and 16 MiB optional-plot ink LRU; three plots share one bounded tile-render batch; keys cover source identity, geometry/viewport preparation, compiled color plan and immutable LUT identity; cache counters/budget/timings in performance diagnostics; dependency manifest; diagnostic CPU capture uses explicit RAW semantics and current geometry; source, prepared-preview and CPU sRGB output fingerprints in diagnostic ZIP; nine named CPU color boundaries with streaming FP32 hashes/ranges and quantized/detail fingerprints; explicit frozen GPU final working-output hash/ranges with a 64 MiB readback cap and accurate compute/CPU-upload producer | True float RAW source, highlight upgrades, internal GPU boundary hashes, individual kernel timings and internal intermediate-stage caches |
-| F4 | Independent B&W mode and eight hue-weighted luminance bands (CPU/QRhi); scene-linear post-crop elliptical vignette (EV/midpoint/feather) shared by CPU/QRhi, viewport mapping, history/projects/presets/XMP and independent effects transfer/reset; normalized crop on the corrected grid; manual horizontal/vertical perspective, radial distortion and red/blue lateral CA magnification; single-pass 16-bit CPU resampling with conservative full-domain trim and no dimension enlargement; centered 1:1/3:2/4:3 crop UI; ±45° straighten with 16-bit linear interpolation and automatic inscribed trim, no upscale; 90° rotation, horizontal/vertical flip, reset; shared geometry in CPU/GPU preview, full scopes and all export formats; persistent Undo/Redo with slider coalescing; full-image crop editing with eight handles, move, aspect constraints, Apply/Cancel and Enter/Escape | Automatic perspective/lens profiles and tangential distortion, masks, Texture/Clarity/Dehaze, noise/sharpen, grain, grading, healing |
+| F4 | Independent B&W mode and eight hue-weighted luminance bands (CPU/QRhi); optional three-wheel perceptual Color Grading (CPU/QRhi, CI pending); scene-linear post-crop elliptical vignette (EV/midpoint/feather) shared by CPU/QRhi, viewport mapping, history/projects/presets/XMP and independent effects transfer/reset; normalized crop on the corrected grid; manual horizontal/vertical perspective, radial distortion and red/blue lateral CA magnification; single-pass 16-bit CPU resampling with conservative full-domain trim and no dimension enlargement; centered 1:1/3:2/4:3 crop UI; ±45° straighten with 16-bit linear interpolation and automatic inscribed trim, no upscale; 90° rotation, horizontal/vertical flip, reset; shared geometry in CPU/GPU preview, full scopes and all export formats; persistent Undo/Redo with slider coalescing; full-image crop editing with eight handles, move, aspect constraints, Apply/Cancel and Enter/Escape | Automatic perspective/lens profiles and tangential distortion, masks, Texture/Clarity/Dehaze, noise/sharpen, grain, grading, healing |
 | F5 | Selective paste and selected/all-version sync across nine parameter groups, with independent per-target history; Add existing files plus background Copy-to-folder import with whole-plan preflight, content verification, original names or validated stem/sequence/camera-date/time templates with an asynchronous metadata preview, no overwrite and cancellation; 16-bit RGBA PNG with target ICC; 16-bit lossless LZW TIFF and explicit 8-bit WebP/ICC (GUI quality 100 is lossless); shared GUI/CLI export naming templates with source/version/sequence/recorded capture date and time, preview and whole-plan validation; current and batch export; new-file batch staging and publication; atomic QSaveFile with cancellation preserving destination; original protection; existing tiled JPEG and 1024-bin GPU histogram retained; optional CPU waveform/RGB Parade/vectorscope for preview and full-resolution output | Proofing, Move import and broader RAW validation |
 | F6 | Shared scalar/HSL/curve/geometry/effects Develop registry used by UI and offline CLI; strict JSON commands and undoable GUI command replay; CPU JPEG/PNG export, schema inspection, invalid-command checks and existing-output refusal; portable batch plans; read-only catalog snapshots exporting saved original/virtual versions and current history cursors, with optional command overrides and structured partial-failure reports; read-only saved-version listings and exact-key selection in catalog order | Full action registry/replay and optional MCP |
 

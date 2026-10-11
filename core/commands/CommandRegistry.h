@@ -92,6 +92,29 @@ struct CommandRegistry {
             if (!fields(command,{})) return fail();
             state.blackWhite=false; state.bwMix={}; return true;
         }
+        if (name == "grading.enable") {
+            if (!fields(command,{"enabled"}) || !command["enabled"].isBool()) return fail();
+            state.gradingEnabled=command["enabled"].toBool(); return true;
+        }
+        if (name == "grading.set") {
+            if (!fields(command,{"region","component","value"}) || !integer(command,"region",0,2)
+                || !command["component"].isString() || !number(command,"value")) return fail();
+            const auto component=command["component"].toString();
+            auto *values=component=="hue"?&state.gradingHue:component=="saturation"?&state.gradingSaturation:nullptr;
+            if (!values) return fail();
+            const double upper=component=="hue"?360.0:100.0;
+            (*values)[std::size_t(command["region"].toInt())]=std::clamp(command["value"].toDouble(),0.0,upper);
+            return true;
+        }
+        if (name == "grading.balance") {
+            if (!fields(command,{"value"}) || !number(command,"value")) return fail();
+            state.gradingBalance=std::clamp(command["value"].toDouble(),-100.0,100.0); return true;
+        }
+        if (name == "grading.reset") {
+            if (!fields(command,{})) return fail();
+            state.gradingEnabled=false; state.gradingHue={}; state.gradingSaturation={};
+            state.gradingBalance=0; return true;
+        }
         if (name == "geometry.crop") {
             if (!fields(command,{"x","y","width","height"}) || !number(command,"x") || !number(command,"y")
                 || !number(command,"width") || !number(command,"height")) return fail();
@@ -157,6 +180,12 @@ struct CommandRegistry {
             QJsonObject{{"name","bw.enable"},{"fields",QJsonArray{"enabled"}},{"operation","toggle monochrome without discarding 8 color-channel luminance values"}},
             QJsonObject{{"name","bw.set"},{"fields",QJsonArray{"band","value"}},{"band",QJsonArray{0,7}},{"value",QJsonArray{-100,100}},{"range_policy","clamp"},{"unit","1/100 EV"}},
             QJsonObject{{"name","bw.reset"},{"fields",QJsonArray{}},{"operation","disable monochrome and reset all 8 channel mixes"}},
+            QJsonObject{{"name","grading.enable"},{"fields",QJsonArray{"enabled"}},{"operation","enable/disable optional three-way grading without clearing controls"}},
+            QJsonObject{{"name","grading.set"},{"fields",QJsonArray{"region","component","value"}},
+                {"regions",QJsonArray{"shadows","midtones","highlights"}},{"component",QJsonArray{"hue","saturation"}},
+                {"hue_range",QJsonArray{0,360}},{"saturation_range",QJsonArray{0,100}},{"range_policy","clamp"}},
+            QJsonObject{{"name","grading.balance"},{"fields",QJsonArray{"value"}},{"range",QJsonArray{-100,100}},{"range_policy","clamp"}},
+            QJsonObject{{"name","grading.reset"},{"fields",QJsonArray{}},{"operation","disable grading and clear three hue/saturation wheels and balance"}},
             QJsonObject{{"name","geometry.crop"},{"fields",QJsonArray{"x","y","width","height"}},{"coordinates","normalized corrected grid after lens/perspective/straighten, before quarter-turns and flips"}},
             QJsonObject{{"name","geometry.straighten"},{"fields",QJsonArray{"degrees"}},{"degrees",QJsonArray{-45,45}},{"operation","absolute clockwise angle before quarter-turns/flips; inscribed crop, no upscale; out-of-range rejected"}},
             QJsonObject{{"name","geometry.set"},{"fields",QJsonArray{"parameter","value"}},{"parameters",geometryDescriptors},{"range_policy","reject"},

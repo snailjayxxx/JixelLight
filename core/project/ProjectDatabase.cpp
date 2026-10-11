@@ -263,6 +263,9 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     if (!AdjustmentState::validBlackAndWhiteJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported black-and-white mixer for project photo"); break;
                     }
+                    if (!AdjustmentState::validColorGradingJson(doc.object())) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported color grading for project photo"); break;
+                    }
                     if (doc.object().contains("geometry") && (!doc.object()["geometry"].isObject()
                         || !GeometryState::validJson(doc.object()["geometry"].toObject()))) {
                         ready=false; error=QStringLiteral("Invalid or unsupported geometry for project photo"); break;

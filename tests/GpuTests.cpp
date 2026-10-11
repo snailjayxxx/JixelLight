@@ -206,6 +206,29 @@ private slots:
         ordinary.vignetteAmount=-3;
         QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
     }
+    void colorGradingCpuGpuParityOnEveryOutputAndThreeTones() {
+        QImage source(59,67,QImage::Format_RGBA64);
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for (int y=0;y<source.height();++y) for (int x=0;x<source.width();++x) {
+            const quint16 r=quint16((x*1039+y*1043+300)%65536);
+            const quint16 g=quint16((x*2539+y*2381+4000)%65536);
+            const quint16 b=quint16((x*4763+y*779+2700)%65536);
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(r,g,b,alpha[(x+y)%4]);
+        }
+        for(int mode=0;mode<3;++mode) for(int encoding=0;encoding<2;++encoding) for(int space=0;space<4;++space) {
+            AdjustmentState state; state.gradingEnabled=true;
+            state.gradingHue={20,132,246};
+            state.gradingSaturation={90,35,75};
+            state.gradingBalance=mode==0 ? -70 : mode==1 ? 0 : 70;
+            if(mode==1) { state.blackWhite=true; state.bwMix[0]=50; }
+            if(mode==2) { state.look.mode="manual"; state.look.code="ST"; state.exposure=.3; }
+            verifyParity(source,state,ImagePipeline::InputEncoding(encoding),
+                         ColorManagement::OutputSpace(space),true,"three-way perceptual grade");
+            if(QTest::currentTestFailed()) return;
+            // Grading requires no CPU upload fallback on the existing tested backends.
+            QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
     void blackWhiteMixCpuGpuParityAndNativeCompute() {
         QImage source(47,39,QImage::Format_RGBA64);
         const std::array<quint16,4> alpha{0,1,23456,65535};

@@ -40,6 +40,15 @@ struct AdjustmentState {
     bool blackWhite = false;
     ColorBandArray bwMix{};
 
+    // Optional three-way color grading in Oklab, without altering the Sony LUT
+    // or the HSL color mixer. Hue degrees [0, 360], saturation [0, 100].
+    static constexpr int GradingRegionCount = 3;
+    using GradingArray = std::array<double, GradingRegionCount>;
+    bool gradingEnabled = false;
+    GradingArray gradingHue{};
+    GradingArray gradingSaturation{};
+    double gradingBalance = 0.0; // -100 shadows ... +100 highlights
+
     ColorBandArray hslHue{};
     ColorBandArray hslSaturation{};
     ColorBandArray hslLuminance{};
@@ -83,6 +92,13 @@ struct AdjustmentState {
         const bool hasMix = std::any_of(bwMix.begin(), bwMix.end(), [](double v){ return v != 0.0; });
         if (blackWhite || hasMix)
             result["blackAndWhite"] = QJsonObject{{"schema", 1}, {"enabled", blackWhite}, {"mix", toJsonArray(bwMix)}};
+        const bool hasGradingControls = gradingBalance != 0.0
+            || std::any_of(gradingHue.begin(),gradingHue.end(),[](double v){ return v != 0.0; })
+            || std::any_of(gradingSaturation.begin(),gradingSaturation.end(),[](double v){ return v != 0.0; });
+        if (gradingEnabled || hasGradingControls)
+            result["colorGrading"] = QJsonObject{{"schema",1},{"enabled",gradingEnabled},
+                {"hue",toJsonArray(gradingHue)},{"saturation",toJsonArray(gradingSaturation)},
+                {"balance",gradingBalance}};
         return result;
     }
 
@@ -115,6 +131,28 @@ struct AdjustmentState {
         return b.value("enabled").toBool() || hasMix;
     }
 
+    static bool validColorGradingJson(const QJsonObject &object) {
+        if (!object.contains("colorGrading")) return true;
+        if (!object.value("colorGrading").isObject()) return false;
+        const auto g = object.value("colorGrading").toObject();
+        if (g.size()!=5 || !g.value("schema").isDouble() || g.value("schema").toDouble()!=1
+            || !g.value("enabled").isBool() || !g.value("hue").isArray()
+            || !g.value("saturation").isArray() || !g.value("balance").isDouble()) return false;
+        const double balance=g.value("balance").toDouble();
+        if (!std::isfinite(balance) || balance < -100 || balance > 100) return false;
+        const auto hue=g.value("hue").toArray(), saturation=g.value("saturation").toArray();
+        if (hue.size()!=GradingRegionCount || saturation.size()!=GradingRegionCount) return false;
+        bool changed=balance!=0;
+        for (int i=0;i<GradingRegionCount;++i) {
+            if (!hue[i].isDouble() || !saturation[i].isDouble()) return false;
+            const double h=hue[i].toDouble(), s=saturation[i].toDouble();
+            if (!std::isfinite(h) || h<0 || h>360 || !std::isfinite(s) || s<0 || s>100) return false;
+            changed |= h!=0 || s!=0;
+        }
+        // Canonical snapshots never add an empty optional section.
+        return g.value("enabled").toBool() || changed;
+    }
+
     static AdjustmentState fromJson(const QJsonObject &o) {
         AdjustmentState s;
         s.geometry = GeometryState::fromJson(o.value("geometry").toObject());
@@ -139,6 +177,13 @@ struct AdjustmentState {
             const auto b = o.value("blackAndWhite").toObject();
             s.blackWhite = b.value("enabled").toBool();
             readJsonArray(b, "mix", s.bwMix);
+        }
+        if (o.contains("colorGrading") && validColorGradingJson(o)) {
+            const auto g=o.value("colorGrading").toObject();
+            s.gradingEnabled=g.value("enabled").toBool();
+            readJsonArray(g,"hue",s.gradingHue);
+            readJsonArray(g,"saturation",s.gradingSaturation);
+            s.gradingBalance=g.value("balance").toDouble();
         }
         readJsonArray(o, "hslHue", s.hslHue);
         readJsonArray(o, "hslSaturation", s.hslSaturation);

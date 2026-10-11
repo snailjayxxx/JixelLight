@@ -418,6 +418,27 @@ inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
         const float gray = std::max(0.0f,orderedDot(.2126f,.7152f,.0722f,v))*std::exp2(ev);
         v = {gray,gray,gray};
     }
+    if (plan.data[ProcessingPlan::GradingOptions].x > 0.5f) {
+        // Three-way grading in perceptual a/b, after Sony styling and optional
+        // independent monochrome, before gamut/output transform. The weights
+        // overlap smoothly, normalize to one, and approach zero for pure black.
+        const float y = std::max(0.0f,orderedDot(.2126f,.7152f,.0722f,v));
+        const float tone = clamp01(y/(y+.18f)+plan.data[ProcessingPlan::GradingOptions].y*.20f);
+        const float shadows = 1.0f-smooth((tone-.10f)/.45f);
+        const float highlights = smooth((tone-.45f)/.45f);
+        const float midtones = std::max(0.0f,1.0f-std::max(shadows,highlights));
+        const float total = std::max(1.0f,shadows+midtones+highlights);
+        const auto low=plan.data[ProcessingPlan::GradingShadows];
+        const auto mid=plan.data[ProcessingPlan::GradingMidtones];
+        const auto high=plan.data[ProcessingPlan::GradingHighlights];
+        auto lab = linearSrgbToOklab(v);
+        const float luminanceWeight=std::clamp(lab.L,0.0f,1.5f);
+        const float a = shadows*low.x + midtones*mid.x + highlights*high.x;
+        const float b = shadows*low.y + midtones*mid.y + highlights*high.y;
+        lab.a += luminanceWeight*(a/total);
+        lab.b += luminanceWeight*(b/total);
+        v=oklabToLinearSrgb(lab);
+    }
     return v;
 }
 
@@ -506,6 +527,17 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
         switch (i%4) { case 0: slot.x=stops; break; case 1: slot.y=stops; break;
                        case 2: slot.z=stops; break; default: slot.w=stops; break; }
     }
+    bool gradingActive=false;
+    for (int i=0;i<AdjustmentState::GradingRegionCount;++i) {
+        const float hue=finite(state.gradingHue[std::size_t(i)],0,0,360);
+        const float saturation=finite(state.gradingSaturation[std::size_t(i)],0,0,100);
+        const float chroma=.12f*saturation/100.0f;
+        plan.data[GradingShadows+i]={chroma*std::cos(hue*kPi/180.0f),
+                                      chroma*std::sin(hue*kPi/180.0f),0,0};
+        gradingActive |= saturation>0.0f;
+    }
+    plan.data[GradingOptions]={state.gradingEnabled && gradingActive?1.0f:0.0f,
+                               finite(state.gradingBalance,0,-100,100)/100.0f,0,0};
     const auto style=LookProfiles::style(original.look),detail=LookProfiles::detail(original.look);
     plan.data[LookStyle]={style[0],style[1],style[2],style[3]};
     plan.data[LookDetail]={detail[0],detail[1],detail[2],detail[3]};

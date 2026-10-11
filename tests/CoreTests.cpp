@@ -123,6 +123,165 @@ private slots:
         const auto prepared=preparePreview(request,{}); QCOMPARE(prepared.normal,source); QCOMPARE(prepared.gpu,floating);
         const auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::floatSource(source,token).isNull()); QVERIFY(ImagePipeline::rgba64Source(floating,token).isNull());
     }
+    void colorGradingIsOptInAndKeepsOldPixelsAlphaAndCacheSemantics() {
+        QImage source(4,1,QImage::Format_RGBA64);
+        auto *p=reinterpret_cast<QRgba64 *>(source.scanLine(0));
+        for (int i=0;i<4;++i) {
+            const quint16 gray=quint16(std::lround(std::array<double,4>{.025,.18,.75,0}[i]*65535));
+            p[i]=QRgba64::fromRgba64(gray,gray,gray,std::array<quint16,4>{0,1,23456,65535}[i]);
+        }
+        auto compile=[](const AdjustmentState &state) {
+            return ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                          ColorManagement::OutputSpace::SRgb,false,0);
+        };
+        auto render=[&](const AdjustmentState &state) {
+            return ImagePipeline::processWithPlan(source,compile(state));
+        };
+        const auto old=render({});
+        QVERIFY(!AdjustmentState{}.toJson().contains("colorGrading"));
+        AdjustmentState disabled; disabled.gradingHue={40,150,285};
+        disabled.gradingSaturation={100,55,90}; disabled.gradingBalance=30;
+        QCOMPARE(render(disabled),old);
+        disabled.gradingEnabled=true; disabled.gradingSaturation={0,0,0};
+        QCOMPARE(render(disabled),old); // enabled, but no active toning
+        AdjustmentState tone; tone.gradingEnabled=true;
+        tone.gradingHue={0,120,240}; tone.gradingSaturation={100,100,100};
+        const auto colored=render(tone);
+        QVERIFY(colored!=old);
+        QCOMPARE(colored.pixelColor(0,0).rgba64().alpha(),quint16(0));
+        QCOMPARE(colored.pixelColor(1,0).rgba64().alpha(),quint16(1));
+        QCOMPARE(colored.pixelColor(2,0).rgba64().alpha(),quint16(23456));
+        QCOMPARE(colored.pixelColor(3,0).rgba64().alpha(),quint16(65535));
+        const auto red=colored.pixelColor(0,0).rgba64();
+        const auto green=colored.pixelColor(1,0).rgba64();
+        const auto blue=colored.pixelColor(2,0).rgba64();
+        QVERIFY(red.red()>red.green()); // shadow hue 0, perceptual red
+        QVERIFY(green.green()>green.red()); // middle wheel 120, green
+        QVERIFY(blue.blue()>blue.red()); // highlight wheel 240, blue
+        QCOMPARE(colored.pixelColor(3,0),old.pixelColor(3,0)); // genuine black
+        const auto plan=compile(tone);
+        QVERIFY(plan.data[ProcessingPlan::GradingOptions].x>0);
+        QVERIFY(plan.data[ProcessingPlan::GradingShadows].x>0);
+        QCOMPARE(ImagePipeline::processRegion(source,plan,source.rect()),colored);
+        QCOMPARE(ImagePipeline::diagnoseWithPlan(source,plan).image,colored);
+        QCOMPARE(ImagePipeline::processWithPlan(source,plan,{},false),colored);
+        const auto key=StageGraph::renderKey(source,plan);
+        tone.gradingBalance=75;
+        QVERIFY(StageGraph::renderKey(source,compile(tone))!=key);
+        QVERIFY(render(tone)!=colored);
+        tone.gradingEnabled=false;
+        QCOMPARE(render(tone),old);
+    }
+    void colorGradingCommandValidationHistoryPresetsAndXmpRoundTrip() {
+        AdjustmentState tone; auto original=tone.toJson();
+        QVERIFY(CommandRegistry::execute(tone,{{"command","grading.enable"},{"enabled",true}}));
+        for(int region=0;region<3;++region) {
+            QVERIFY(CommandRegistry::execute(tone,{{"command","grading.set"},{"region",region},
+                 {"component","hue"},{"value",region*120}}));
+            QVERIFY(CommandRegistry::execute(tone,{{"command","grading.set"},{"region",region},
+                 {"component","saturation"},{"value",region*30+20}}));
+        }
+        QVERIFY(CommandRegistry::execute(tone,{{"command","grading.balance"},{"value",-35}}));
+        const auto json=tone.toJson(); QVERIFY(json.contains("colorGrading"));
+        QVERIFY(AdjustmentState::validColorGradingJson(json));
+        QCOMPARE(AdjustmentState::fromJson(json).toJson(),json);
+        QVERIFY(CommandRegistry::schema().value("commands").toArray().size()>13);
+        for (const auto &invalid : QList<QJsonObject>{
+                 {{"command","grading.enable"},{"enabled",1}},
+                 {{"command","grading.set"},{"region",-1},{"component","hue"},{"value",50}},
+                 {{"command","grading.set"},{"region",3},{"component","hue"},{"value",50}},
+                 {{"command","grading.set"},{"region",0},{"component","alpha"},{"value",50}},
+                 {{"command","grading.set"},{"region",0},{"component","hue"},{"value","NaN"}},
+                 {{"command","grading.balance"},{"value",12},{"unknown",1}},
+                 {{"command","grading.reset"},{"unused",0}}
+             }) {
+            auto same=tone;
+            QVERIFY(!CommandRegistry::execute(same,invalid));
+            QCOMPARE(same.toJson(),json);
+        }
+        const auto schema=CommandRegistry::schema().value("commands").toArray();
+        bool foundWheel=false,foundBalance=false;
+        for(const auto &item:schema) {
+            const auto object=item.toObject();
+            foundWheel |= object.value("name").toString()=="grading.set";
+            foundBalance |= object.value("name").toString()=="grading.balance";
+        }
+        QVERIFY(foundWheel && foundBalance);
+        EditHistory hist; hist.initialize({}); hist.record(tone,"grading");
+        EditHistory recovered; QVERIFY(recovered.restore(hist.toJson(),tone));
+        QCOMPARE(recovered.undo().toJson(),original); QCOMPARE(recovered.redo().toJson(),json);
+        AdjustmentState dest; dest.exposure=1.5; dest.geometry.straighten=4;
+        QVERIFY(AdjustmentTransfer::apply(dest,tone,{"color"}));
+        QCOMPARE(dest.toJson()["colorGrading"],json["colorGrading"]);
+        QCOMPARE(dest.exposure,1.5); QCOMPARE(dest.geometry.straighten,4.0);
+        for(const auto field: {"schema","enabled","hue","saturation","balance"}) {
+            auto corrupt=json, grading=corrupt["colorGrading"].toObject();
+            grading.remove(field); corrupt["colorGrading"]=grading;
+            QVERIFY(!AdjustmentState::validColorGradingJson(corrupt));
+        }
+        auto corrupt=json; auto grading=corrupt["colorGrading"].toObject();
+        grading["hue"]=QJsonArray{0,120,361}; corrupt["colorGrading"]=grading;
+        QVERIFY(!AdjustmentState::validColorGradingJson(corrupt));
+        grading=json["colorGrading"].toObject();
+        grading["saturation"]=QJsonArray{0,-1,20}; corrupt["colorGrading"]=grading;
+        QVERIFY(!AdjustmentState::validColorGradingJson(corrupt));
+        grading=json["colorGrading"].toObject();
+        grading["balance"]=101; corrupt["colorGrading"]=grading;
+        QVERIFY(!AdjustmentState::validColorGradingJson(corrupt));
+        grading=json["colorGrading"].toObject();
+        grading["extra"]=1; corrupt["colorGrading"]=grading;
+        QVERIFY(!AdjustmentState::validColorGradingJson(corrupt));
+        QVERIFY(CommandRegistry::execute(dest,{{"command","grading.reset"}}));
+        QVERIFY(!dest.toJson().contains("colorGrading")); QCOMPARE(dest.exposure,1.5);
+        QTemporaryDir dir; QString error;
+        NamedPresets presets(dir.filePath("grading-presets.json"));
+        QVERIFY2(presets.load(&error),qPrintable(error));
+        QVERIFY2(presets.save("Three-way",tone,&error),qPrintable(error));
+        NamedPresets loaded(dir.filePath("grading-presets.json"));
+        QVERIFY2(loaded.load(&error),qPrintable(error));
+        AdjustmentState saved; QVERIFY(loaded.get("Three-way",&saved)); QCOMPARE(saved.toJson(),json);
+        const auto portable=dir.filePath("grading-preset.jixelpreset.json");
+        QVERIFY2(loaded.exportFile("Three-way",portable,&error),qPrintable(error));
+        QVERIFY2(loaded.importFile(portable,"Imported Grading",&error),qPrintable(error));
+        QVERIFY(loaded.get("Imported Grading",&saved)); QCOMPARE(saved.toJson(),json);
+        const auto xmp=dir.filePath("grading.xmp");
+        QVERIFY2(XmpSidecar::writeNew(xmp,tone,{},0,"none",&error),qPrintable(error));
+        XmpSidecar::Document imported; QVERIFY2(XmpSidecar::read(xmp,&imported,&error),qPrintable(error));
+        QCOMPARE(imported.adjustments.toJson(),json);
+    }
+    void colorGradingControllerHistoryProjectAndWheelGesture() {
+        QTemporaryDir dir; QImage image(61,43,QImage::Format_RGB32);
+        image.fill(QColor(76,104,157));
+        const auto path=dir.filePath("threeway.png"); QVERIFY(image.save(path));
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto sourceBytes=file.readAll(); file.close();
+        PhotoController c(nullptr); c.setGpuEnabled(false);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.previewReady() && !c.rendering(),15000);
+        QVERIFY(!c.gradingEnabled());
+        c.setGradingEnabled(true);
+        const int before=c.editHistory().size();
+        c.setGradingWheel(0,12,40); c.setGradingWheel(0,24,55); c.setGradingWheel(0,40,65);
+        c.finishInteraction();
+        QCOMPARE(c.editHistory().size(),before+1);
+        QCOMPARE(c.editHistory().last().toMap()["action"].toString(),QString("color_grading_wheel"));
+        QCOMPARE(c.gradingHue().at(0).toDouble(),40.0);
+        QCOMPARE(c.gradingSaturation().at(0).toDouble(),65.0);
+        c.setGradingControl(1,0,135); c.setGradingControl(1,1,40); c.finishInteraction();
+        c.setGradingBalance(-45); c.finishInteraction();
+        const auto saved=c.gpuPlan(true).state.toJson();
+        c.undo(); QCOMPARE(c.gradingBalance(),0.0);
+        c.redo(); QCOMPARE(c.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Three-way"));
+        QVERIFY(c.flushEdits());
+        QCOMPARE(fixtureBytes(path),sourceBytes);
+        PhotoController reopened(nullptr); reopened.setGpuEnabled(false);
+        QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+        reopened.resetColorGrading(); QVERIFY(!reopened.gradingEnabled());
+        QVERIFY(reopened.gradingHue().size()==3);
+        QCOMPARE(reopened.gradingSaturation().at(0).toDouble(),0.0);
+        reopened.undo(); QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+    }
     void blackWhiteMixPreservesColorDefaultAndPixels() {
         QImage source(3,1,QImage::Format_RGBA64);
         auto *px=reinterpret_cast<QRgba64 *>(source.scanLine(0));
