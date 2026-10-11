@@ -128,6 +128,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto transferTrace=std::make_shared<QJsonObject>();
     auto correctionTrace=std::make_shared<QJsonObject>();
     auto vignetteTrace=std::make_shared<QJsonObject>();
+    auto gradingUiTrace=std::make_shared<QJsonObject>();
     auto exportNamesTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
@@ -599,6 +600,22 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             revealItem(window->findChild<QQuickItem *>("straightenAngle"));
             state->phase=289;
         } else if (state->phase==289 && ready) {
+            // Exercise a reachable optional grading panel without changing
+            // RAW pixels, source or full-resolution scopes.
+            const auto gradingBefore=controller->gpuPlan(true).state.toJson();
+            auto *gradingToggle=window->findChild<QQuickItem *>("colorGradingToggle");
+            gradingUiTrace->insert("toggle_found",bool(gradingToggle));
+            gradingUiTrace->insert("toggle_revealed",revealItem(gradingToggle));
+            auto *enable=window->findChild<QQuickItem *>("colorGradingEnable");
+            const bool wasOpen=enable && enable->isVisible();
+            gradingUiTrace->insert("opened",wasOpen || clickItem(window,gradingToggle));
+            enable=window->findChild<QQuickItem *>("colorGradingEnable");
+            gradingUiTrace->insert("enabled_control_visible",enable && enable->isVisible());
+            auto *balance=visualChild(window->contentItem(),"gradingBalanceSlider");
+            gradingUiTrace->insert("balance_control_found",balance && balance->isVisible());
+            gradingUiTrace->insert("grading_preserved",controller->gpuPlan(true).state.toJson()==gradingBefore);
+            if(gradingToggle && !wasOpen) QMetaObject::invokeMethod(gradingToggle,"clicked");
+            gradingUiTrace->insert("closed",wasOpen || (enable && !enable->isVisible()));
             // The actual Copy test now publishes a dated JPEG. Keep an
             // independent undated fixture for the export refusal check.
             const auto before=controller->library().size();
@@ -704,11 +721,15 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         bool vignetteOk=true;
         for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
             vignetteOk=vignetteOk && vignetteTrace->value(key).toBool();
+        bool gradingUiOk=true;
+        for (const auto *key : {"toggle_found","toggle_revealed","opened","enabled_control_visible",
+                                "balance_control_found","grading_preserved","closed"})
+            gradingUiOk=gradingUiOk && gradingUiTrace->value(key).toBool();
         bool exportNamesOk=true;
         for (const auto *key : {"missing_date_fixture_added","menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
                                "translated_buttons","invalid_template_blocked","missing_date_blocked","cancel_clicked","closed","edits_unchanged","no_export_queued"})
             exportNamesOk=exportNamesOk && exportNamesTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && exportNamesOk && (!gpuRequired || controller->gpuActive());
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -732,6 +753,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_geometry_corrections_trace"]=*correctionTrace;
         report["ui_vignette_passed"]=vignetteOk;
         report["ui_vignette_trace"]=*vignetteTrace;
+        report["ui_color_grading_panel_passed"]=gradingUiOk;
+        report["ui_color_grading_panel_trace"]=*gradingUiTrace;
         report["ui_export_naming_passed"]=exportNamesOk;
         report["ui_export_naming_trace"]=*exportNamesTrace;
         report["ui_straighten_passed"]=state->straightenPassed;

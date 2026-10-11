@@ -10,9 +10,11 @@
 >
 > **F4 accepted (run 38059711744):** independent B&W with eight hue-weighted
 > luminance bands, tested on Windows/macOS/Linux and the deployed packages.
-> **Current F4 batch awaiting CI:** three-wheel perceptual Color Grading with
-> independently adjustable shadow/midtone/highlight hue/saturation and balance,
-> real-time Develop controls and shared CPU/QRhi + CLI/history/XMP/preset path.
+> **F4 Color Grading accepted at 152bce9 (run 38103311957):** shadow/midtone/
+> highlight wheels and balance, native CPU/QRhi pipeline, editable bilingual UI,
+> CLI/history/XMP/presets; Windows/macOS/Linux and desktop packages passed.
+> New grading CPU/GPU delta at most 7/65535 on this CI (original limit 40).
+> Further GUI panel and deployed CLI validation is being added separately.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
 
 
@@ -152,7 +154,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
 
-### 三路色彩分级 Color Grading（融合分支，待 CI 验收）
+### 三路色彩分级 Color Grading（融合分支，三平台基础验收通过）
 
 在当前颜色与 Sony Look / 独立黑白混合之后、目标色域转换之前，以 Oklab 的色度平面进行阴影/中间调/高光三段平滑加权，支持三种独立色相（0～360°）、饱和度（0～100）和明暗平衡（−100～100）。UI 提供可拖动三色轮与精确数值滑块；支持非破坏性历史、项目/虚拟副本、预设、XMP 与颜色组同步，以及离线 CLI 命令 `grading.enable`、`grading.set`、`grading.balance`、`grading.reset`。默认关闭时不改变旧图片任何像素；禁用时也保留分级数值，可重新启用。三平台 40/65535 CPU/GPU 限差继续作为强制条件，未经本次精确 HEAD 的 CI 全部通过不视为完成。
 

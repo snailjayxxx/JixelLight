@@ -62,17 +62,23 @@ succeeded on Windows x64, macOS arm64 and Linux GPU including desktop package
 validations. 126 core and 25 performance checks passed per platform; 16 B&W parity
 fixtures per platform showed maximum channel delta **1/65535**, no GPU skip.
 
-**Current F4 batch (awaiting its own exact-head CI):** optional three-way Color
-Grading after Sony/B&W, before gamut/output; shadow/midtone/highlight hue and
-saturation, tone balance, perceptual smooth weighting and precompiled Oklab
-vectors. CPU reference and QRhi remain paired, with zero-default bypass, original
-alpha/scopes/ICC intact. Develop offers three interactive wheels and precise
-sliders, all parameters survive versioned project snapshots, virtual copies,
-undo/redo, presets, XMP and color-group copy/sync. CLI commands:
-`grading.enable`, `grading.set`, `grading.balance`, `grading.reset`.
-New tests cover old-photo identity, strict schema, tint/tonal range, GPU parity,
-project/history/metadata and CLI. **40/65535 GPU parity and 60-second RAW GUI
-smoke thresholds are unchanged.**
+**Accepted F4 Color Grading (first exact-HEAD CI):** `152bce913af46f6424ee6baa01ce46e8edb3d9f9`,
+[run 38103311957](https://github.com/snailjayxxx/JixelLight/actions/runs/38103311957),
+success on **Windows, macOS and Linux** with 129 core, 26 mandatory GPU and 25
+performance checks per platform and real Sony RAW/JPEG, GUI and desktop packages.
+Three-way Oklab Color Grading follows Sony/B&W and precedes ICC, with editable
+shadow/midtone/highlight hue/saturation, balance, three QML wheels and safe
+history/project/preset/XMP/color-group/CLI integration. Twenty-four mandatory
+new CPU/GPU parity fixtures per platform: max channel error **7 Linux, 3 macOS,
+5 Windows /65535**, zero excess over existing **40/65535** threshold. No GPU
+test skip; 60-second RAW GUI smoke and 10,340,960 final histogram pixels stay
+unchanged. Main/PR #15 untouched.
+
+**Next verification batch (not yet accepted):** exercise the real QML grading
+panel in the existing GUI smoke without changing RAW pixels or redoing full
+scopes; independently test grading enable/disable/reset and invalid requests
+through the deployed offline CLI, including invalid catalog snapshot rejection.
+Retain exact-head three-platform acceptance requirement for these test changes.
 
 
 | Phase | Working code | Remaining scope |

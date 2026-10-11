@@ -38,7 +38,7 @@ def main():
             return process
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 15
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
@@ -155,6 +155,35 @@ def main():
         result = json.loads(run('--commands', commands, source, reset_vignette).stdout)
         assert 'vignette' not in result['adjustments'] and result['adjustments']['exposure'] == 1
         assert png_pixel_stream(reset_vignette) == png_pixel_stream(plain)
+        grading = [
+            {'command': 'grading.enable', 'enabled': True},
+            {'command': 'grading.set', 'region': 0, 'component': 'hue', 'value': 18},
+            {'command': 'grading.set', 'region': 0, 'component': 'saturation', 'value': 100},
+            {'command': 'grading.set', 'region': 1, 'component': 'hue', 'value': 125},
+            {'command': 'grading.set', 'region': 1, 'component': 'saturation', 'value': 65},
+            {'command': 'grading.set', 'region': 2, 'component': 'hue', 'value': 260},
+            {'command': 'grading.set', 'region': 2, 'component': 'saturation', 'value': 100},
+            {'command': 'grading.balance', 'value': -30},
+        ]
+        commands.write_text(json.dumps(exposure + grading))
+        graded = root / 'color-graded.png'
+        result = json.loads(run('--commands', commands, source, graded).stdout)
+        assert result['adjustments']['colorGrading'] == {
+            'schema': 1, 'enabled': True, 'hue': [18, 125, 260],
+            'saturation': [100, 65, 100], 'balance': -30,
+        }
+        assert png_pixel_stream(graded) != png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure + grading + [
+            {'command': 'grading.enable', 'enabled': False}]))
+        disabled_grade = root / 'grading-disabled.png'
+        result = json.loads(run('--commands', commands, source, disabled_grade).stdout)
+        assert result['adjustments']['colorGrading']['enabled'] is False
+        assert png_pixel_stream(disabled_grade) == png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure + grading + [{'command': 'grading.reset'}]))
+        reset_grade = root / 'grading-reset.png'
+        result = json.loads(run('--commands', commands, source, reset_grade).stdout)
+        assert 'colorGrading' not in result['adjustments']
+        assert png_pixel_stream(reset_grade) == png_pixel_stream(plain)
         for bad in [
             {'command': 'geometry.crop', 'x': .8, 'y': 0, 'width': .5, 'height': 1},
             {'command': 'geometry.rotate', 'quarterTurns': .5},
@@ -167,6 +196,12 @@ def main():
             {'command': 'geometry.set', 'parameter': 'unknown', 'value': 0},
             {'command': 'geometry.resetCorrections', 'extra': 1},
             {'command': 'vignette.reset', 'extra': 1},
+            {'command': 'grading.enable', 'enabled': 1},
+            {'command': 'grading.set', 'region': 3, 'component': 'hue', 'value': 120},
+            {'command': 'grading.set', 'region': 1, 'component': 'oops', 'value': 50},
+            {'command': 'grading.set', 'region': 2, 'component': 'hue', 'value': None},
+            {'command': 'grading.balance', 'value': '20'},
+            {'command': 'grading.reset', 'extra': 1},
             {'command': 'develop.set', 'parameter': 'vignetteAmount', 'value': '-1'},
             {'command': 'develop.set', 'parameter': 'vignetteFeather', 'value': None},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
@@ -446,7 +481,9 @@ def main():
         for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}},
                         {**original_state, 'geometry': {'schema': 3, 'straighten': 5}},
                         {**original_state, 'vignette': {'schema': 2, 'amount': -1, 'midpoint': .5, 'feather': 1}},
-                        {**original_state, 'vignette': {'schema': 1, 'amount': -4, 'midpoint': .5, 'feather': 1}}]:
+                        {**original_state, 'vignette': {'schema': 1, 'amount': -4, 'midpoint': .5, 'feather': 1}},
+                         {**original_state, 'colorGrading': {'schema': 2, 'enabled': True, 'hue': [0,0,0], 'saturation': [100,0,0], 'balance': 0}},
+                         {**original_state, 'colorGrading': {'schema': 1, 'enabled': True, 'hue': [0,361,0], 'saturation': [100,0,0], 'balance': 0}}]:
             with open_database(db_path) as db:
                 db.execute('UPDATE photos SET adjustment_json=? WHERE path=?', (json.dumps(corrupt), '../original.png'))
             current = hashlib.sha256(db_path.read_bytes()).hexdigest()
@@ -455,7 +492,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':
