@@ -1,4 +1,5 @@
 #include "GeometryState.h"
+#include "core/pipeline/FloatGeometrySampling.h"
 #include "core/async/ParallelRows.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QColorSpace>
@@ -65,6 +66,16 @@ Sample sample(const QImage &input,double x,double y,std::atomic_bool &invalid) {
     return out;
 }
 quint16 channel(double value) { return quint16(std::clamp(std::lround(value),0L,65535L)); }
+FloatGeometrySampling::Sample sampleFloat(const QImage &input,double x,double y,std::atomic_bool &invalid) {
+    // Match the integer resampler's strict inscribed-domain rejection; clamp
+    // only numerical rounding at the last source sample center.
+    if (!std::isfinite(x) || !std::isfinite(y) || x < -1e-7 || y < -1e-7
+        || x > input.width()-1+1e-7 || y > input.height()-1+1e-7) {
+        invalid.store(true,std::memory_order_relaxed);
+        return {};
+    }
+    return FloatGeometrySampling::bilinear(input,x,y);
+}
 }
 
 QSize GeometryState::correctedSize(QSize source) const {
@@ -81,12 +92,14 @@ QSize GeometryState::correctedSize(QSize source) const {
 }
 
 QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken &cancel) const {
-    PerformanceSpan timer("geometry_corrections",{{"backend","cpu"},{"source_pixels",qint64(source.width())*source.height()},
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    PerformanceSpan timer("geometry_corrections",{{"backend","cpu"},{"input_fp32",floating},
+        {"source_pixels",qint64(source.width())*source.height()},
         {"perspective_horizontal",perspectiveHorizontal},{"perspective_vertical",perspectiveVertical},
         {"distortion",distortion},{"red_ca_percent",redCa},{"blue_ca_percent",blueCa},{"straighten",straighten}});
-    const auto input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    const auto input=floating || source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
     if (input.isNull() || cancelled(cancel)) return {};
-    QImage result(correctedSize(source.size()),QImage::Format_RGBA64);
+    QImage result(correctedSize(source.size()),floating ? QImage::Format_RGBA32FPx4 : QImage::Format_RGBA64);
     if (result.isNull()) return {};
     result.setColorSpace(source.colorSpace()); result.setDevicePixelRatio(source.devicePixelRatio());
     result.setDotsPerMeterX(source.dotsPerMeterX()); result.setDotsPerMeterY(source.dotsPerMeterY());
@@ -95,6 +108,29 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
     const double ox=(result.width()-1)/2.0,oy=(result.height()-1)/2.0;
     auto *bits=result.bits(); const auto stride=result.bytesPerLine(); // Detach before parallel writers.
     std::atomic_bool invalid{false};
+    if (floating) {
+        ParallelRows::run(result.height(),result.width(),cancel,[&](int y) {
+            auto *out=reinterpret_cast<float *>(bits+y*stride);
+            for (int x=0;x<result.width();++x) {
+                if ((x%256==0 && cancelled(cancel)) || invalid.load(std::memory_order_relaxed)) return;
+                const auto p=map.project(x-ox,y-oy);
+                const double factor=map.radial(p),rx=p.x()*factor,ry=p.y()*factor;
+                const auto green=sampleFloat(input,map.cx+rx,map.cy+ry,invalid);
+                const auto red=redCa==0 ? green
+                    : sampleFloat(input,map.cx+rx*(1+redCa/100),map.cy+ry*(1+redCa/100),invalid);
+                const auto blue=blueCa==0 ? green
+                    : sampleFloat(input,map.cx+rx*(1+blueCa/100),map.cy+ry*(1+blueCa/100),invalid);
+                // Preserve the original green-defined alpha and independent
+                // RGB lateral-CA samples; signed/over-white colors are legal.
+                const FloatGeometrySampling::Sample mixed=green.a>0
+                    ? FloatGeometrySampling::Sample{red.r,green.g,blue.b,green.a}
+                    : FloatGeometrySampling::Sample{};
+                FloatGeometrySampling::write(out+4*x,mixed);
+            }
+        });
+    } else {
+    // The historical integer rounding and sampling path is intentionally
+    // untouched, retaining reference pixels for every existing RAW/JPEG.
     ParallelRows::run(result.height(),result.width(),cancel,[&](int y) {
         auto *out=reinterpret_cast<QRgba64 *>(bits+y*stride);
         for (int x=0;x<result.width();++x) {
@@ -109,5 +145,6 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
             out[x]=green.a>0 ? QRgba64::fromRgba64(channel(red.r),channel(green.g),channel(blue.b),channel(green.a)) : QRgba64::fromRgba64(0,0,0,0);
         }
     });
+    }
     return cancelled(cancel) || invalid ? QImage{} : result;
 }

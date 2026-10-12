@@ -82,6 +82,9 @@ struct GeometryState {
         // Roundoff from 1-(x+w) can be a tiny negative at a full-frame edge.
         return rect.intersected(QRectF(0,0,1,1));
     }
+    // Real RAW bitmap stays RGBA64. Explicit FP32 scene inputs preserve
+    // out-of-display-range colors through straighten, manual lens/CA,
+    // perspective, crop and bit-preserving orientation, with shared geometry.
     QImage apply(const QImage &source, const CancelToken &cancel = {}) const;
 private:
     QImage resampleCorrections(const QImage &source, const CancelToken &cancel) const;

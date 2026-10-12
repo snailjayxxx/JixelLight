@@ -1,8 +1,11 @@
 #include "GeometryState.h"
+#include "core/pipeline/FloatGeometrySampling.h"
+#include "core/pipeline/ImagePipeline.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QColorSpace>
 #include <QRgba64>
 #include <numbers>
+#include <cstring>
 
 QSize GeometryState::straightenedSize(QSize source) const {
     if (source.isEmpty() || !validStraighten(straighten)) return {};
@@ -20,15 +23,20 @@ QSize GeometryState::straightenedSize(QSize source) const {
 QImage GeometryState::apply(const QImage &source, const CancelToken &cancel) const {
     if (source.isNull() || cancelled(cancel) || !validStraighten(straighten) || !validCorrections()
         || !validCrop(crop.x(),crop.y(),crop.width(),crop.height())) return {};
+    // An explicit FP32 scene image is a different storage contract from the
+    // camera's historical RGBA64 bitmap. Validate it before *any* geometry,
+    // including crop-only and orientation-only operations.
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    if (floating && !ImagePipeline::validFloatSource(source,cancel)) return {};
     QImage result=source;
     if (hasCorrections()) {
         result=resampleCorrections(source,cancel);
         if (result.isNull()) return {};
     } else if (straighten!=0) {
         PerformanceSpan timer("geometry_straighten",{{"degrees",straighten},{"source_pixels",qint64(source.width())*source.height()}});
-        const auto input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+        const auto input=floating || source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
         if (input.isNull() || cancelled(cancel)) return {};
-        result=QImage(straightenedSize(source.size()),QImage::Format_RGBA64);
+        result=QImage(straightenedSize(source.size()),floating ? QImage::Format_RGBA32FPx4 : QImage::Format_RGBA64);
         if (result.isNull()) return {};
         result.setColorSpace(source.colorSpace()); result.setDevicePixelRatio(source.devicePixelRatio());
         result.setDotsPerMeterX(source.dotsPerMeterX()); result.setDotsPerMeterY(source.dotsPerMeterY());
@@ -36,6 +44,22 @@ QImage GeometryState::apply(const QImage &source, const CancelToken &cancel) con
         const double angle=straighten*std::numbers::pi/180, c=std::cos(angle), s=std::sin(angle);
         const double cx=(input.width()-1)/2.0, cy=(input.height()-1)/2.0;
         const double ox=(result.width()-1)/2.0, oy=(result.height()-1)/2.0;
+        if (floating) {
+            // Bilinear FP32 scene resampling: preserve headroom and signed
+            // out-of-gamut channels with associated-alpha interpolation.
+            auto *bits=result.bits();
+            const auto stride=result.bytesPerLine();
+            for(int y=0;y<result.height();++y) {
+                if(cancelled(cancel)) return {};
+                auto *out=reinterpret_cast<float *>(bits+y*stride);
+                for(int x=0;x<result.width();++x) {
+                    const double sx=std::clamp(cx+c*(x-ox)+s*(y-oy),0.0,double(input.width()-1));
+                    const double sy=std::clamp(cy-s*(x-ox)+c*(y-oy),0.0,double(input.height()-1));
+                    FloatGeometrySampling::write(out+4*x,FloatGeometrySampling::bilinear(input,sx,sy));
+                }
+            }
+        } else {
+        // Leave the original integer resampling and pixel rounding unchanged.
         for (int y=0;y<result.height();++y) {
             if (cancelled(cancel)) return {};
             auto out=reinterpret_cast<QRgba64 *>(result.scanLine(y));
@@ -57,6 +81,7 @@ QImage GeometryState::apply(const QImage &source, const CancelToken &cancel) con
                 out[x]=a>0 ? QRgba64::fromRgba64(channel(r/a),channel(g/a),channel(b/a),channel(a)) : QRgba64::fromRgba64(0,0,0,0);
             }
         }
+        }
     }
     if (cancelled(cancel)) return {};
     if (crop!=QRectF(0,0,1,1)) {
@@ -67,8 +92,33 @@ QImage GeometryState::apply(const QImage &source, const CancelToken &cancel) con
         result=result.copy(left,top,right-left,bottom-top);
     }
     if (cancelled(cancel)) return {};
-    if (quarterTurns%4) result=result.transformed(QTransform().rotate(90*(quarterTurns%4)),Qt::FastTransformation);
-    if (cancelled(cancel)) return {};
-    if (flipHorizontal||flipVertical) result=result.mirrored(flipHorizontal,flipVertical);
+    if (floating && (quarterTurns%4 || flipHorizontal || flipVertical)) {
+        // Qt image transforms may take a conversion path for FP32 formats.
+        // Rearrange full IEEE-754 RGBA pixels byte-for-byte instead.
+        const int turns=((quarterTurns%4)+4)%4;
+        const int width=result.width(),height=result.height();
+        QImage oriented(turns%2 ? QSize(height,width) : result.size(),QImage::Format_RGBA32FPx4);
+        if (oriented.isNull()) return {};
+        FloatGeometrySampling::copyMetadata(result,oriented);
+        auto *dst=oriented.bits();const qsizetype stride=oriented.bytesPerLine();
+        for (int y=0;y<height;++y) {
+            if (cancelled(cancel)) return {};
+            const auto *src=result.constScanLine(y);
+            for (int x=0;x<width;++x) {
+                int tx=x,ty=y;
+                if (turns==1) {tx=height-1-y;ty=x;}
+                else if (turns==2) {tx=width-1-x;ty=height-1-y;}
+                else if (turns==3) {tx=y;ty=width-1-x;}
+                if (flipHorizontal) tx=oriented.width()-1-tx;
+                if (flipVertical) ty=oriented.height()-1-ty;
+                std::memcpy(dst+qsizetype(ty)*stride+qsizetype(tx)*16,src+qsizetype(x)*16,16);
+            }
+        }
+        result=std::move(oriented);
+    } else {
+        if (quarterTurns%4) result=result.transformed(QTransform().rotate(90*(quarterTurns%4)),Qt::FastTransformation);
+        if (cancelled(cancel)) return {};
+        if (flipHorizontal||flipVertical) result=result.mirrored(flipHorizontal,flipVertical);
+    }
     return cancelled(cancel) ? QImage{} : result;
 }

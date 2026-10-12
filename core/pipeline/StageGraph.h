@@ -9,8 +9,10 @@
 #include <QColorSpace>
 #include <QByteArrayView>
 
-// Keys for the existing engine boundaries. These describe the actual RGBA64
-// decode / FP32 GPU staging path, not an unimplemented float RAW decoder.
+// Keys for the existing engine boundaries. Real camera RAW still decodes to
+// RGBA64; optional explicit FP32 scene inputs now preserve float precision
+// through manual geometry, tone processing, and GPU staging. This is not a
+// native floating-point LibRaw decoder.
 struct StageGraph {
     static QString digest(const QByteArray &bytes) {
         return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
@@ -63,6 +65,7 @@ struct StageGraph {
     static QJsonObject describe(const QString &sourceKey, const PrepareRequest &request,
                                 const AdjustmentState &state, bool raw, float baseExposure) {
         const QString prepared = prepareKey(request);
+        const bool sourceFp32=request.image.format()==QImage::Format_RGBA32FPx4;
         const QByteArray renderDependencies = QJsonDocument(QJsonObject{
             {"prepare", prepared}, {"adjustments", state.toJson()}, {"raw", raw},
             {"baseExposure", baseExposure}, {"output", "srgb"},
@@ -70,10 +73,15 @@ struct StageGraph {
         const QString rendered = digest(renderDependencies);
         return {{"schema", 1}, {"source", sourceKey}, {"prepare", prepared}, {"render", rendered},
                 {"scopes", digest((rendered + ":1024:rgb-luma:pre-monitor").toUtf8())},
-                {"source_storage", "RGBA64; GPU staging FP32"},
+                {"source_storage", sourceFp32
+                     ? "RGBA32FPx4 explicit scene; CPU geometry/resampling FP32; GPU staging FP32"
+                     : "RGBA64 camera decoded source; GPU staging FP32"},
                 {"geometry",QJsonObject{{"backend","cpu"},{"settings",request.geometry.toJson()},
                     {"order","manual lens/CA -> perspective -> straighten -> crop -> orientation -> color"},
-                    {"corrections_active",request.geometry.hasCorrections()},{"sampling","premultiplied-alpha bilinear RGBA64; conservative inscribed trim"},
+                    {"corrections_active",request.geometry.hasCorrections()},{"input_fp32",sourceFp32},
+                     {"sampling",sourceFp32
+                          ? "associated-alpha bilinear FP32 (double accumulation); RGB unassociated, unclipped; conservative inscribed trim"
+                          : "premultiplied-alpha bilinear RGBA64; conservative inscribed trim"},
                     {"lens_profile",false},{"monitor_icc",false}}},
                 {"black_white",QJsonObject{{"schema",1},{"enabled",state.blackWhite},
                      {"mix_hundredth_stops",AdjustmentState::toJsonArray(state.bwMix)},

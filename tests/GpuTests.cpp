@@ -207,6 +207,52 @@ private slots:
         ordinary.vignetteAmount=-3;
         QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
     }
+    void fp32GeometryStraightenProjectiveCaMatchesCpuGpuAndScopes() {
+        // Exercise the actual scene image returned by spatial geometry,
+        // including >1 highlights, negative channels and premultiplied-alpha
+        // resampling. GPU compute and numeric CPU fallback must see the exact
+        // same FP32 source; no integer proxy is allowed.
+        QImage scene(113,89,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(2.1+.006*x+.003*y);
+            p[1]=float(.16+.004*x+.001*y);
+            p[2]=float(-.22+.002*x+.002*y);
+            p[3]=(x+y)%9==0?.75f:1.0f;
+        }
+        GeometryState geometry;
+        geometry.straighten=8.5;
+        geometry.perspectiveHorizontal=.13;
+        geometry.perspectiveVertical=-.09;
+        geometry.distortion=-.12;
+        geometry.redCa=1.5;
+        geometry.blueCa=-.9;
+        geometry.crop={.1,.1,.8,.8};
+        geometry.quarterTurns=1;
+        geometry.flipHorizontal=true;
+        const auto corrected=geometry.apply(scene);
+        QVERIFY(!corrected.isNull());
+        QCOMPARE(corrected.format(),QImage::Format_RGBA32FPx4);
+        QVERIFY(ImagePipeline::validFloatSource(corrected));
+        QVERIFY(reinterpret_cast<const float *>(corrected.constScanLine(corrected.height()/2))[4*(corrected.width()/2)]>1.0f);
+        const auto fingerprint=FloatFrameFingerprint::capture(corrected);
+        QVERIFY(fingerprint.value("available").toBool());
+        QVERIFY(fingerprint.value("ranges_rgba").toArray()[0].toArray()[1].toDouble()>2.0);
+        for(int mode=0;mode<2;++mode) for(int space=0;space<4;++space) {
+            AdjustmentState state;
+            state.exposure=-2.0;
+            state.temperature=mode==0?0:9;
+            state.highlightRecovery=mode==0?0:22;
+            if(mode==1) state.hslSaturation[5]=-27; // verified CPU fallback on D3D/OpenGL
+            const auto output=ColorManagement::OutputSpace(space);
+            verifyParity(corrected,state,ImagePipeline::InputEncoding::LinearProPhoto,
+                         output,true,"FP32 lens/CA/projective/straighten");
+            if(QTest::currentTestFailed()) return;
+            const bool expectedFallback=mode==1 &&
+                (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),expectedFallback);
+        }
+    }
     void fp32SceneOverRangeCpuGpuAndCpuSafetyFallback() {
         QImage scene(53,47,QImage::Format_RGBA32FPx4);
         const std::array<quint16,4> alpha{0,1,12345,65535};

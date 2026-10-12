@@ -81,11 +81,15 @@ This does not reconstruct a camera photosite clipped by the sensor or a
   RAW/JPEG fixtures, GUI, Windows/macOS package validation and no GPU skip.
   The 12 new FP32 color-matrix fixtures have maximum channel delta **1 Linux,
   4 macOS, 1 Windows /65535** (existing max 40/65535).
-- **Stage 1 follow-up (new exact-head CI pending):** exercise the prepared
-  FP32 preview source and crop-only `GeometryState::apply` path, plus an
-  independently decoded PNG16 export. The optional FP32 data must survive
-  these stages above 1.0 until explicit display conversion. This follow-up
-  tests crop-only geometry, **not** rotate/straighten/lens corrections.
+- **Stage 1 follow-up accepted:** `ff94a51fad44bfcd487f6dbfa6e20b5b269117df`,
+  [run 38202436018](https://github.com/snailjayxxx/JixelLight/actions/runs/38202436018),
+  passed Windows/macOS/Linux (133 core / 28 mandatory GPU / 25 performance
+  per OS, actual Sony RAW/JPEG, GUI and both desktop packages). The float
+  prepared preview, crop-only `GeometryState::apply` and independently
+  decoded PNG16 pixel comparison retained >1.0 headroom.
+  The **separate F3 stage 2** adds FP32 straighten, manual lens/CA/
+  perspective and full-resolution scopes. See
+  [F3_FLOAT_GEOMETRY_STAGE2.md](F3_FLOAT_GEOMETRY_STAGE2.md).
 
 ## Next F3 work
 

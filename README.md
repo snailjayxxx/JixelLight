@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **Development branch status (2026-10-12):** `design/lightcraft-fusion-20261008`,
+> **Development branch status (2026-10-13):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
 > **Jixel Neutral v2 and no universal RAW +2.5 EV**. The alpha.10 descriptions
 > below are retained for historical reference and **must not be interpreted as
@@ -21,9 +21,13 @@
 > mandatory GPU / 25 performance per platform, worst new FP32 channel delta
 > **4/65535** (original limit 40/65535). Direct scene-linear `RGBA32FPx4`
 > CPU processing preserves over-white highlights through numeric fallback
-> and frozen diagnostic comparison. Preview/crop-only/PNG16 follow-up checks
-> are being added. Real camera RAW still uses LibRaw's 16-bit developed
-> bitmap; native float RAW decode is a separate unfinished stage.
+> and frozen diagnostic comparison. FP32 preview/crop-only/PNG16 checks were
+> accepted at `ff94a51` / run `38202436018` on all three platforms.
+> **F3 stage 2 in development:** scene-linear FP32 manual perspective,
+> straighten, radial/CA resampling, bit-exact 90-degree orientation and
+> correct 1024-bin full-resolution scopes. This stage awaits exact-head CI.
+> Real camera RAW still uses LibRaw's 16-bit developed bitmap; native float
+> RAW decode is a separate unfinished stage.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
 
 
@@ -163,9 +167,11 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
 
-### F3 浮点场景输入精度（融合开发分支，第一阶段已三平台验收）
+### F3 浮点显影和几何精度（融合开发分支，第一阶段已验收）
 
 已加入可选 `RGBA32FPx4` 线性工作源的 CPU 显影，场景高光值大于 1.0 时不再先裁切为 16-bit；GPU 复杂 HSL 的 CPU 安全回退与冻结诊断也使用相同源。默认 LibRaw 仍输出 RGBA64，**当前功能不能被宣传为完整 FP32 RAW 解码器**。已添加 float / 旧 16-bit 像素等价性和 GPU 精度测试。参阅 [F3 浮点输入 Stage 1](docs/F3_FLOAT_SCENE_STAGE1.md)。
+
+最新 F3 stage 2 正在接入 FP32 拉直、手动透视/畸变/色差校正、浮点无损 90° 方向变换，并修正全分辨率 Scopes 在调色之前提前压成 RGBA64 的问题。保留原有 RGBA64 像素逻辑和 Sony RAW/JPEG 基准；新代码仍需跨平台验收，详见 [F3 浮点几何 Stage 2](docs/F3_FLOAT_GEOMETRY_STAGE2.md)。
 
 ### 三路色彩分级 Color Grading（融合分支，三平台基础验收通过）
 

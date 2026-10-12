@@ -1237,6 +1237,246 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.copyImportBusy(),10000); QVERIFY(QFileInfo::exists(QDir(out).filePath("third.png")));
         QVERIFY(controller.prepareToClose());
     }
+    void floatSceneStraightenPreservesOverWhiteSignedChannelsAndAssociatedAlpha() {
+        QImage scene(113,89,QImage::Format_RGBA32FPx4);
+        scene.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        scene.setText("JixelLightSource","synthetic-fp32-geometry");
+        scene.setDevicePixelRatio(2);
+        scene.setDotsPerMeterX(3100);
+        for (int y=0;y<scene.height();++y) {
+            auto *row=reinterpret_cast<float *>(scene.scanLine(y));
+            for(int x=0;x<scene.width();++x) {
+                row[4*x]=float(2.0+.020*x-.005*y);
+                row[4*x+1]=float(.3+.004*x+.003*y);
+                row[4*x+2]=float(-.6+.002*x-.001*y);
+                row[4*x+3]=1.0f;
+            }
+        }
+        const auto fingerprint=FloatFrameFingerprint::capture(scene);
+        GeometryState geometry;geometry.straighten=18.0;
+        const auto corrected=geometry.apply(scene);
+        QVERIFY(!corrected.isNull());
+        QCOMPARE(corrected.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(corrected.size(),geometry.straightenedSize(scene.size()));
+        QCOMPARE(corrected.colorSpace(),scene.colorSpace());
+        QCOMPARE(corrected.text("JixelLightSource"),QString("synthetic-fp32-geometry"));
+        QCOMPARE(corrected.devicePixelRatio(),2.0);
+        QCOMPARE(corrected.dotsPerMeterX(),3100);
+        const double a=geometry.straighten*std::acos(-1.0)/180.0;
+        const double c=std::cos(a),s=std::sin(a);
+        const double cx=(scene.width()-1)/2.0,cy=(scene.height()-1)/2.0;
+        const double ox=(corrected.width()-1)/2.0,oy=(corrected.height()-1)/2.0;
+        for(int y=0;y<corrected.height();++y) for(int x=0;x<corrected.width();++x) {
+            const auto *pixel=reinterpret_cast<const float *>(corrected.constScanLine(y))+4*x;
+            const double sx=std::clamp(cx+c*(x-ox)+s*(y-oy),0.0,double(scene.width()-1));
+            const double sy=std::clamp(cy-s*(x-ox)+c*(y-oy),0.0,double(scene.height()-1));
+            const double r=2.0+.020*sx-.005*sy, g=.3+.004*sx+.003*sy, b=-.6+.002*sx-.001*sy;
+            QVERIFY2(std::abs(double(pixel[0])-r)<.00002,"FP32 red/over-white interpolation drift");
+            QVERIFY(std::abs(double(pixel[1])-g)<.00002);
+            QVERIFY(std::abs(double(pixel[2])-b)<.00002);
+            QCOMPARE(pixel[3],1.0f);
+        }
+        QVERIFY(reinterpret_cast<const float *>(corrected.constScanLine(corrected.height()/2))[4*(corrected.width()/2)]>1.0f);
+        QVERIFY(reinterpret_cast<const float *>(corrected.constScanLine(corrected.height()/2))[4*(corrected.width()/2)+2]<0.0f);
+        QCOMPARE(FloatFrameFingerprint::capture(scene),fingerprint); // source is immutable
+
+        // Transparent hidden RGB must not contaminate associated-color
+        // interpolation, and translucent alpha must remain floating.
+        QImage alphaSource(2,2,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
+            auto *p=reinterpret_cast<float *>(alphaSource.scanLine(y))+4*x;
+            p[0]=0;p[1]=0;p[2]=20;p[3]=0;
+        }
+        auto *opaque=reinterpret_cast<float *>(alphaSource.scanLine(0));
+        opaque[0]=3.25f;opaque[1]=-.4f;opaque[2]=.9f;opaque[3]=1;
+        GeometryState narrow;narrow.straighten=33;
+        const auto out=narrow.apply(alphaSource);
+        QCOMPARE(out.size(),QSize(1,1)); QCOMPARE(out.format(),QImage::Format_RGBA32FPx4);
+        const auto *p=reinterpret_cast<const float *>(out.constScanLine(0));
+        QCOMPARE(p[0],3.25f); QCOMPARE(p[1],-.4f); QCOMPARE(p[2],.9f);
+        QCOMPARE(p[3],.25f);
+    }
+
+    void floatSceneProjectiveRadialAndCaMatchAnalyticReference() {
+        QImage scene(101,61,QImage::Format_RGBA32FPx4);
+        for (int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(1.7+.012*x+.004*y);
+            p[1]=float(.2+.002*x+.005*y);
+            p[2]=float(-.35+.001*x-.002*y);
+            p[3]=1;
+        }
+        GeometryState g;g.perspectiveHorizontal=.21;g.perspectiveVertical=-.13;
+        g.distortion=-.17;g.redCa=1.7;g.blueCa=-1.3;g.straighten=12;
+        const auto corrected=g.apply(scene);
+        QVERIFY(!corrected.isNull());
+        QCOMPARE(corrected.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(corrected.size(),g.correctedSize(scene.size()));
+        const double a=g.straighten*std::acos(-1.0)/180,c=std::cos(a),s=std::sin(a);
+        const double cx=50,cy=30,radialDenominator=cx*cx+cy*cy;
+        for(int y=0;y<corrected.height();++y) for(int x=0;x<corrected.width();++x) {
+            const double dx=x-(corrected.width()-1)/2.0,dy=y-(corrected.height()-1)/2.0;
+            const double rx=c*dx+s*dy,ry=-s*dx+c*dy;
+            const double den=1+g.perspectiveHorizontal*rx/std::max(.5,cx)
+                              +g.perspectiveVertical*ry/std::max(.5,cy);
+            QVERIFY(den>0);
+            const double ux=rx/den,uy=ry/den;
+            const double factor=1+g.distortion*(ux*ux+uy*uy)/radialDenominator;
+            const double gx=cx+ux*factor,gy=cy+uy*factor;
+            const double rX=cx+ux*factor*(1+g.redCa/100),rY=cy+uy*factor*(1+g.redCa/100);
+            const double bX=cx+ux*factor*(1+g.blueCa/100),bY=cy+uy*factor*(1+g.blueCa/100);
+            const auto *p=reinterpret_cast<const float *>(corrected.constScanLine(y))+4*x;
+            QVERIFY(std::abs(double(p[0])-(1.7+.012*rX+.004*rY))<.00003);
+            QVERIFY(std::abs(double(p[1])-(.2+.002*gx+.005*gy))<.00003);
+            QVERIFY(std::abs(double(p[2])-(-.35+.001*bX-.002*bY))<.00003);
+            QCOMPARE(p[3],1.0f);
+        }
+        const auto integerProxy=ImagePipeline::rgba64Source(scene);
+        const auto prematurelyClipped=g.apply(integerProxy);
+        QVERIFY(!prematurelyClipped.isNull());
+        QCOMPARE(prematurelyClipped.size(),corrected.size());
+        QVERIFY(reinterpret_cast<const float *>(corrected.constScanLine(0))[0]>1.0f);
+        QCOMPARE(prematurelyClipped.pixelColor(0,0).rgba64().red(),quint16(65535));
+    }
+
+    void floatSceneOrientationIsBitExactAndRejectsInvalidSource() {
+        QImage source(7,5,QImage::Format_RGBA32FPx4);
+        source.setText("JixelLightSource","float-orientation");
+        source.setDotsPerMeterY(3500);
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=float(2.25+.125*x+.03125*y);
+            p[1]=-0.0f; // preserve signed zero bit pattern on axis operations
+            p[2]=float(-.75+.0625*y-.015625*x);
+            p[3]=(x+y)%3==0?0.0f:(x+y)%3==1?.375f:1.0f;
+        }
+        const auto original=FloatFrameFingerprint::capture(source);
+        for(int turns=0;turns<4;++turns) for(bool flipH:{false,true}) for(bool flipV:{false,true}) {
+            GeometryState g;g.quarterTurns=turns;g.flipHorizontal=flipH;g.flipVertical=flipV;
+            const auto image=g.apply(source);
+            QVERIFY(!image.isNull());
+            QCOMPARE(image.format(),QImage::Format_RGBA32FPx4);
+            QCOMPARE(image.size(),turns%2?QSize(source.height(),source.width()):source.size());
+            QCOMPARE(image.text("JixelLightSource"),QString("float-orientation"));
+            QCOMPARE(image.dotsPerMeterY(),3500);
+            for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x) {
+                int tx=x,ty=y;
+                if(turns==1) {tx=source.height()-1-y;ty=x;}
+                else if(turns==2) {tx=source.width()-1-x;ty=source.height()-1-y;}
+                else if(turns==3) {tx=y;ty=source.width()-1-x;}
+                if(flipH)tx=image.width()-1-tx;
+                if(flipV)ty=image.height()-1-ty;
+                QCOMPARE(std::memcmp(image.constScanLine(ty)+qsizetype(tx)*16,
+                                     source.constScanLine(y)+qsizetype(x)*16,16),0);
+            }
+        }
+        QCOMPARE(FloatFrameFingerprint::capture(source),original);
+
+        const auto token=std::make_shared<std::atomic_bool>(true);
+        GeometryState g;g.straighten=7.0;
+        QVERIFY(g.apply(source,token).isNull());
+        auto corrupt=source.copy();
+        reinterpret_cast<float *>(corrupt.scanLine(1))[3]=1.25f;
+        for(int mode=0;mode<4;++mode) {
+            GeometryState bad;
+            if(mode==1) bad.crop={.1,.1,.8,.8};
+            if(mode==2) bad.straighten=11;
+            if(mode==3) bad.redCa=1;
+            QVERIFY(bad.apply(corrupt).isNull());
+        }
+        reinterpret_cast<float *>(corrupt.scanLine(1))[3]=1;
+        reinterpret_cast<float *>(corrupt.scanLine(1))[4]=std::numeric_limits<float>::quiet_NaN();
+        g.redCa=1;
+        QVERIFY(g.apply(corrupt).isNull());
+    }
+
+    void floatSceneFullScopesPreviewAnd16BitExportsShareCorrectedPixels() {
+        QImage source(113,89,QImage::Format_RGBA32FPx4);
+        const auto working=QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear);
+        source.setColorSpace(working);
+        source.setText("JixelLightSource","synthetic-geometry-hdr");
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=float(2.2+.005*x+.001*y);
+            p[1]=float(.15+.001*x+.002*y);
+            p[2]=float(-.22+.001*x+.001*y);
+            p[3]=1.0f;
+        }
+        AdjustmentState state;state.exposure=-2;
+        auto &g=state.geometry;
+        g.perspectiveHorizontal=.12;g.perspectiveVertical=-.08;
+        g.distortion=.14;g.redCa=.8;g.blueCa=-.9;g.straighten=7;
+        g.crop={.15,.1,.7,.8};g.quarterTurns=3;g.flipVertical=true;
+        const auto full=g.apply(source);
+        QVERIFY(!full.isNull());
+        QCOMPARE(full.format(),QImage::Format_RGBA32FPx4);
+        QVERIFY(ImagePipeline::validFloatSource(full));
+        QVERIFY(reinterpret_cast<const float *>(full.constScanLine(full.height()/2))[4*(full.width()/2)]>1.0f);
+        const auto preclipped=g.apply(ImagePipeline::rgba64Source(source));
+        QCOMPARE(preclipped.size(),full.size());
+        QCOMPARE(preclipped.format(),QImage::Format_RGBA64);
+        PrepareRequest prepare;
+        prepare.image=source;prepare.geometry=g;prepare.viewport={4096,4096};
+        const auto preview=preparePreview(prepare,{});
+        QVERIFY(preview.error.isEmpty());
+        QCOMPARE(preview.normal,full);
+        QCOMPARE(preview.gpu.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(preview.gpu,full);
+        const auto manifest=StageGraph::describe("float-source-test",prepare,state,false,0);
+        QVERIFY(manifest.value("source_storage").toString().contains("RGBA32FPx4"));
+        const auto geometryManifest=manifest.value("geometry").toObject();
+        QVERIFY(geometryManifest.value("input_fp32").toBool());
+        QVERIFY(geometryManifest.value("sampling").toString().contains("double accumulation"));
+
+        QTemporaryDir temp;
+        for(auto space:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3}) {
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                    space,false,0);
+            const auto rendered=ImagePipeline::processWithPlan(full,plan);
+            QVERIFY(!rendered.isNull());
+            QCOMPARE(rendered.format(),QImage::Format_RGBA64);
+            const auto clipped=ImagePipeline::processWithPlan(preclipped,plan);
+            QVERIFY(rendered!=clipped); // exposure must apply to original >1 scene values
+            const auto complete=ScopesEngine::analyzeFull(full,plan);
+            const auto expected=ScopesEngine::analyze(rendered);
+            QCOMPARE(complete.pixelCount,quint64(full.width())*full.height());
+            QCOMPARE(complete.red,expected.red);
+            QCOMPARE(complete.green,expected.green);
+            QCOMPARE(complete.blue,expected.blue);
+            QCOMPARE(complete.luma,expected.luma);
+            QCOMPARE(complete.shadowClipPercent,expected.shadowClipPercent);
+            QCOMPARE(complete.highlightClipPercent,expected.highlightClipPercent);
+            FullScopesCache scopes;
+            ScopeRequest request{source,plan,1,true,g};
+            const auto cached=scopes.analyze(request);
+            QCOMPARE(cached.red,expected.red);
+            QCOMPARE(cached.green,expected.green);
+            QCOMPARE(cached.blue,expected.blue);
+            QCOMPARE(cached.luma,expected.luma);
+            const auto cachedAgain=scopes.analyze(request);
+            QCOMPARE(cachedAgain.red.constData(),cached.red.constData());
+
+            for(auto format:{RasterFormat::Png16,RasterFormat::Tiff16}) {
+                const auto file=temp.filePath(QStringLiteral("geometry-%1-%2.%3")
+                    .arg(ColorManagement::key(space))
+                    .arg(format==RasterFormat::Png16 ? QStringLiteral("png") : QStringLiteral("tiff"))
+                    .arg(format==RasterFormat::Png16 ? QStringLiteral("png") : QStringLiteral("tif")));
+                QString error;
+                QVERIFY2(exportRaster(source,state,file,space,format,100,{},&error,false,0),qPrintable(error));
+                QImageReader reader(file);
+                const auto imported=reader.read();
+                QVERIFY2(!imported.isNull(),qPrintable(reader.errorString()));
+                QCOMPARE(imported.size(),rendered.size());
+                QCOMPARE(imported.colorSpace().iccProfile(),rendered.colorSpace().iccProfile());
+                QCOMPARE(imported.convertToFormat(QImage::Format_RGBA64),rendered);
+            }
+        }
+        auto rejected=source.copy();
+        reinterpret_cast<float *>(rejected.scanLine(0))[0]=std::numeric_limits<float>::infinity();
+        ScopeRequest invalid{rejected,ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto),1,true,g};
+        QCOMPARE(FullScopesCache().analyze(invalid).pixelCount,quint64(0));
+    }
+
     void manualGeometrySamplesKnownProjectiveRadialAndCaCoordinates() {
         QImage source(101,61,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setText("JixelLightSource","RAW"); source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000);
