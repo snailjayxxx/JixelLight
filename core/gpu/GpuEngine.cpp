@@ -194,6 +194,10 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
     const bool newSource = source.cacheKey() != m_sourceKey;
+    // Inspect only new uploads, never repeat the O(pixels) validation on a
+    // slider tick. Refuse bad FP32 data before any QRhi resources are updated.
+    if (newSource && !ImagePipeline::validFloatSource(source))
+        return fail(QStringLiteral("Invalid non-finite/out-of-range FP32 source or alpha"));
     if (revision != m_revision || newSource || newLut) {
         PerformanceSpan timing("gpu_submit_cpu_ms", {{"pixels", qint64(source.width())*source.height()}});
         auto *updates = m_rhi->nextResourceUpdateBatch();
@@ -217,8 +221,9 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
         plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
         if (m_lastCpuFallback) {
-            const QImage cpuInput = ImagePipeline::rgba64Source(source);
-            const QImage cpuResult = ImagePipeline::processWithPlan(cpuInput, plan);
+            // Render from the exact GPU upload source. An RGBA64 conversion
+            // would truncate HDR scene channels (>1) before the safety fallback.
+            const QImage cpuResult = ImagePipeline::processWithPlan(source, plan);
             if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
             m_cpuFallbackFrame = ImagePipeline::floatSource(cpuResult);
             QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));

@@ -6,6 +6,27 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 
 ## Verified checkpoints
 
+- **F4 Color Grading interface and packaged CLI accepted:** `11986fe3f3d5045512b75d65eaaafc301bbdd04e`,
+  [run 38104150260](https://github.com/snailjayxxx/JixelLight/actions/runs/38104150260).
+  All three jobs completed **Success**: 129 core / 26 mandatory GPU / 25 performance
+  checks per platform, real Sony RAW/JPEG, GUI/CPU fallback, Windows/macOS deployed
+  programs and safe CLI. New GUI trace verifies Color Grading panel reachability
+  without changing state; maximum measured GPU/CPU grading error remains
+  7 Linux, 3 macOS, 5 Windows /65535. This supersedes the prior "pending"
+  GUI/CLI batch label; no mandatory GPU skips.
+
+- **F3 FP32 scene-input precision upgrade (stage 1, CI pending):** direct RGBA32FPx4
+  input through the CPU scene color pipeline and diagnostics with no RGBA64
+  pre-tone clipping; exact FP32 source in GPU numeric CPU fallback and
+  frozen diagnostic oracle. Invalid/nonfinite float frames are explicitly
+  rejected before GPU upload. Existing RGBA64 photo sources stay byte-for-byte
+  equivalent, so the LibRaw 16-bit decoder, render engine version and project
+  JSON remain unchanged. Tests include synthetic over-white input, alpha/ROI,
+  original 16-bit parity, rejection and mandatory native GPU/fallback parity.
+  See [F3_FLOAT_SCENE_STAGE1.md](F3_FLOAT_SCENE_STAGE1.md).
+  **This is not yet a float LibRaw camera decoder**; geometry/source caches
+  and actual RAW photos are still backed by 16-bit RGBA64.
+
 - **Accepted GPU final-output diagnostics:** `ff18f8e526efe35297a72fd33d0f72bb29b24104`,
   [run 38056787929](https://github.com/snailjayxxx/JixelLight/actions/runs/38056787929),
   completed successfully on **Windows x64, macOS arm64 and Linux GPU** on 2026-10-10.
@@ -74,11 +95,10 @@ new CPU/GPU parity fixtures per platform: max channel error **7 Linux, 3 macOS,
 test skip; 60-second RAW GUI smoke and 10,340,960 final histogram pixels stay
 unchanged. Main/PR #15 untouched.
 
-**Next verification batch (not yet accepted):** exercise the real QML grading
-panel in the existing GUI smoke without changing RAW pixels or redoing full
-scopes; independently test grading enable/disable/reset and invalid requests
-through the deployed offline CLI, including invalid catalog snapshot rejection.
-Retain exact-head three-platform acceptance requirement for these test changes.
+**F4 GUI + deployed CLI verification accepted** in `11986fe3` (three-platform
+run `38104150260`). Next verification is **F3 float scene-input stage 1**;
+its new code must pass the original mandatory GPU/RAW/GUI/package thresholds
+on the new exact-commit head before acceptance.
 
 
 | Phase | Working code | Remaining scope |
@@ -86,12 +106,18 @@ Retain exact-head three-platform acceptance requirement for these test changes.
 | F0 | Alpha.11 baseline retained; cross-platform CI; existing real RAW/JPEG and GPU parity tests unchanged | Additional per-camera/cross-exposure evidence and performance measurements |
 | F1 | Library/Develop shell, Filmstrip, asynchronous thumbnails, collapsible editing panels | Additional compact-window and layout polish |
 | F2 | Independent named virtual copies with per-version Develop/history/curation/annotations, transactional rename/delete, shared read-only source and unique batch export destinations; collection albums, keywords, color labels, combined filename/keyword/album/label/curation filters; catalog/filename/rating and capture/import/Develop-date sorting (missing dates last); background metadata indexing; Ctrl/Meta and Shift selection; batch rating/flag/keywords/label/album assignment; WAL-consistent backup before legacy annotations/date migration; project restore; exclusive new-project creation and failed-create writer preservation; ratings, Pick/Reject; per-photo durable project history, Undo/Redo, 128 undo steps; slider gestures coalesced; full immutable Sony LUT snapshots; reset/paste/sync covered; bilingual history UI; user-local named Develop presets with rename, explicit replacement and portable import/export (Sony Look/effects included, crop/curation excluded); explicit XMP standard rating/color-label/keyword import and new-file export, validated JixelLight Develop/Sony/geometry/catalog snapshots | Automatic sidecar discovery and conflict-aware in-place merging; no Adobe Develop translation |
-| F3 | Source cache retained; independent 128 MiB prepared-preview LRU, per-controller 64 MiB CPU rendered-preview LRU, 4 MiB exact-histogram result LRU and 16 MiB optional-plot ink LRU; three plots share one bounded tile-render batch; keys cover source identity, geometry/viewport preparation, compiled color plan and immutable LUT identity; cache counters/budget/timings in performance diagnostics; dependency manifest; diagnostic CPU capture uses explicit RAW semantics and current geometry; source, prepared-preview and CPU sRGB output fingerprints in diagnostic ZIP; nine named CPU color boundaries with streaming FP32 hashes/ranges and quantized/detail fingerprints; explicit frozen GPU final working-output hash/ranges with a 64 MiB readback cap and accurate compute/CPU-upload producer | True float RAW source, highlight upgrades, internal GPU boundary hashes, individual kernel timings and internal intermediate-stage caches |
-| F4 | Independent B&W mode and eight hue-weighted luminance bands (CPU/QRhi); optional three-wheel perceptual Color Grading (CPU/QRhi, CI pending); scene-linear post-crop elliptical vignette (EV/midpoint/feather) shared by CPU/QRhi, viewport mapping, history/projects/presets/XMP and independent effects transfer/reset; normalized crop on the corrected grid; manual horizontal/vertical perspective, radial distortion and red/blue lateral CA magnification; single-pass 16-bit CPU resampling with conservative full-domain trim and no dimension enlargement; centered 1:1/3:2/4:3 crop UI; ±45° straighten with 16-bit linear interpolation and automatic inscribed trim, no upscale; 90° rotation, horizontal/vertical flip, reset; shared geometry in CPU/GPU preview, full scopes and all export formats; persistent Undo/Redo with slider coalescing; full-image crop editing with eight handles, move, aspect constraints, Apply/Cancel and Enter/Escape | Automatic perspective/lens profiles and tangential distortion, masks, Texture/Clarity/Dehaze, noise/sharpen, grain, grading, healing |
+| F3 | FP32 scene input and CPU numeric-fallback/highlight preservation (stage 1; CI pending), with native-float source validity checks and same nine CPU diagnostic boundaries; source cache retained; independent 128 MiB prepared-preview LRU, per-controller 64 MiB CPU rendered-preview LRU, 4 MiB exact-histogram result LRU and 16 MiB optional-plot ink LRU; three plots share one bounded tile-render batch; keys cover source identity, geometry/viewport preparation, compiled color plan and immutable LUT identity; cache counters/budget/timings in performance diagnostics; dependency manifest; diagnostic CPU capture uses explicit RAW semantics and current geometry; source, prepared-preview and CPU sRGB output fingerprints in diagnostic ZIP; nine named CPU color boundaries with streaming FP32 hashes/ranges and quantized/detail fingerprints; explicit frozen GPU final working-output hash/ranges with a 64 MiB readback cap and accurate compute/CPU-upload producer | True float RAW source, highlight upgrades, internal GPU boundary hashes, individual kernel timings and internal intermediate-stage caches |
+| F4 | Independent B&W mode and eight hue-weighted luminance bands (CPU/QRhi); accepted three-wheel perceptual Color Grading (CPU/QRhi, GUI/CLI); scene-linear post-crop elliptical vignette (EV/midpoint/feather) shared by CPU/QRhi, viewport mapping, history/projects/presets/XMP and independent effects transfer/reset; normalized crop on the corrected grid; manual horizontal/vertical perspective, radial distortion and red/blue lateral CA magnification; single-pass 16-bit CPU resampling with conservative full-domain trim and no dimension enlargement; centered 1:1/3:2/4:3 crop UI; ±45° straighten with 16-bit linear interpolation and automatic inscribed trim, no upscale; 90° rotation, horizontal/vertical flip, reset; shared geometry in CPU/GPU preview, full scopes and all export formats; persistent Undo/Redo with slider coalescing; full-image crop editing with eight handles, move, aspect constraints, Apply/Cancel and Enter/Escape | Automatic perspective/lens profiles and tangential distortion, masks, Texture/Clarity/Dehaze, noise/sharpen, grain, grading, healing |
 | F5 | Selective paste and selected/all-version sync across nine parameter groups, with independent per-target history; Add existing files plus background Copy-to-folder import with whole-plan preflight, content verification, original names or validated stem/sequence/camera-date/time templates with an asynchronous metadata preview, no overwrite and cancellation; 16-bit RGBA PNG with target ICC; 16-bit lossless LZW TIFF and explicit 8-bit WebP/ICC (GUI quality 100 is lossless); shared GUI/CLI export naming templates with source/version/sequence/recorded capture date and time, preview and whole-plan validation; current and batch export; new-file batch staging and publication; atomic QSaveFile with cancellation preserving destination; original protection; existing tiled JPEG and 1024-bin GPU histogram retained; optional CPU waveform/RGB Parade/vectorscope for preview and full-resolution output | Proofing, Move import and broader RAW validation |
 | F6 | Shared scalar/HSL/curve/geometry/effects Develop registry used by UI and offline CLI; strict JSON commands and undoable GUI command replay; CPU JPEG/PNG export, schema inspection, invalid-command checks and existing-output refusal; portable batch plans; read-only catalog snapshots exporting saved original/virtual versions and current history cursors, with optional command overrides and structured partial-failure reports; read-only saved-version listings and exact-key selection in catalog order | Full action registry/replay and optional MCP |
 
 CLI is included in the Windows ZIP and macOS app under `Contents/MacOS`, with a deployed CLI safety test after stripping development Qt search paths.
+
+The opt-in FP32 scene input and CPU numeric safety fallback now preserve RGB
+above 1 until color processing, but default camera RAW files **still decode as
+RGBA64**. Real float-camera input, FP32 optical geometry and FP32 source caches
+are unfinished; do not present the new path as full RAW FP32 decoding.
+See [F3 stage 1](F3_FLOAT_SCENE_STAGE1.md).
 
 The PNG/TIFF/WebP writers use full-frame rendered memory; TIFF is classic TIFF (no BigTIFF), WebP is explicitly 8-bit; JPEG retains its streaming 128-row path. Geometry currently runs on CPU before the existing GPU color pipeline, and is labeled accordingly. Decoded RAW storage remains RGBA64; GPU staging is FP32. These are not claims of a float RAW decoder or completed F0–F6.
 

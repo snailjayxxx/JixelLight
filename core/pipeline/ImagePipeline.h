@@ -14,6 +14,11 @@ public:
     // Qt's generic integer/float conversion can round through premultiplied
     // RGBA64; staging/readback must use the same channel values as the oracle.
     static QImage floatSource(const QImage &source,const CancelToken &cancel = {});
+    // A bounded, finite, unassociated linear FP32 scene source may exceed the
+    // display range [0,1], or carry negative out-of-gamut color channels.
+    // Alpha must be finite and within [0,1]; no pre-tone RGB clipping.
+    static constexpr float MaxLinearInputMagnitude = 65536.0f;
+    static bool validFloatSource(const QImage &source,const CancelToken &cancel = {});
     static QImage rgba64Source(const QImage &source,const CancelToken &cancel = {});
     static QImage process(const QImage &source, const AdjustmentState &state,
                           InputEncoding encoding = InputEncoding::SRgb,
@@ -23,7 +28,8 @@ public:
     static QImage processWithPlan(const QImage &source, const ProcessingPlan &plan,
                           const CancelToken &cancel = {}, bool parallel = true);
     // Explicit CPU reference capture only. Normal rendering never allocates
-    // stage buffers or hashes pixels. The source remains RGBA64, not float RAW.
+    // stage buffers or hashes pixels. Real camera RAW still decodes RGBA64;
+    // explicit RGBA32FPx4 scene sources retain over-range values until tone mapping.
     static DiagnosticResult diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan,
                                             const CancelToken &cancel = {});
 };

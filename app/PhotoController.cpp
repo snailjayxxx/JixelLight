@@ -1225,9 +1225,11 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
         {"frame_rect", QJsonArray{snapshot.gpuFrameRect.x(), snapshot.gpuFrameRect.y(), snapshot.gpuFrameRect.width(), snapshot.gpuFrameRect.height()}},
         {"source", FloatFrameFingerprint::capture(snapshot.gpuSource)}};
     if (gpuOutput.value("available").toBool()) {
-        const QImage reference = ImagePipeline::processWithPlan(ImagePipeline::rgba64Source(snapshot.gpuSource), snapshot.visiblePlan);
+        // Frozen CPU oracle now consumes the identical FP32 source, without
+        // clipping values above one before the shared color kernel.
+        const QImage reference = ImagePipeline::processWithPlan(snapshot.gpuSource, snapshot.visiblePlan);
         gpuContext["cpu_reference"] = FloatFrameFingerprint::capture(ImagePipeline::floatSource(reference));
-        gpuContext["reference_storage"] = "RGBA64 CPU oracle converted to FP32; identical frozen GPU input and color plan";
+        gpuContext["reference_storage"] = "FP32 source -> CPU scene color kernel -> RGBA64 display quantization -> FP32 reference";
     }
     gpuOutput["request_id"] = QString::number(snapshot.request);
     const QJsonObject stageOutputs{{"schema",2},{"engine",ProcessingPlan::EngineVersion},

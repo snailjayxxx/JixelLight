@@ -348,13 +348,16 @@ struct ColorKernel {
         centerX((sourceSize.width()-1)*.5f),centerY((sourceSize.height()-1)*.5f),
         kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr) {}
 };
-inline Vec3 inputLinear(QRgba64 original, const ColorKernel &kernel) {
-    Vec3 v{original.red()/65535.0f, original.green()/65535.0f, original.blue()/65535.0f};
+inline Vec3 inputLinear(Vec3 v, const ColorKernel &kernel) {
     if (kernel.plan.encoding == ImagePipeline::InputEncoding::SRgb) {
         v = {srgbToLinear(v.x),srgbToLinear(v.y),srgbToLinear(v.z)};
         v = multiply(kernel.plan.data.data()+ProcessingPlan::Input0,v);
     }
     return v;
+}
+inline Vec3 inputLinear(QRgba64 original, const ColorKernel &kernel) {
+    return inputLinear(Vec3{original.red()/65535.0f,original.green()/65535.0f,
+                            original.blue()/65535.0f},kernel);
 }
 inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
     v = multiply(kernel.plan.data.data()+ProcessingPlan::Wb0,v);
@@ -471,8 +474,8 @@ inline Vec3 lookLut(Vec3 v, const ColorKernel &kernel) {
     return v;
 }
 struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
-template<class Observer> inline QRgba64 colorPixel(QRgba64 original, const ColorKernel &kernel,int x,int y, Observer observe) {
-    Vec3 v=inputLinear(original,kernel); observe(ColorStage::InputLinear,v);
+template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe) {
+    observe(ColorStage::InputLinear,v);
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
     v=applyVignette(v,kernel,x,y); observe(ColorStage::Vignette,v);
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
@@ -482,7 +485,15 @@ template<class Observer> inline QRgba64 colorPixel(QRgba64 original, const Color
     v=outputTransfer(v,kernel); observe(ColorStage::OutputTransfer,v);
     v=lookLut(v,kernel); observe(ColorStage::LookLut,v);
     const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
-    return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),original.alpha());
+    return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),alpha);
+}
+template<class Observer> inline QRgba64 colorPixel(QRgba64 original,const ColorKernel &kernel,int x,int y,Observer observe) {
+    return colorPixelLinear(inputLinear(original,kernel),original.alpha(),kernel,x,y,observe);
+}
+template<class Observer> inline QRgba64 colorPixelFloat(const float *pixel,const ColorKernel &kernel,int x,int y,Observer observe) {
+    const Vec3 encoded{pixel[0],pixel[1],pixel[2]};
+    const quint16 alpha=quint16(std::lround(pixel[3]*65535.0f));
+    return colorPixelLinear(inputLinear(encoded,kernel),alpha,kernel,x,y,observe);
 }
 QImage finishColor(QImage out, const ProcessingPlan &plan, const CancelToken &token) {
     if (out.isNull() || cancelled(token)) return {};
@@ -594,6 +605,20 @@ void copySourceMetadata(const QImage &source,QImage &target) {
     for (const auto &key : source.textKeys()) target.setText(key,source.text(key));
 }
 }
+bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &token) {
+    if (source.isNull() || source.format()!=QImage::Format_RGBA32FPx4 || cancelled(token)) return false;
+    for (int y=0;y<source.height();++y) {
+        if (cancelled(token)) return false;
+        const auto *pixels=reinterpret_cast<const float *>(source.constScanLine(y));
+        for (int x=0;x<source.width();++x) {
+            const auto *p=pixels+4*x;
+            for (int c=0;c<3;++c)
+                if (!std::isfinite(p[c]) || std::fabs(p[c])>MaxLinearInputMagnitude) return false;
+            if (!std::isfinite(p[3]) || p[3]<0.0f || p[3]>1.0f) return false;
+        }
+    }
+    return !cancelled(token);
+}
 QImage ImagePipeline::floatSource(const QImage &source,const CancelToken &token) {
     if (source.isNull() || cancelled(token)) return {};
     if (source.format()==QImage::Format_RGBA32FPx4) return source;
@@ -628,18 +653,32 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state
 namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,const QSize &sourceSize,const QPoint &origin) {
     if (source.isNull() || cancelled(token)) return {};
-    PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()}, {"parallel",parallel}});
-    const QImage input = ImagePipeline::rgba64Source(source,token); if (input.isNull()) return {};
-    QImage out(input.size(), QImage::Format_RGBA64);
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()},
+                           {"parallel",parallel},{"input_fp32",floating}});
+    // Integer sources retain their exact historical hot path. Explicit FP32
+    // scene sources bypass RGBA64 staging; otherwise values >1 would clip
+    // before the user's exposure or highlight recovery can act.
+    if (floating && !ImagePipeline::validFloatSource(source,token)) return {};
+    const QImage input=floating?source:ImagePipeline::rgba64Source(source,token);
+    if (input.isNull()) return {};
+    QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return {};
-    const uchar *src = input.constBits(); const qsizetype srcStride = input.bytesPerLine();
-    uchar *dst = out.bits(); const qsizetype dstStride = out.bytesPerLine();
+    const uchar *src=input.constBits(); const qsizetype srcStride=input.bytesPerLine();
+    uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
     const ColorKernel kernel(plan,sourceSize);
-    ParallelRows::run(out.height(), out.width(), token, [&](int y) {
-        const auto *in = reinterpret_cast<const QRgba64 *>(src+y*srcStride);
-        auto *line = reinterpret_cast<QRgba64 *>(dst+y*dstStride);
-        for (int x=0; x<out.width(); ++x) line[x]=colorPixel(in[x],kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
-    }, parallel);
+    ParallelRows::run(out.height(),out.width(),token,[&](int y) {
+        auto *line=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
+        if (floating) {
+            const auto *pixels=reinterpret_cast<const float *>(src+y*srcStride);
+            for (int x=0;x<out.width();++x)
+                line[x]=colorPixelFloat(pixels+4*x,kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
+        } else {
+            const auto *in=reinterpret_cast<const QRgba64 *>(src+y*srcStride);
+            for (int x=0;x<out.width();++x)
+                line[x]=colorPixel(in[x],kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
+        }
+    },parallel);
     return finishColor(std::move(out),plan,token);
 }
 }
@@ -651,7 +690,13 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
     if (source.isNull() || cancelled(token)) return result;
     QElapsedTimer timer; timer.start();
-    const QImage input=rgba64Source(source,token); if (input.isNull()) return result;
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    if (floating && !validFloatSource(source,token)) {
+        result.stages.insert("error","Invalid non-finite/out-of-range FP32 scene source");
+        return result;
+    }
+    const QImage input=floating?source:rgba64Source(source,token);
+    if (input.isNull()) return result;
     QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return result;
     const ColorKernel kernel(plan,input.size());
@@ -660,11 +705,21 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     // Cancellation between rows discards incomplete images and all their hashes.
     for (int y=0;y<input.height();++y) {
         if (cancelled(token)) return result;
-        const auto *in=reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
         auto *line=reinterpret_cast<QRgba64 *>(out.scanLine(y));
-        for (int x=0;x<input.width();++x) line[x]=colorPixel(in[x],kernel,x,y,[&](ColorStage stage, Vec3 v) {
-            stages.observe(stage,x,v.x,v.y,v.z);
-        });
+        // Both layouts use the same nine stage-boundary observations.
+        if (floating) {
+            const auto *in=reinterpret_cast<const float *>(input.constScanLine(y));
+            for (int x=0;x<input.width();++x)
+                line[x]=colorPixelFloat(in+4*x,kernel,x,y,[&](ColorStage stage,Vec3 v) {
+                    stages.observe(stage,x,v.x,v.y,v.z);
+                });
+        } else {
+            const auto *in=reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
+            for (int x=0;x<input.width();++x)
+                line[x]=colorPixel(in[x],kernel,x,y,[&](ColorStage stage,Vec3 v) {
+                    stages.observe(stage,x,v.x,v.y,v.z);
+                });
+        }
         stages.finishRow();
     }
     if (cancelled(token)) return result;
@@ -672,6 +727,12 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     result.image=finishColor(std::move(out),plan,token);
     if (result.image.isNull() || cancelled(token)) { result.image={}; return result; }
     result.stages=stages.result();
+    if (floating) {
+        result.stages.insert("source_storage","RGBA32FPx4 scene input; no pre-tone integer clipping");
+        result.stages.insert("source_integer_clip",false);
+        result.stages.insert("source_fp32_bounds",double(MaxLinearInputMagnitude));
+        result.stages.insert("note","CPU FP32 scene input, quantized RGBA64 display output; RAW decoder not yet FP32");
+    }
     result.stages.insert("quantized_color",quantized);
     result.stages.insert("detail_output",StageGraph::outputFingerprint(result.image));
     const auto detail=plan.data[ProcessingPlan::LookDetail];

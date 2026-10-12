@@ -6,6 +6,7 @@
 #include <random>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include "core/gpu/GpuEngine.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/color/MonitorColorTransform.h"
@@ -205,6 +206,75 @@ private slots:
         QVERIFY(!render(image,ordinary,false).image.isNull()); QCOMPARE(engine->lastProcessUsedCpuFallback(),backendNeedsFallback);
         ordinary.vignetteAmount=-3;
         QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
+    }
+    void fp32SceneOverRangeCpuGpuAndCpuSafetyFallback() {
+        QImage scene(53,47,QImage::Format_RGBA32FPx4);
+        const std::array<quint16,4> alpha{0,1,12345,65535};
+        for(int y=0;y<scene.height();++y) {
+            auto *row=reinterpret_cast<float *>(scene.scanLine(y));
+            for(int x=0;x<scene.width();++x) {
+                row[4*x]=.19f+float((x*11+y*3)%43)*.071f; // reaches >3
+                row[4*x+1]=.04f+float((x*7+y*5)%43)*.029f;
+                row[4*x+2]=(x+y)%8==0?-.012f:(.07f+float((x*5+y*9)%43)*.042f);
+                row[4*x+3]=float(alpha[(x+y)%4])/65535.0f;
+            }
+        }
+        QVERIFY(ImagePipeline::validFloatSource(scene));
+        QCOMPARE(ImagePipeline::floatSource(scene).cacheKey(),scene.cacheKey());
+        const auto clipped=ImagePipeline::rgba64Source(scene);
+        for(int mode=0;mode<3;++mode) for(int space=0;space<4;++space) {
+            AdjustmentState state; state.exposure=-1.5;
+            if(mode==1) { state.temperature=18;state.highlightRecovery=25;state.vignetteAmount=-.9; }
+            if(mode==2) { state.hue=-15;state.hslSaturation[5]=-20; }
+            const auto output=ColorManagement::OutputSpace(space);
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0);
+            if(mode==0 && space==0) {
+                const auto full=ImagePipeline::processWithPlan(scene,plan);
+                const auto earlyClipped=ImagePipeline::processWithPlan(clipped,plan);
+                QVERIFY(full!=earlyClipped); // no pre-tone clipping in the CPU reference
+            }
+            verifyParity(scene,state,ImagePipeline::InputEncoding::LinearProPhoto,output,true,"FP32 scene > 1");
+            if(QTest::currentTestFailed()) return;
+            const bool fallback=mode==2 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
+        }
+        // Capture a real output fingerprint from the frozen FP32 source rather
+        // than a preclipped RGBA64 proxy.
+        AdjustmentState reference; reference.exposure=-2.0;
+        auto result=render(scene,reference,true,ImagePipeline::InputEncoding::LinearProPhoto,
+                           ColorManagement::OutputSpace::SRgb,{},true);
+        QVERIFY(!result.image.isNull());
+        QVERIFY(result.diagnostic.value("available").toBool());
+        QCOMPARE(result.diagnostic.value("producer").toString(),QString("gpu-compute"));
+    }
+    void invalidFloatSceneIsRefusedBeforeGpuUpload() {
+        QImage scene(4,4,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) {
+            auto *row=reinterpret_cast<float *>(scene.scanLine(y));
+            for(int x=0;x<scene.width();++x) {
+                row[4*x]=.35f;row[4*x+1]=.1f;row[4*x+2]=.5f;row[4*x+3]=1.0f;
+            }
+        }
+        reinterpret_cast<float *>(scene.scanLine(1))[4]=std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!ImagePipeline::validFloatSource(scene));
+        QRhiCommandBuffer *cb=nullptr;
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        bool accepted=false;
+        QString error;
+        quint64 uploads=99,rendered=99;
+        auto guarded=std::make_unique<GpuEngine>(rhi.get());
+        const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
+                                                ColorManagement::OutputSpace::SRgb,false,0);
+        accepted=guarded->process(cb,scene,plan,1,{});
+        error=guarded->error();
+        uploads=guarded->sourceUploads();
+        rendered=guarded->renderedRevision();
+        rhi->endOffscreenFrame();rhi->finish();
+        guarded.reset();
+        QVERIFY(!accepted);
+        QVERIFY(error.contains("Invalid") && error.contains("FP32"));
+        QCOMPARE(uploads,quint64(0));
+        QCOMPARE(rendered,quint64(0));
     }
     void colorGradingCpuGpuParityOnEveryOutputAndThreeTones() {
         QImage source(59,67,QImage::Format_RGBA64);

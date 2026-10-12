@@ -123,6 +123,126 @@ private slots:
         const auto prepared=preparePreview(request,{}); QCOMPARE(prepared.normal,source); QCOMPARE(prepared.gpu,floating);
         const auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::floatSource(source,token).isNull()); QVERIFY(ImagePipeline::rgba64Source(floating,token).isNull());
     }
+    void floatSceneCpuPreservesOverRangeBeforeOutputQuantization() {
+        // A synthetic scene-linear input can carry unsaturated sensor-domain
+        // channel values beyond white. The existing LibRaw decoder has not yet
+        // been replaced with a float decoder; this exercises the future
+        // representation without requiring a camera-specific fixture.
+        QImage scene(19,11,QImage::Format_RGBA32FPx4);
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for (int y=0;y<scene.height();++y) {
+            auto *line=reinterpret_cast<float *>(scene.scanLine(y));
+            for (int x=0;x<scene.width();++x) {
+                const int i=4*x;
+                line[i]=2.25f+float(x)*.05f;
+                line[i+1]=.22f+float(y)*.01f;
+                line[i+2]=x%3==0 ? -.03f : .11f;
+                line[i+3]=float(alpha[(x+y)%4])/65535.0f;
+            }
+        }
+        scene.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        scene.setText("JixelLightSource","synthetic-fp32-scene");
+        const auto before=scene.copy();
+        QVERIFY(ImagePipeline::validFloatSource(scene));
+        QCOMPARE(ImagePipeline::floatSource(scene).cacheKey(),scene.cacheKey());
+        AdjustmentState state; state.exposure=-3;
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                  ColorManagement::OutputSpace::SRgb,false,0);
+        const QImage direct=ImagePipeline::processWithPlan(scene,plan);
+        QVERIFY(!direct.isNull()); QCOMPARE(direct.format(),QImage::Format_RGBA64);
+        QCOMPARE(scene,before);
+        const QImage clipped=ImagePipeline::processWithPlan(ImagePipeline::rgba64Source(scene),plan);
+        QVERIFY(!clipped.isNull());
+        const auto a=reinterpret_cast<const QRgba64 *>(direct.constScanLine(0))[0];
+        const auto b=reinterpret_cast<const QRgba64 *>(clipped.constScanLine(0))[0];
+        QVERIFY(int(a.red())-int(b.red())>1000);
+        for (int y=0;y<scene.height();++y) {
+            const auto *out=reinterpret_cast<const QRgba64 *>(direct.constScanLine(y));
+            for (int x=0;x<scene.width();++x) QCOMPARE(out[x].alpha(),alpha[(x+y)%4]);
+        }
+        QCOMPARE(ImagePipeline::processWithPlan(scene,plan,{},false),direct);
+        const QRect roi(3,2,11,7);
+        QCOMPARE(ImagePipeline::processRegion(scene,plan,roi),direct.copy(roi));
+        const auto capture=ImagePipeline::diagnoseWithPlan(scene,plan);
+        QCOMPARE(capture.image,direct);
+        QVERIFY(!capture.stages.value("source_integer_clip").toBool(true));
+        QVERIFY(capture.stages.value("source_storage").toString().contains("RGBA32FPx4"));
+        const auto incoming=colorStage(capture.stages,"input_linear");
+        QVERIFY(!incoming.isEmpty());
+        QCOMPARE(incoming.value("first_rgb").toArray().at(0).toDouble(),2.25);
+        QCOMPARE(incoming.value("non_finite_values").toInteger(),qint64(0));
+        QVERIFY(StageGraph::renderKey(scene,plan)!=
+                StageGraph::renderKey(ImagePipeline::rgba64Source(scene),plan));
+    }
+
+    void floatScene16BitStagingPreservesLegacyPixelIdentity() {
+        QImage packed(37,29,QImage::Format_RGBA64);
+        const std::array<quint16,4> alphas{0,1,32768,65535};
+        for(int y=0;y<packed.height();++y) {
+            auto *line=reinterpret_cast<QRgba64 *>(packed.scanLine(y));
+            for(int x=0;x<packed.width();++x)
+                line[x]=QRgba64::fromRgba64(quint16((x*1409+y*691)%65536),
+                    quint16((x*1483+y*271)%65536),quint16((x*499+y*1601)%65536),
+                    alphas[(x+y)%4]);
+        }
+        const auto staged=ImagePipeline::floatSource(packed);
+        QVERIFY(ImagePipeline::validFloatSource(staged));
+        QCOMPARE(ImagePipeline::rgba64Source(staged),packed);
+        for(bool raw:{false,true}) for(int mode=0;mode<3;++mode)
+            for(auto output:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3,
+                             ColorManagement::OutputSpace::AdobeRgb,ColorManagement::OutputSpace::ProPhotoRgb}) {
+                AdjustmentState state;
+                if(mode==1) {state.exposure=-.4;state.temperature=20;state.highlightRecovery=35;state.vignetteAmount=-1.3;}
+                if(mode==2) {
+                    state.look.mode="manual";state.look.code="FL";
+                    state.hue=-13;state.hslSaturation[5]=-18;
+                    state.blackWhite=true;state.bwMix[0]=45;
+                    state.gradingEnabled=true;state.gradingSaturation={20,40,60};
+                    state.gradingHue={15,120,250};
+                }
+                const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                        output,raw,0);
+                const auto integer=ImagePipeline::processWithPlan(packed,plan,{},false);
+                const auto floating=ImagePipeline::processWithPlan(staged,plan,{},false);
+                QCOMPARE(floating,integer);
+            }
+    }
+
+    void floatSceneRejectsInvalidPixelsRatherThanSilentlyClipping() {
+        QImage image(2,1,QImage::Format_RGBA32FPx4);
+        auto *pixels=reinterpret_cast<float *>(image.scanLine(0));
+        for(int i=0;i<2;++i) {
+            pixels[i*4]=.2f;pixels[i*4+1]=.3f;pixels[i*4+2]=.4f;pixels[i*4+3]=1.0f;
+        }
+        const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
+                                                ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(ImagePipeline::validFloatSource(image));
+        for(int channel=0;channel<4;++channel) {
+            const float initial=pixels[channel];
+            const std::array<float,4> invalid{std::numeric_limits<float>::quiet_NaN(),
+                std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+                channel==3?1.01f:ImagePipeline::MaxLinearInputMagnitude+1.0f};
+            for(float value:invalid) {
+                pixels[channel]=value;
+                QVERIFY(!ImagePipeline::validFloatSource(image));
+                QVERIFY(ImagePipeline::processWithPlan(image,plan).isNull());
+                auto capture=ImagePipeline::diagnoseWithPlan(image,plan);
+                QVERIFY(capture.image.isNull());
+                QVERIFY(!capture.stages.value("available").toBool());
+                QVERIFY(capture.stages.value("error").toString().contains("FP32"));
+            }
+            pixels[channel]=initial;
+        }
+        pixels[3]=-.1f;
+        QVERIFY(!ImagePipeline::validFloatSource(image));
+        pixels[3]=1.0f;
+        pixels[0]=-ImagePipeline::MaxLinearInputMagnitude;
+        QVERIFY(ImagePipeline::validFloatSource(image)); // signed color channels are allowed
+        const auto token=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!ImagePipeline::validFloatSource(image,token));
+    }
+
     void colorGradingIsOptInAndKeepsOldPixelsAlphaAndCacheSemantics() {
         QImage source(4,1,QImage::Format_RGBA64);
         auto *p=reinterpret_cast<QRgba64 *>(source.scanLine(0));
