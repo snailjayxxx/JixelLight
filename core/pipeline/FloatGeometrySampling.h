@@ -1,5 +1,6 @@
 #pragma once
 #include <QImage>
+#include <QColorSpace>
 #include <algorithm>
 #include <cmath>
 
