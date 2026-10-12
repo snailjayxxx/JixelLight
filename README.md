@@ -16,10 +16,14 @@
 > New grading CPU/GPU delta at most 7/65535 on this CI (original limit 40).
 > Color Grading panel/deployed CLI follow-up passed on all three platforms
 > at `11986fe3`, run `38104150260`.
-> **F3 now in progress:** direct scene-linear `RGBA32FPx4` CPU processing,
-> preserving over-white highlight values through CPU numeric fallback and
-> frozen diagnostic comparison. Real camera RAW still uses LibRaw's 16-bit
-> developed bitmap; native float RAW decode is a separate, unfinished stage.
+> **F3 FP32 scene-input stage 1 accepted:** `33381a5` / run `38201306237`
+> passed all Windows/macOS/Linux and desktop package checks; 132 core / 28
+> mandatory GPU / 25 performance per platform, worst new FP32 channel delta
+> **4/65535** (original limit 40/65535). Direct scene-linear `RGBA32FPx4`
+> CPU processing preserves over-white highlights through numeric fallback
+> and frozen diagnostic comparison. Preview/crop-only/PNG16 follow-up checks
+> are being added. Real camera RAW still uses LibRaw's 16-bit developed
+> bitmap; native float RAW decode is a separate unfinished stage.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
 
 
@@ -159,7 +163,7 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
 
-### F3 浮点场景输入精度（融合开发分支，待本次 CI 验收）
+### F3 浮点场景输入精度（融合开发分支，第一阶段已三平台验收）
 
 已加入可选 `RGBA32FPx4` 线性工作源的 CPU 显影，场景高光值大于 1.0 时不再先裁切为 16-bit；GPU 复杂 HSL 的 CPU 安全回退与冻结诊断也使用相同源。默认 LibRaw 仍输出 RGBA64，**当前功能不能被宣传为完整 FP32 RAW 解码器**。已添加 float / 旧 16-bit 像素等价性和 GPU 精度测试。参阅 [F3 浮点输入 Stage 1](docs/F3_FLOAT_SCENE_STAGE1.md)。
 

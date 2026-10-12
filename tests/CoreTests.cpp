@@ -243,6 +243,68 @@ private slots:
         QVERIFY(!ImagePipeline::validFloatSource(image,token));
     }
 
+    void floatScenePreviewAndCropOnlyPng16ExportPreserveHeadroom() {
+        // Preview and crop-only geometry must not quietly introduce RGBA64
+        // staging before an explicit FP32 scene has been rendered.
+        QImage scene(41,33,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) {
+            auto *pixels=reinterpret_cast<float *>(scene.scanLine(y));
+            for(int x=0;x<scene.width();++x) {
+                pixels[4*x]=2.4f+float(x)*.01f;
+                pixels[4*x+1]=.23f+float(y)*.004f;
+                pixels[4*x+2]=.14f;
+                pixels[4*x+3]=1.0f;
+            }
+        }
+        QVERIFY(ImagePipeline::validFloatSource(scene));
+        PrepareRequest previewRequest;
+        previewRequest.image=scene;
+        previewRequest.viewport=scene.size();
+        previewRequest.zoom=1.0;
+        previewRequest.fullResolution=true;
+        const auto prepared=preparePreview(previewRequest,{});
+        QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));
+        QCOMPARE(prepared.normal.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(prepared.gpu.format(),QImage::Format_RGBA32FPx4);
+        const auto *visible=reinterpret_cast<const float *>(prepared.normal.constScanLine(0));
+        const auto *gpuInput=reinterpret_cast<const float *>(prepared.gpu.constScanLine(0));
+        QVERIFY(visible[0]>2.0f); QCOMPARE(gpuInput[0],visible[0]);
+        const auto key=StageGraph::prepareKey(previewRequest);
+        auto clippedRequest=previewRequest; clippedRequest.image=ImagePipeline::rgba64Source(scene);
+        QVERIFY(StageGraph::prepareKey(clippedRequest)!=key);
+
+        AdjustmentState state;state.exposure=-2.0;state.geometry.crop={.1,.1,.8,.8};
+        const auto cropped=state.geometry.apply(scene);
+        QVERIFY(!cropped.isNull());
+        QCOMPARE(cropped.format(),QImage::Format_RGBA32FPx4);
+        QVERIFY(reinterpret_cast<const float *>(cropped.constScanLine(0))[0]>2.0f);
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                 ColorManagement::OutputSpace::SRgb,false,0);
+        const auto expected=ImagePipeline::processWithPlan(cropped,plan);
+        QVERIFY(!expected.isNull());
+        QTemporaryDir dir;
+        QString error;
+        const QString path=dir.filePath("float-scene-16bit.png");
+        QVERIFY2(exportRaster(scene,state,path,ColorManagement::OutputSpace::SRgb,
+                              RasterFormat::Png16,92,{},&error,false,0),qPrintable(error));
+        QImageReader reader(path);
+        const auto restored=reader.read().convertToFormat(QImage::Format_RGBA64);
+        QVERIFY2(!restored.isNull(),qPrintable(reader.errorString()));
+        QCOMPARE(restored.size(),expected.size());
+        int maximum=0;
+        for(int y=0;y<restored.height();++y) {
+            const auto *actual=reinterpret_cast<const QRgba64 *>(restored.constScanLine(y));
+            const auto *reference=reinterpret_cast<const QRgba64 *>(expected.constScanLine(y));
+            for(int x=0;x<restored.width();++x) {
+                maximum=std::max(maximum,std::abs(int(actual[x].red())-int(reference[x].red())));
+                maximum=std::max(maximum,std::abs(int(actual[x].green())-int(reference[x].green())));
+                maximum=std::max(maximum,std::abs(int(actual[x].blue())-int(reference[x].blue())));
+                QCOMPARE(actual[x].alpha(),reference[x].alpha());
+            }
+        }
+        QVERIFY2(maximum<=2,qPrintable(QStringLiteral("PNG 16-bit delta: %1").arg(maximum)));
+    }
+
     void colorGradingIsOptInAndKeepsOldPixelsAlphaAndCacheSemantics() {
         QImage source(4,1,QImage::Format_RGBA64);
         auto *p=reinterpret_cast<QRgba64 *>(source.scanLine(0));

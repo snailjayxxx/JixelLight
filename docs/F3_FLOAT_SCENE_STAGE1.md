@@ -74,7 +74,18 @@ This does not reconstruct a camera photosite clipped by the sensor or a
   staged as float; synthetic FP32 values above one must visibly differ from
   an intentionally clipped proxy. FP32 stage diagnostics must describe the
   actual input >1 before output shoulder.
-- This stage is accepted only when the exact HEAD run succeeds.
+- **Stage 1 accepted:** commit `33381a56234c7a9e255fa6733c83b668e780abc4`,
+  [CI run 38201306237](https://github.com/snailjayxxx/JixelLight/actions/runs/38201306237)
+  succeeded across **Windows x64 / macOS arm64 / Linux GPU**, including 132 core,
+  28 mandatory GPU and 25 performance checks on every platform, real Sony
+  RAW/JPEG fixtures, GUI, Windows/macOS package validation and no GPU skip.
+  The 12 new FP32 color-matrix fixtures have maximum channel delta **1 Linux,
+  4 macOS, 1 Windows /65535** (existing max 40/65535).
+- **Stage 1 follow-up (new exact-head CI pending):** exercise the prepared
+  FP32 preview source and crop-only `GeometryState::apply` path, plus an
+  independently decoded PNG16 export. The optional FP32 data must survive
+  these stages above 1.0 until explicit display conversion. This follow-up
+  tests crop-only geometry, **not** rotate/straighten/lens corrections.
 
 ## Next F3 work
 
