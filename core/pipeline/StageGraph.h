@@ -76,6 +76,15 @@ struct StageGraph {
                 {"source_storage", sourceFp32
                      ? "RGBA32FPx4 explicit scene; CPU geometry/resampling FP32; GPU staging FP32"
                      : "RGBA64 camera decoded source; GPU staging FP32"},
+                {"preview_resize",QJsonObject{
+                    {"backend",sourceFp32?"cpu-fp32-reference":"qt-image-smooth"},
+                    {"filter",sourceFp32
+                        ? "separable normalized area-weighted downsample / bilinear upscale; scene-linear associated alpha"
+                        : "Qt SmoothTransformation (legacy integer input)"},
+                    {"precision",sourceFp32
+                        ? "RGBA32FPx4 unassociated, RGB unclipped; double-precision weighted accumulation"
+                        : "historical QImage integer presentation"},
+                    {"gpu_max_edge",4096},{"fast_max_edge",1024},{"monitor_icc",false}}},
                 {"geometry",QJsonObject{{"backend","cpu"},{"settings",request.geometry.toJson()},
                     {"order","manual lens/CA -> perspective -> straighten -> crop -> orientation -> color"},
                     {"corrections_active",request.geometry.hasCorrections()},{"input_fp32",sourceFp32},

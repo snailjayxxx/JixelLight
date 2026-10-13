@@ -9,6 +9,7 @@
 #include <limits>
 #include "core/gpu/GpuEngine.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/FloatSceneResampler.h"
 #include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/look/LookProfiles.h"
@@ -206,6 +207,32 @@ private slots:
         QVERIFY(!render(image,ordinary,false).image.isNull()); QCOMPARE(engine->lastProcessUsedCpuFallback(),backendNeedsFallback);
         ordinary.vignetteAmount=-3;
         QVERIFY(!render(image,ordinary,false).image.isNull()); QVERIFY(!engine->lastProcessUsedCpuFallback());
+    }
+    void fp32DownscaledPreviewCpuGpuParityAllSpacesAndFallbacks() {
+        QImage scene(321,259,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(2.1+.004*x+.002*y);
+            p[1]=float(.22+.001*x+.0005*y);
+            p[2]=float(-.07+.0004*x);
+            p[3]=(x+y)%19==0?0.0f:(x+y)%11==0?.375f:1.0f;
+        }
+        auto scaled=FloatSceneResampler::scale(scene,{101,79});
+        QVERIFY(!scaled.isNull());
+        QCOMPARE(scaled.format(),QImage::Format_RGBA32FPx4);
+        QVERIFY(ImagePipeline::validFloatSource(scaled));
+        const auto *mid=reinterpret_cast<const float *>(scaled.constScanLine(39))+4*50;
+        QVERIFY(mid[0]>2.0f);
+        QVERIFY(mid[2]<0.1f);
+        for(int mode=0;mode<2;++mode) for(int output=0;output<4;++output) {
+            AdjustmentState state;state.exposure=-2;
+            if(mode==1) state.hslSaturation[5]=-22;
+            verifyParity(scaled,state,ImagePipeline::InputEncoding::LinearProPhoto,
+                         ColorManagement::OutputSpace(output),true,"FP32 antialiased preview");
+            if(QTest::currentTestFailed()) return;
+            const bool fallback=mode==1 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
+        }
     }
     void fp32GeometryStraightenProjectiveCaMatchesCpuGpuAndScopes() {
         // Exercise the actual scene image returned by spatial geometry,

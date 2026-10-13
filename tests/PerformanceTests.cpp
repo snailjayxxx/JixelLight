@@ -24,6 +24,7 @@
 #include "core/cache/ScopePlotCache.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include "core/preview/PreviewTasks.h"
+#include "core/pipeline/FloatSceneResampler.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
 #include "core/scopes/ScopesEngine.h"
@@ -102,6 +103,38 @@ private slots:
         const auto next=cache.render(source,shifted); QVERIFY(next!=first); QCOMPARE(cache.snapshot()["misses"].toInteger(),2);
         QCOMPARE(cache.render(source,plan).cacheKey(),first.cacheKey());
         QCOMPARE(source,before); QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=cache.snapshot()["budget_bytes"].toInteger());
+    }
+    void floatPreviewResizeIsDeterministicAcrossThreadBudgetsAndBounded() {
+        QImage scene(800,600,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(2.2+.002*x+.001*y);
+            p[1]=float(.08+.002*x);
+            p[2]=float(-.4+.0004*y);
+            p[3]=(x+y)%13==0?0.0f:(x+y)%5==0?.375f:1.0f;
+        }
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        auto restore=qScopeGuard([&] {
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        const auto before=scene.copy();
+        qputenv("JIXELLIGHT_CPU_THREADS","1");
+        const auto serial=FloatSceneResampler::scale(scene,{480,360});
+        QVERIFY(!serial.isNull());
+        qputenv("JIXELLIGHT_CPU_THREADS","8");
+        const auto parallel=FloatSceneResampler::scale(scene,{480,360});
+        QCOMPARE(parallel,serial);
+        QCOMPARE(scene,before);
+        QCOMPARE(serial.sizeInBytes(),qint64(480)*360*16);
+        QVERIFY(reinterpret_cast<const float *>(serial.constScanLine(200))[4*200]>1.0f);
+        QVERIFY(reinterpret_cast<const float *>(serial.constScanLine(200))[4*200+2]<0.0f);
+        // Same-size requests must not allocate/copy pixel storage.
+        const auto same=FloatSceneResampler::scale(scene,scene.size());
+        QCOMPARE(same.cacheKey(),scene.cacheKey());
+        auto cancelledToken=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(FloatSceneResampler::scale(scene,{480,360},cancelledToken).isNull());
     }
     void manualGeometryIsDeterministicAcrossCpuBudgetsAndCancellation() {
         const QImage source=fixture(1100,800); const auto before=source.copy();

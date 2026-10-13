@@ -31,6 +31,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/FloatSceneResampler.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
@@ -123,6 +124,145 @@ private slots:
         const auto prepared=preparePreview(request,{}); QCOMPARE(prepared.normal,source); QCOMPARE(prepared.gpu,floating);
         const auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(ImagePipeline::floatSource(source,token).isNull()); QVERIFY(ImagePipeline::rgba64Source(floating,token).isNull());
     }
+    void floatSceneResamplerAreaFilterRemovesAliasingAndPreservesLinearHeadroom() {
+        QImage source(8,8,QImage::Format_RGBA32FPx4);
+        source.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        source.setDevicePixelRatio(2);
+        source.setDotsPerMeterX(3000);source.setDotsPerMeterY(3200);
+        source.setText("JixelLightSource","FP32 checkerboard");
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=(x+y)%2==0?4.0f:0.0f;
+            pixel[1]=-.375f;pixel[2]=.125f;pixel[3]=1.0f;
+        }
+        const auto before=FloatFrameFingerprint::capture(source);
+        const auto down=FloatSceneResampler::scale(source,{2,2});
+        QVERIFY(!down.isNull());
+        QCOMPARE(down.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(down.colorSpace(),source.colorSpace());
+        QCOMPARE(down.devicePixelRatio(),2.0);
+        QCOMPARE(down.dotsPerMeterX(),3000);
+        QCOMPARE(down.dotsPerMeterY(),3200);
+        QCOMPARE(down.text("JixelLightSource"),QString("FP32 checkerboard"));
+        for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
+            const auto *p=reinterpret_cast<const float *>(down.constScanLine(y))+4*x;
+            QCOMPARE(p[0],2.0f); QCOMPARE(p[1],-.375f);
+            QCOMPARE(p[2],.125f); QCOMPARE(p[3],1.0f);
+        }
+        QCOMPARE(FloatFrameFingerprint::capture(source),before);
+        QCOMPARE(FloatSceneResampler::scale(source,source.size()).cacheKey(),source.cacheKey());
+
+        QImage transparent(2,2,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
+            auto *p=reinterpret_cast<float *>(transparent.scanLine(y))+4*x;
+            p[0]=0;p[1]=0;p[2]=99;p[3]=0;
+        }
+        auto *opaque=reinterpret_cast<float *>(transparent.scanLine(0));
+        opaque[0]=4.25f;opaque[1]=-.5f;opaque[2]=.75f;opaque[3]=1;
+        const auto associated=FloatSceneResampler::scale(transparent,{1,1});
+        QVERIFY(!associated.isNull());
+        const auto *p=reinterpret_cast<const float *>(associated.constScanLine(0));
+        QCOMPARE(p[0],4.25f);QCOMPARE(p[1],-.5f);
+        QCOMPARE(p[2],.75f);QCOMPARE(p[3],.25f);
+        opaque[3]=0.0f;
+        const auto invisible=FloatSceneResampler::scale(transparent,{1,1});
+        const auto *hidden=reinterpret_cast<const float *>(invisible.constScanLine(0));
+        QCOMPARE(hidden[0],0.0f);QCOMPARE(hidden[1],0.0f);
+        QCOMPARE(hidden[2],0.0f);QCOMPARE(hidden[3],0.0f);
+
+        QImage gradient(2,2,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
+            auto *v=reinterpret_cast<float *>(gradient.scanLine(y))+4*x;
+            v[0]=float(2+x+2*y);v[1]=-.25f;v[2]=.5f;v[3]=1.0f;
+        }
+        const auto enlarged=FloatSceneResampler::scale(gradient,{4,4});
+        QVERIFY(!enlarged.isNull());
+        const auto *at=reinterpret_cast<const float *>(enlarged.constScanLine(1))+4;
+        QCOMPARE(at[0],2.75f);QCOMPARE(at[1],-.25f);QCOMPARE(at[3],1.0f);
+        QCOMPARE(reinterpret_cast<const float *>(enlarged.constScanLine(0))[0],2.0f);
+        QCOMPARE(reinterpret_cast<const float *>(enlarged.constScanLine(3))[4*3],5.0f);
+
+        auto invalid=gradient.copy();
+        reinterpret_cast<float *>(invalid.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(FloatSceneResampler::scale(invalid,{4,4}).isNull());
+        const auto cancelledToken=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(FloatSceneResampler::scale(gradient,{4,4},cancelledToken).isNull());
+        QVERIFY(FloatSceneResampler::scale(gradient,{}).isNull());
+    }
+
+    void floatScenePreparedPreviewUsesAreaFilteringForNormalFastAndBoundedGpu() {
+        QImage scene(1260,990,QImage::Format_RGBA32FPx4);
+        scene.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        scene.setText("JixelLightSource","FP32 preview downscale");
+        for(int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(2.5+.0004*x+.0002*y);
+            p[1]=float(.3+.0001*x);
+            p[2]=float(-.38+.0001*y);
+            p[3]=1.0f;
+        }
+        QVERIFY(ImagePipeline::validFloatSource(scene));
+        const auto fingerprint=FloatFrameFingerprint::capture(scene);
+        PrepareRequest request;request.image=scene;request.viewport={1120,840};
+        request.zoom=0;request.fullResolution=false;
+        const auto preview=preparePreview(request,{});
+        QVERIFY2(preview.error.isEmpty(),qPrintable(preview.error));
+        QVERIFY(!preview.normal.isNull() && !preview.fast.isNull() && !preview.gpu.isNull());
+        QCOMPARE(preview.normal.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(preview.fast.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(preview.gpu.format(),QImage::Format_RGBA32FPx4);
+        QVERIFY(preview.normal.width()>1024);
+        QVERIFY(preview.fast.width()<=1024);
+        QCOMPARE(preview.normal,FloatSceneResampler::scale(scene,preview.normal.size()));
+        QCOMPARE(preview.fast,FloatSceneResampler::scale(preview.normal,preview.fast.size()));
+        QCOMPARE(preview.gpu,preview.normal);
+        QCOMPARE(preview.normal.colorSpace(),scene.colorSpace());
+        QCOMPARE(preview.normal.text("JixelLightSource"),QString("FP32 preview downscale"));
+        const auto *normal=reinterpret_cast<const float *>(preview.normal.constScanLine(preview.normal.height()/2));
+        const auto *fast=reinterpret_cast<const float *>(preview.fast.constScanLine(preview.fast.height()/2));
+        QVERIFY(normal[4*(preview.normal.width()/2)]>2.5f);
+        QVERIFY(fast[4*(preview.fast.width()/2)]>2.5f);
+        QVERIFY(normal[4*(preview.normal.width()/2)+2]<0);
+        QVERIFY(fast[4*(preview.fast.width()/2)+2]<0);
+        const auto hit=preparePreview(request,{});
+        QCOMPARE(hit.normal.cacheKey(),preview.normal.cacheKey());
+        QCOMPARE(hit.fast.cacheKey(),preview.fast.cacheKey());
+        QCOMPARE(hit.gpu.cacheKey(),preview.gpu.cacheKey());
+        QCOMPARE(FloatFrameFingerprint::capture(scene),fingerprint);
+        const auto graph=StageGraph::describe("float-preview-source",request,{},false,0);
+        const auto resizeInfo=graph.value("preview_resize").toObject();
+        QVERIFY(resizeInfo.value("filter").toString().contains("area-weighted"));
+        QVERIFY(resizeInfo.value("precision").toString().contains("RGB unclipped"));
+        QCOMPARE(resizeInfo.value("gpu_max_edge").toInt(),4096);
+        QCOMPARE(resizeInfo.value("fast_max_edge").toInt(),1024);
+
+        auto oneToOne=request;
+        oneToOne.zoom=1.0;oneToOne.fullResolution=true;
+        const auto roi=preparePreview(oneToOne,{});
+        QVERIFY(roi.error.isEmpty());
+        QVERIFY(roi.viewportOnly);
+        QCOMPARE(roi.normal.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(roi.normal,scene.copy(70,75,1120,840));
+        QCOMPARE(roi.gpu,roi.normal);
+
+        // The 4096px GPU texture ceiling must use the same floating filter
+        // even when the fit pass itself would not resize the picture.
+        QImage panoramic(4100,10,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<10;++y) for(int x=0;x<4100;++x) {
+            auto *p=reinterpret_cast<float *>(panoramic.scanLine(y))+4*x;
+            p[0]=2.75f;p[1]=-.3f;p[2]=.4f;p[3]=1.0f;
+        }
+        PrepareRequest maxRequest;maxRequest.image=panoramic;maxRequest.viewport={8200,100};
+        const auto capped=preparePreview(maxRequest,{});
+        QVERIFY(capped.error.isEmpty());
+        QCOMPARE(capped.normal.width(),4096);
+        QCOMPARE(capped.normal.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(reinterpret_cast<const float *>(capped.normal.constScanLine(0))[0],2.75f);
+        QCOMPARE(reinterpret_cast<const float *>(capped.normal.constScanLine(0))[1],-.3f);
+        QVERIFY(capped.fast.width()<=1024);
+        QCOMPARE(capped.gpu,capped.normal);
+    }
+
     void floatSceneCpuPreservesOverRangeBeforeOutputQuantization() {
         // A synthetic scene-linear input can carry unsaturated sensor-domain
         // channel values beyond white. The existing LibRaw decoder has not yet

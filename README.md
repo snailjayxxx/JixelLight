@@ -23,9 +23,11 @@
 > CPU processing preserves over-white highlights through numeric fallback
 > and frozen diagnostic comparison. FP32 preview/crop-only/PNG16 checks were
 > accepted at `ff94a51` / run `38202436018` on all three platforms.
-> **F3 stage 2 in development:** scene-linear FP32 manual perspective,
-> straighten, radial/CA resampling, bit-exact 90-degree orientation and
-> correct 1024-bin full-resolution scopes. This stage awaits exact-head CI.
+> **F3 stage 2 accepted:** `9969f5e` / run `38322823120`,
+> scene-linear FP32 geometry and 1024-bin full-resolution scopes passed on
+> Windows, macOS and Linux GPU (137 core / 29 GPU / 25 performance).
+> **F3 stage 3 in development:** FP32 linear-light anti-aliased fit/fast
+> previews and bounded GPU staging; separate exact-head CI is required.
 > Real camera RAW still uses LibRaw's 16-bit developed bitmap; native float
 > RAW decode is a separate unfinished stage.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
@@ -171,7 +173,9 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 已加入可选 `RGBA32FPx4` 线性工作源的 CPU 显影，场景高光值大于 1.0 时不再先裁切为 16-bit；GPU 复杂 HSL 的 CPU 安全回退与冻结诊断也使用相同源。默认 LibRaw 仍输出 RGBA64，**当前功能不能被宣传为完整 FP32 RAW 解码器**。已添加 float / 旧 16-bit 像素等价性和 GPU 精度测试。参阅 [F3 浮点输入 Stage 1](docs/F3_FLOAT_SCENE_STAGE1.md)。
 
-最新 F3 stage 2 正在接入 FP32 拉直、手动透视/畸变/色差校正、浮点无损 90° 方向变换，并修正全分辨率 Scopes 在调色之前提前压成 RGBA64 的问题。保留原有 RGBA64 像素逻辑和 Sony RAW/JPEG 基准；新代码仍需跨平台验收，详见 [F3 浮点几何 Stage 2](docs/F3_FLOAT_GEOMETRY_STAGE2.md)。
+F3 Stage 2 的 FP32 拉直、手动透视/畸变/色差校正、无损 90° 方向变换与全分辨率 Scopes 已通过三平台验证，详见 [F3 浮点几何 Stage 2](docs/F3_FLOAT_GEOMETRY_STAGE2.md)。
+
+F3 Stage 3 正增加浮点线性光预览抗锯齿：普通 Fit 预览、4096 像素上限和 1024 像素快速预览改用专用关联 Alpha 的双精度面积缩小／双线性放大，不提前裁切超白或负值。旧 RGBA64 的 Qt 缩放路径保持不变；新功能尚待跨平台验收，参阅 [F3 浮点预览 Stage 3](docs/F3_FLOAT_PREVIEW_SCALE_STAGE3.md)。
 
 ### 三路色彩分级 Color Grading（融合分支，三平台基础验收通过）
 

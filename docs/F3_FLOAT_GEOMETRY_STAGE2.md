@@ -66,9 +66,13 @@ FP32 preview and export whenever exposure or highlight recovery were active.
 - Mandatory GPU tests on corrected FP32 frames, including native compute and
   D3D/OpenGL CPU numerical fallback, four output spaces, unchanged
   **40/65535 RGB** bound, exact alpha and 1024-bin histogram.
-- Three-platform CI, original Sony real RAW/JPEG and unchanged GUI/export
-  package tests remain mandatory. New stage not accepted until exact-HEAD
-  Windows/macOS/Linux run passes.
+- **Accepted:** `9969f5e510cb4886dd7e1632e28e3195337bdc07`,
+  [CI run 38322823120](https://github.com/snailjayxxx/JixelLight/actions/runs/38322823120)
+  passed all three OSes: 137 core, 29 mandatory GPU and 25 performance
+  tests per OS, Sony real RAW/JPEG, GUI and desktop packages. Maximum
+  new FP32 geometry CPU/GPU delta: Linux 1, Windows 1, macOS 2 /65535.
+  The initial `ea0b965` C++ missing QColorSpace include was fixed and
+  fully retested without weakening any gate.
 
 ## Deliberate limitations
 
@@ -85,7 +89,7 @@ lens-profile lookup require separate auditing. PNG16/TIFF16 remain
 output-quantized and ICC-tagged, not scene-linear float exports. No new
 camera white-level calibration or fixed RAW exposure offsets are introduced.
 
-Next F3 work: verify anti-aliased FP32 downscaled proxy/thumbnail generation;
+Next F3 work: validate the new anti-aliased FP32 downscaled fit/fast previews ([stage 3](F3_FLOAT_PREVIEW_SCALE_STAGE3.md), CI pending);
 review SourceCache persistence for float decoded sources; then investigate
 camera-linear LibRaw processing with sensor black/white levels and **actual**
 highlight headroom before any integer development, without changing the
