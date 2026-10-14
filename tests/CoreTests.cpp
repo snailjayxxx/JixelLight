@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 #include "app/PhotoController.h"
 #include "core/color/ColorManagement.h"
@@ -100,6 +101,206 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void floatSceneCacheRoundTripPreservesEveryFloatBitAndSourceIdentity() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        SourceCache cache(4*1024*1024,dir.path());
+        const QString sourceKey(64,'a');
+        const auto decoder=SourceCache::floatDecoderSignature(
+            QByteArrayLiteral("LibRaw mosaic+linear WB camera-v1; matrix-A; black 512 white 16383"));
+        QVERIFY(decoder.size()==64);
+        QVERIFY(decoder!=SourceCache::floatDecoderSignature(
+            QByteArrayLiteral("LibRaw mosaic+linear WB camera-v2; matrix-A; black 512 white 16383")));
+        QVERIFY(SourceCache::floatDecoderSignature({}).isEmpty());
+        QVERIFY(SourceCache::floatDecoderSignature(QByteArray(8193,'x')).isEmpty());
+        SourceData source;
+        source.key=sourceKey;source.fullResolution=true;
+        source.metadata={{"make","Sony"},{"model","Test Raw"},{"rawBlackLevel",512},
+                         {"cameraExposure",1.25},{"sceneFormat","camera-linear-f32"}};
+        source.image=QImage(13,7,QImage::Format_RGBA32FPx4);
+        source.image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        source.image.setText("JixelLightWorkingSpace","Linear ProPhoto RGB");
+        source.image.setText("JixelLightSource","synthetic-camera-linear-f32");
+        source.image.setText("JixelLightCameraCrop","1,2,10,5");
+        source.image.setDevicePixelRatio(2);
+        source.image.setDotsPerMeterX(2900);
+        source.image.setDotsPerMeterY(3200);
+        for(int y=0;y<source.image.height();++y) {
+            auto *row=reinterpret_cast<float *>(source.image.scanLine(y));
+            for(int x=0;x<source.image.width();++x) {
+                row[4*x]=2.125f+x*.125f;
+                row[4*x+1]=-0.0f;
+                row[4*x+2]=x==0?-.75f:(x%2?.75f:-.125f);
+                row[4*x+3]=y%3==0?0.0f:y%3==1?.375f:1.0f;
+            }
+        }
+        QVERIFY(ImagePipeline::validFloatSource(source.image));
+        const auto fingerprint=FloatFrameFingerprint::capture(source.image,1024*1024);
+        QVERIFY(fingerprint.value("available").toBool());
+        QVERIFY(cache.get(source.key).image.isNull());
+        // Neither legacy decoded-memory nor .jlpv disk preview may implicitly
+        // convert a true FP32 scene source to clipped RGBA64 data.
+        cache.put(source);
+        cache.storeDiskPreview(source);
+        QVERIFY(cache.get(source.key).image.isNull());
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlpv"},QDir::Files).size(),0);
+        QVERIFY(cache.storeFloatScene(source,decoder));
+        QVERIFY(cache.get(source.key).image.isNull()); // FP32 never aliases original RAW entry
+        const auto memory=cache.floatScene(source.key,decoder);
+        QVERIFY(!memory.image.isNull());
+        QCOMPARE(FloatFrameFingerprint::capture(memory.image,1024*1024),fingerprint);
+        QCOMPARE(memory.fullResolution,true);
+        QCOMPARE(memory.key,sourceKey);
+        QCOMPARE(memory.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(memory.image.size(),source.image.size());
+        const auto entryNames=QDir(dir.path()).entryList({"*.jlfs"},QDir::Files);
+        QCOMPARE(entryNames.size(),1);
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlpv"},QDir::Files).size(),0);
+
+        SourceCache reopened(4*1024*1024,dir.path());
+        auto disk=reopened.floatScene(source.key,decoder);
+        QVERIFY(!disk.image.isNull());
+        QVERIFY(disk.fullResolution);
+        QCOMPARE(disk.key,source.key);
+        QCOMPARE(disk.metadata,source.metadata);
+        QCOMPARE(disk.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(disk.image.colorSpace(),source.image.colorSpace());
+        QCOMPARE(disk.image.text("JixelLightWorkingSpace"),QString("Linear ProPhoto RGB"));
+        QCOMPARE(disk.image.text("JixelLightSource"),QString("synthetic-camera-linear-f32"));
+        QCOMPARE(disk.image.text("JixelLightCameraCrop"),QString("1,2,10,5"));
+        QCOMPARE(disk.image.devicePixelRatio(),2.0);
+        QCOMPARE(disk.image.dotsPerMeterX(),2900);
+        QCOMPARE(disk.image.dotsPerMeterY(),3200);
+        QCOMPARE(FloatFrameFingerprint::capture(disk.image,1024*1024),fingerprint);
+        for(int y=0;y<source.image.height();++y)
+            QCOMPARE(std::memcmp(disk.image.constScanLine(y),source.image.constScanLine(y),
+                                 qsizetype(source.image.width())*16),0);
+        // Cache reload is immutable and shares its pixel buffer until detached.
+        const auto hit=reopened.floatScene(source.key,decoder);
+        QCOMPARE(hit.image.cacheKey(),disk.image.cacheKey());
+        QVERIFY(reopened.memoryBytes()<=reopened.budgetBytes());
+        QVERIFY(reopened.get(source.key).image.isNull());
+        QVERIFY(reopened.floatScene(source.key,
+            SourceCache::floatDecoderSignature("different camera profile")).image.isNull());
+        QVERIFY(reopened.floatScene(QString(64,'b'),decoder).image.isNull());
+        QVERIFY(reopened.floatScene("../malicious",decoder).image.isNull());
+        QVERIFY(reopened.floatScene(source.key,decoder.toUpper()).image.isNull());
+        QVERIFY(reopened.floatScene(source.key,"unknown").image.isNull());
+        QCOMPARE(FloatFrameFingerprint::capture(source.image,1024*1024),fingerprint);
+    }
+    void floatSceneCacheRejectsCorruptionAndProtectsLegacyPreview() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString key(64,'c');
+        const auto signature=SourceCache::floatDecoderSignature("strict:raw-a:camera-profile-v1");
+        SourceCache cache(1024*1024,dir.path());
+        SourceData legacy;legacy.key=key;legacy.fullResolution=true;
+        legacy.image=QImage(16,11,QImage::Format_RGBA64);
+        legacy.image.fill(QColor::fromRgba64(QRgba64::fromRgba64(1234,4567,8901,65535)));
+        cache.storeDiskPreview(legacy);
+        QCOMPARE(cache.diskPreview(key).image,legacy.image);
+        SourceData scene;scene.key=key;scene.fullResolution=true;
+        scene.image=QImage(16,11,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<11;++y) for(int x=0;x<16;++x) {
+            auto *p=reinterpret_cast<float *>(scene.image.scanLine(y))+4*x;
+            p[0]=2.5f;p[1]=-.5f;p[2]=.125f;p[3]=1;
+        }
+        QVERIFY(cache.storeFloatScene(scene,signature));
+        const auto paths=QDir(dir.path()).entryList({"*.jlfs"},QDir::Files);
+        QCOMPARE(paths.size(),1);
+        const QString filePath=dir.filePath(paths[0]);
+        QFile file(filePath);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray original=file.readAll();file.close();
+        QVERIFY(original.size()>100);
+        QVERIFY(cache.diskPreview(key).image==legacy.image);
+
+        auto inject=[&](QByteArray bytes) {
+            QFile target(filePath);
+            if(!target.open(QIODevice::WriteOnly|QIODevice::Truncate)) return false;
+            const auto written=target.write(bytes);target.close();
+            return written==bytes.size();
+        };
+        {auto mutated=original;const auto index=mutated.size()-40;mutated[index]=char(mutated.at(index)^0x1);
+         QVERIFY(inject(mutated));SourceCache fresh(1024*1024,dir.path());
+         QVERIFY(fresh.floatScene(key,signature).image.isNull());}
+        {auto mutated=original;mutated[0]=char(0);
+         QVERIFY(inject(mutated));SourceCache fresh(1024*1024,dir.path());
+         QVERIFY(fresh.floatScene(key,signature).image.isNull());}
+        {auto mutated=original;mutated.append("x");
+         QVERIFY(inject(mutated));SourceCache fresh(1024*1024,dir.path());
+         QVERIFY(fresh.floatScene(key,signature).image.isNull());}
+        QVERIFY(inject(original));
+        SourceCache restored(1024*1024,dir.path());
+        auto actual=restored.floatScene(key,signature);
+        QVERIFY(!actual.image.isNull());
+        QVERIFY(restored.get(key).image.isNull());
+        QCOMPARE(actual.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(cache.diskPreview(key).image,legacy.image);
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlpv"},QDir::Files).size(),1);
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlfs"},QDir::Files).size(),1);
+
+        const auto cancelledToken=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!restored.storeFloatScene(scene,signature,cancelledToken));
+        QVERIFY(restored.floatScene(key,signature,cancelledToken).image.isNull());
+        QFile unchanged(filePath);QVERIFY(unchanged.open(QIODevice::ReadOnly));
+        QCOMPARE(unchanged.readAll(),original);
+    }
+    void floatSceneCacheRejectsInvalidStorageAndHandlesPaddedRows() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        SourceCache cache(1024*1024,dir.path());
+        const QString key(64,'d');
+        const auto decoder=SourceCache::floatDecoderSignature("FP32 padded-stride unit test");
+        SourceData source;source.key=key;source.fullResolution=true;
+        constexpr int width=7,height=5,stride=width*16+32;
+        std::vector<uchar> buffer(stride*height,0x9e);
+        source.image=QImage(buffer.data(),width,height,stride,QImage::Format_RGBA32FPx4);
+        QVERIFY(!source.image.isNull());
+        for(int y=0;y<height;++y) for(int x=0;x<width;++x) {
+            auto *p=reinterpret_cast<float *>(buffer.data()+y*stride)+4*x;
+            p[0]=float(1.75+.125*x);p[1]=float(-.5+.125*y);p[2]=.25f;p[3]=1;
+        }
+        const auto reference=FloatFrameFingerprint::capture(source.image);
+        QVERIFY(cache.storeFloatScene(source,decoder));
+        SourceCache fresh(1024*1024,dir.path());
+        auto result=fresh.floatScene(key,decoder);
+        QVERIFY(!result.image.isNull());
+        QCOMPARE(result.image.size(),QSize(width,height));
+        QCOMPARE(result.image.bytesPerLine(),width*16);
+        QCOMPARE(FloatFrameFingerprint::capture(result.image),reference);
+        for(int y=0;y<height;++y)
+            QCOMPARE(std::memcmp(result.image.constScanLine(y),
+                                 source.image.constScanLine(y),width*16),0);
+        QCOMPARE(buffer[width*16],uchar(0x9e)); // source row padding is not stored
+        // Replacing the same composite identity must invalidate the old RAM
+        // entry; old borrowed pixel storage must never remain cached.
+        auto newer=source;
+        newer.image=source.image.copy(); // detached, owned mutation
+        reinterpret_cast<float *>(newer.image.scanLine(0))[0]=3.5f;
+        QVERIFY(cache.storeFloatScene(newer,decoder));
+        const auto updated=cache.floatScene(key,decoder);
+        QVERIFY(!updated.image.isNull());
+        QCOMPARE(reinterpret_cast<const float *>(updated.image.constScanLine(0))[0],3.5f);
+        auto invalid=source;invalid.fullResolution=false;
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.placeholder=true;
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.image=ImagePipeline::rgba64Source(source.image);
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.key="../bad";
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.key=key.toUpper();
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        QVERIFY(!cache.storeFloatScene(source,"unknown"));
+        invalid=source;invalid.image=source.image.copy();
+        reinterpret_cast<float *>(invalid.image.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.image=source.image.copy();
+        reinterpret_cast<float *>(invalid.image.scanLine(0))[3]=1.1f;
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        invalid=source;invalid.metadata["oversized"]=QString(200000,'x');
+        QVERIFY(!cache.storeFloatScene(invalid,decoder));
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlfs"},QDir::Files).size(),1);
+    }
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
         QImage source(256,1024,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000); source.setDotsPerMeterY(3100); source.setText("JixelLightSource","staging-test");

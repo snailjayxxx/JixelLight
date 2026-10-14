@@ -1,5 +1,6 @@
 #pragma once
 #include "core/async/LatestJob.h"
+#include <QByteArray>
 #include <QCache>
 #include <QImage>
 #include <QMutex>
@@ -22,10 +23,20 @@ public:
     void put(const SourceData &source);
     SourceData diskPreview(const QString &key);
     void storeDiskPreview(const SourceData &source, const CancelToken &cancel = {});
+    // Opt-in, separate versioned FP32 source cache for future camera-linear
+    // decoding. Not used by today's LibRaw 16-bit RAW path or .jlpv previews.
+    // decoderSignature is the 64-character SHA-256 of *all* decode settings,
+    // sensor interpretation and profile versions, never a user-facing label.
+    static QString floatDecoderSignature(const QByteArray &configuration);
+    SourceData floatScene(const QString &sourceKey, const QString &decoderSignature,
+                          const CancelToken &cancel = {});
+    bool storeFloatScene(const SourceData &source, const QString &decoderSignature,
+                         const CancelToken &cancel = {});
     qint64 memoryBytes() const;
     qint64 budgetBytes() const { return qint64(m_budgetKiB) * 1024; }
 private:
     void trimDisk();
+    void trimFloatDisk();
     mutable QMutex m_mutex;
     QMutex m_diskMutex;
     QCache<QString, SourceData> m_memory;

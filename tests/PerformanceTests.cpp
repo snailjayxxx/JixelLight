@@ -218,6 +218,62 @@ private slots:
         QCOMPARE(delivered.first(),99);
         QVERIFY(calls.load()<=2);
     }
+    void fp32SourceCacheSharesLruBudgetAndConcurrentReaders() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString key(64,'e');
+        const auto signature=SourceCache::floatDecoderSignature(
+            QByteArrayLiteral("camera float test: sensor black+white per channel; WB/matrix v1"));
+        SourceData floating;floating.key=key;floating.fullResolution=true;
+        floating.image=QImage(160,160,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<160;++y) for(int x=0;x<160;++x) {
+            auto *p=reinterpret_cast<float *>(floating.image.scanLine(y))+4*x;
+            p[0]=float(2.0+.001*x+.002*y);
+            p[1]=float(-.25+.0001*y);
+            p[2]=float(.1+.0001*x);
+            p[3]=1.0f;
+        }
+        SourceCache cache(1024*1024,dir.path());
+        QVERIFY(cache.storeFloatScene(floating,signature));
+        const auto initial=cache.floatScene(key,signature);
+        QVERIFY(!initial.image.isNull());
+        QCOMPARE(initial.image.size(),floating.image.size());
+        QCOMPARE(initial.image.format(),QImage::Format_RGBA32FPx4);
+        const auto initialHit=cache.floatScene(key,signature);
+        QCOMPARE(initialHit.image.cacheKey(),initial.image.cacheKey());
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        SourceData integer;
+        integer.key=QString(64,'f');integer.fullResolution=true;
+        integer.image=fixture(350,300); // 840 KiB, must evict 400 KiB float entry
+        cache.put(integer);
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        QCOMPARE(cache.get(integer.key).image.cacheKey(),integer.image.cacheKey());
+        const auto recovered=cache.floatScene(key,signature);
+        QVERIFY(!recovered.image.isNull());
+        QCOMPARE(recovered.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(recovered.image.size(),floating.image.size());
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        QVERIFY(cache.get(integer.key).image.isNull()); // single shared budget
+
+        SourceCache parallel(1024*1024,dir.path());
+        std::array<QFuture<SourceData>,6> tasks;
+        for(auto &task:tasks)
+            task=QtConcurrent::run([&parallel,key,signature] {
+                return parallel.floatScene(key,signature);
+            });
+        for(auto &task:tasks) {
+            task.waitForFinished();
+            const auto result=task.result();
+            QVERIFY(!result.image.isNull());
+            QCOMPARE(result.image.format(),QImage::Format_RGBA32FPx4);
+            QCOMPARE(result.image.size(),floating.image.size());
+            const auto *p=reinterpret_cast<const float *>(result.image.constScanLine(100))+4*100;
+            QVERIFY(p[0]>2.0f);
+            QVERIFY(p[1]<0.0f);
+        }
+        QVERIFY(parallel.memoryBytes()<=parallel.budgetBytes());
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlfs"},QDir::Files).size(),1);
+    }
+
     void sourceCacheBudgetAndDiskRoundtrip() {
         QTemporaryDir dir;
         SourceCache cache(1024*1024,dir.path());

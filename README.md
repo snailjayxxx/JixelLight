@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **Development branch status (2026-10-13):** `design/lightcraft-fusion-20261008`,
+> **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
 > **Jixel Neutral v2 and no universal RAW +2.5 EV**. The alpha.10 descriptions
 > below are retained for historical reference and **must not be interpreted as
@@ -26,10 +26,15 @@
 > **F3 stage 2 accepted:** `9969f5e` / run `38322823120`,
 > scene-linear FP32 geometry and 1024-bin full-resolution scopes passed on
 > Windows, macOS and Linux GPU (137 core / 29 GPU / 25 performance).
-> **F3 stage 3 in development:** FP32 linear-light anti-aliased fit/fast
-> previews and bounded GPU staging; separate exact-head CI is required.
-> Real camera RAW still uses LibRaw's 16-bit developed bitmap; native float
-> RAW decode is a separate unfinished stage.
+> **F3 stage 3 accepted:** `9e761b9` / run `38362372408`,
+> float area-antialiased fit/fast previews and bounded GPU staging passed
+> Linux/Windows/macOS (139 core / 30 GPU / 26 performance each, deployed
+> programs, worst new preview delta 2/65535).
+> **F3 stage 4 in development:** a separate opt-in scene-linear FP32 source
+> memory/disk cache, with versioned decoder identity, atomic validated float
+> rows and noninterfering RGBA64 legacy previews; exact-head CI pending.
+> Actual camera RAW still uses LibRaw's 16-bit developed bitmap: a genuine
+> floating-point RAW decoder remains unfinished.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
 
 
@@ -175,7 +180,9 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 
 F3 Stage 2 的 FP32 拉直、手动透视/畸变/色差校正、无损 90° 方向变换与全分辨率 Scopes 已通过三平台验证，详见 [F3 浮点几何 Stage 2](docs/F3_FLOAT_GEOMETRY_STAGE2.md)。
 
-F3 Stage 3 正增加浮点线性光预览抗锯齿：普通 Fit 预览、4096 像素上限和 1024 像素快速预览改用专用关联 Alpha 的双精度面积缩小／双线性放大，不提前裁切超白或负值。旧 RGBA64 的 Qt 缩放路径保持不变；新功能尚待跨平台验收，参阅 [F3 浮点预览 Stage 3](docs/F3_FLOAT_PREVIEW_SCALE_STAGE3.md)。
+F3 Stage 3 已通过三平台验收：普通 Fit 预览、4096 像素上限和 1024 像素快速预览的 FP32 线性光抗锯齿不会裁切超白或负值，旧 RGBA64 路径不变。参阅 [F3 浮点预览 Stage 3](docs/F3_FLOAT_PREVIEW_SCALE_STAGE3.md)。
+
+F3 Stage 4 正在开发独立可选的浮点场景源缓存：使用 JLF1 磁盘格式完整保存 IEEE-754 位、色彩配置和图像/相机元数据；读取前检查完整来源和哈希、严格限额、原子写入。当前真实 RAW 的 LibRaw 16-bit 路径不自动启用本缓存，该批仍待 CI 验收。参阅 [F3 浮点缓存 Stage 4](docs/F3_FLOAT_SOURCE_CACHE_STAGE4.md)。
 
 ### 三路色彩分级 Color Grading（融合分支，三平台基础验收通过）
 

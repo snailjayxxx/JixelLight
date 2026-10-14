@@ -15,6 +15,21 @@ The new corrected-scene GPU samples had maximum CPU/GPU channel error
 The initial C++ compilation failure was repaired by explicitly including
 `QColorSpace` in the geometry helper; no intermediate failed commit was merged.
 
+## Exact-head acceptance
+
+The implementation in `9e761b975bb213b1d8ba034067839e9d5608cf83`
+passed [GitHub Actions run 38362372408](https://github.com/snailjayxxx/JixelLight/actions/runs/38362372408)
+on Linux GPU, Windows x64 and macOS arm64: **139 core, 30 mandatory GPU,
+26 performance correctness checks** per platform, real Sony ARW/JPEG,
+60-second GUI smoke and shipped Windows/macOS packages. Eight new FP32
+GPU parity scenarios passed with maximum RGB delta **1 Linux / 1 Windows /
+2 macOS** out of 65535; original 40/65535 limit and exact alpha/scopes
+checks were not weakened. Stage 3 is accepted.
+
+Next: [F3 Stage 4 source cache](F3_FLOAT_SOURCE_CACHE_STAGE4.md) is a
+separate opt-in persistence milestone. Native float camera RAW decoding
+remains unfinished.
+
 ## Scope: three preview resizing points
 
 The existing `preparePreview` path performs geometry correction, then
