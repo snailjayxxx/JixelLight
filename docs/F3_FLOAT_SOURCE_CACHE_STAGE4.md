@@ -99,10 +99,12 @@ GPU staging, export ICC and Sony Look.
   refusal cannot overwrite a valid cache or disturb existing .jlpv data.
 - Memory entries are subject to one shared LRU budget; concurrent
   independent disk readers must return identical valid frames.
-- Three OS CI: mandatory actual GPU precision, real Sony ARW/JPEG,
-  60-second GUI, correct 1024-bin Scopes, Windows/macOS deployment
-  and offline CLI. This cache is not presented as accepted without
-  exact-commit complete Success.
+- **Accepted:** `4c8e97866c72fda3898611ae8ff3579df2e188cd`,
+  [CI run 38534048071](https://github.com/snailjayxxx/JixelLight/actions/runs/38534048071)
+  passed Linux GPU, Windows x64 and macOS arm64: 142 core, 30 mandatory
+  GPU and 27 performance tests per OS; real Sony ARW/JPEG, GUI and
+  deployed Windows/macOS packages. No mandatory GPU tests were skipped.
+  The cache remains opt-in pending a trusted sensor-linear decoder.
 
 ## Still missing
 

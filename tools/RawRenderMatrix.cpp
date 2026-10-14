@@ -219,7 +219,26 @@ int main(int argc,char **argv) {
         QJsonObject scene{{"id",id},{"role",item["role"].toString()},{"rawSha256",sha256(rawPath)},{"jpegSha256",sha256(jpegPath)},
                           {"metadataError",error},{"recordedLook",QJsonObject::fromVariantMap(metadata.value("sonyLook").toMap())}};
         const auto paired=CameraReference::load({rawPath,jpegPath,metadata,1});
-        QImage linear=RawDecoder::decode(rawPath,&error);scene["decodeError"]=error;
+        RawMetadata rawSensor;
+        rawSensor.captureSensorAudit=true;
+        QImage linear=RawDecoder::decode(rawPath,&error,&rawSensor);
+        scene["decodeError"]=error;
+        scene["sensorUnpackedAudit"]=rawSensor.sensorAudit;
+        if(!linear.isNull()) {
+            if(rawSensor.sensorAudit.isEmpty() || rawSensor.sensorAudit["schema"].toInt()!=1) {
+                scene["error"]="Missing diagnostic sensor audit";scenes.append(scene);failed=true;continue;
+            }
+            // Do not make a camera unsupported by the optional mosaic probe
+            // fail legacy Sony RAW/JPEG color-matrix validation.
+            if(rawSensor.sensorAudit["available"].toBool()) {
+                const auto audit=rawSensor.sensorAudit;
+                if(audit["sample_count"].toInteger()<=0
+                    || audit["pixel_sha256"].toString().size()!=64
+                    || audit["raw_width"].toInt()<=0 || audit["raw_height"].toInt()<=0) {
+                    scene["error"]="Invalid available sensor mosaic audit";scenes.append(scene);failed=true;continue;
+                }
+            }
+        }
         if(linear.isNull()||paired.image.isNull()){scene["error"]=linear.isNull()?error:paired.error;scenes.append(scene);failed=true;continue;}
         QVariantMap geometry;linear=calibrationSource(linear,paired.image,&geometry);scene["geometry"]=QJsonObject::fromVariantMap(geometry);
         const QSize size=linear.size().scaled(QSize(512,512),Qt::KeepAspectRatio);

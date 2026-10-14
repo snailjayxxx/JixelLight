@@ -1,5 +1,6 @@
 #include "core/raw/RawDecoder.h"
 #include "core/raw/RawGeometry.h"
+#include "core/raw/SensorMosaicAudit.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QSemaphore>
 #include <algorithm>
@@ -9,6 +10,10 @@
 #include <QBuffer>
 #include <QImageReader>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QCryptographicHash>
+#include <QByteArrayView>
+#include <cmath>
 #include <QRgba64>
 #include <QtGlobal>
 
@@ -69,6 +74,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     }
 
     if (metadata) {
+        metadata->sensorAudit={};
         metadata->make = QString::fromLatin1(raw.imgdata.idata.make).trimmed();
         metadata->model = QString::fromLatin1(raw.imgdata.idata.model).trimmed();
         metadata->width = raw.imgdata.sizes.width;
@@ -87,6 +93,50 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         return {};
     }
 
+    // Capture only when explicitly requested; before dcraw_process() can
+    // subtract black, alter maximum, demosaic, or convert to ProPhoto RGB.
+    if (metadata && metadata->captureSensorAudit && !cancelled(cancel)) {
+        const auto &sizes=raw.imgdata.sizes;
+        const auto &color=raw.imgdata.color;
+        SensorMosaicAudit::Layout layout;
+        layout.rawWidth=sizes.raw_width;layout.rawHeight=sizes.raw_height;
+        layout.pitchBytes=int(sizes.raw_pitch);
+        layout.active=QRect(sizes.left_margin,sizes.top_margin,sizes.width,sizes.height);
+        layout.nominalBlack=color.black;
+        layout.nominalWhite=color.maximum;
+        auto report=SensorMosaicAudit::capture(raw.imgdata.rawdata.raw_image,layout,cancel);
+        QJsonArray perChannelBlack,perChannelLinearWhite,camMul,preMul;
+        for(int i=0;i<4;++i) {
+            perChannelBlack.append(qint64(color.cblack[i]));
+            perChannelLinearWhite.append(qint64(color.linear_max[i]));
+            camMul.append(std::isfinite(color.cam_mul[i]) ? QJsonValue(double(color.cam_mul[i])) : QJsonValue());
+            preMul.append(std::isfinite(color.pre_mul[i]) ? QJsonValue(double(color.pre_mul[i])) : QJsonValue());
+        }
+        report["libraw_version"]=QString::fromLatin1(LibRaw::version());
+        report["raw_pitch_bytes"]=int(sizes.raw_pitch);
+        report["cfa_filters_encoded"]=qint64(raw.imgdata.idata.filters);
+        report["cfa_kind"]=raw.imgdata.idata.filters==9 ? QStringLiteral("xtrans_6x6")
+            : raw.imgdata.idata.filters>1000 ? QStringLiteral("bayer_like_filters")
+            : QStringLiteral("unknown_or_non_mosaic");
+        report["camera_flip"]=sizes.flip;
+        report["black_channel_corrections"]=perChannelBlack;
+        report["linear_white_metadata_not_black_subtracted"]=perChannelLinearWhite;
+        report["as_shot_camera_wb_multipliers_unverified"]=camMul;
+        report["libraw_pre_multipliers_unverified"]=preMul;
+        const auto cols=int(color.cblack[4]),rows=int(color.cblack[5]);
+        // cblack dimensions are values from an untrusted camera file.
+        // A pattern is not by itself an absolute channel-black level.
+        const bool patternValid=cols>0 && rows>0 && qint64(cols)*rows<=4098;
+        QJsonArray pattern;
+        if (patternValid) for(int i=0;i<cols*rows;++i) pattern.append(qint64(color.cblack[6+i]));
+        report["black_pattern_dimensions"]=QJsonArray{cols,rows};
+        report["black_pattern_values_uninterpreted"]=pattern;
+        report["black_pattern_valid"]=patternValid || (cols==0 && rows==0);
+        report["pre_develop_warning"]=QStringLiteral(
+            "Unpacked sensor samples and LibRaw black/white metadata are not scene RGB, "
+            "do not imply recoverable highlights, and may include unpack-stage linearization");
+        metadata->sensorAudit=report;
+    }
     const auto decodeSizes=raw.imgdata.sizes;
     auto &params = raw.imgdata.params;
     params.use_camera_wb = 1;

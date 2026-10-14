@@ -2,6 +2,7 @@
 
 #include <QImage>
 #include <QString>
+#include <QJsonObject>
 #include "core/async/LatestJob.h"
 
 struct RawMetadata {
@@ -20,6 +21,10 @@ struct RawMetadata {
     bool highlightBlendEnabled = false;
     int highlightMode = 1;
     float adjustMaximumThreshold = 0.75f;
+    // Diagnostic opt-in only. Real RAW development never depends on the
+    // pre-demosaic sensor audit and remains the accepted RGBA64 path.
+    bool captureSensorAudit = false;
+    QJsonObject sensorAudit;
 };
 
 class RawDecoder final {

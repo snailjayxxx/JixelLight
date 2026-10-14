@@ -30,11 +30,17 @@
 > float area-antialiased fit/fast previews and bounded GPU staging passed
 > Linux/Windows/macOS (139 core / 30 GPU / 26 performance each, deployed
 > programs, worst new preview delta 2/65535).
-> **F3 stage 4 in development:** a separate opt-in scene-linear FP32 source
-> memory/disk cache, with versioned decoder identity, atomic validated float
-> rows and noninterfering RGBA64 legacy previews; exact-head CI pending.
-> Actual camera RAW still uses LibRaw's 16-bit developed bitmap: a genuine
-> floating-point RAW decoder remains unfinished.
+> **F3 stage 4 accepted:** `4c8e978` / [CI 38534048071](https://github.com/snailjayxxx/JixelLight/actions/runs/38534048071)
+> passed Windows/macOS/Linux with 142 core / 30 mandatory GPU / 27
+> performance checks and deployed packages. Versioned opt-in FP32 source
+> cache preserves raw floating-point bits, provenance and atomic integrity.
+> **F3 stage 5 in development:** pre-demosaic RAW mosaic read-only audit of
+> sensor samples, black/white/CFA metadata and saturation counts, integrated
+> into the real ARW/JPEG validation. This diagnostic stage requires its own
+> exact-head CI before acceptance; see
+> [sensor audit technical scope](docs/F3_RAW_SENSOR_AUDIT_STAGE5.md).
+> Camera RAW still uses LibRaw's 16-bit developed bitmap by default:
+> a native verified FP32 demosaic decoder remains unfinished.
 > PR #16 remains Draft; neither `main` nor PR #15 is changed.
 
 
@@ -173,6 +179,10 @@ RAW 输入保持在线性宽色域处理链中，直到最终显示转换：
 ### 黑白色彩混合（融合开发分支，待 CI 验收）
 
 独立的黑白开关和八色通道明度混合，分别可设 −100～+100（−1～+1 EV）；对颜色的识别使用 Oklab 色相，以灰阶过渡避免中性像素对色相数值误差敏感。开启后在色彩/ Sony Look 风格之后、输出色域转换之前生成中性亮度；下游 RGB 曲线或 Sony LUT 仍可能对黑白结果着色。关闭时仍保持旧引擎彩色像素不变。UI 位于 Develop 的可折叠黑白混合区，使用单独的 B&W 数值，**不会覆盖 Sony Creative Look 或 HSL 颜色混合器**。支持历史、项目、虚拟副本、预设、XMP、颜色组同步与 CLI 的 `bw.enable`、`bw.set`、`bw.reset`；默认快照不新增字段，无效 schema/色带拒绝项目打开。CPU/GPU 差异继续受原 40/65535 阈值约束。
+
+### F3 RAW 传感器原始采样审计（开发分支，Stage 5 待 CI）
+
+新增按需启用的 LibRaw 解包后／显影前 U16 传感器审计：原始有效区域的采样值分布、标称黑白电平与逐通道修正、像素指纹及饱和统计。此信息仅用于诊断未来浮点 RAW 解码的依据，不改变实际 RAW 图像、Jixel Neutral v2、Sony Creative Look 和 ICC；不能将未经去马赛克、黑电平处理的数据称作浮点 RGB 或已恢复高光。技术与局限见 [F3 RAW 传感器审计 Stage 5](docs/F3_RAW_SENSOR_AUDIT_STAGE5.md)。
 
 ### F3 浮点显影和几何精度（融合开发分支，第一阶段已验收）
 

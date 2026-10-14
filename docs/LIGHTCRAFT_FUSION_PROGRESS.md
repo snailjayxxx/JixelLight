@@ -6,6 +6,25 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 
 ## Verified checkpoints
 
+- **F3 stage 4 FP32 source cache accepted:** `4c8e97866c72fda3898611ae8ff3579df2e188cd`,
+  [run 38534048071](https://github.com/snailjayxxx/JixelLight/actions/runs/38534048071)
+  **Success** on Linux GPU, Windows x64 and macOS arm64, each with **142 core /
+  30 mandatory GPU / 27 performance** checks. Real Sony ARW/JPEG, GUI,
+  Windows/macOS deployed packages and no mandatory GPU test skips passed.
+  Versioned FP32 `.jlfs` source cache and its provenance/checksum safety
+  are accepted, but still opt-in and never substituted for LibRaw RGBA64.
+
+- **F3 stage 5 sensor mosaic audit (exact-head CI pending):** opt-in
+  pre-`dcraw_process()` LibRaw unpacked U16 raw-image sample distribution,
+  active-area/pitch checks, p50/p99/p999, raw parity, SHA-256 identity and
+  unmodified black/white/WB/CFA metadata. No pixel renderer, demosaic,
+  exposure offset or RAW default path changes. Integrated with the real
+  ARW/JPEG render matrix and small-stack RAW worker, with synthetic
+  validation of boundaries/cancellation/threshold semantics.
+  See [F3_RAW_SENSOR_AUDIT_STAGE5.md](F3_RAW_SENSOR_AUDIT_STAGE5.md).
+  **A sensor sample distribution is not restored highlight dynamic range
+  or a native scene-linear FP32 RAW decoder.**
+
 - **Accepted F3 Stage 3 FP32 preview scaling:** `9e761b975bb213b1d8ba034067839e9d5608cf83`,
   [run 38362372408](https://github.com/snailjayxxx/JixelLight/actions/runs/38362372408),
   **Success** on Linux GPU, Windows x64 and macOS arm64 (139 core, 30 mandatory
@@ -14,16 +33,12 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
   anti-aliased fit/fast/capped preview samples have maximum CPU/GPU error
   **1 Linux, 1 Windows, 2 macOS /65535**, below unchanged 40/65535.
 
-- **Current F3 Stage 4 (new exact-HEAD CI pending):** a separately versioned,
-  opt-in FP32 source cache (JLF1 / `.jlfs`) stores raw scene-linear IEEE-754
-  channel bits rather than RGBA64 proxy data. Cache identity binds the
-  original source file key, complete decoder configuration signature and
-  engine version; SHA-256 validates metadata, ICC and canonical LE pixel
-  rows before publishing. Atomic write/cancel, strict resource limits,
-  one shared RAM LRU budget, independent 4 GiB disk quota and
-  corruption/provenance tests protect legacy `.jlpv` files. The existing
-  16-bit LibRaw loader does **not** automatically write or read JLF1.
-  See [F3_FLOAT_SOURCE_CACHE_STAGE4.md](F3_FLOAT_SOURCE_CACHE_STAGE4.md).
+- **F3 stage 4 implementation (accepted at `4c8e978`):** canonical,
+  opt-in FP32 `.jlfs` cache with signed-bit-preserving rows, decoder
+  provenance, SHA-256, atomic rollback and separate disk quota. Current
+  LibRaw still decodes RGBA64; `loadSource` does not use this new cache
+  until an independently verified FP32 decoder exists. See
+  [F3_FLOAT_SOURCE_CACHE_STAGE4.md](F3_FLOAT_SOURCE_CACHE_STAGE4.md).
 
 - **F3 stage 2 accepted:** `9969f5e510cb4886dd7e1632e28e3195337bdc07`,
   [run 38322823120](https://github.com/snailjayxxx/JixelLight/actions/runs/38322823120)

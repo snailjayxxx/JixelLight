@@ -44,6 +44,7 @@
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
+#include "core/raw/SensorMosaicAudit.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/scopes/ScopePlot.h"
 #include "core/image/ProcessedImageProvider.h"
@@ -301,6 +302,98 @@ private slots:
         QVERIFY(!cache.storeFloatScene(invalid,decoder));
         QCOMPARE(QDir(dir.path()).entryList({"*.jlfs"},QDir::Files).size(),1);
     }
+    void sensorMosaicAuditMeasuresOnlyUnprocessedSensorSamplesAndParities() {
+        const std::array<quint16,16> codes{
+            100,110,120,130, 140,150,160,170,
+            180,190,200,210, 220,230,240,250};
+        const SensorMosaicAudit::Layout layout{4,4,8,{0,0,4,4},120,230};
+        const auto result=SensorMosaicAudit::capture(codes.data(),layout);
+        QVERIFY(result.value("available").toBool());
+        QCOMPARE(result["schema"].toInt(),1);
+        QVERIFY(!result["rgb_demosaiced"].toBool());
+        QVERIFY(!result["black_subtracted"].toBool());
+        QCOMPARE(result["raw_width"].toInt(),4);
+        QCOMPARE(result["raw_height"].toInt(),4);
+        QCOMPARE(result["sample_count"].toInteger(),qint64(16));
+        QCOMPARE(result["minimum_code"].toInt(),100);
+        QCOMPARE(result["maximum_code"].toInt(),250);
+        QCOMPARE(result["mean_code"].toDouble(),175.0);
+        QCOMPARE(result["p50_code"].toInt(),170);
+        QCOMPARE(result["p99_code"].toInt(),240);
+        QCOMPARE(result["p999_code"].toInt(),240);
+        QCOMPARE(result["nominal_black_code"].toInteger(),qint64(120));
+        QCOMPARE(result["nominal_white_code"].toInteger(),qint64(230));
+        QCOMPARE(result["at_or_below_nominal_black_code"].toInteger(),qint64(3));
+        QCOMPARE(result["at_or_above_nominal_white_code"].toInteger(),qint64(3));
+        QCOMPARE(result["at_code_65535"].toInteger(),qint64(0));
+        QCOMPARE(result["active_bounds"].toArray(),QJsonArray({0,0,4,4}));
+        QCOMPARE(result["pixel_sha256"].toString().size(),64);
+        const auto parity=result["parity_2x2_raw_grid_not_cfa_color"].toArray();
+        QCOMPARE(parity.size(),4);
+        for(const auto &item:parity) QCOMPARE(item.toObject()["pixels"].toInteger(),qint64(4));
+        QCOMPARE(parity[0].toObject()["mean"].toDouble(),150.0); // (0,0),(2,0),(0,2),(2,2)
+        QVERIFY(result["note"].toString().contains("not actual recoverable highlight"));
+
+        const auto repeat=SensorMosaicAudit::capture(codes.data(),layout);
+        QCOMPARE(repeat,result);
+        auto changed=codes;
+        changed[0]=65535;
+        const auto modified=SensorMosaicAudit::capture(changed.data(),layout);
+        QVERIFY(modified.value("pixel_sha256")!=result.value("pixel_sha256"));
+        QCOMPARE(modified["at_code_65535"].toInteger(),qint64(1));
+        QCOMPARE(codes[0],quint16(100)); // audit must not mutate source
+    }
+
+    void sensorMosaicAuditActiveRectAndNominalThresholdsAreNotRgbRecovery() {
+        const std::array<quint16,16> codes{
+            100,110,120,130, 140,150,160,170,
+            180,190,200,210, 220,230,240,250};
+        SensorMosaicAudit::Layout layout{4,4,8,{1,1,2,2},0,0};
+        const auto subset=SensorMosaicAudit::capture(codes.data(),layout);
+        QVERIFY(subset["available"].toBool());
+        QCOMPARE(subset["sample_count"].toInteger(),qint64(4));
+        QCOMPARE(subset["minimum_code"].toInt(),150);
+        QCOMPARE(subset["maximum_code"].toInt(),200);
+        QCOMPARE(subset["p50_code"].toInt(),160);
+        QCOMPARE(subset["mean_code"].toDouble(),175.0);
+        QCOMPARE(subset["at_or_above_nominal_white_code"].toDouble(-1),-1.0);
+        QVERIFY(subset.value("at_or_above_nominal_white_code").isNull());
+        const auto groups=subset["parity_2x2_raw_grid_not_cfa_color"].toArray();
+        QCOMPARE(groups.size(),4);
+        for(const auto &entry:groups) QCOMPARE(entry.toObject()["pixels"].toInteger(),qint64(1));
+
+        layout.nominalWhite=180;layout.nominalBlack=150;
+        const auto thresholds=SensorMosaicAudit::capture(codes.data(),layout);
+        QCOMPARE(thresholds["at_or_above_nominal_white_code"].toInteger(),qint64(2));
+        QCOMPARE(thresholds["at_or_below_nominal_black_code"].toInteger(),qint64(1));
+        QVERIFY(thresholds["pixel_sha256"]==subset["pixel_sha256"]); // thresholds don't change raw U16 identity
+        layout.active={0,0,4,4};
+        QVERIFY(thresholds["pixel_sha256"]!=SensorMosaicAudit::capture(codes.data(),layout)["pixel_sha256"]);
+    }
+
+    void sensorMosaicAuditRejectsUnsafePitchBoundsAndCancellation() {
+        std::array<quint16,16> source{};source.fill(512);
+        const SensorMosaicAudit::Layout good{4,4,8,{0,0,4,4},512,4095};
+        const auto ok=SensorMosaicAudit::capture(source.data(),good);
+        QVERIFY(ok["available"].toBool());
+        QCOMPARE(ok["minimum_code"].toInt(),512);
+        QCOMPARE(ok["at_or_below_nominal_black_code"].toInteger(),qint64(16));
+        auto failed=SensorMosaicAudit::capture(nullptr,good);
+        QVERIFY(!failed["available"].toBool()); QVERIFY(!failed["reason"].toString().isEmpty());
+        for(auto bad:{SensorMosaicAudit::Layout{4,4,10,{0,0,4,4},0,0},
+                      SensorMosaicAudit::Layout{4,4,0,{0,0,4,4},0,0},
+                      SensorMosaicAudit::Layout{4,4,8,{-1,0,4,4},0,0},
+                      SensorMosaicAudit::Layout{4,4,8,{1,1,4,4},0,0},
+                      SensorMosaicAudit::Layout{4,4,8,{0,0,0,4},0,0},
+                      SensorMosaicAudit::Layout{32768,32768,65536,{0,0,32768,32768},0,0}}) {
+            failed=SensorMosaicAudit::capture(source.data(),bad);
+            QVERIFY(!failed["available"].toBool());QVERIFY(!failed["reason"].toString().isEmpty());
+        }
+        const auto token=std::make_shared<std::atomic_bool>(true);
+        failed=SensorMosaicAudit::capture(source.data(),good,token);
+        QVERIFY(!failed["available"].toBool());QCOMPARE(failed["reason"].toString(),QString("cancelled"));
+    }
+
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
         QImage source(256,1024,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000); source.setDotsPerMeterY(3100); source.setText("JixelLightSource","staging-test");

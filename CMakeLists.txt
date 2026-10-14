@@ -81,6 +81,7 @@ add_library(JixelLightCore STATIC
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
+    core/raw/SensorMosaicAudit.cpp
     core/scopes/ScopesEngine.cpp
     core/scopes/ScopePlot.cpp
     core/export/PngExporter.cpp
