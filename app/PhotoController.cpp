@@ -589,7 +589,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -650,6 +650,33 @@ void PhotoController::resetVignette() {
     persistAndApply("vignette_reset");
 }
 
+bool PhotoController::setLinearMaskEnabled(bool enabled) {
+    auto *state=mutableCurrentState();
+    if (!state) return false;
+    if (state->linearMaskEnabled==enabled) return true;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","mask.linear.enable"},{"enabled",enabled}})) return false;
+    persistAndApply("linear_mask_toggle",{{"enabled",enabled}});
+    return true;
+}
+bool PhotoController::setLinearMaskParameter(const QString &parameter,double value) {
+    auto *state=mutableCurrentState();
+    if (!state || !std::isfinite(value)) return false;
+    auto revised=*state;
+    if (!CommandRegistry::execute(revised,{{"command","mask.linear.set"},
+                                           {"parameter",parameter},{"value",value}})) return false;
+    if (revised.toJson()==state->toJson()) return true;
+    *state=std::move(revised);
+    persistAndApply("linear_mask_adjustment",{{"parameter",parameter},{"value",value}});
+    return true;
+}
+void PhotoController::resetLinearMask() {
+    auto *state=mutableCurrentState();
+    if (!state || !state->toJson().contains("linearMask")) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","mask.linear.reset"}})) return;
+    persistAndApply("linear_mask_reset");
+}
 void PhotoController::setBlackWhite(bool enabled) {
     auto *state=mutableCurrentState(); if (!state || state->blackWhite==enabled) return;
     m_photos[m_currentIndex].history.finish();

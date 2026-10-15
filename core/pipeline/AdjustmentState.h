@@ -34,6 +34,13 @@ struct AdjustmentState {
     double vignetteAmount = 0.0; // EV at the outer ellipse; negative darkens.
     double vignetteMidpoint = 0.5;
     double vignetteFeather = 1.0;
+    // F4 M1: one manual scene-linear graduated exposure mask.
+    // Normalized post-geometry/crop frame, not the pre-crop RAW sensor.
+    bool linearMaskEnabled = false;
+    double linearMaskExposure = 0.0; // EV -3..3
+    double linearMaskCenter = 0.5;   // position 0..1
+    double linearMaskFeather = 0.25; // half-width .02..1
+    double linearMaskAngle = 0.0;    // degrees -180..180, down=0, right=90
 
     // Independent monochrome rendering and eight hue-weighted luminance controls.
     // Values -100..100 map to -1..+1 EV; they do not modify Sony Look state.
@@ -86,6 +93,11 @@ struct AdjustmentState {
             {"greenCurve", toJsonArray(greenCurve)},
             {"blueCurve", toJsonArray(blueCurve)}
         };
+        if (linearMaskEnabled || linearMaskExposure!=0 || linearMaskCenter!=.5
+            || linearMaskFeather!=.25 || linearMaskAngle!=0)
+            result["linearMask"]=QJsonObject{{"schema",1},{"enabled",linearMaskEnabled},
+                {"exposure",linearMaskExposure},{"center",linearMaskCenter},
+                {"feather",linearMaskFeather},{"angle",linearMaskAngle}};
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
@@ -102,6 +114,22 @@ struct AdjustmentState {
         return result;
     }
 
+    static bool validLinearMaskJson(const QJsonObject &object) {
+        if (!object.contains("linearMask")) return true;
+        if (!object.value("linearMask").isObject()) return false;
+        const auto m=object.value("linearMask").toObject();
+        if (m.size()!=6 || !m.value("schema").isDouble() || m.value("schema").toDouble()!=1
+            || !m.value("enabled").isBool()) return false;
+        const auto range=[&](const char *name,double lo,double hi) {
+            const auto v=m.value(QLatin1String(name));
+            return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble()>=lo && v.toDouble()<=hi;
+        };
+        if (!range("exposure",-3,3) || !range("center",0,1) || !range("feather",.02,1)
+            || !range("angle",-180,180)) return false;
+        return m.value("enabled").toBool() || m.value("exposure").toDouble()!=0
+            || m.value("center").toDouble()!=.5 || m.value("feather").toDouble()!=.25
+            || m.value("angle").toDouble()!=0;
+    }
     static bool validVignetteJson(const QJsonObject &object) {
         if (!object.contains("vignette")) return true;
         if (!object["vignette"].isObject()) return false;
@@ -169,6 +197,14 @@ struct AdjustmentState {
         s.hue = o.value("hue").toDouble();
         s.saturation = o.value("saturation").toDouble();
         s.vibrance = o.value("vibrance").toDouble();
+        if (o.contains("linearMask") && validLinearMaskJson(o)) {
+            const auto m=o.value("linearMask").toObject();
+            s.linearMaskEnabled=m.value("enabled").toBool();
+            s.linearMaskExposure=m.value("exposure").toDouble();
+            s.linearMaskCenter=m.value("center").toDouble();
+            s.linearMaskFeather=m.value("feather").toDouble();
+            s.linearMaskAngle=m.value("angle").toDouble();
+        }
         if (o.contains("vignette") && validVignetteJson(o)) {
             const auto v=o["vignette"].toObject(); s.vignetteAmount=v["amount"].toDouble();
             s.vignetteMidpoint=v["midpoint"].toDouble(); s.vignetteFeather=v["feather"].toDouble();

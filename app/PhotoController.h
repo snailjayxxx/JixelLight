@@ -93,6 +93,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteAmount READ vignetteAmount WRITE setVignetteAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteMidpoint READ vignetteMidpoint WRITE setVignetteMidpoint NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool blackWhite READ blackWhite WRITE setBlackWhite NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList blackWhiteMix READ blackWhiteMix NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool gradingEnabled READ gradingEnabled WRITE setGradingEnabled NOTIFY adjustmentsChanged)
@@ -233,6 +234,12 @@ public:
     double highlights() const; double shadows() const; double whites() const; double blacks() const;
     double highlightRecovery() const; double hue() const; double saturation() const; double vibrance() const;
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
+    QVariantMap linearMask() const {
+        const auto state=currentState();
+        return {{"enabled",state.linearMaskEnabled},{"exposure",state.linearMaskExposure},
+                {"center",state.linearMaskCenter},{"feather",state.linearMaskFeather},
+                {"angle",state.linearMaskAngle}};
+    }
     bool blackWhite() const { return currentState().blackWhite; }
     QVariantList blackWhiteMix() const;
     bool gradingEnabled() const { return currentState().gradingEnabled; }
@@ -246,6 +253,9 @@ public:
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
     void setHighlightRecovery(double v); void setHue(double v); void setSaturation(double v); void setVibrance(double v);
     void setVignetteAmount(double v); void setVignetteMidpoint(double v); void setVignetteFeather(double v);
+    Q_INVOKABLE bool setLinearMaskEnabled(bool enabled);
+    Q_INVOKABLE bool setLinearMaskParameter(const QString &parameter,double value);
+    Q_INVOKABLE void resetLinearMask();
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();

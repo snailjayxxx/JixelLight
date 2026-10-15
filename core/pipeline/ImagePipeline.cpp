@@ -364,6 +364,16 @@ inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
     if (kernel.flags.w > 0.0f) v = scale(v, kernel.flags.w); // camera/model exposure zero-point only
     return v;
 }
+inline Vec3 applyLinearMask(Vec3 v,const ColorKernel &kernel,int x,int y) {
+    const auto m=kernel.plan.data[ProcessingPlan::LinearMask];
+    if (m.x==0.0f) return v;
+    const auto map=kernel.pixelMap;
+    const float dx=map.x+(float(x)-kernel.centerX)*map.z;
+    const float dy=map.y+(float(y)-kernel.centerY)*map.w;
+    const float cosine=kernel.plan.data[ProcessingPlan::LinearMaskDirection].x;
+    const float position=dx*m.w+dy*cosine;
+    return scale(v,std::exp2(m.x*smooth(.5f+(position-m.y)/m.z)));
+}
 inline Vec3 applyVignette(Vec3 v,const ColorKernel &kernel,int x,int y) {
     const auto p=kernel.vignette; if (p.x==0) return v;
     const auto map=kernel.pixelMap;
@@ -477,6 +487,8 @@ struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
 template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe) {
     observe(ColorStage::InputLinear,v);
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
+    // Preexisting vignette diagnostic boundary includes this spatial gain.
+    v=applyLinearMask(v,kernel,x,y);
     v=applyVignette(v,kernel,x,y); observe(ColorStage::Vignette,v);
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
     v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
@@ -529,6 +541,15 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     const auto finite=[](double value,double fallback,double lo,double hi) { return float(std::clamp(std::isfinite(value)?value:fallback,lo,hi)); };
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[FrameRect]={0,0,1,1};
+    constexpr float rad=3.14159265358979323846f/180.0f;
+    const float angle=finite(state.linearMaskAngle,0,-180,180)*rad;
+    plan.data[LinearMask]={
+        state.linearMaskEnabled ? finite(state.linearMaskExposure,0,-3,3) : 0.0f,
+        2*finite(state.linearMaskCenter,.5,0,1)-1,
+        2*finite(state.linearMaskFeather,.25,.02,1),
+        std::sin(angle)
+    };
+    plan.data[LinearMaskDirection]={std::cos(angle),0,0,0};
     plan.rawSource = rawSource;
     plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;
     plan.data[BlackWhite]={state.blackWhite?1.0f:0.0f,0,0,0};

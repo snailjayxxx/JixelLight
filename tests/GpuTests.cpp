@@ -392,6 +392,23 @@ private slots:
                 QVERIFY(!engine->lastProcessUsedCpuFallback());
             }
     }
+    void linearMaskCpuGpuParityIncludesFullImageViewportAndAlpha() {
+        QImage source(71,93,QImage::Format_RGBA64);
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*941+y*113)%65536,(x*433+y*277)%65536,(x*1531+y*71)%65536,alpha[(x+y)%4]);
+        for(double angle : {0.0,90.0,-45.0,180.0})
+            for(const auto &frame : {QRectF(0,0,1,1),QRectF(.13,.18,.52,.43)})
+                for(int encoding=0;encoding<2;++encoding)
+                    for(const auto space : {ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::ProPhotoRgb}) {
+                        AdjustmentState mask;mask.linearMaskEnabled=true;mask.linearMaskExposure=-2;
+                        mask.linearMaskCenter=.4;mask.linearMaskFeather=.35;mask.linearMaskAngle=angle;
+                        mask.vignetteAmount=-.3;
+                        verifyParity(source,mask,ImagePipeline::InputEncoding(encoding),space,true,"graduated linear mask",frame);
+                        if(QTest::currentTestFailed())return;
+                    }
+    }
     void vignetteCpuGpuParityIncludesFullFrameAndViewportCoordinates() {
         QImage source(71,93,QImage::Format_RGBA64);
         const std::array<quint16,4> alpha{0,1,23456,65535};

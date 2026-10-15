@@ -1479,6 +1479,106 @@ private slots:
         QVERIFY(!reopened.blackWhite()); QCOMPARE(reopened.blackWhiteMix().at(0).toDouble(),0.0);
         reopened.undo(); QCOMPARE(reopened.gpuPlan(true).state.toJson(),snapshot);
     }
+    void linearMaskSceneLinearPixelGeometryAndViewport() {
+        const auto legacy=AdjustmentState{}.toJson();
+        QVERIFY(!legacy.contains("linearMask"));
+        QImage source(27,19,QImage::Format_RGBA64);
+        source.fill(QColor::fromRgba64(8000,14000,22000,23456));
+        const auto neutral=ImagePipeline::process(source,{},ImagePipeline::InputEncoding::LinearProPhoto);
+        AdjustmentState effect; effect.linearMaskEnabled=true; effect.linearMaskExposure=1.5;
+        effect.linearMaskCenter=.5; effect.linearMaskFeather=.2;
+        const auto plan=ProcessingPlan::compile(effect,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                ColorManagement::OutputSpace::SRgb,false,0);
+        const auto full=ImagePipeline::processWithPlan(source,plan);
+        QVERIFY(!full.isNull());
+        QCOMPARE(full.pixelColor(13,0),neutral.pixelColor(13,0));
+        QVERIFY(full.pixelColor(13,18).red()>neutral.pixelColor(13,18).red());
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            QCOMPARE(full.pixelColor(x,y).rgba64().alpha(),quint16(23456));
+        QCOMPARE(ImagePipeline::processRegion(source,plan,QRect(0,5,27,10)),full.copy(0,5,27,10));
+        QCOMPARE(ImagePipeline::diagnoseWithPlan(source,plan).image,full);
+        const QRect roi(5,4,12,9);
+        auto viewport=plan;
+        viewport.setFrameRect(QRectF(double(roi.x())/source.width(),double(roi.y())/source.height(),
+                                     double(roi.width())/source.width(),double(roi.height())/source.height()));
+        const auto cropped=ImagePipeline::processWithPlan(source.copy(roi),viewport);
+        int maxDelta=0;
+        for(int y=0;y<roi.height();++y)for(int x=0;x<roi.width();++x) {
+            const auto a=cropped.pixelColor(x,y).rgba64(),b=full.pixelColor(x+roi.x(),y+roi.y()).rgba64();
+            maxDelta=std::max({maxDelta,std::abs(int(a.red())-int(b.red())),
+                               std::abs(int(a.green())-int(b.green())),
+                               std::abs(int(a.blue())-int(b.blue()))});
+        }
+        QVERIFY2(maxDelta<=2,qPrintable(QString::number(maxDelta)));
+        effect.linearMaskAngle=90;
+        const auto horizontal=ImagePipeline::process(source,effect,ImagePipeline::InputEncoding::LinearProPhoto);
+        QCOMPARE(horizontal.pixelColor(0,9),neutral.pixelColor(0,9));
+        QVERIFY(horizontal.pixelColor(26,9).red()>neutral.pixelColor(26,9).red());
+        QCOMPARE(source.pixelColor(0,0).rgba64().red(),quint16(8000));
+        QVERIFY(StageGraph::renderKey(source,plan)!=StageGraph::renderKey(source,ProcessingPlan::compile(
+            {},ImagePipeline::InputEncoding::LinearProPhoto)));
+    }
+    void linearMaskCommandsSnapshotsHistoryAndXmpPresets() {
+        AdjustmentState state;const auto legacy=state.toJson();
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.linear.set"},{"parameter","center"},{"value",.35}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.linear.set"},{"parameter","exposure"},{"value",-1.75}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.linear.set"},{"parameter","angle"},{"value",-45}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.linear.enable"},{"enabled",true}}));
+        const auto saved=state.toJson();
+        QVERIFY(AdjustmentState::validLinearMaskJson(saved));
+        QCOMPARE(AdjustmentState::fromJson(saved).toJson(),saved);
+        for(const auto *key : {"schema","enabled","exposure","center","feather","angle"}) {
+            auto bad=saved;auto obj=bad["linearMask"].toObject();obj.remove(key);bad["linearMask"]=obj;
+            QVERIFY(!AdjustmentState::validLinearMaskJson(bad));
+        }
+        const auto invalid=[&](const char *key,QJsonValue value) {
+            auto bad=saved;auto obj=bad["linearMask"].toObject();obj[key]=value;bad["linearMask"]=obj;
+            return !AdjustmentState::validLinearMaskJson(bad);
+        };
+        QVERIFY(invalid("schema",2));QVERIFY(invalid("exposure",-4));
+        QVERIFY(invalid("center",1.1));QVERIFY(invalid("feather",0));
+        QVERIFY(invalid("angle",181));QVERIFY(invalid("enabled",1));QVERIFY(invalid("extra",true));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.linear.set"},{"parameter","feather"},{"value",0}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.linear.set"},{"parameter","other"},{"value",0}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.linear.enable"},{"enabled",1}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.linear.reset"},{"extra",1}}));
+        QCOMPARE(state.toJson(),saved);
+        EditHistory history;history.initialize({});history.record(state,"mask");
+        EditHistory restored;QVERIFY(restored.restore(history.toJson(),state));
+        QCOMPARE(restored.undo().toJson(),legacy);QCOMPARE(restored.redo().toJson(),saved);
+        AdjustmentState target;target.exposure=.6;
+        QVERIFY(AdjustmentTransfer::apply(target,state,{"masks"}));
+        QCOMPARE(target.toJson()["linearMask"],saved["linearMask"]);QCOMPARE(target.exposure,.6);
+        QTemporaryDir temp;QString error;NamedPresets presets(temp.filePath("presets.json"));
+        QVERIFY(presets.load(&error));QVERIFY2(presets.save("Gradient",state,&error),qPrintable(error));
+        AdjustmentState preset;QVERIFY(presets.get("Gradient",&preset));QCOMPARE(preset.toJson(),saved);
+        const auto xmp=temp.filePath("linear-mask.xmp");
+        QVERIFY2(XmpSidecar::writeNew(xmp,state,{},0,"none",&error),qPrintable(error));
+        XmpSidecar::Document doc;QVERIFY2(XmpSidecar::read(xmp,&doc,&error),qPrintable(error));
+        QCOMPARE(doc.adjustments.toJson(),saved);
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.linear.reset"}}));
+        QCOMPARE(state.toJson(),legacy);
+    }
+    void linearMaskControllerUndoAndProjectPersistence() {
+        QTemporaryDir temp;QImage source(19,17,QImage::Format_RGB32);source.fill(QColor(76,120,158));
+        const auto path=temp.filePath("linear.png");QVERIFY(source.save(path));
+        PhotoController controller(nullptr);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QVERIFY(controller.setLinearMaskParameter("exposure",-1.3));
+        QVERIFY(controller.setLinearMaskParameter("center",.42));
+        QVERIFY(controller.setLinearMaskEnabled(true));
+        const auto saved=controller.gpuPlan(true).state.toJson();
+        QVERIFY(saved.contains("linearMask"));QCOMPARE(controller.linearMask().value("center").toDouble(),.42);
+        controller.finishInteraction();controller.resetLinearMask();
+        QVERIFY(!controller.gpuPlan(true).state.toJson().contains("linearMask"));
+        controller.undo();QCOMPARE(controller.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(temp.path()),"LinearMask"));
+        QVERIFY(controller.flushEdits());
+        PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(reopened.setLinearMaskEnabled(false));
+        reopened.undo();QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+    }
     void vignetteUsesKnownSceneExposureAndPreservesDefaultsAndAlpha() {
         QImage source(9,9,QImage::Format_RGBA64); source.fill(QColor::fromRgba64(10000,10000,10000,32768));
         const auto plain=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);

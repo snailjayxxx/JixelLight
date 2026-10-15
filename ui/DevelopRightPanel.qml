@@ -16,6 +16,7 @@ Rectangle {
     property bool exifExpanded: false
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
+    property bool linearMaskExpanded: false
     property bool blackWhiteExpanded: false
     property bool colorGradingExpanded: false
     color: "#15191f"
@@ -31,6 +32,7 @@ Rectangle {
         property alias exifExpanded: root.exifExpanded
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
+        property alias linearMaskExpanded: root.linearMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
         property alias colorGradingExpanded: root.colorGradingExpanded
     }
@@ -485,6 +487,59 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("裁切后椭圆暗角；负值压暗边缘，正值提亮。在线性工作空间、明暗映射之前执行。",
                             "Post-crop ellipse; negative darkens edges, positive brightens. Applied in linear working space before tone mapping.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "linearMaskToggle"; Layout.fillWidth: true; font.bold: true
+                        text: (root.linearMaskExpanded ? "▾ " : "▸ ") + root.t("局部线性蒙版 (1)", "LINEAR MASK (1)")
+                        onClicked: root.linearMaskExpanded = !root.linearMaskExpanded
+                    }
+                    Button {
+                        objectName: "linearMaskReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage
+                        onClicked: root.controller.resetLinearMask()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 6; visible: root.linearMaskExpanded
+                    CheckBox {
+                        objectName: "linearMaskEnable"; Layout.fillWidth: true
+                        text: root.t("启用渐变曝光", "Enable graduated exposure")
+                        checked: root.controller.linearMask.enabled
+                        enabled: root.controller.hasImage
+                        onToggled: root.controller.setLinearMaskEnabled(checked)
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "linearMaskExposureSlider"
+                        label: root.t("局部曝光 EV", "Local exposure EV"); from: -3; to: 3
+                        decimals: 2; value: root.controller.linearMask.exposure
+                        onEdited: function(v) { root.controller.setLinearMaskParameter("exposure",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "linearMaskCenterSlider"
+                        label: root.t("位置", "Position"); from: 0; to: 1
+                        decimals: 2; value: root.controller.linearMask.center
+                        onEdited: function(v) { root.controller.setLinearMaskParameter("center",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "linearMaskFeatherSlider"
+                        label: root.t("羽化宽度", "Feather width"); from: .02; to: 1
+                        decimals: 2; value: root.controller.linearMask.feather
+                        onEdited: function(v) { root.controller.setLinearMaskParameter("feather",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "linearMaskAngleSlider"
+                        label: root.t("方向 (°)", "Angle (°)"); from: -180; to: 180
+                        decimals: 0; value: root.controller.linearMask.angle
+                        onEdited: function(v) { root.controller.setLinearMaskParameter("angle",v) }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("初版支持一个手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；画布手柄、笔刷、径向及颜色蒙版尚未实现。",
+                                     "One manual gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles, brush, radial and color masks are not yet available.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

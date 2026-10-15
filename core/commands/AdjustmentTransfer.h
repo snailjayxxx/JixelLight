@@ -7,7 +7,7 @@
 // metadata, catalog annotations and history are never part of a transfer.
 namespace AdjustmentTransfer {
 inline QStringList allGroups() {
-    return {"exposure","white_balance","tone","color","hsl","curves","sony_look","effects","geometry"};
+    return {"exposure","white_balance","tone","color","hsl","curves","sony_look","effects","masks","geometry"};
 }
 inline bool validGroups(const QStringList &groups) {
     if (groups.isEmpty()) return false;
@@ -37,6 +37,13 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         else if (group=="sony_look") target.look=source.look;
         else if (group=="effects") {
             target.vignetteAmount=source.vignetteAmount; target.vignetteMidpoint=source.vignetteMidpoint; target.vignetteFeather=source.vignetteFeather;
+        }
+        else if (group=="masks") {
+            target.linearMaskEnabled=source.linearMaskEnabled;
+            target.linearMaskExposure=source.linearMaskExposure;
+            target.linearMaskCenter=source.linearMaskCenter;
+            target.linearMaskFeather=source.linearMaskFeather;
+            target.linearMaskAngle=source.linearMaskAngle;
         }
         else if (group=="geometry") target.geometry=source.geometry;
     }

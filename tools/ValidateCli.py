@@ -38,7 +38,7 @@ def main():
             return process
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 15
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
@@ -155,6 +155,29 @@ def main():
         result = json.loads(run('--commands', commands, source, reset_vignette).stdout)
         assert 'vignette' not in result['adjustments'] and result['adjustments']['exposure'] == 1
         assert png_pixel_stream(reset_vignette) == png_pixel_stream(plain)
+        gradient = [
+            {'command': 'mask.linear.enable', 'enabled': True},
+            {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': -1.5},
+            {'command': 'mask.linear.set', 'parameter': 'center', 'value': .5},
+            {'command': 'mask.linear.set', 'parameter': 'feather', 'value': .25},
+            {'command': 'mask.linear.set', 'parameter': 'angle', 'value': 0},
+        ]
+        commands.write_text(json.dumps(exposure+gradient))
+        gradient_png=root/'linear-mask.png'
+        result=json.loads(run('--commands',commands,source,gradient_png).stdout)
+        assert result['adjustments']['linearMask']=={
+            'schema':1,'enabled':True,'exposure':-1.5,'center':.5,'feather':.25,'angle':0}
+        assert png_pixel_stream(gradient_png)!=png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure+gradient+[{'command':'mask.linear.enable','enabled':False}]))
+        disabled_png=root/'linear-mask-disabled.png'
+        result=json.loads(run('--commands',commands,source,disabled_png).stdout)
+        assert not result['adjustments']['linearMask']['enabled']
+        assert png_pixel_stream(disabled_png)==png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure+gradient+[{'command':'mask.linear.reset'}]))
+        reset_png=root/'linear-mask-reset.png'
+        result=json.loads(run('--commands',commands,source,reset_png).stdout)
+        assert 'linearMask' not in result['adjustments']
+        assert png_pixel_stream(reset_png)==png_pixel_stream(plain)
         grading = [
             {'command': 'grading.enable', 'enabled': True},
             {'command': 'grading.set', 'region': 0, 'component': 'hue', 'value': 18},
@@ -202,6 +225,13 @@ def main():
             {'command': 'grading.set', 'region': 2, 'component': 'hue', 'value': None},
             {'command': 'grading.balance', 'value': '20'},
             {'command': 'grading.reset', 'extra': 1},
+            {'command': 'mask.linear.enable', 'enabled': 1},
+            {'command': 'mask.linear.set', 'parameter': 'center', 'value': 1.2},
+            {'command': 'mask.linear.set', 'parameter': 'feather', 'value': 0},
+            {'command': 'mask.linear.set', 'parameter': 'angle', 'value': 181},
+            {'command': 'mask.linear.set', 'parameter': 'unknown', 'value': 0},
+            {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': '2'},
+            {'command': 'mask.linear.reset', 'extra': 1},
             {'command': 'develop.set', 'parameter': 'vignetteAmount', 'value': '-1'},
             {'command': 'develop.set', 'parameter': 'vignetteFeather', 'value': None},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
@@ -492,7 +522,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

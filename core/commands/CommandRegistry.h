@@ -74,6 +74,30 @@ struct CommandRegistry {
         if (name == "develop.reset") {
             if (!fields(command,{})) return fail(); state = {}; return true;
         }
+        if (name == "mask.linear.enable") {
+            if (!fields(command,{"enabled"}) || !command.value("enabled").isBool()) return fail();
+            state.linearMaskEnabled=command.value("enabled").toBool();
+            return true;
+        }
+        if (name == "mask.linear.set") {
+            if (!fields(command,{"parameter","value"}) || !command.value("parameter").isString()
+                || !number(command,"value")) return fail();
+            const QString key=command.value("parameter").toString();
+            const double value=command.value("value").toDouble();
+            double *field=nullptr, minimum=0, maximum=0;
+            if (key=="exposure") { field=&state.linearMaskExposure; minimum=-3; maximum=3; }
+            else if (key=="center") { field=&state.linearMaskCenter; minimum=0; maximum=1; }
+            else if (key=="feather") { field=&state.linearMaskFeather; minimum=.02; maximum=1; }
+            else if (key=="angle") { field=&state.linearMaskAngle; minimum=-180; maximum=180; }
+            if (!field || value<minimum || value>maximum) return fail();
+            *field=value; return true;
+        }
+        if (name == "mask.linear.reset") {
+            if (!fields(command,{})) return fail();
+            state.linearMaskEnabled=false; state.linearMaskExposure=0;
+            state.linearMaskCenter=.5; state.linearMaskFeather=.25; state.linearMaskAngle=0;
+            return true;
+        }
         if (name == "vignette.reset") {
             if (!fields(command,{})) return fail();
             state.vignetteAmount=0; state.vignetteMidpoint=.5; state.vignetteFeather=1; return true;
@@ -176,6 +200,14 @@ struct CommandRegistry {
         const QJsonArray commands{
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
+            QJsonObject{{"name","mask.linear.enable"},{"fields",QJsonArray{"enabled"}},
+                {"operation","enable or disable one linear gradient without losing stored controls"}},
+            QJsonObject{{"name","mask.linear.set"},{"fields",QJsonArray{"parameter","value"}},
+                {"parameters",QJsonArray{"exposure","center","feather","angle"}},
+                {"ranges","exposure [-3,3] EV; center [0,1]; feather [.02,1]; angle [-180,180] degrees"},
+                {"range_policy","reject"}},
+            QJsonObject{{"name","mask.linear.reset"},{"fields",QJsonArray{}},
+                {"operation","reset local linear gradient only"}},
             QJsonObject{{"name","vignette.reset"},{"fields",QJsonArray{}},{"operation","reset post-crop vignette amount/midpoint/feather; preserve other edits"}},
             QJsonObject{{"name","bw.enable"},{"fields",QJsonArray{"enabled"}},{"operation","toggle monochrome without discarding 8 color-channel luminance values"}},
             QJsonObject{{"name","bw.set"},{"fields",QJsonArray{"band","value"}},{"band",QJsonArray{0,7}},{"value",QJsonArray{-100,100}},{"range_policy","clamp"},{"unit","1/100 EV"}},
