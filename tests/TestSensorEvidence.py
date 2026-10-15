@@ -151,6 +151,28 @@ class SensorEvidenceTests(unittest.TestCase):
         self.assertTrue(any("ISO" in gap for gap in result["coverage"]["remainingEvidence"]))
         self.assertFalse(result["cameraCalibrationAccepted"])
 
+
+    def test_real_sony_exif_exposure_formats_and_coverage_are_numeric(self):
+        self.assertAlmostEqual(evidence.shutter_seconds("1/800 s"), 1/800)
+        self.assertAlmostEqual(evidence.shutter_seconds("1/250 sec"), 1/250)
+        self.assertAlmostEqual(evidence.shutter_seconds("1/60s"), 1/60)
+        self.assertIsNone(evidence.shutter_seconds("1/0 s"))
+        self.assertEqual(evidence.aperture_fnumber("F2.8"), 2.8)
+        self.assertEqual(evidence.aperture_fnumber("F8"), 8.)
+        self.assertEqual(evidence.exposure_bias_stops("0 EV"), 0.)
+        self.assertAlmostEqual(evidence.exposure_bias_stops("+1/3 EV"), 1/3)
+        self.assertIsNone(evidence.exposure_bias_stops("unknown"))
+        for i, scene in enumerate(self.matrix["scenes"]):
+            scene["cameraEvidence"]["shutterText"] = ["1/800 s", "1/250 s", "1/60 s"][i]
+            scene["cameraEvidence"]["apertureText"] = ["F2.8", "F8", "F2.8"][i]
+            scene["cameraEvidence"]["exposureBiasText"] = "0 EV"
+        report = evidence.analyze(self.manifest, self.matrix)
+        self.assertEqual(len(report["coverage"]["distinctShutterSeconds"]), 3)
+        self.assertEqual(report["coverage"]["distinctApertureFNumbers"], [2.8, 8.0])
+        self.assertEqual(report["coverage"]["distinctExposureBiasStops"], [0.0])
+        self.assertFalse(any("shutter exposures" in gap for gap in report["coverage"]["remainingEvidence"]))
+        self.assertFalse(report["cameraCalibrationAccepted"])
+
     def test_save_report_is_atomic_and_does_not_copy_image(self):
         output = evidence.analyze(self.manifest, self.matrix)
         with tempfile.TemporaryDirectory() as directory:

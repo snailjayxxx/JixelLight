@@ -71,9 +71,10 @@ def iso_number(text: Any) -> int | None:
 def shutter_seconds(text: Any) -> float | None:
     if not isinstance(text, str):
         return None
-    s = text.strip()
+    s = re.sub(r"\s*(?:s|sec|secs|second|seconds)\s*$", "", text.strip(), flags=re.IGNORECASE).strip()
     if "/" in s:
         a, slash, b = s.partition("/")
+        a, b = a.strip(), b.strip()
         if not (a.isdecimal() and b.isdecimal() and int(b) > 0):
             return None
         result = int(a) / int(b)
@@ -82,6 +83,34 @@ def shutter_seconds(text: Any) -> float | None:
     else:
         return None
     return result if math.isfinite(result) and 0 < result <= 86400 else None
+
+
+def aperture_fnumber(text: Any) -> float | None:
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if s.startswith(("F", "f")):
+        s = s[1:].strip()
+    if not _NUMBER.fullmatch(s):
+        return None
+    f = float(s)
+    return f if math.isfinite(f) and 0.5 <= f <= 128 else None
+
+
+def exposure_bias_stops(text: Any) -> float | None:
+    if not isinstance(text, str):
+        return None
+    s = re.sub(r"\s*EV\s*$", "", text.strip(), flags=re.IGNORECASE).strip()
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", s):
+        bias = float(s)
+    elif re.fullmatch(r"[+-]?\d+/\d+", s):
+        numerator, denominator = s.split("/")
+        if int(denominator) == 0:
+            return None
+        bias = int(numerator) / int(denominator)
+    else:
+        return None
+    return bias if math.isfinite(bias) and -16 <= bias <= 16 else None
 
 
 def audit_evidence(audit: Any, *, required: bool) -> dict:
@@ -228,7 +257,7 @@ def analyze(manifest: Any, matrix: Any) -> dict:
             "No independent train/validation scenes")
     result_scenes = []
     seen_scenes, captures = set(), set()
-    models, isos, shutters = set(), set(), set()
+    models, isos, shutters, apertures, exposure_biases = set(), set(), set(), set(), set()
     for value in scenes:
         scene = obj(value, "native measurement scene")
         ident = scene.get("id")
@@ -257,10 +286,16 @@ def analyze(manifest: Any, matrix: Any) -> dict:
         models.add(model)
         iso = iso_number(camera.get("isoText"))
         shutter = shutter_seconds(camera.get("shutterText"))
+        aperture = aperture_fnumber(camera.get("apertureText"))
+        exposure_bias = exposure_bias_stops(camera.get("exposureBiasText"))
         if iso is not None:
             isos.add(iso)
         if shutter is not None:
             shutters.add(shutter)
+        if aperture is not None:
+            apertures.add(aperture)
+        if exposure_bias is not None:
+            exposure_biases.add(exposure_bias)
         audit = audit_evidence(scene.get("sensorUnpackedAudit"),
                                required=expected["auditRequired"])
         compare = route_metrics(scene)
@@ -268,6 +303,7 @@ def analyze(manifest: Any, matrix: Any) -> dict:
             "id": ident, "role": expected["role"], "model": model, "make": make,
             "rawSha256": expected["raw"], "jpegSha256": expected["jpeg"],
             "iso": iso, "shutterSeconds": shutter,
+            "apertureFNumber": aperture, "exposureBiasStops": exposure_bias,
             "captureTime": capture,
             "sensorAudit": audit, "pairedCameraJpeg": compare,
         })
@@ -280,6 +316,10 @@ def analyze(manifest: Any, matrix: Any) -> dict:
         coverage_gaps.append("fewer than 3 independent ISO settings")
     if len(shutters) < 3:
         coverage_gaps.append("fewer than 3 distinct shutter exposures")
+    if len(apertures) < 3:
+        coverage_gaps.append("fewer than 3 distinct apertures")
+    if len(exposure_biases) < 2:
+        coverage_gaps.append("only one or no distinct exposure-compensation settings")
     if sum(1 for s in result_scenes if s["sensorAudit"]["available"]) < len(result_scenes):
         coverage_gaps.append("one or more sensor mosaics unavailable")
     coverage_gaps.extend([
@@ -302,6 +342,8 @@ def analyze(manifest: Any, matrix: Any) -> dict:
                    "trainCount": roles["train"], "heldoutCount": roles["validation"]},
         "coverage": {"models": sorted(models), "distinctIso": sorted(isos),
                      "distinctShutterSeconds": sorted(shutters),
+                     "distinctApertureFNumbers": sorted(apertures),
+                     "distinctExposureBiasStops": sorted(exposure_biases),
                      "remainingEvidence": coverage_gaps},
         "scenes": result_scenes,
     }
