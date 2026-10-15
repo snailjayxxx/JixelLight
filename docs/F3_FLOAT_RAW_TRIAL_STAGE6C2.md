@@ -1,7 +1,7 @@
 # F3 Stage 6C.2 — opt-in real RAW FP32 calibration trial and patch evaluator
 
 Branch: design/lightcraft-fusion-20261008; PR #16 stays Draft.
-Status: implementation pending exact-HEAD CI; NOT production calibrated.
+Status: **isolated research tool accepted** at 6fc358d4a8174b1e0aa843634480b11d66e2e507 via [CI 38737985662](https://github.com/snailjayxxx/JixelLight/actions/runs/38737985662), all Windows x64/macOS arm64/Linux GPU Success. Camera-specific FP32 RAW fidelity remains **not calibrated and not accepted**.
 
 ## Why this stage exists
 

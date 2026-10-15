@@ -808,6 +808,42 @@ private slots:
             invalid,QRect(0,0,4,4),reference,QByteArray(64,'a'),&error).isEmpty());
     }
 
+
+    void offlineRawProbeRequiresImmutableOriginalAndRefusesFakeRaw() {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const auto path=temporary.filePath(QStringLiteral("not-a-sensor.arw"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray contents("Not an actual camera RAW sensor");
+        QCOMPARE(file.write(contents),qint64(contents.size()));
+        file.close();
+        QString error;
+        auto result=RawDecoder::inspectUnpacked(path,QByteArray(64,'a'),&error);
+        QVERIFY(!result.value("available").toBool());
+        QCOMPARE(result.value("schema").toInt(),1);
+        QVERIFY(!result.value("cameraCalibrationAccepted").toBool());
+        QVERIFY(!result.value("defaultRawReplacementAllowed").toBool());
+        QVERIFY(!error.isEmpty());
+        const QByteArray exact=QCryptographicHash::hash(contents,QCryptographicHash::Sha256).toHex();
+        result=RawDecoder::inspectUnpacked(path,exact,&error);
+        QVERIFY(!result.value("available").toBool());
+        QVERIFY(!error.isEmpty()); // LibRaw must refuse fabricated bytes
+        result=RawDecoder::inspectUnpacked(path,QByteArray(64,'A'),&error);
+        QVERIFY(!result.value("available").toBool());
+        QVERIFY(error.contains("lowercase"));
+        result=RawDecoder::inspectUnpacked(path,QByteArray{},&error);
+        QVERIFY(!result.value("available").toBool());
+        QVERIFY(error.contains("SHA-256"));
+        const auto stop=std::make_shared<std::atomic_bool>(true);
+        result=RawDecoder::inspectUnpacked(path,exact,&error,stop);
+        QVERIFY(!result.value("available").toBool());
+        QCOMPARE(error,QStringLiteral("cancelled"));
+        // No user-controlled source filename or absolute private path in failures.
+        const QByteArray serialized=QJsonDocument(result).toJson(QJsonDocument::Compact);
+        QVERIFY(!serialized.contains(path.toUtf8()));
+    }
+
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
         QImage source(256,1024,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000); source.setDotsPerMeterY(3100); source.setText("JixelLightSource","staging-test");

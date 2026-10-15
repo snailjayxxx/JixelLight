@@ -178,6 +178,10 @@ set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALS
 qt_add_executable(JixelLightFloatRawTrial tools/FloatRawTrial.cpp)
 target_link_libraries(JixelLightFloatRawTrial PRIVATE JixelLightCore)
 set_target_properties(JixelLightFloatRawTrial PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+# Offline/private fixtures are opt-in and never installed or uploaded as images.
+qt_add_executable(JixelLightOfflineRawProbe tools/OfflineRawProbe.cpp)
+target_link_libraries(JixelLightOfflineRawProbe PRIVATE JixelLightCore)
+set_target_properties(JixelLightOfflineRawProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}

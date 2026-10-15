@@ -118,6 +118,12 @@ jobs:
           TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
           test -n "$TRIAL"
           python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
@@ -183,7 +189,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json'),Path('build/offline-raw-probe.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -201,6 +207,7 @@ jobs:
             build/raw-render-matrix/
             build/sensor-evidence.json
             build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             display-color-gpu-validation.txt
@@ -316,6 +323,12 @@ jobs:
           TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
           test -n "$TRIAL"
           python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
@@ -335,7 +348,7 @@ jobs:
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json build/float-raw-readiness.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json build/float-raw-readiness.json build/offline-raw-probe.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -350,6 +363,7 @@ jobs:
             build/raw-render-matrix/
             build/sensor-evidence.json
             build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png

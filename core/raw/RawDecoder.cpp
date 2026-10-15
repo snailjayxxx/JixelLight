@@ -362,6 +362,109 @@ SensorFloatDevelop::Frame RawDecoder::calibratedFloatTile(
     return frame;
 }
 
+
+QJsonObject RawDecoder::inspectUnpacked(const QString &path,const QByteArray &expectedSha256,
+                                        QString *errorMessage,const CancelToken &cancel) {
+    if(errorMessage) errorMessage->clear();
+    const auto fail=[&](const QString &why) {
+        if(errorMessage) *errorMessage=why;
+        return QJsonObject{{"schema",1},{"available",false},{"reason",why},
+                           {"mode","source-sha-bound-unpack-only"},
+                           {"cameraCalibrationAccepted",false},
+                           {"defaultRawReplacementAllowed",false}};
+    };
+    if(cancelled(cancel)) return fail(QStringLiteral("cancelled"));
+    // We do not trust a basename, model string or file timestamp to identify
+    // immutable sensor evidence; require all 64 lowercase hexadecimal digits.
+    if(expectedSha256.size()!=64)return fail(QStringLiteral("Original RAW SHA-256 required"));
+    for(const char c:expectedSha256)
+        if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))
+            return fail(QStringLiteral("Invalid lowercase RAW SHA-256"));
+    if(!isRawFile(path))return fail(QStringLiteral("Original RAW format required"));
+    QFile file(path);
+    if(!file.open(QIODevice::ReadOnly)||file.size()<=0||file.size()>2LL*1024*1024*1024)
+        return fail(QStringLiteral("Original RAW unreadable or exceeds 2 GiB file limit"));
+    const qint64 originalSize=file.size();
+    const auto originalMtime=QFileInfo(path).lastModified();
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while(!file.atEnd()) {
+        if(cancelled(cancel))return fail(QStringLiteral("cancelled"));
+        const QByteArray chunk=file.read(1024*1024);
+        if(chunk.isEmpty())return fail(QStringLiteral("Cannot hash complete original RAW"));
+        hash.addData(chunk);
+    }
+    file.close();
+    if(hash.result().toHex()!=expectedSha256)
+        return fail(QStringLiteral("Original RAW SHA-256 does not match expected bytes"));
+    RawLease lease(cancel);
+    if(!lease.acquired)return fail(QStringLiteral("cancelled"));
+    auto decoder=std::make_unique<LibRaw>();
+    auto &raw=*decoder;
+    raw.set_progress_handler(rawProgress,const_cast<CancelToken *>(&cancel));
+#if defined(Q_OS_WIN)
+    int code=raw.open_file(reinterpret_cast<const wchar_t *>(path.utf16()));
+#else
+    const QByteArray nativePath=QFile::encodeName(path);
+    int code=raw.open_file(nativePath.constData());
+#endif
+    if(code!=LIBRAW_SUCCESS)return fail(libRawError(code));
+    const auto &sizes=raw.imgdata.sizes;
+    if(sizes.raw_width<=0||sizes.raw_height<=0||
+       quint64(sizes.raw_width)*sizes.raw_height>200000000ULL)
+        return fail(QStringLiteral("RAW sensor exceeds 200 million sites"));
+    const quint64 requestedLimit=quint64(std::max(256,qEnvironmentVariableIntValue(
+        "JIXELLIGHT_RAW_MEMORY_MB")))*1024*1024;
+    const quint64 limit=qEnvironmentVariableIsSet("JIXELLIGHT_RAW_MEMORY_MB")
+        ? requestedLimit : 3ULL*1024*1024*1024;
+    if(quint64(sizes.raw_width)*sizes.raw_height>limit/32)
+        return fail(QStringLiteral("RAW exceeds configured decode memory budget"));
+    if(cancelled(cancel))return fail(QStringLiteral("cancelled"));
+    code=raw.unpack();
+    if(code!=LIBRAW_SUCCESS)return fail(libRawError(code));
+    if(cancelled(cancel))return fail(QStringLiteral("cancelled"));
+    const auto &c=raw.imgdata.color;
+    const SensorMosaicAudit::Layout layout{
+        int(sizes.raw_width),int(sizes.raw_height),int(sizes.raw_pitch),
+        QRect(sizes.left_margin,sizes.top_margin,sizes.width,sizes.height),
+        c.black,c.maximum};
+    QJsonObject audit=SensorMosaicAudit::capture(raw.imgdata.rawdata.raw_image,layout,cancel);
+    if(cancelled(cancel))return fail(QStringLiteral("cancelled"));
+    const auto after=QFileInfo(path);
+    if(after.size()!=originalSize||after.lastModified()!=originalMtime)
+        return fail(QStringLiteral("RAW source file changed during sensor inspection"));
+    QJsonArray rawBlack,linearMax,asShotWb;
+    for(int i=0;i<4;++i) {
+        rawBlack.append(qint64(c.cblack[i]));
+        linearMax.append(qint64(c.linear_max[i]));
+        asShotWb.append(std::isfinite(c.cam_mul[i])?QJsonValue(double(c.cam_mul[i])):QJsonValue());
+    }
+    return QJsonObject{
+        {"schema",1},{"available",audit.value("available").toBool()},
+        {"mode","source-sha-bound-unpack-only"},
+        {"source_sha256",QString::fromLatin1(expectedSha256)},
+        {"source_bytes",originalSize},
+        {"make",QString::fromLatin1(raw.imgdata.idata.make).trimmed()},
+        {"model",QString::fromLatin1(raw.imgdata.idata.model).trimmed()},
+        {"libraw_version",QString::fromLatin1(LibRaw::version())},
+        {"raw_sensor_array",QJsonArray{int(sizes.raw_width),int(sizes.raw_height)}},
+        {"active_sensor_bounds",QJsonArray{int(sizes.left_margin),int(sizes.top_margin),
+                                            int(sizes.width),int(sizes.height)}},
+        {"camera_orientation_code",int(sizes.flip)},
+        {"nominal_black",qint64(c.black)},
+        {"nominal_white",qint64(c.maximum)},
+        {"black_channel_corrections",rawBlack},
+        {"linear_white_metadata_unverified",linearMax},
+        {"camera_wb_metadata_unverified",asShotWb},
+        {"raw_cfa_filters_unverified",qint64(raw.imgdata.idata.filters)},
+        {"sensorAudit",audit},
+        {"raw_demosaiced",false},{"image_rendered",false},
+        {"realFP32TrialExecuted",false},
+        {"cameraCalibrationAccepted",false},
+        {"defaultRawReplacementAllowed",false},
+        {"warning","Source hash and pre-demosaic U16 sensor diagnostics only; no photographic color validation"}
+    };
+}
+
 QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {
     if (cancelled(cancel)) return {};
     PerformanceSpan timer(QStringLiteral("raw_embedded_preview"));

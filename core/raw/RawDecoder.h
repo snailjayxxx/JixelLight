@@ -43,5 +43,11 @@ public:
         const SensorFloatDevelop::Profile &profile,const QRect &sampleRoi,
         const QRect &outputRoi,QString *errorMessage=nullptr,
         const CancelToken &cancel={});
+    // Laboratory-only pre-demosaic source inspection: verifies the entire
+    // original SHA-256 and unpacks only a bounded single-plane RAW mosaic.
+    // Never materializes or exports scene RGB, never modifies the normal RAW path.
+    static QJsonObject inspectUnpacked(const QString &path,
+        const QByteArray &expectedSha256,QString *errorMessage=nullptr,
+        const CancelToken &cancel={});
     static QImage thumbnail(const QString &path, const CancelToken &cancel = {});
 };
