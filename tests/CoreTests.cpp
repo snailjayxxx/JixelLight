@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "app/PhotoController.h"
+#include "app/SmokePhasePolicy.h"
 #include "core/color/ColorManagement.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
@@ -842,6 +843,22 @@ private slots:
         // No user-controlled source filename or absolute private path in failures.
         const QByteArray serialized=QJsonDocument(result).toJson(QJsonDocument::Compact);
         QVERIFY(!serialized.contains(path.toUtf8()));
+    }
+
+    void smokeExportDialogPhasesMustNotWaitForBackgroundImageRendering() {
+        QCOMPARE(SmokePhasePolicy::DeadlineMs,60000); // never relax the gate
+        for(int phase=290;phase<=295;++phase) {
+            QVERIFY(SmokePhasePolicy::isRenderIndependentExportUi(phase));
+            QVERIFY(SmokePhasePolicy::canAdvance(phase,false));
+            QVERIFY(SmokePhasePolicy::canAdvance(phase,true));
+        }
+        // Opening other tools and returning to the actual RAW/Scopes remain
+        // blocked until the real photo is fully rendered.
+        for(const int phase:{0,2,289,50,296}) {
+            QVERIFY(!SmokePhasePolicy::isRenderIndependentExportUi(phase));
+            QVERIFY(!SmokePhasePolicy::canAdvance(phase,false));
+            QVERIFY(SmokePhasePolicy::canAdvance(phase,true));
+        }
     }
 
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {

@@ -1,4 +1,5 @@
 #include "app/SmokeRun.h"
+#include "app/SmokePhasePolicy.h"
 #include "app/PhotoController.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include "diagnostics/LoggingEngine.h"
@@ -8,6 +9,7 @@
 #include <QTimer>
 #include <QSaveFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJSValue>
 #include <QMouseEvent>
 #include <QTemporaryDir>
@@ -122,6 +124,10 @@ void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
     struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
+    // Measured on *each* native desktop run: distinguish stalled UI phases
+    // from legitimate slow RAW development without altering the 60 s deadline.
+    auto observedPhase=std::make_shared<int>(-1);
+    auto phaseMilestones=std::make_shared<QJsonArray>();
     auto cropTrace=std::make_shared<QJsonObject>();
     auto scopePlots=std::make_shared<QJsonObject>();
     auto copyTrace=std::make_shared<QJsonObject>();
@@ -134,6 +140,18 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
         const bool ready=controller->previewReady() && !controller->loading() && !controller->rendering();
+        if (state->phase != *observedPhase) {
+            phaseMilestones->append(QJsonObject{
+                {"phase",state->phase},{"entered_ms",state->elapsed.elapsed()},
+                {"image_ready",ready},{"loading",controller->loading()},
+                {"rendering",controller->rendering()}});
+            *observedPhase=state->phase;
+        }
+        // Export naming UI operations do not consume the photo render result.
+        // Waiting for a CPU re-render here can consume the remaining 60 s
+        // budget while the dialog is already closed, blocking source restore.
+        // All real pixel/scope checks remain gated by 'ready', esp. phase 50.
+        const bool exportUiReady=SmokePhasePolicy::canAdvance(state->phase,ready);
         bool complete=false;
         if(state->phase==0 && ready) {
             // Every alpha.8 RAW smoke exercises the new look and independent reference UI.
@@ -627,13 +645,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             exportNamesTrace->insert("language",controller->language());
             exportNamesTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
             state->phase=290;
-        } else if (state->phase==290 && ready) {
+        } else if (state->phase==290 && exportUiReady) {
             auto *menu=window->findChild<QObject *>("exportActionsMenu");
             exportNamesTrace->insert("menu_visible",menu && menu->property("visible").toBool());
             exportNamesTrace->insert("action_clicked",clickItem(window,window->findChild<QQuickItem *>("batchExportAction")));
             if (menu) QMetaObject::invokeMethod(menu,"close");
             state->phase=291;
-        } else if (state->phase==291 && ready) {
+        } else if (state->phase==291 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
             auto *format=window->findChild<QQuickItem *>("batchExportFormat");
             exportNamesTrace->insert("dialog_visible",dialog && dialog->property("visible").toBool() && dialog->property("batchMode").toBool());
@@ -652,11 +670,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                     && visualChild(window->contentItem(),"exportSettingsContinue")->isEnabled());
             }
             state->phase=292;
-        } else if (state->phase==292 && ready) {
+        } else if (state->phase==292 && exportUiReady) {
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming.png");
             controller->setLanguage("en_US"); resizeForSmoke(window,1180,720);
             state->phase=293;
-        } else if (state->phase==293 && ready) {
+        } else if (state->phase==293 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-en.png");
             if (dialog) {
@@ -672,7 +690,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 exportNamesTrace->insert("missing_date_blocked",!objectMap(dialog,"namingPreview")["valid"].toBool() && ok && !ok->isEnabled());
             }
             state->phase=294;
-        } else if (state->phase==294 && ready) {
+        } else if (state->phase==294 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
             if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-invalid.png");
             if (dialog) {
@@ -683,7 +701,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             exportNamesTrace->insert("cancel_clicked",clickItem(window,visualChild(window->contentItem(),"exportSettingsCancel")));
             controller->setLanguage(exportNamesTrace->value("language").toString()); resizeForSmoke(window,1540,920);
             state->phase=295;
-        } else if (state->phase==295 && ready) {
+        } else if (state->phase==295 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
             const bool closed=dialog && !dialog->property("visible").toBool();
             if (!closed && state->elapsed.elapsed()<60000) return;
@@ -757,6 +775,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_color_grading_panel_trace"]=*gradingUiTrace;
         report["ui_export_naming_passed"]=exportNamesOk;
         report["ui_export_naming_trace"]=*exportNamesTrace;
+        report["smoke_phase_milestones"]=*phaseMilestones;
+        report["smoke_deadline_ms"]=SmokePhasePolicy::DeadlineMs;
+        report["smoke_final_image_ready"]=ready;
+        report["smoke_final_loading"]=controller->loading();
+        report["smoke_final_rendering"]=controller->rendering();
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);
