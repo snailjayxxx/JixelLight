@@ -52,7 +52,7 @@ SensorLinearMosaic::Tile SensorLinearMosaic::normalizeTile(
         tile.samples.clear();
         tile.statistics={};
         tile.decoderSignature.clear();
-        tile.rawRoi={};
+        tile.rawRoi={};tile.activeBounds={};
         return tile;
     };
     if(cancelled(cancel)) return fail("cancelled");
@@ -100,6 +100,7 @@ SensorLinearMosaic::Tile SensorLinearMosaic::normalizeTile(
         counts.append(siteCounts[std::size_t(i)]);
         cfa.append(int(calibration.cfa[std::size_t(i)]));
     }
+    tile.activeBounds=layout.active;
     tile.rawRoi=rawRoi;
     tile.decoderSignature=signature;
     tile.statistics=QJsonObject{

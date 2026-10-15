@@ -1,6 +1,6 @@
 # F3 Stage 6A — opt-in calibrated floating Bayer mosaic tiles
 
-Status: implemented on design/lightcraft-fusion-20261008; exact-head three-OS CI required for acceptance.
+Status: accepted at 986bfa8c17eae959d0def478d2f427ce9c126816; [CI 38700027102](https://github.com/snailjayxxx/JixelLight/actions/runs/38700027102) succeeded on Windows x64, macOS ARM64 and Linux GPU (148 core / 30 mandatory GPU / 27 performance per OS; 10/10 CTest, real RAW/JPEG, GUI and desktop packages). This does not validate camera-specific WB/matrix or actual default scene-linear FP32 RAW.
 
 ## Scope and safety contract
 

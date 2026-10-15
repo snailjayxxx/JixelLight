@@ -341,6 +341,27 @@ SensorLinearMosaic::Tile RawDecoder::calibratedMosaicTile(
     return tile;
 }
 
+SensorFloatDevelop::Frame RawDecoder::calibratedFloatTile(
+        const QString &path,const SensorLinearMosaic::Calibration &sensor,
+        const SensorFloatDevelop::Profile &profile,const QRect &sampleRoi,
+        const QRect &outputRoi,QString *errorMessage,const CancelToken &cancel) {
+    if(errorMessage) errorMessage->clear();
+    const auto refuse=[&](const QString &why) {
+        if(errorMessage) *errorMessage=why;
+        SensorFloatDevelop::Frame frame;frame.error=why;return frame;
+    };
+    if(cancelled(cancel)) return refuse(QStringLiteral("cancelled"));
+    if(!SensorFloatDevelop::validProfile(profile))
+        return refuse(QStringLiteral("Independent calibrated WB and color matrix are required"));
+    if(!outputRoi.isValid()||!sampleRoi.isValid()||!sampleRoi.contains(outputRoi))
+        return refuse(QStringLiteral("Output ROI must be inside sensor mosaic sampling ROI"));
+    const auto mosaic=calibratedMosaicTile(path,sensor,sampleRoi,errorMessage,cancel);
+    if(!mosaic.valid()) return refuse(mosaic.error);
+    auto frame=SensorFloatDevelop::developTile(mosaic,sensor,profile,outputRoi,cancel);
+    if(!frame.valid() && errorMessage) *errorMessage=frame.error;
+    return frame;
+}
+
 QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {
     if (cancelled(cancel)) return {};
     PerformanceSpan timer(QStringLiteral("raw_embedded_preview"));

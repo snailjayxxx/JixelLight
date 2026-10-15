@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include "core/async/LatestJob.h"
 #include "core/raw/SensorLinearMosaic.h"
+#include "core/raw/SensorFloatDevelop.h"
 
 struct RawMetadata {
     QString make;
@@ -36,5 +37,11 @@ public:
     static SensorLinearMosaic::Tile calibratedMosaicTile(const QString &path,
         const SensorLinearMosaic::Calibration &calibration, const QRect &rawRoi,
         QString *errorMessage=nullptr, const CancelToken &cancel={});
+    // Explicit laboratory float scene only, requires sensor+color calibration.
+    static SensorFloatDevelop::Frame calibratedFloatTile(
+        const QString &path,const SensorLinearMosaic::Calibration &sensor,
+        const SensorFloatDevelop::Profile &profile,const QRect &sampleRoi,
+        const QRect &outputRoi,QString *errorMessage=nullptr,
+        const CancelToken &cancel={});
     static QImage thumbnail(const QString &path, const CancelToken &cancel = {});
 };

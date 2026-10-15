@@ -24,6 +24,7 @@ struct SensorLinearMosaic final {
         std::array<quint32,4> white{}; // explicitly calibrated U16 white at each SITE
     };
     struct Tile {
+        QRect activeBounds; // sensor CFA phase / physical edge / halo validation
         QRect rawRoi; // absolute raw sensor coordinates
         QVector<float> samples; // row-major single-channel, no clamp to [0,1]
         QByteArray decoderSignature;

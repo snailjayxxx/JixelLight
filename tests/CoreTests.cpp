@@ -45,6 +45,7 @@
 #include "core/commands/NamedPresets.h"
 #include "core/raw/RawDecoder.h"
 #include "core/raw/SensorMosaicAudit.h"
+#include "core/raw/SensorFloatDevelop.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/scopes/ScopePlot.h"
 #include "core/image/ProcessedImageProvider.h"
@@ -490,6 +491,171 @@ private slots:
         result=RawDecoder::calibratedMosaicTile(path,c,valid,&error);
         QVERIFY(!result.valid());
         QVERIFY2(error.contains("SHA-256"),qPrintable(error));
+    }
+
+
+    void calibratedBayerFloatDemosaicPreservesHeadroomAndUsesColorProfile() {
+        SensorLinearMosaic::Calibration sensor;
+        sensor.sourceSha256=QByteArray(64,'a');sensor.calibrationSha256=QByteArray(64,'b');
+        sensor.cfa={0,1,3,2};
+        sensor.black={100,200,300,400};sensor.white={1100,1200,1300,1400};
+        SensorFloatDevelop::Profile profile;
+        profile.profileSha256=QByteArray(64,'c');
+        profile.whiteBalanceBySite={1.,2.,1.,1.};
+        QVERIFY(SensorFloatDevelop::validProfile(profile));
+        std::array<quint16,64> raw{};
+        for(int y=1;y<=6;++y) for(int x=1;x<=6;++x) {
+            const int site=(((y-1)&1)<<1)|((x-1)&1);
+            raw[std::size_t(y*8+x)]=std::array<quint16,4>{1600,700,1300,150}[std::size_t(site)];
+        }
+        const SensorLinearMosaic::Layout layout{8,8,16,{1,1,6,6}};
+        const auto mosaic=SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,layout.active);
+        QVERIFY2(mosaic.valid(),qPrintable(mosaic.error));
+        QCOMPARE(mosaic.activeBounds,layout.active);
+        const auto frame=SensorFloatDevelop::developTile(mosaic,sensor,profile,layout.active);
+        QVERIFY2(frame.valid(),qPrintable(frame.error));
+        QCOMPARE(frame.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(frame.image.size(),QSize(6,6));
+        QCOMPARE(frame.image.colorSpace(),QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(ImagePipeline::validFloatSource(frame.image));
+        QCOMPARE(frame.image.text("JixelLightDecoderSignature"),QString::fromLatin1(frame.decoderSignature));
+        QCOMPARE(frame.diagnostics["pixel_count"].toInteger(),qint64(36));
+        QCOMPARE(frame.diagnostics["above_one_rgb_channel_values"].toInteger(),qint64(36));
+        QCOMPARE(frame.diagnostics["negative_rgb_channel_values"].toInteger(),qint64(36));
+        for(int y=0;y<frame.image.height();++y) {
+            const auto *row=reinterpret_cast<const float *>(frame.image.constScanLine(y));
+            for(int x=0;x<frame.image.width();++x) {
+                QCOMPARE(row[4*x],1.5f);
+                QCOMPARE(row[4*x+1],1.f);
+                QCOMPARE(row[4*x+2],-0.25f);
+                QCOMPARE(row[4*x+3],1.f);
+            }
+        }
+        const auto imageFingerprint=FloatFrameFingerprint::capture(frame.image);
+        QVERIFY(imageFingerprint["available"].toBool());
+        QCOMPARE(imageFingerprint["pixel_sha256"].toString().size(),64);
+        // Deliberately send an FP32 source through the existing reference
+        // pipeline without a premature RGBA64 conversion.
+        const auto preview=ImagePipeline::process(frame.image,AdjustmentState{},
+            ImagePipeline::InputEncoding::LinearProPhoto);
+        QVERIFY(!preview.isNull());
+        QCOMPARE(preview.format(),QImage::Format_RGBA64);
+        auto mixedProfile=profile;
+        mixedProfile.cameraToProPhoto={1.,.25,0.,0.,1.,0.,0.,0.,1.};
+        const auto mixed=SensorFloatDevelop::developTile(mosaic,sensor,mixedProfile,layout.active);
+        QVERIFY2(mixed.valid(),qPrintable(mixed.error));
+        QVERIFY(std::fabs(reinterpret_cast<const float *>(mixed.image.constScanLine(0))[0]-1.75f)<1.e-6f);
+        QVERIFY(mixed.decoderSignature!=frame.decoderSignature);
+        QCOMPARE(raw[1*8+1],quint16(1600)); // source sensor buffer not changed
+    }
+
+    void calibratedBayerFloatStitchIsBitExactWithSensorMarginAndHalo() {
+        SensorLinearMosaic::Calibration sensor;
+        sensor.sourceSha256=QByteArray(64,'a');sensor.calibrationSha256=QByteArray(64,'b');
+        sensor.cfa={2,1,3,0}; // BGGR, nonzero physical sensor margin
+        sensor.black={50,60,70,80};sensor.white={1050,1060,1070,1080};
+        SensorFloatDevelop::Profile profile;
+        profile.profileSha256=QByteArray(64,'c');
+        profile.whiteBalanceBySite={1.2,.9,1.1,1.7};
+        profile.cameraToProPhoto={1.,.05,-.03,.1,1.,.02,-.1,.1,1.};
+        std::array<quint16,120> raw{};
+        for(int y=1;y<=8;++y) for(int x=1;x<=10;++x) {
+            const int site=(((y-1)&1)<<1)|((x-1)&1);
+            raw[std::size_t(y*12+x)]=quint16(150+site*100+x*2+y*3);
+        }
+        const SensorLinearMosaic::Layout layout{12,10,24,{1,1,10,8}};
+        const auto fullM=SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,layout.active);
+        const auto full=SensorFloatDevelop::developTile(fullM,sensor,profile,layout.active);
+        QVERIFY2(full.valid(),qPrintable(full.error));
+        const QRect aSamples(1,1,6,8),aOutput(1,1,5,8);
+        const QRect bSamples(5,1,6,8),bOutput(6,1,5,8);
+        const auto a=SensorFloatDevelop::developTile(
+            SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,aSamples),
+            sensor,profile,aOutput);
+        const auto b=SensorFloatDevelop::developTile(
+            SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,bSamples),
+            sensor,profile,bOutput);
+        QVERIFY2(a.valid(),qPrintable(a.error));
+        QVERIFY2(b.valid(),qPrintable(b.error));
+        for(int y=0;y<full.image.height();++y) {
+            const auto *entire=reinterpret_cast<const float *>(full.image.constScanLine(y));
+            const auto *left=reinterpret_cast<const float *>(a.image.constScanLine(y));
+            const auto *right=reinterpret_cast<const float *>(b.image.constScanLine(y));
+            for(int x=0;x<5;++x) for(int channel=0;channel<4;++channel) {
+                QCOMPARE(left[4*x+channel],entire[4*x+channel]);
+                QCOMPARE(right[4*x+channel],entire[4*(x+5)+channel]);
+            }
+        }
+        const auto noHalo=SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,aOutput);
+        const auto rejected=SensorFloatDevelop::developTile(noHalo,sensor,profile,aOutput);
+        QVERIFY(!rejected.valid());
+        QVERIFY(rejected.error.contains("halo"));
+        // Physical sensor edge is not a missing tile halo.
+        const auto corner=SensorFloatDevelop::developTile(fullM,sensor,profile,{1,1,1,1});
+        QVERIFY2(corner.valid(),qPrintable(corner.error));
+    }
+
+    void calibratedBayerFloatIdentitySafetyCancellationAndOverflow() {
+        SensorLinearMosaic::Calibration sensor;
+        sensor.sourceSha256=QByteArray(64,'a');sensor.calibrationSha256=QByteArray(64,'b');
+        sensor.cfa={0,1,3,2};
+        sensor.black={0,0,0,0};sensor.white={1000,1000,1000,1000};
+        std::array<quint16,16> raw{};raw.fill(250);
+        const SensorLinearMosaic::Layout layout{4,4,8,{0,0,4,4}};
+        const auto mosaic=SensorLinearMosaic::normalizeTile(raw.data(),layout,sensor,layout.active);
+        QVERIFY(mosaic.valid());
+        SensorFloatDevelop::Profile profile;
+        profile.profileSha256=QByteArray(64,'c');
+        const auto signature=SensorFloatDevelop::decoderSignature(sensor,profile);
+        QCOMPARE(signature.size(),64);
+        auto changed=profile;changed.profileSha256=QByteArray(64,'d');
+        QVERIFY(SensorFloatDevelop::decoderSignature(sensor,changed)!=signature);
+        changed=profile;changed.whiteBalanceBySite[2]=1.5;
+        QVERIFY(SensorFloatDevelop::decoderSignature(sensor,changed)!=signature);
+        changed=profile;changed.cameraToProPhoto[3]=.01;
+        QVERIFY(SensorFloatDevelop::decoderSignature(sensor,changed)!=signature);
+        auto changedSensor=sensor;changedSensor.black[1]=10;
+        QVERIFY(SensorFloatDevelop::decoderSignature(changedSensor,profile)!=signature);
+        changed=profile;changed.profileSha256="INVALID";
+        QVERIFY(!SensorFloatDevelop::validProfile(changed));
+        changed=profile;changed.whiteBalanceBySite[0]=0.;
+        QVERIFY(!SensorFloatDevelop::validProfile(changed));
+        changed=profile;changed.whiteBalanceBySite[1]=std::numeric_limits<double>::quiet_NaN();
+        QVERIFY(!SensorFloatDevelop::validProfile(changed));
+        changed=profile;changed.cameraToProPhoto.fill(0.);
+        QVERIFY(!SensorFloatDevelop::validProfile(changed));
+        changed=profile;changed.cameraToProPhoto[0]=std::numeric_limits<double>::infinity();
+        QVERIFY(!SensorFloatDevelop::validProfile(changed));
+        auto malformed=mosaic;malformed.decoderSignature=QByteArray(64,'f');
+        QVERIFY(!SensorFloatDevelop::developTile(malformed,sensor,profile,layout.active).valid());
+        malformed=mosaic;malformed.samples[0]=std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!SensorFloatDevelop::developTile(malformed,sensor,profile,layout.active).valid());
+        malformed=mosaic;malformed.samples.removeLast();
+        QVERIFY(!SensorFloatDevelop::developTile(malformed,sensor,profile,layout.active).valid());
+        const auto stop=std::make_shared<std::atomic_bool>(true);
+        const auto refused=SensorFloatDevelop::developTile(mosaic,sensor,profile,layout.active,stop);
+        QVERIFY(!refused.valid());QCOMPARE(refused.error,QString("cancelled"));
+        auto overSensor=sensor;overSensor.white={1,1,1,1};
+        raw.fill(65535);
+        const auto overM=SensorLinearMosaic::normalizeTile(raw.data(),layout,overSensor,layout.active);
+        QVERIFY(overM.valid());
+        auto overProfile=profile;overProfile.whiteBalanceBySite={64.,64.,64.,64.};
+        const auto over=SensorFloatDevelop::developTile(overM,overSensor,overProfile,layout.active);
+        QVERIFY(!over.valid());
+        QVERIFY(over.error.contains("exceeds"));
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        const QString path=dir.filePath("synthetic.arw");
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("RAW bytes are not a valid sensor")>0);file.close();
+        QString error;
+        const auto denied=RawDecoder::calibratedFloatTile(path,sensor,profile,
+            layout.active,layout.active,&error);
+        QVERIFY(!denied.valid());QVERIFY(error.contains("SHA-256"));
+        changed=profile;changed.profileSha256.clear();
+        const auto noColor=RawDecoder::calibratedFloatTile(path,sensor,changed,
+            layout.active,layout.active,&error);
+        QVERIFY(!noColor.valid());QVERIFY(error.contains("color matrix"));
     }
 
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
