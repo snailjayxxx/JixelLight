@@ -411,6 +411,10 @@ bool PhotoController::importXmp(const QUrl &source) {
     if (!XmpSidecar::read(source.toLocalFile(),&document,&error)) {
         setStatus(uiText("XMP 导入失败：", "XMP import failed: ")+error); return false;
     }
+    return applyParsedXmp(document);
+}
+bool PhotoController::applyParsedXmp(const XmpSidecar::Document &document) {
+    if (!hasImage()) return false;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state); photo.history.finish();
     if (document.hasRating) photo.rating = document.rating;
@@ -455,10 +459,51 @@ void PhotoController::openXmpImportDialog() {
         uiText("导入 XMP 到当前版本", "Import XMP into current version"),
         selection,"XMP (*.xmp *.XMP)");
     if (path.isEmpty()) return;
-    const auto answer = QMessageBox::question(nullptr,uiText("应用 XMP", "Apply XMP"),
-        uiText("应用到当前照片版本？\n文件中已有的评分、标签和关键词会替换当前值。JixelLight 显影可撤销；目录标注不能撤销。Adobe 显影参数不会转换。",
-               "Apply to the current photo version?\nPresent ratings, labels and keywords replace current values. JixelLight Develop edits can be undone; catalog annotations cannot. Adobe Develop settings are not converted."));
-    if (answer == QMessageBox::Yes && hasImage() && key == m_photos[m_currentIndex].storageKey()) importXmp(QUrl::fromLocalFile(path));
+    XmpSidecar::Document parsed; QString error;
+    if (!XmpSidecar::read(path, &parsed, &error)) {
+        setStatus(uiText("XMP 导入失败：", "XMP import failed: ") + error);
+        return;
+    }
+    const auto &photo = m_photos[m_currentIndex];
+    const auto impact = XmpSidecar::previewChanges(
+        parsed, photo.state, photo.tags, photo.rating, photo.flag);
+    if (!impact.any()) {
+        setStatus(uiText("XMP 没有可应用的变化；Adobe 显影参数不会转换",
+                         "No applicable XMP changes; Adobe Develop edits are not converted"));
+        return;
+    }
+    QStringList fields;
+    if (impact.adjustments) fields << uiText("显影参数", "Develop adjustments");
+    if (impact.rating) fields << uiText("评分", "Rating");
+    if (impact.flag) fields << uiText("旗标", "Flag");
+    if (impact.keywords) fields << uiText("关键词", "Keywords");
+    if (impact.label) fields << uiText("颜色标签", "Color label");
+    if (impact.albums) fields << uiText("相册", "Albums");
+    const auto priorState = photo.state.toJson();
+    const auto priorTags = photo.tags.toJson();
+    const int priorRating = photo.rating;
+    const QString priorFlag = photo.flag;
+    const QString warnings = parsed.warnings.isEmpty() ? QString{}
+        : "\n\n" + uiText("外部字段提醒：", "External-field warnings: ")
+          + "\n" + parsed.warnings.join("\n");
+    const auto answer = QMessageBox::question(nullptr, uiText("预览 XMP 导入变化", "Preview XMP import changes"),
+        uiText("即将替换当前版本中的这些字段：", "The following fields will be replaced in this version:")
+        + "\n" + fields.join(uiText("、", ", "))
+        + "\n\n" + uiText("只列出文件中存在且与当前值不同的字段。显影参数可撤销，目录标注不能撤销。Adobe 显影参数不会转换。确定应用吗？",
+                              "Only present fields differing from the current version are listed. Develop changes are undoable; catalog annotations are not. Adobe Develop edits are not converted. Apply?")
+        + warnings);
+    if (answer != QMessageBox::Yes || !hasImage()
+        || key != m_photos[m_currentIndex].storageKey()) return;
+    const auto &current = m_photos[m_currentIndex];
+    if (current.state.toJson() != priorState || current.tags.toJson() != priorTags
+        || current.rating != priorRating || current.flag != priorFlag) {
+        setStatus(uiText("照片在确认期间已更改；请重新检查 XMP 导入内容",
+                         "The photo changed during confirmation; review the XMP import again"));
+        return;
+    }
+    // Apply exactly the validated, previewed snapshot. A sidecar may change on
+    // disk while the confirmation dialog is open; never parse it a second time.
+    applyParsedXmp(parsed);
 }
 
 bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }

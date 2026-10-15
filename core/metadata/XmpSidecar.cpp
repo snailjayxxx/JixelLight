@@ -207,6 +207,19 @@ bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
     *out = result; return true;
 }
 
+XmpSidecar::ImportImpact XmpSidecar::previewChanges(
+    const Document &incoming, const AdjustmentState &current,
+    const CatalogTags &tags, int rating, const QString &flag) {
+    ImportImpact impact;
+    impact.adjustments = incoming.hasAdjustments && incoming.adjustments.toJson() != current.toJson();
+    impact.rating = incoming.hasRating && incoming.rating != rating;
+    impact.flag = incoming.hasFlag && incoming.flag != flag;
+    impact.keywords = incoming.hasKeywords && incoming.tags.keywords != tags.keywords;
+    impact.label = incoming.hasLabel && incoming.tags.label != tags.label;
+    impact.albums = incoming.hasAlbums && incoming.tags.albums != tags.albums;
+    return impact;
+}
+
 bool XmpSidecar::writeNew(const QString &path, const AdjustmentState &state, const CatalogTags &tags,
                           int rating, const QString &flag, QString *error) {
     if (error) error->clear();

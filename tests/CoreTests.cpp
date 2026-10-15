@@ -2889,6 +2889,43 @@ private slots:
         QFile rawCheck(source); QVERIFY(rawCheck.open(QIODevice::ReadOnly));
         QCOMPARE(rawCheck.readAll(),QByteArray("test-image-placeholder",22));
     }
+    void xmpImportPreflightOnlyReportsPresentChangesAndNeverMutates() {
+        AdjustmentState original; original.exposure = .5;
+        CatalogTags tags; tags.keywords = {"Old"}; tags.label = "red"; tags.albums = {"Existing"};
+        const auto savedState = original.toJson(), savedTags = tags.toJson();
+        XmpSidecar::Document incoming;
+        incoming.rating = 3; incoming.hasRating = true;
+        incoming.tags.keywords = {"New"}; incoming.hasKeywords = true;
+        const auto changed = XmpSidecar::previewChanges(incoming, original, tags, 3, "pick");
+        QVERIFY(changed.keywords);
+        QVERIFY(!changed.rating);
+        QVERIFY(!changed.flag);
+        QVERIFY(!changed.label);
+        QVERIFY(!changed.albums);
+        QVERIFY(!changed.adjustments);
+        QVERIFY(changed.catalogChanges());
+        QVERIFY(changed.any());
+        QCOMPARE(original.toJson(), savedState);
+        QCOMPARE(tags.toJson(), savedTags);
+        incoming.tags.keywords = tags.keywords;
+        QVERIFY(!XmpSidecar::previewChanges(incoming, original, tags, 3, "pick").any());
+        incoming.hasAdjustments = true;
+        incoming.adjustments = original;
+        incoming.adjustments.exposure = 1.25;
+        incoming.hasFlag = true; incoming.flag = "reject";
+        incoming.hasLabel = true; incoming.tags.label = "blue";
+        incoming.hasAlbums = true; incoming.tags.albums = {"NewAlbum"};
+        const auto all = XmpSidecar::previewChanges(incoming, original, tags, 1, "pick");
+        QVERIFY(all.adjustments);
+        QVERIFY(all.rating);
+        QVERIFY(all.flag);
+        QVERIFY(all.label);
+        QVERIFY(all.albums);
+        QVERIFY(!all.keywords);
+        QVERIFY(all.catalogChanges());
+        QCOMPARE(original.toJson(), savedState);
+        QCOMPARE(tags.toJson(), savedTags);
+    }
     void xmpStandardNamespacesAndPublicOverridesAreExplicit() {
         QTemporaryDir dir; const auto path = dir.filePath("external.xmp"); QString error;
         QFile file(path); auto put = [&](const QByteArray &bytes) {

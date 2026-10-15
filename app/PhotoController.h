@@ -28,6 +28,7 @@ class ProcessedImageProvider;
 class RenderedPreviewCache;
 class FullScopesCache;
 class ScopePlotCache;
+namespace XmpSidecar { struct Document; }
 
 class PhotoController final : public QObject {
     Q_OBJECT
@@ -491,6 +492,9 @@ private:
     void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();
+    // A dialog previews the exact parsed XMP snapshot which is later applied.
+    // Never re-read an external file after the user has confirmed its impact.
+    bool applyParsedXmp(const XmpSidecar::Document &document);
     void persistAndApply(const QString &action, const QVariantMap &details = {});
     void setStatus(const QString &message);
     QString uiText(const QString &zh, const QString &en) const;

@@ -1,0 +1,9 @@
+# F2.8 — Explicit XMP import impact preflight (candidate change, CI pending)
+
+Development branch: `design/lightcraft-fusion-20261008`, PR #16 remains Draft. This is an incremental read-only preflight over the existing XMP parser, not an automatic sidecar merge.
+
+The existing XMP file picker still requires explicit user action. After selection, the parser reads a document **once** before showing the confirmation; any malformed or incompatible file fails without touching the catalog. The bilingual confirmation lists only changes to fields actually present: Develop adjustments, rating, flag, keywords, color label and albums. Adobe Camera Raw edits are never applied; parser warnings are shown. An XMP with no applicable change makes no edit.
+
+A stored snapshot of the selected version's Develop state and catalog annotations is checked when confirmation returns. If the selected version or its values have changed meanwhile, import aborts and asks the user to review. On acceptance the exact parsed in-memory document is applied, rather than re-reading a potentially replaced XMP file. The existing programmatic `importXmp` remains an explicit import API and uses the same application code; no alternative parser or catalog merge code is introduced.
+
+**Intentional limits:** this is a field-name/impact summary, not a before/after value diff, rollback for catalog annotations, automatic watcher, conflict-aware two-way sync, or Adobe Develop translation. The prior warning that catalog annotations are not undoable remains visible. Raw originals are never changed. New CoreTests cover absent values, unchanged values, six impact flags and source immutability. All previous 60,000-ms GUI smoke, full RAW/scopes restoration, mandatory GPU parity and cross-platform deploy checks remain required; no acceptance claim until exact-head Windows/macOS/Linux CI succeeds.

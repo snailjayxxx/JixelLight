@@ -23,6 +23,24 @@ struct Document {
     bool hasKeywords = false, hasLabel = false, hasAlbums = false;
     QStringList warnings;
 };
+// Field-level import impact for explicit confirmation. Absent XMP properties
+// never overwrite catalog or Develop values.
+struct ImportImpact {
+    bool adjustments = false;
+    bool rating = false;
+    bool flag = false;
+    bool keywords = false;
+    bool label = false;
+    bool albums = false;
+    bool any() const noexcept {
+        return adjustments || rating || flag || keywords || label || albums;
+    }
+    bool catalogChanges() const noexcept {
+        return rating || flag || keywords || label || albums;
+    }
+};
+ImportImpact previewChanges(const Document &incoming, const AdjustmentState &current,
+                            const CatalogTags &tags, int rating, const QString &flag);
 bool read(const QString &path, Document *out, QString *error);
 bool writeNew(const QString &path, const AdjustmentState &state, const CatalogTags &tags,
               int rating, const QString &flag, QString *error);
