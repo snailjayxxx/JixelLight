@@ -1,7 +1,7 @@
 # F3 Stage 6C.3 — offline, SHA-pinned private RAW/JPEG sensor audit
 
 Branch: design/lightcraft-fusion-20261008, PR #16 Draft.
-Status: implementation prepared, mandatory exact-HEAD 3-platform CI pending.
+Status: accepted at commit def37a83e7786d9159df643008a5ac12b8a393bd by [CI Run 38772980919](https://github.com/snailjayxxx/JixelLight/actions/runs/38772980919) on Windows x64, macOS arm64 and Linux GPU, including 156 core/30 mandatory GPU/27 performance/10 CTest suites and deployed packages. This establishes only real public-source U16 sensor audit and private offline-runner safety, not any real-photo FP32 camera color calibration.
 
 ## Objective
 

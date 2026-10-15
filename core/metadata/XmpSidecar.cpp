@@ -50,6 +50,44 @@ QString property(const QString &ns, const QString &name) {
 }
 }
 
+XmpSidecar::Companion XmpSidecar::discoverCompanion(const QString &photoPath) {
+    Companion result;
+    const QFileInfo photo(photoPath);
+    if(photoPath.isEmpty()||!photo.exists()||!photo.isFile()||
+       photo.suffix().compare("xmp",Qt::CaseInsensitive)==0) {
+        return result;
+    }
+    const QDir dir=photo.dir();
+    const QStringList nameCandidates{
+        photo.fileName()+".xmp",
+        photo.fileName()+".XMP",
+        photo.completeBaseName()+".xmp",
+        photo.completeBaseName()+".XMP"
+    };
+    QSet<QString> identities;
+    bool unsafe=false;
+    for(const auto &name:nameCandidates) {
+        const QFileInfo candidate(dir.absoluteFilePath(name));
+        if(!candidate.exists()&&!candidate.isSymLink())continue;
+        if(candidate.isSymLink()||!candidate.isFile()||!candidate.isReadable()||
+           candidate.size()<=0||candidate.size()>Limit ||
+           candidate.absolutePath()!=photo.absolutePath()) {
+            unsafe=true;continue;
+        }
+        const auto canonical=candidate.canonicalFilePath();
+        if(canonical.isEmpty()||identities.contains(canonical))continue;
+        identities.insert(canonical);
+        result.candidates.append(candidate.absoluteFilePath());
+    }
+    if(unsafe)result.status="unsafe";
+    else if(result.candidates.size()>1)result.status="ambiguous";
+    else if(result.candidates.size()==1) {
+        result.status="unique";
+        result.selectedPath=result.candidates.first();
+    }
+    return result;
+}
+
 bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
     if (error) error->clear();
     if (!out) return fail(error, "Missing XMP destination");

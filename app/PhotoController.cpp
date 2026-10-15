@@ -440,8 +440,20 @@ void PhotoController::openXmpExportDialog() {
 void PhotoController::openXmpImportDialog() {
     if (!hasImage()) return;
     const auto key = m_photos[m_currentIndex].storageKey();
-    const auto path = QFileDialog::getOpenFileName(nullptr,uiText("导入 XMP 到当前版本", "Import XMP into current version"),
-        QFileInfo(currentFile()).absolutePath(),"XMP (*.xmp)");
+    const auto companion = XmpSidecar::discoverCompanion(currentFile());
+    // Discovery is metadata-only. Never silently apply an external XMP to a
+    // catalog: curation may be non-undoable and foreign edits are not mapped.
+    if (companion.status == "ambiguous")
+        setStatus(uiText("发现多个匹配的 XMP：请手动选择，避免覆盖当前目录信息",
+                         "Multiple matching XMP sidecars: select one manually to avoid a curation conflict"));
+    else if (companion.status == "unsafe")
+        setStatus(uiText("匹配的 XMP 不安全或不可读：请检查文件后手动选择",
+                         "Matching XMP sidecar is unsafe or unreadable: inspect it before selecting"));
+    const QString selection=companion.status=="unique" ? companion.selectedPath
+        : QFileInfo(currentFile()).absolutePath();
+    const auto path = QFileDialog::getOpenFileName(nullptr,
+        uiText("导入 XMP 到当前版本", "Import XMP into current version"),
+        selection,"XMP (*.xmp *.XMP)");
     if (path.isEmpty()) return;
     const auto answer = QMessageBox::question(nullptr,uiText("应用 XMP", "Apply XMP"),
         uiText("应用到当前照片版本？\n文件中已有的评分、标签和关键词会替换当前值。JixelLight 显影可撤销；目录标注不能撤销。Adobe 显影参数不会转换。",

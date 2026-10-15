@@ -2836,6 +2836,46 @@ private slots:
         QVERIFY(!QFileInfo::exists(dir.filePath("invalid.xmp")));
         QCOMPARE(QDir(dir.path()).entryList(QDir::Dirs|QDir::Hidden|QDir::NoDotAndDotDot).size(),0);
     }
+    void xmpCompanionDiscoveryPreselectsOnlyUniqueSafeSibling() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage photo(8,8,QImage::Format_RGB32); photo.fill(Qt::green);
+        const auto source=dir.filePath("photo.v1.ARW");
+        QFile raw(source); QVERIFY(raw.open(QIODevice::WriteOnly));
+        QCOMPARE(raw.write("test-image-placeholder",22),qint64(22));raw.close();
+        auto discovery=XmpSidecar::discoverCompanion(source);
+        QCOMPARE(discovery.status,QString("none"));
+        QVERIFY(discovery.selectedPath.isEmpty());
+        QVERIFY(discovery.candidates.isEmpty());
+        const auto base=dir.filePath("photo.v1.xmp");
+        QString error;
+        QVERIFY2(XmpSidecar::writeNew(base,AdjustmentState{},CatalogTags{},0,"none",&error),qPrintable(error));
+        discovery=XmpSidecar::discoverCompanion(source);
+        QCOMPARE(discovery.status,QString("unique"));
+        QCOMPARE(discovery.selectedPath,base);
+        QCOMPARE(discovery.candidates.size(),1);
+        // Two valid sidecars can carry different curation. Never silently
+        // prefer one or overwrite either of them.
+        const auto full=source+".xmp";
+        QVERIFY2(XmpSidecar::writeNew(full,AdjustmentState{},CatalogTags{},0,"none",&error),qPrintable(error));
+        discovery=XmpSidecar::discoverCompanion(source);
+        QCOMPARE(discovery.status,QString("ambiguous"));
+        QVERIFY(discovery.selectedPath.isEmpty());
+        QCOMPARE(discovery.candidates.size(),2);
+        QFile side(full); QVERIFY(side.remove());
+        QFile other(base); QVERIFY(other.open(QIODevice::WriteOnly));
+        QVERIFY(other.resize(0));other.close();
+        discovery=XmpSidecar::discoverCompanion(source);
+        QCOMPARE(discovery.status,QString("unsafe"));
+        QVERIFY(discovery.selectedPath.isEmpty());
+        QVERIFY(other.remove());
+        QVERIFY(!XmpSidecar::discoverCompanion(source).selectedPath.size());
+        QVERIFY(!XmpSidecar::discoverCompanion(dir.filePath("missing.ARW")).selectedPath.size());
+        QVERIFY(!XmpSidecar::discoverCompanion(base).selectedPath.size());
+        // Only explicit importXmp can apply an XMP; discovery never touches
+        // RAW bytes, history, catalog flags or photo contents.
+        QFile rawCheck(source); QVERIFY(rawCheck.open(QIODevice::ReadOnly));
+        QCOMPARE(rawCheck.readAll(),QByteArray("test-image-placeholder",22));
+    }
     void xmpStandardNamespacesAndPublicOverridesAreExplicit() {
         QTemporaryDir dir; const auto path = dir.filePath("external.xmp"); QString error;
         QFile file(path); auto put = [&](const QByteArray &bytes) {
