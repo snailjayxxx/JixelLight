@@ -112,6 +112,12 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
           python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
       - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
@@ -177,7 +183,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -194,6 +200,7 @@ jobs:
             build/sony-real-reports/
             build/raw-render-matrix/
             build/sensor-evidence.json
+            build/float-raw-readiness.json
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             display-color-gpu-validation.txt
@@ -303,6 +310,12 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
           python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
@@ -322,7 +335,7 @@ jobs:
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json build/float-raw-readiness.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -336,6 +349,7 @@ jobs:
             build/sony-real-reports/
             build/raw-render-matrix/
             build/sensor-evidence.json
+            build/float-raw-readiness.json
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png

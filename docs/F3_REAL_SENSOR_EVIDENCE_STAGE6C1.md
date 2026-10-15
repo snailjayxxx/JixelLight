@@ -1,7 +1,7 @@
 # F3 Stage 6C.1 — checksum-pinned real sensor evidence and coverage gate
 
 Branch: `design/lightcraft-fusion-20261008` / PR #16 (Draft).
-Status: implementation staged; **exact-commit Windows/macOS/Linux CI required**.
+Status: accepted at commit 20611f288d8e778dbe8f4f13cf9179e3fda7d168 via [CI 38711973832](https://github.com/snailjayxxx/JixelLight/actions/runs/38711973832): three platform jobs Success, 17 sensor-evidence checks and real-file evaluation, 151 core / 30 mandatory GPU / 27 performance / 10 CTest suites per OS, Windows/macOS deployed binaries. This validates evidence consistency only, not camera color calibration.
 
 ## What Stage 6C.1 actually establishes
 

@@ -84,6 +84,7 @@ add_library(JixelLightCore STATIC
     core/raw/SensorMosaicAudit.cpp
     core/raw/SensorLinearMosaic.cpp
     core/raw/SensorFloatDevelop.cpp
+    core/raw/FloatRawTrial.cpp
     core/scopes/ScopesEngine.cpp
     core/scopes/ScopePlot.cpp
     core/export/PngExporter.cpp
@@ -172,6 +173,11 @@ set_target_properties(JixelLightSonyValidation PROPERTIES WIN32_EXECUTABLE FALSE
 qt_add_executable(JixelLightRawRenderMatrix tools/RawRenderMatrix.cpp)
 target_link_libraries(JixelLightRawRenderMatrix PRIVATE JixelLightGpu)
 set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
+# Experimental, opt-in only. Not installed in normal Windows/macOS packages.
+qt_add_executable(JixelLightFloatRawTrial tools/FloatRawTrial.cpp)
+target_link_libraries(JixelLightFloatRawTrial PRIVATE JixelLightCore)
+set_target_properties(JixelLightFloatRawTrial PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}

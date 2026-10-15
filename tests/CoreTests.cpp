@@ -46,6 +46,7 @@
 #include "core/raw/RawDecoder.h"
 #include "core/raw/SensorMosaicAudit.h"
 #include "core/raw/SensorFloatDevelop.h"
+#include "core/raw/FloatRawTrial.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/scopes/ScopePlot.h"
 #include "core/image/ProcessedImageProvider.h"
@@ -656,6 +657,155 @@ private slots:
         const auto noColor=RawDecoder::calibratedFloatTile(path,sensor,changed,
             layout.active,layout.active,&error);
         QVERIFY(!noColor.valid());QVERIFY(error.contains("color matrix"));
+    }
+
+
+    void floatRawTrialPlanRequiresExplicitBoundProfileAndResearchOnlyMode() {
+        QTemporaryDir temporary;QVERIFY(temporary.isValid());
+        const QByteArray sensorBytes("Independent Bayer test calibration evidence v1");
+        const QByteArray colorBytes("Independent D50 color test calibration evidence v1");
+        QFile sensorFile(temporary.filePath("sensor-evidence.txt"));
+        QVERIFY(sensorFile.open(QIODevice::WriteOnly));
+        QCOMPARE(sensorFile.write(sensorBytes),qint64(sensorBytes.size()));
+        sensorFile.close();
+        QFile colorFile(temporary.filePath("color-evidence.txt"));
+        QVERIFY(colorFile.open(QIODevice::WriteOnly));
+        QCOMPARE(colorFile.write(colorBytes),qint64(colorBytes.size()));
+        colorFile.close();
+        const QString sensorSha=QString::fromLatin1(QCryptographicHash::hash(
+            sensorBytes,QCryptographicHash::Sha256).toHex());
+        const QString colorSha=QString::fromLatin1(QCryptographicHash::hash(
+            colorBytes,QCryptographicHash::Sha256).toHex());
+        QJsonObject sensor{
+            {"sha256",sensorSha},{"evidenceFile","sensor-evidence.txt"},
+            {"provenance","Independently characterized sensor black/white levels"},
+            {"cfa",QJsonArray{0,1,3,2}},
+            {"black",QJsonArray{512,512,512,512}},
+            {"white",QJsonArray{16383,16383,16383,16383}}};
+        QJsonObject color{
+            {"sha256",colorSha},{"evidenceFile","color-evidence.txt"},
+            {"provenance","Color matrix from separately evidenced D50 measurements"},
+            {"whiteBalanceBySite",QJsonArray{1.,2.,1.,1.}},
+            {"cameraToProPhoto",QJsonArray{1.,0.,0.,0.,1.,0.,0.,0.,1.}}};
+        QJsonObject source{{"file","original.arw"},{"sha256",QString(64,'a')}};
+        QJsonObject plan{{"schema",1},{"purpose","experimental-research-only"},
+                         {"source",source},{"sensorCalibration",sensor},
+                         {"colorCalibration",color},
+                         {"sampleRoi",QJsonArray{1,1,8,8}},
+                         {"outputRoi",QJsonArray{2,2,6,6}}};
+        FloatRawTrial::Request request;
+        QString error;
+        QVERIFY2(FloatRawTrial::parse(plan,temporary.path(),&request,&error),qPrintable(error));
+        QCOMPARE(request.sensor.sourceSha256,QByteArray(64,'a'));
+        QCOMPARE(request.sensor.black[0],quint32(512));
+        QCOMPARE(request.color.whiteBalanceBySite[1],2.);
+        QCOMPARE(request.sampleRoi,QRect(1,1,8,8));
+        QCOMPARE(request.outputRoi,QRect(2,2,6,6));
+        QVERIFY(request.referencePath.isEmpty());
+        QVERIFY(request.rawPath.startsWith(temporary.path()));
+        // Provenance must be bound to actual readable evidence bytes.
+        sensor["sha256"]=QString(64,'b');
+        plan["sensorCalibration"]=sensor;
+        QVERIFY(!FloatRawTrial::parse(plan,temporary.path(),&request,&error));
+        sensor["sha256"]=sensorSha;plan["sensorCalibration"]=sensor;
+        QVERIFY(!FloatRawTrial::parse(
+            QJsonObject{{"purpose","production-enable"}},temporary.path(),&request,&error));
+        plan["purpose"]="production-enable";
+        QVERIFY(!FloatRawTrial::parse(plan,temporary.path(),&request,&error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(request.sensor.sourceSha256,QByteArray{}); // failed parse must not reuse prior output
+        plan["purpose"]="experimental-research-only";
+        source["sha256"]=QString(64,'A');plan["source"]=source;
+        QVERIFY(!FloatRawTrial::parse(plan,temporary.path(),&request,&error));
+        source["sha256"]=QString(64,'a');plan["source"]=source;
+        sensor["cfa"]=QJsonArray{0,1,1,1};plan["sensorCalibration"]=sensor;
+        QVERIFY(!FloatRawTrial::parse(plan,temporary.path(),&request,&error));
+        sensor["cfa"]=QJsonArray{0,1,3,2};plan["sensorCalibration"]=sensor;
+        color["cameraToProPhoto"]=QJsonArray{0.,0.,0.,0.,0.,0.,0.,0.,0.};
+        plan["colorCalibration"]=color;
+        QVERIFY(!FloatRawTrial::parse(plan,temporary.path(),&request,&error));
+    }
+
+    void floatRawTrialPatchMeansCompareAbsoluteSensorCoordinates() {
+        QImage image(4,4,QImage::Format_RGBA32FPx4);
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        for(int y=0;y<4;++y) {
+            auto *row=reinterpret_cast<float *>(image.scanLine(y));
+            for(int x=0;x<4;++x) {
+                row[4*x]=1.5f;row[4*x+1]=-0.25f;
+                row[4*x+2]=.75f;row[4*x+3]=1.f;
+            }
+        }
+        const QJsonObject p1{{"rawRoi",QJsonArray{20,30,2,2}},
+                              {"meanRgb",QJsonArray{1.5,-.25,.75}}};
+        const QJsonObject p2{{"rawRoi",QJsonArray{22,32,2,2}},
+                              {"meanRgb",QJsonArray{1.5,-.25,.75}}};
+        QJsonObject independent{
+            {"schema",1},{"domain","linear-ProPhoto-D50-patch-means-v1"},
+            {"sourceRawSha256",QString(64,'a')},
+            {"measurementMethod","Independent D50 chart swatch method"},
+            {"patches",QJsonArray{p1,p2}}};
+        QString error;
+        const auto compared=FloatRawTrial::comparePatchMeans(
+            image,QRect(20,30,4,4),independent,QByteArray(64,'a'),&error);
+        QVERIFY2(!compared.isEmpty(),qPrintable(error));
+        QCOMPARE(compared["patchCount"].toInt(),2);
+        QCOMPARE(compared["rgbRmse"].toDouble(),0.);
+        QCOMPARE(compared["rgbMaximumAbsolute"].toDouble(),0.);
+        QVERIFY(!compared["cameraCalibrationAccepted"].toBool());
+        QVERIFY(!compared["independentlyVerified"].toBool());
+        auto changed=independent;
+        changed["sourceRawSha256"]=QString(64,'b');
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            image,QRect(20,30,4,4),changed,QByteArray(64,'a'),&error).isEmpty());
+        changed=independent;changed["patches"]=QJsonArray{p1,p1};
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            image,QRect(20,30,4,4),changed,QByteArray(64,'a'),&error).isEmpty());
+        changed=independent;
+        changed["patches"]=QJsonArray{p1,QJsonObject{
+            {"rawRoi",QJsonArray{23,32,2,2}},
+            {"meanRgb",QJsonArray{1.,1.,1.}}}};
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            image,QRect(20,30,4,4),changed,QByteArray(64,'a'),&error).isEmpty());
+    }
+
+    void floatRawTrialRejectsMalformedPatchValuesAndDomain() {
+        QImage image(4,4,QImage::Format_RGBA32FPx4);
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        for(int y=0;y<4;++y) {
+            auto *row=reinterpret_cast<float *>(image.scanLine(y));
+            for(int x=0;x<4;++x)
+                {row[4*x]=0.5f;row[4*x+1]=0.25f;row[4*x+2]=0.125f;row[4*x+3]=1.f;}
+        }
+        QJsonObject reference{
+            {"schema",1},{"domain","linear-ProPhoto-D50-patch-means-v1"},
+            {"sourceRawSha256",QString(64,'a')},
+            {"measurementMethod","External measured scene-linear swatches"},
+            {"patches",QJsonArray{
+                QJsonObject{{"rawRoi",QJsonArray{0,0,2,2}},
+                            {"meanRgb",QJsonArray{.5,.25,.125}}},
+                QJsonObject{{"rawRoi",QJsonArray{2,2,2,2}},
+                            {"meanRgb",QJsonArray{.5,.25,.125}}}}}};
+        QString error;
+        QCOMPARE(FloatRawTrial::comparePatchMeans(
+            image,QRect(0,0,4,4),reference,QByteArray(64,'a'),&error)["rgbRmse"].toDouble(),0.);
+        QJsonObject changed=reference;
+        changed["domain"]="encoded-sRGB";
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            image,QRect(0,0,4,4),changed,QByteArray(64,'a'),&error).isEmpty());
+        changed=reference;
+        changed["patches"]=QJsonArray{
+            QJsonObject{{"rawRoi",QJsonArray{0,0,2,2}},
+                        {"meanRgb",QJsonArray{.5,QJsonValue(),.125}}},
+            reference["patches"].toArray()[1]};
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            image,QRect(0,0,4,4),changed,QByteArray(64,'a'),&error).isEmpty());
+        auto invalid=image.copy();
+        reinterpret_cast<float *>(invalid.scanLine(1))[1]=std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(FloatRawTrial::comparePatchMeans(
+            invalid,QRect(0,0,4,4),reference,QByteArray(64,'a'),&error).isEmpty());
     }
 
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
