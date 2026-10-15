@@ -107,6 +107,11 @@ jobs:
           test -n "$MATRIX"
           rm -rf build/raw-render-matrix
           "$MATRIX" "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
       - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
@@ -172,7 +177,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -188,6 +193,7 @@ jobs:
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             display-color-gpu-validation.txt
@@ -292,6 +298,11 @@ jobs:
         run: |
           rm -rf build/raw-render-matrix
           xvfb-run -a ./build/bin/JixelLightRawRenderMatrix "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
@@ -311,7 +322,7 @@ jobs:
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -324,6 +335,7 @@ jobs:
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png

@@ -1,7 +1,7 @@
 # F3 Stage 6B — experimental Bayer demosaic → scene-linear FP32
 
 Branch: design/lightcraft-fusion-20261008; PR #16 remains Draft.
-Status: code prepared; exact-HEAD Windows/macOS/Linux CI is required before acceptance.
+Status: accepted at commit 940829f3557557152670f9cd977b64e425bbc6ed, [CI run 38705643249](https://github.com/snailjayxxx/JixelLight/actions/runs/38705643249) Success on Windows x64 / macOS arm64 / Linux GPU (151 core / 30 mandatory GPU / 27 performance / 10 CTest suites per platform). Acceptance is isolated synthetic correctness and unchanged real-camera legacy paths, not proven real-camera FP32 calibration.
 
 ## Purpose and isolation
 

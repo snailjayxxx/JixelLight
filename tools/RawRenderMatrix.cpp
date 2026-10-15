@@ -218,6 +218,19 @@ int main(int argc,char **argv) {
         QString error;QVariantMap metadata=MetadataReader::read(rawPath,&error);
         QJsonObject scene{{"id",id},{"role",item["role"].toString()},{"rawSha256",sha256(rawPath)},{"jpegSha256",sha256(jpegPath)},
                           {"metadataError",error},{"recordedLook",QJsonObject::fromVariantMap(metadata.value("sonyLook").toMap())}};
+        // Read-only, file-hash-bound real-camera evidence for the Stage 6C
+        // hold-out audit. Exif is observational; not a trusted sensor profile.
+        scene["cameraEvidence"]=QJsonObject{
+            {"make",metadata.value("make").toString()},
+            {"model",metadata.value("model").toString()},
+            {"isoText",metadata.value("iso").toString()},
+            {"shutterText",metadata.value("shutter").toString()},
+            {"apertureText",metadata.value("aperture").toString()},
+            {"exposureBiasText",metadata.value("exposureBias").toString()},
+            {"captureTime",metadata.value("captureTime").toString()},
+            {"subSecTime",metadata.value("subSecTime").toString()},
+            {"lens",metadata.value("lens").toString()},
+            {"recordedLookCode",metadata.value("sonyLook").toMap().value("code").toString()}};
         const auto paired=CameraReference::load({rawPath,jpegPath,metadata,1});
         RawMetadata rawSensor;
         rawSensor.captureSensorAudit=true;
