@@ -2853,6 +2853,19 @@ private slots:
         QCOMPARE(discovery.status,QString("unique"));
         QCOMPARE(discovery.selectedPath,base);
         QCOMPARE(discovery.candidates.size(),1);
+        // Windows resolves *.xmp and *.XMP to the same file even when
+        // canonical paths retain differently-cased caller spellings.
+        // On a genuinely case-sensitive volume two distinct files with
+        // these suffixes must still remain ambiguous.
+        QFile caseVariant(dir.filePath("photo.v1.XMP"));
+        if(caseVariant.open(QIODevice::WriteOnly|QIODevice::NewOnly)) {
+            QCOMPARE(caseVariant.write("distinct-case-sensitive-file",28),qint64(28));
+            caseVariant.close();
+            discovery=XmpSidecar::discoverCompanion(source);
+            QCOMPARE(discovery.status,QString("ambiguous"));
+            QVERIFY(discovery.selectedPath.isEmpty());
+            QVERIFY(caseVariant.remove());
+        }
         // Two valid sidecars can carry different curation. Never silently
         // prefer one or overwrite either of them.
         const auto full=source+".xmp";

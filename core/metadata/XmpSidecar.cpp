@@ -75,8 +75,19 @@ XmpSidecar::Companion XmpSidecar::discoverCompanion(const QString &photoPath) {
             unsafe=true;continue;
         }
         const auto canonical=candidate.canonicalFilePath();
-        if(canonical.isEmpty()||identities.contains(canonical))continue;
-        identities.insert(canonical);
+        if(canonical.isEmpty()) {unsafe=true;continue;}
+        // QFileInfo::canonicalFilePath() can retain the caller's spelling
+        // for an existing Windows file. On case-insensitive Windows, both
+        // *.xmp and *.XMP name the SAME file; they must not count as two
+        // conflicting sidecars. Case-sensitive POSIX volumes must preserve
+        // genuinely distinct names, so normalize only on Windows.
+#if defined(Q_OS_WIN)
+        const QString identity=canonical.toCaseFolded();
+#else
+        const QString identity=canonical;
+#endif
+        if(identities.contains(identity))continue;
+        identities.insert(identity);
         result.candidates.append(candidate.absoluteFilePath());
     }
     if(unsafe)result.status="unsafe";
