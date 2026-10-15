@@ -6,6 +6,8 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 
 ## Verified checkpoints
 
+- **F2.8 explicit XMP impact preflight accepted:** exact commit `2b17b89342646a8e9e7dd72e57d81458906b8d8e`, [CI #38821749965](https://github.com/snailjayxxx/JixelLight/actions/runs/38821749965), Windows x64 / macOS arm64 / Linux GPU all **Success**. Each platform passed **158 core, 30 mandatory GPU, 27 performance checks**, real Sony RAW/JPEG, Stage 6C, GUI and desktop package; 10/10 CTest suites, strict **60,000 ms** deployed CPU smoke and 10,340,960 restored RAW scopes remain required and passed. Read-only six-field XMP import diff, unique adjacent sidecar on Windows, and source/editor immutability regression passed. After GUI file-picker version recheck, a new exact-HEAD CI is required; acceptance at 2b17 must not be misrepresented as acceptance of later commits.
+
 - **F2 XMP case-folded physical identity, Windows regression correction (exact-HEAD CI pending):** [run 38775811259](https://github.com/snailjayxxx/JixelLight/actions/runs/38775811259) succeeded on Linux/macOS but Windows CoreTests::xmpCompanionDiscoveryPreselectsOnlyUniqueSafeSibling failed because Windows case-insensitive `.xmp` and `.XMP` spellings returned separate canonical path strings and were counted as two files. Normalize canonical identity only on Windows with Unicode `toCaseFolded()`, preserving genuinely distinct files on case-sensitive volumes. A missing canonical path is now marked unsafe. The existing Windows single-XMP regression and an additional conditional case-sensitive sibling check cover both models. Do not skip or weaken CoreTests, RAW/GPU or deployed-package smoke (including strict 60 s CPU).
 
 

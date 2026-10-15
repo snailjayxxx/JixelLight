@@ -458,7 +458,10 @@ void PhotoController::openXmpImportDialog() {
     const auto path = QFileDialog::getOpenFileName(nullptr,
         uiText("导入 XMP 到当前版本", "Import XMP into current version"),
         selection,"XMP (*.xmp *.XMP)");
-    if (path.isEmpty()) return;
+    // QFileDialog runs a nested event loop; the selected project/photo may
+    // have changed before it returns. Never preview an XMP for another version.
+    if (path.isEmpty() || !hasImage()
+        || key != m_photos[m_currentIndex].storageKey()) return;
     XmpSidecar::Document parsed; QString error;
     if (!XmpSidecar::read(path, &parsed, &error)) {
         setStatus(uiText("XMP 导入失败：", "XMP import failed: ") + error);
