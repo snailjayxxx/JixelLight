@@ -10,6 +10,7 @@
 #include <QBuffer>
 #include <QImageReader>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QJsonArray>
 #include <QCryptographicHash>
 #include <QByteArrayView>
@@ -246,6 +247,98 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
 
     LibRaw::dcraw_clear_mem(processed);
     return image;
+}
+
+
+SensorLinearMosaic::Tile RawDecoder::calibratedMosaicTile(
+        const QString &path,const SensorLinearMosaic::Calibration &calibration,
+        const QRect &rawRoi,QString *errorMessage,const CancelToken &cancel) {
+    if(errorMessage) errorMessage->clear();
+    const auto refuse=[&](const QString &reason) {
+        if(errorMessage) *errorMessage=reason;
+        SensorLinearMosaic::Tile tile;tile.error=reason;return tile;
+    };
+    if(cancelled(cancel)) return refuse(QStringLiteral("cancelled"));
+    if(!SensorLinearMosaic::validCalibration(calibration))
+        return refuse(QStringLiteral("Explicit Bayer calibration and two SHA-256 identities are required"));
+    if(!isRawFile(path)) return refuse(QStringLiteral("Calibration probe requires an original RAW file"));
+    RawLease lease(cancel);
+    if(!lease.acquired) return refuse(QStringLiteral("cancelled"));
+
+    // An external calibration is not evidence unless bound to these exact
+    // source bytes. Do not trust a filename, camera model or preview metadata.
+    QFile source(path);
+    if(!source.open(QIODevice::ReadOnly)) return refuse(QStringLiteral("Cannot open source for SHA-256 verification"));
+    const qint64 initialSize=source.size();
+    const QDateTime initialModified=QFileInfo(path).lastModified();
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    while(!source.atEnd()) {
+        if(cancelled(cancel)) return refuse(QStringLiteral("cancelled"));
+        const QByteArray chunk=source.read(1024*1024);
+        if(chunk.isEmpty()) return refuse(QStringLiteral("Unable to read complete RAW file for SHA-256"));
+        digest.addData(chunk);
+    }
+    source.close();
+    if(digest.result().toHex()!=calibration.sourceSha256)
+        return refuse(QStringLiteral("Original RAW source SHA-256 does not match calibration"));
+
+    // Heap-allocate LibRaw: the project also decodes on a 512-KiB stack.
+    auto instance=std::make_unique<LibRaw>();
+    auto &raw=*instance;
+    raw.set_progress_handler(rawProgress,const_cast<CancelToken *>(&cancel));
+#if defined(Q_OS_WIN)
+    int result=raw.open_file(reinterpret_cast<const wchar_t *>(path.utf16()));
+#else
+    const QByteArray encoded=QFile::encodeName(path);
+    int result=raw.open_file(encoded.constData());
+#endif
+    if(result!=LIBRAW_SUCCESS) return refuse(libRawError(result));
+    const auto &sizes=raw.imgdata.sizes;
+    const quint64 pixels=quint64(sizes.raw_width)*sizes.raw_height;
+    const quint64 limit=quint64(std::max(256,qEnvironmentVariableIntValue("JIXELLIGHT_RAW_MEMORY_MB")))*1024*1024;
+    const quint64 effectiveLimit=qEnvironmentVariableIsSet("JIXELLIGHT_RAW_MEMORY_MB") ? limit : 3ULL*1024*1024*1024;
+    if(pixels>effectiveLimit/32)
+        return refuse(QStringLiteral("RAW exceeds configured decode memory budget"));
+    if(cancelled(cancel)) return refuse(QStringLiteral("cancelled"));
+    result=raw.unpack();
+    if(result!=LIBRAW_SUCCESS) return refuse(libRawError(result));
+    if(cancelled(cancel)) return refuse(QStringLiteral("cancelled"));
+
+    const auto &idata=raw.imgdata.idata;
+    const auto &color=raw.imgdata.color;
+    if(idata.is_foveon || idata.filters<=1000 ||
+       QString::fromLatin1(idata.make).contains(QStringLiteral("FUJI"),Qt::CaseInsensitive) ||
+       idata.cdesc[0]!='R'||idata.cdesc[1]!='G'||idata.cdesc[2]!='B')
+        return refuse(QStringLiteral("Unsupported or non-regular RGB Bayer CFA"));
+    const int patternCols=int(color.cblack[4]),patternRows=int(color.cblack[5]);
+    const bool noPattern=patternCols==0&&patternRows==0;
+    const bool pattern2x2=patternCols==2&&patternRows==2;
+    if(!noPattern&&!pattern2x2)
+        return refuse(QStringLiteral("Unsupported repeating sensor black-level pattern"));
+    for(int y=0;y<8;++y) for(int x=0;x<2;++x) {
+        const int site=((y&1)<<1)|(x&1);
+        const int channel=raw.COLOR(y,x); // row/column relative to visible area
+        if(channel!=calibration.cfa[std::size_t(site)] ||
+           (channel==3 && idata.cdesc[3]!='G'))
+            return refuse(QStringLiteral("External Bayer phase disagrees with LibRaw or is non-2x2"));
+        const quint64 black=quint64(color.black)+color.cblack[channel]+
+            (pattern2x2 ? color.cblack[6+site] : 0);
+        if(black!=calibration.black[std::size_t(site)])
+            return refuse(QStringLiteral("External Bayer black calibration disagrees with LibRaw"));
+    }
+    const SensorLinearMosaic::Layout layout{
+        int(sizes.raw_width),int(sizes.raw_height),int(sizes.raw_pitch),
+        QRect(sizes.left_margin,sizes.top_margin,sizes.width,sizes.height)};
+    auto tile=SensorLinearMosaic::normalizeTile(raw.imgdata.rawdata.raw_image,
+                                                layout,calibration,rawRoi,cancel);
+    if(!tile.valid()) return refuse(tile.error);
+    const QFileInfo after(path);
+    if(after.size()!=initialSize||after.lastModified()!=initialModified)
+        return refuse(QStringLiteral("Original RAW changed during calibrated mosaic probe"));
+    tile.statistics["libraw_nominal_white_code"]=qint64(color.maximum);
+    tile.statistics["libraw_version"]=QString::fromLatin1(LibRaw::version());
+    tile.statistics["calibrated_white_is_external_not_libraw_maximum"]=true;
+    return tile;
 }
 
 QImage RawDecoder::thumbnail(const QString &path, const CancelToken &cancel) {

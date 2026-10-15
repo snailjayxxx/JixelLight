@@ -6,6 +6,10 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
 
 ## Verified checkpoints
 
+- **F3 Stage 6A calibrated Bayer tile pilot (exact-head CI pending):** separate opt-in, source-SHA-verified LibRaw unpack path plus explicit per-site Bayer black/white calibration; one float CFA sample per sensor site, unclamped negative/>1 with bounded tile memory and versioned decoder signature. Rejects unverified phase, unsupported black patterns, invalid source hashes and cancellations. Default LibRaw RGBA64, Sony/ICC/scopes and all UI code untouched. See [F3_SENSOR_LINEAR_MOSAIC_STAGE6A.md](F3_SENSOR_LINEAR_MOSAIC_STAGE6A.md). Native FP32 demosaic/WB/camera matrix and source-cache adoption remain future scope.
+
+- **F3 Stage 5 sensor audit accepted:** exact HEAD `57f3ee92758961d28f9c8ea54fb68bc37a0f3033` passed [CI run 38538089526](https://github.com/snailjayxxx/JixelLight/actions/runs/38538089526) on Windows x64, macOS arm64 and Linux GPU, including original RAW/JPEG, GPU, GUI and Windows/macOS deployment validation; ten CTest suites passed per OS. These audit samples do not imply high-light restoration.
+
 - **F3 stage 4 FP32 source cache accepted:** `4c8e97866c72fda3898611ae8ff3579df2e188cd`,
   [run 38534048071](https://github.com/snailjayxxx/JixelLight/actions/runs/38534048071)
   **Success** on Linux GPU, Windows x64 and macOS arm64, each with **142 core /
@@ -14,7 +18,7 @@ Production `main` and PR #15 (`fix/a7r6-camera-base-as-shot`) are not updated or
   Versioned FP32 `.jlfs` source cache and its provenance/checksum safety
   are accepted, but still opt-in and never substituted for LibRaw RGBA64.
 
-- **F3 stage 5 sensor mosaic audit (exact-head CI pending):** opt-in
+- **F3 stage 5 sensor mosaic audit (accepted at 57f3ee9):** opt-in
   pre-`dcraw_process()` LibRaw unpacked U16 raw-image sample distribution,
   active-area/pitch checks, p50/p99/p999, raw parity, SHA-256 identity and
   unmodified black/white/WB/CFA metadata. No pixel renderer, demosaic,

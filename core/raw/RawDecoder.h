@@ -4,6 +4,7 @@
 #include <QString>
 #include <QJsonObject>
 #include "core/async/LatestJob.h"
+#include "core/raw/SensorLinearMosaic.h"
 
 struct RawMetadata {
     QString make;
@@ -31,5 +32,9 @@ class RawDecoder final {
 public:
     static bool isRawFile(const QString &path);
     static QImage decode(const QString &path, QString *errorMessage = nullptr, RawMetadata *metadata = nullptr, const CancelToken &cancel = {});
+    // Explicit calibrated CFA tile experiment only; never called by normal rendering.
+    static SensorLinearMosaic::Tile calibratedMosaicTile(const QString &path,
+        const SensorLinearMosaic::Calibration &calibration, const QRect &rawRoi,
+        QString *errorMessage=nullptr, const CancelToken &cancel={});
     static QImage thumbnail(const QString &path, const CancelToken &cancel = {});
 };

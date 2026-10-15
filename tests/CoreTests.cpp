@@ -394,6 +394,104 @@ private slots:
         QVERIFY(!failed["available"].toBool());QCOMPARE(failed["reason"].toString(),QString("cancelled"));
     }
 
+
+    void calibratedBayerTileNormalizesSensorSitesWithoutRgbOrClipping() {
+        SensorLinearMosaic::Calibration c;
+        c.sourceSha256=QByteArray(64,'a');c.calibrationSha256=QByteArray(64,'b');
+        c.cfa={0,1,1,2};
+        c.black={100,200,300,400};
+        c.white={900,1200,1300,1400};
+        QVERIFY(SensorLinearMosaic::validCalibration(c));
+        std::array<quint16,36> raw{};raw.fill(600);
+        raw[1*6+1]=100;raw[1*6+2]=1200;
+        raw[2*6+1]=100;raw[2*6+2]=1900;
+        const SensorLinearMosaic::Layout layout{6,6,12,{1,1,4,4}};
+        const auto tile=SensorLinearMosaic::normalizeTile(raw.data(),layout,c,{1,1,2,2});
+        QVERIFY2(tile.valid(),qPrintable(tile.error));
+        QCOMPARE(tile.rawRoi,QRect(1,1,2,2));
+        QCOMPARE(tile.samples.size(),4);
+        QCOMPARE(tile.samples[0],0.0f);
+        QCOMPARE(tile.samples[1],1.0f);
+        QVERIFY(std::abs(tile.samples[2]-(-0.2f))<1.e-6f);
+        QCOMPARE(tile.samples[3],1.5f);
+        QCOMPARE(tile.statistics["sample_count"].toInteger(),qint64(4));
+        QCOMPARE(tile.statistics["negative_samples"].toInteger(),qint64(1));
+        QCOMPARE(tile.statistics["at_or_above_calibrated_white_samples"].toInteger(),qint64(2));
+        QCOMPARE(tile.statistics["site_counts"].toArray(),QJsonArray({1,1,1,1}));
+        QVERIFY(!tile.statistics["demosaiced"].toBool());
+        QVERIFY(!tile.statistics["white_balanced"].toBool());
+        QCOMPARE(tile.statistics["kind"].toString(),QString("unclamped_single_channel_bayer_mosaic_not_rgb"));
+        // Absolute sensor coordinates, but relative-to-visible active CFA phase.
+        const auto shifted=SensorLinearMosaic::normalizeTile(raw.data(),layout,c,{2,1,2,2});
+        QVERIFY(shifted.valid());
+        QCOMPARE(shifted.samples[0],0.4f); // green at visible-relative (1,0)
+        QCOMPARE(raw[2*6+2],quint16(1900)); // never mutate the underlying sensor
+    }
+
+    void calibratedBayerDecoderIdentityTracksEveryCorrectionAndSource() {
+        SensorLinearMosaic::Calibration c;
+        c.sourceSha256=QByteArray(64,'a');c.calibrationSha256=QByteArray(64,'b');
+        c.cfa={0,1,3,2};c.black={512,513,514,515};c.white={16383,16382,16381,16380};
+        const auto signature=SensorLinearMosaic::decoderSignature(c);
+        QCOMPARE(signature.size(),64);
+        auto changed=c;changed.sourceSha256=QByteArray(64,'c');
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed)!=signature);
+        changed=c;changed.calibrationSha256=QByteArray(64,'c');
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed)!=signature);
+        changed=c;changed.cfa={2,1,3,0};
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed)!=signature);
+        changed=c;changed.black[2]++;
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed)!=signature);
+        changed=c;changed.white[2]--;
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed)!=signature);
+        changed=c;changed.sourceSha256="INVALID";
+        QVERIFY(!SensorLinearMosaic::validCalibration(changed));
+        QVERIFY(SensorLinearMosaic::decoderSignature(changed).isEmpty());
+        changed=c;changed.cfa={0,1,1,1};
+        QVERIFY(!SensorLinearMosaic::validCalibration(changed));
+        changed=c;changed.black[0]=changed.white[0];
+        QVERIFY(!SensorLinearMosaic::validCalibration(changed));
+        changed=c;changed.white[0]=65536;
+        QVERIFY(!SensorLinearMosaic::validCalibration(changed));
+    }
+
+    void calibratedBayerProbeRejectsUnsafeGeometryCancellationAndSourceMismatch() {
+        SensorLinearMosaic::Calibration c;
+        c.sourceSha256=QByteArray(64,'a');c.calibrationSha256=QByteArray(64,'b');
+        c.cfa={0,1,3,2};c.black={512,512,512,512};c.white={16383,16383,16383,16383};
+        std::array<quint16,36> raw{};raw.fill(512);
+        const SensorLinearMosaic::Layout good{6,6,12,{1,1,4,4}};
+        const QRect valid(1,1,2,2);
+        QVERIFY(SensorLinearMosaic::normalizeTile(raw.data(),good,c,valid).valid());
+        auto result=SensorLinearMosaic::normalizeTile(nullptr,good,c,valid);
+        QVERIFY(!result.valid());QVERIFY(!result.error.isEmpty());
+        for(const auto &bad:{SensorLinearMosaic::Layout{6,6,0,{1,1,4,4}},
+                             SensorLinearMosaic::Layout{6,6,14,{1,1,4,4}},
+                             SensorLinearMosaic::Layout{6,6,12,{-1,1,4,4}},
+                             SensorLinearMosaic::Layout{32768,32768,65536,{0,0,32768,32768}}}) {
+            result=SensorLinearMosaic::normalizeTile(raw.data(),bad,c,valid);
+            QVERIFY(!result.valid());QVERIFY(!result.error.isEmpty());
+        }
+        result=SensorLinearMosaic::normalizeTile(raw.data(),good,c,{0,0,3,3});
+        QVERIFY(!result.valid());
+        result=SensorLinearMosaic::normalizeTile(raw.data(),good,c,{1,1,0,3});
+        QVERIFY(!result.valid());
+        const SensorLinearMosaic::Layout huge{2048,2048,4096,{0,0,2048,2048}};
+        result=SensorLinearMosaic::normalizeTile(raw.data(),huge,c,{0,0,1025,1025});
+        QVERIFY(!result.valid()); // reject before reading the tiny fixture buffer
+        const auto stop=std::make_shared<std::atomic_bool>(true);
+        result=SensorLinearMosaic::normalizeTile(raw.data(),good,c,valid,stop);
+        QVERIFY(!result.valid());QCOMPARE(result.error,QString("cancelled"));
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        const QString path=dir.filePath("synthetic.arw");
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("not a RAW file"),qint64(14));file.close();
+        QString error;
+        result=RawDecoder::calibratedMosaicTile(path,c,valid,&error);
+        QVERIFY(!result.valid());
+        QVERIFY2(error.contains("SHA-256"),qPrintable(error));
+    }
+
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
         QImage source(256,1024,QImage::Format_RGBA64); source.setColorSpace(QColorSpace::SRgbLinear);
         source.setDevicePixelRatio(2); source.setDotsPerMeterX(3000); source.setDotsPerMeterY(3100); source.setText("JixelLightSource","staging-test");

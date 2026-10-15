@@ -83,6 +83,10 @@ Official references:
   and unchanged Jixel Neutral v2 color semantics. The stage is not
   accepted unless the complete run succeeds.
 
+## Accepted checkpoint
+
+- Exact-head 57f3ee92758961d28f9c8ea54fb68bc37a0f3033, CI https://github.com/snailjayxxx/JixelLight/actions/runs/38538089526: Windows, macOS and Linux GPU jobs all completed Success, including full real RAW/JPEG, GUI and deployed desktop checks. Stage 5 measurement is accepted; native FP32 camera RAW is not.
+
 ## Limits / next work
 
 This stage is **measurement**, not scene-linear FP32 demosaic or highlight
