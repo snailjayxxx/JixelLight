@@ -424,7 +424,7 @@ private slots:
         // Absolute sensor coordinates, but relative-to-visible active CFA phase.
         const auto shifted=SensorLinearMosaic::normalizeTile(raw.data(),layout,c,{2,1,2,2});
         QVERIFY(shifted.valid());
-        QCOMPARE(shifted.samples[0],0.4f); // green at visible-relative (1,0)
+        QCOMPARE(shifted.samples[0],1.0f); // sampled code 1200 is this green site's calibrated white
         QCOMPARE(raw[2*6+2],quint16(1900)); // never mutate the underlying sensor
     }
 
