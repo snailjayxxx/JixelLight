@@ -8,7 +8,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonParseError>
-#include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QDebug>
 
 namespace {
@@ -31,16 +31,23 @@ bool writeNewJson(const QString &path,const QJsonObject &json,QString *error) {
     if(QFileInfo::exists(path)){*error=QStringLiteral("Existing report cannot be replaced");return false;}
     const QFileInfo info(path);
     if(!QDir().mkpath(info.absolutePath())) {*error=QStringLiteral("Cannot create report directory");return false;}
-    QTemporaryFile stage(QDir(info.absolutePath()).filePath(QStringLiteral(".jix-float-trial-XXXXXX")));
-    if(!stage.open()) {*error=QStringLiteral("Cannot stage report");return false;}
+    // QTemporaryFile::close() may retain its underlying native handle on
+    // Windows, preventing rename. An ordinary QFile inside a private
+    // same-filesystem directory really releases it before publication.
+    QTemporaryDir stageDir(QDir(info.absolutePath()).filePath(
+        QStringLiteral(".jix-float-trial-XXXXXX")));
+    if(!stageDir.isValid()) {*error=QStringLiteral("Cannot stage report directory");return false;}
+    const QString stagedName=QDir(stageDir.path()).filePath(QStringLiteral("report.json"));
+    QFile stage(stagedName);
+    if(!stage.open(QIODevice::WriteOnly|QIODevice::NewOnly)) {
+        *error=QStringLiteral("Cannot create staged report");return false;
+    }
     const QByteArray bytes=QJsonDocument(json).toJson(QJsonDocument::Indented);
     if(stage.write(bytes)!=bytes.size()||!stage.flush()) {
         *error=QStringLiteral("Cannot write complete report");return false;
     }
-    const QString temp=stage.fileName();
-    stage.close();stage.setAutoRemove(false);
-    if(!QFile::rename(temp,path)) {
-        QFile::remove(temp);
+    stage.close();
+    if(!QFile::rename(stagedName,path)) {
         *error=QStringLiteral("Cannot publish new report (destination may exist)");
         return false;
     }
