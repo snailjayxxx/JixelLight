@@ -1484,7 +1484,12 @@ private slots:
         QVERIFY(!legacy.contains("linearMask"));
         QImage source(27,19,QImage::Format_RGBA64);
         source.fill(QColor::fromRgba64(8000,14000,22000,23456));
-        const auto neutral=ImagePipeline::process(source,{},ImagePipeline::InputEncoding::LinearProPhoto);
+        // LinearProPhoto represents an encoding, not RAW provenance.
+        // The 3-arg process convenience overload historically assumes RAW;
+        // compare against an explicit non-RAW plan like the tested effect.
+        const auto neutralPlan=ProcessingPlan::compile(AdjustmentState{},
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto neutral=ImagePipeline::processWithPlan(source,neutralPlan);
         AdjustmentState effect; effect.linearMaskEnabled=true; effect.linearMaskExposure=1.5;
         effect.linearMaskCenter=.5; effect.linearMaskFeather=.2;
         const auto plan=ProcessingPlan::compile(effect,ImagePipeline::InputEncoding::LinearProPhoto,
@@ -1511,12 +1516,13 @@ private slots:
         }
         QVERIFY2(maxDelta<=2,qPrintable(QString::number(maxDelta)));
         effect.linearMaskAngle=90;
-        const auto horizontal=ImagePipeline::process(source,effect,ImagePipeline::InputEncoding::LinearProPhoto);
+        const auto horizontalPlan=ProcessingPlan::compile(effect,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto horizontal=ImagePipeline::processWithPlan(source,horizontalPlan);
         QCOMPARE(horizontal.pixelColor(0,9),neutral.pixelColor(0,9));
         QVERIFY(horizontal.pixelColor(26,9).red()>neutral.pixelColor(26,9).red());
         QCOMPARE(source.pixelColor(0,0).rgba64().red(),quint16(8000));
-        QVERIFY(StageGraph::renderKey(source,plan)!=StageGraph::renderKey(source,ProcessingPlan::compile(
-            {},ImagePipeline::InputEncoding::LinearProPhoto)));
+        QVERIFY(StageGraph::renderKey(source,plan)!=StageGraph::renderKey(source,neutralPlan));
     }
     void linearMaskCommandsSnapshotsHistoryAndXmpPresets() {
         AdjustmentState state;const auto legacy=state.toJson();
