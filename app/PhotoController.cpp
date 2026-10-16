@@ -589,7 +589,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -676,6 +676,38 @@ void PhotoController::resetLinearMask() {
     m_photos[m_currentIndex].history.finish();
     if (!CommandRegistry::execute(*state,{{"command","mask.linear.reset"}})) return;
     persistAndApply("linear_mask_reset");
+}
+bool PhotoController::setRadialMaskEnabled(bool enabled) {
+    auto *state=mutableCurrentState(); if (!state) return false;
+    if (state->radialMaskEnabled==enabled) return true;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","mask.radial.enable"},{"enabled",enabled}})) return false;
+    persistAndApply("radial_mask_toggle",{{"enabled",enabled}});
+    return true;
+}
+bool PhotoController::setRadialMaskInverted(bool inverted) {
+    auto *state=mutableCurrentState(); if (!state) return false;
+    if (state->radialMaskInverted==inverted) return true;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","mask.radial.invert"},{"inverted",inverted}})) return false;
+    persistAndApply("radial_mask_invert",{{"inverted",inverted}});
+    return true;
+}
+bool PhotoController::setRadialMaskParameter(const QString &parameter,double value) {
+    auto *state=mutableCurrentState(); if (!state || !std::isfinite(value)) return false;
+    auto changed=*state;
+    if (!CommandRegistry::execute(changed,{{"command","mask.radial.set"},
+                                           {"parameter",parameter},{"value",value}})) return false;
+    if (changed.toJson()==state->toJson()) return true;
+    *state=std::move(changed);
+    persistAndApply("radial_mask_adjustment",{{"parameter",parameter},{"value",value}});
+    return true;
+}
+void PhotoController::resetRadialMask() {
+    auto *state=mutableCurrentState(); if (!state || !state->toJson().contains("radialMask")) return;
+    m_photos[m_currentIndex].history.finish();
+    if (!CommandRegistry::execute(*state,{{"command","mask.radial.reset"}})) return;
+    persistAndApply("radial_mask_reset");
 }
 void PhotoController::setBlackWhite(bool enabled) {
     auto *state=mutableCurrentState(); if (!state || state->blackWhite==enabled) return;

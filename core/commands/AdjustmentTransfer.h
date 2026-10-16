@@ -44,6 +44,14 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.linearMaskCenter=source.linearMaskCenter;
             target.linearMaskFeather=source.linearMaskFeather;
             target.linearMaskAngle=source.linearMaskAngle;
+            target.radialMaskEnabled=source.radialMaskEnabled;
+            target.radialMaskInverted=source.radialMaskInverted;
+            target.radialMaskExposure=source.radialMaskExposure;
+            target.radialMaskCenterX=source.radialMaskCenterX;
+            target.radialMaskCenterY=source.radialMaskCenterY;
+            target.radialMaskRadiusX=source.radialMaskRadiusX;
+            target.radialMaskRadiusY=source.radialMaskRadiusY;
+            target.radialMaskFeather=source.radialMaskFeather;
         }
         else if (group=="geometry") target.geometry=source.geometry;
     }

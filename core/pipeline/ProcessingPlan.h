@@ -24,7 +24,8 @@ struct ProcessingPlan {
                 LutOut0=34, LutOut1=35, LutOut2=36, Vignette=37, FrameRect=38, PixelMap=39,
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
-                GradingHighlights=46, LinearMask=47, LinearMaskDirection=48, SlotCount=49 };
+                GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
+                RadialMask=49, RadialMaskShape=50, SlotCount=51 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -33,7 +34,7 @@ struct ProcessingPlan {
     float baseExposureStops = 0.0f;
 
     void setFrameRect(const QRectF &rect) {
-        if (data[Vignette].x!=0 || data[LinearMask].x!=0) data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
+        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0) data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
     }
     Float4 pixelMap(const QSize &size) const {
         const auto rect=data[FrameRect];
@@ -55,4 +56,4 @@ struct ProcessingPlan {
                                   float baseExposureStops);
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 784);
+static_assert(sizeof(ProcessingPlan::data) == 816);

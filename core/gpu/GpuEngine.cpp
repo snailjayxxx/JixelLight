@@ -30,7 +30,8 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
         complexHsl = complexHsl || state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;
     const bool extremeBrightPerceptual =
         plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure+std::max(0.0f,plan.data[ProcessingPlan::Vignette].x)
-            +std::max(0.0f,plan.data[ProcessingPlan::LinearMask].x) >= 2.5
+            +std::max(0.0f,plan.data[ProcessingPlan::LinearMask].x)
+            +std::max(0.0f,plan.data[ProcessingPlan::RadialMask].x) >= 2.5
         && (state.saturation != 0 || state.vibrance != 0);
     return complexHsl || extremeBrightPerceptual;
 }

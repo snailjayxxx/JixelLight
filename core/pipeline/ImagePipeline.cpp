@@ -374,6 +374,18 @@ inline Vec3 applyLinearMask(Vec3 v,const ColorKernel &kernel,int x,int y) {
     const float position=dx*m.w+dy*cosine;
     return scale(v,std::exp2(m.x*smooth(.5f+(position-m.y)/m.z)));
 }
+inline Vec3 applyRadialMask(Vec3 v,const ColorKernel &kernel,int x,int y) {
+    const auto mask=kernel.plan.data[ProcessingPlan::RadialMask];
+    if (mask.x==0.0f) return v;
+    const auto shape=kernel.plan.data[ProcessingPlan::RadialMaskShape];
+    const auto map=kernel.pixelMap;
+    const float dx=(map.x+(float(x)-kernel.centerX)*map.z-mask.y)/shape.x;
+    const float dy=(map.y+(float(y)-kernel.centerY)*map.w-mask.z)/shape.y;
+    const float radius=std::sqrt(dx*dx+dy*dy);
+    const float interior=1.0f-smooth((radius-(1.0f-mask.w))/mask.w);
+    const float weight=shape.z>0.5f ? 1.0f-interior : interior;
+    return scale(v,std::exp2(mask.x*weight));
+}
 inline Vec3 applyVignette(Vec3 v,const ColorKernel &kernel,int x,int y) {
     const auto p=kernel.vignette; if (p.x==0) return v;
     const auto map=kernel.pixelMap;
@@ -489,6 +501,7 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
     // Preexisting vignette diagnostic boundary includes this spatial gain.
     v=applyLinearMask(v,kernel,x,y);
+    v=applyRadialMask(v,kernel,x,y);
     v=applyVignette(v,kernel,x,y); observe(ColorStage::Vignette,v);
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
     v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
@@ -550,6 +563,17 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
         std::sin(angle)
     };
     plan.data[LinearMaskDirection]={std::cos(angle),0,0,0};
+    plan.data[RadialMask]={
+        state.radialMaskEnabled ? finite(state.radialMaskExposure,0,-3,3) : 0.0f,
+        2*finite(state.radialMaskCenterX,.5,0,1)-1,
+        2*finite(state.radialMaskCenterY,.5,0,1)-1,
+        finite(state.radialMaskFeather,.25,.02,1)
+    };
+    plan.data[RadialMaskShape]={
+        2*finite(state.radialMaskRadiusX,.35,.05,1),
+        2*finite(state.radialMaskRadiusY,.35,.05,1),
+        state.radialMaskInverted?1.0f:0.0f,0
+    };
     plan.rawSource = rawSource;
     plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;
     plan.data[BlackWhite]={state.blackWhite?1.0f:0.0f,0,0,0};

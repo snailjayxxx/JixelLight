@@ -1479,6 +1479,209 @@ private slots:
         QVERIFY(!reopened.blackWhite()); QCOMPARE(reopened.blackWhiteMix().at(0).toDouble(),0.0);
         reopened.undo(); QCOMPARE(reopened.gpuPlan(true).state.toJson(),snapshot);
     }
+    void invalidRadialMaskProjectFailsClosedWithoutMutatingActiveWriter() {
+        QTemporaryDir dir;
+        ProjectDatabase active,candidate;
+        QVERIFY(active.create(dir.path(),"RadialActive"));
+        QVERIFY(candidate.create(dir.path(),"RadialCandidate"));
+        AdjustmentState state;state.radialMaskEnabled=true;state.radialMaskExposure=-1.5;
+        QVERIFY(candidate.addOrUpdatePhoto("source.png",state));
+        QVERIFY(candidate.flush());
+        const auto activePath=active.projectPath();
+        const auto dbPath=QDir(candidate.projectPath()).filePath("Project.db");
+        const auto valid=state.toJson().value("radialMask").toObject();
+        QList<QJsonValue> invalid{QJsonArray{},QJsonObject{}};
+        for(const auto *key : {"schema","enabled","inverted","exposure","centerX","centerY","radiusX","radiusY","feather"}) {
+            auto v=valid;v.remove(key);invalid.append(v);
+        }
+        auto future=valid;future["schema"]=2;invalid.append(future);
+        auto invalidRadius=valid;invalidRadius["radiusX"]=0;invalid.append(invalidRadius);
+        auto extra=valid;extra["unknown"]=1;invalid.append(extra);
+        invalid.append(QJsonObject{{"schema",1},{"enabled",false},{"inverted",false},
+            {"exposure",0},{"centerX",.5},{"centerY",.5},
+            {"radiusX",.35},{"radiusY",.35},{"feather",.25}});
+        for(const auto &payload : invalid) {
+            const QString connection="invalid-radial-project-check";
+            {
+                auto db=QSqlDatabase::addDatabase("QSQLITE",connection);
+                db.setDatabaseName(dbPath);QVERIFY(db.open());
+                auto json=state.toJson();json["radialMask"]=payload;
+                QSqlQuery query(db);
+                QVERIFY(query.prepare("UPDATE photos SET adjustment_json=?"));
+                query.addBindValue(QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+                QVERIFY(query.exec());
+            }
+            QSqlDatabase::removeDatabase(connection);
+            QFile file(dbPath);QVERIFY(file.open(QIODevice::ReadOnly));
+            const auto bytes=file.readAll();file.close();
+            QVector<ProjectDatabase::SavedPhoto> photos;
+            QVERIFY(!active.open(candidate.projectPath(),&photos));
+            QVERIFY(active.lastError().contains("radial mask"));
+            QCOMPARE(active.projectPath(),activePath);
+            QVERIFY(active.isOpen());QVERIFY(photos.isEmpty());
+            QVERIFY(active.flush());
+            QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),bytes);
+        }
+        QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
+    }
+    void radialMaskSceneLinearEllipseInversionAndTiling() {
+        const auto plainState=AdjustmentState{};
+        const auto plainJson=plainState.toJson();
+        QVERIFY(!plainJson.contains("radialMask") && !plainJson.contains("linearMask"));
+        QImage source(25,25,QImage::Format_RGBA64);
+        source.fill(QColor::fromRgba64(8000,14000,22000,23456));
+        const auto original=source.copy();
+        const auto neutralPlan=ProcessingPlan::compile(plainState,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto baseline=ImagePipeline::processWithPlan(source,neutralPlan);
+        AdjustmentState state;
+        state.radialMaskEnabled=true; state.radialMaskExposure=1.5;
+        state.radialMaskRadiusX=.5; state.radialMaskRadiusY=.25;
+        const auto active=ProcessingPlan::compile(state,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto full=ImagePipeline::processWithPlan(source,active);
+        QVERIFY(!full.isNull());
+        QCOMPARE(full.pixelColor(0,0),baseline.pixelColor(0,0));
+        QCOMPARE(full.pixelColor(12,0),baseline.pixelColor(12,0));
+        QVERIFY(full.pixelColor(12,12).red()>baseline.pixelColor(12,12).red());
+        QVERIFY(full.pixelColor(18,12).red()>baseline.pixelColor(18,12).red());
+        QCOMPARE(full.pixelColor(12,18),baseline.pixelColor(12,18));
+        AdjustmentState global;global.exposure=1.5;
+        const auto globalPlan=ProcessingPlan::compile(global,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto center=full.pixelColor(12,12).rgba64();
+        const auto expected=ImagePipeline::processWithPlan(source,globalPlan).pixelColor(12,12).rgba64();
+        QVERIFY(std::abs(int(center.red())-int(expected.red()))<=2);
+        QVERIFY(std::abs(int(center.green())-int(expected.green()))<=2);
+        for(int y=0;y<source.height();++y) for(int x=0;x<source.width();++x)
+            QCOMPARE(full.pixelColor(x,y).rgba64().alpha(),quint16(23456));
+        QCOMPARE(ImagePipeline::processRegion(source,active,QRect(0,5,25,10)),full.copy(0,5,25,10));
+        QCOMPARE(ImagePipeline::diagnoseWithPlan(source,active).image,full);
+        const auto counts=ScopesEngine::analyzeFull(source,active);
+        QCOMPARE(counts.red,ScopesEngine::analyze(full).red);
+        const QRect roi(5,4,12,9);
+        auto viewport=active;
+        viewport.setFrameRect(QRectF(double(roi.x())/source.width(),double(roi.y())/source.height(),
+                                     double(roi.width())/source.width(),double(roi.height())/source.height()));
+        const auto partial=ImagePipeline::processWithPlan(source.copy(roi),viewport);
+        int maxDiff=0;
+        for(int y=0;y<roi.height();++y)for(int x=0;x<roi.width();++x) {
+            const auto a=partial.pixelColor(x,y).rgba64();
+            const auto b=full.pixelColor(x+roi.x(),y+roi.y()).rgba64();
+            maxDiff=std::max({maxDiff,std::abs(int(a.red())-int(b.red())),
+                    std::abs(int(a.green())-int(b.green())),
+                    std::abs(int(a.blue())-int(b.blue()))});
+        }
+        QVERIFY2(maxDiff<=2,qPrintable(QString::number(maxDiff)));
+        state.radialMaskInverted=true;
+        const auto inverted=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0));
+        QCOMPARE(inverted.pixelColor(12,12),baseline.pixelColor(12,12));
+        QVERIFY(inverted.pixelColor(0,0).red()>baseline.pixelColor(0,0).red());
+        state.radialMaskEnabled=false;
+        QCOMPARE(ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)),baseline);
+        state.radialMaskEnabled=true;state.radialMaskInverted=false;
+        state.linearMaskEnabled=true;state.linearMaskExposure=-.8;
+        const auto combined=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                     ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(ImagePipeline::processWithPlan(source,combined)!=full);
+        QVERIFY(StageGraph::renderKey(source,combined)!=StageGraph::renderKey(source,active));
+        QCOMPARE(source,original);
+        QCOMPARE(AdjustmentState::fromJson(plainJson).toJson(),plainJson);
+    }
+    void radialMaskStrictCommandsSnapshotsPresetsXmpAndTransfer() {
+        AdjustmentState state;state.exposure=.4;state.linearMaskEnabled=true;
+        state.linearMaskExposure=-.7;
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","exposure"},{"value",1.5}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","centerX"},{"value",.3}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","centerY"},{"value",.65}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","radiusX"},{"value",.2}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","radiusY"},{"value",.55}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","feather"},{"value",.4}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.invert"},{"inverted",true}}));
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.enable"},{"enabled",true}}));
+        const auto saved=state.toJson();
+        QVERIFY(AdjustmentState::validRadialMaskJson(saved));
+        QCOMPARE(AdjustmentState::fromJson(saved).toJson(),saved);
+        for(const auto *name : {"schema","enabled","inverted","exposure","centerX","centerY","radiusX","radiusY","feather"}) {
+            auto invalid=saved;auto mask=invalid["radialMask"].toObject();
+            mask.remove(name);invalid["radialMask"]=mask;
+            QVERIFY(!AdjustmentState::validRadialMaskJson(invalid));
+        }
+        const auto invalidField=[&](const char *name,QJsonValue value) {
+            auto invalid=saved;auto mask=invalid["radialMask"].toObject();
+            mask[name]=value;invalid["radialMask"]=mask;
+            return !AdjustmentState::validRadialMaskJson(invalid);
+        };
+        QVERIFY(invalidField("schema",2));QVERIFY(invalidField("enabled",1));
+        QVERIFY(invalidField("inverted",1));QVERIFY(invalidField("exposure",4));
+        QVERIFY(invalidField("centerX",-1));QVERIFY(invalidField("centerY",1.1));
+        QVERIFY(invalidField("radiusX",.01));QVERIFY(invalidField("radiusY",1.1));
+        QVERIFY(invalidField("feather",0));QVERIFY(invalidField("extra",true));
+        for(const auto &bad : {QJsonValue(QJsonArray{}),QJsonValue(QJsonObject{})}) {
+            auto invalid=saved;invalid["radialMask"]=bad;
+            QVERIFY(!AdjustmentState::validRadialMaskJson(invalid));
+        }
+        const auto beforeReject=state.toJson();
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","feather"},{"value",0}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","radiusX"},{"value",2}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","unknown"},{"value",.5}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.set"},{"parameter","exposure"},{"value","1"}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.enable"},{"enabled",1}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.invert"},{"inverted",1}}));
+        QVERIFY(!CommandRegistry::execute(state,{{"command","mask.radial.reset"},{"extra",1}}));
+        QCOMPARE(state.toJson(),beforeReject);
+        EditHistory history;history.initialize(AdjustmentState{});history.record(state,"radial_mask");
+        EditHistory restored;QVERIFY(restored.restore(history.toJson(),state));
+        QVERIFY(restored.undo().toJson()!=saved);
+        QCOMPARE(restored.redo().toJson(),saved);
+        AdjustmentState dest;dest.exposure=-2;dest.geometry.straighten=7;
+        QVERIFY(AdjustmentTransfer::apply(dest,state,{"masks"}));
+        QCOMPARE(dest.toJson()["linearMask"],saved["linearMask"]);
+        QCOMPARE(dest.toJson()["radialMask"],saved["radialMask"]);
+        QCOMPARE(dest.exposure,-2.0);QCOMPARE(dest.geometry.straighten,7.0);
+        QTemporaryDir temp;QString error;
+        NamedPresets presets(temp.filePath("presets.json"));QVERIFY(presets.load(&error));
+        QVERIFY2(presets.save("Oval",state,&error),qPrintable(error));
+        AdjustmentState preset;QVERIFY(presets.get("Oval",&preset));
+        QCOMPARE(preset.toJson(),saved);
+        const auto path=temp.filePath("oval.xmp");
+        QVERIFY2(XmpSidecar::writeNew(path,state,{},0,"none",&error),qPrintable(error));
+        XmpSidecar::Document doc;QVERIFY2(XmpSidecar::read(path,&doc,&error),qPrintable(error));
+        QCOMPARE(doc.adjustments.toJson(),saved);
+        QVERIFY(CommandRegistry::execute(state,{{"command","mask.radial.reset"}}));
+        QVERIFY(!state.toJson().contains("radialMask"));
+        QCOMPARE(state.toJson()["linearMask"],saved["linearMask"]);
+        QCOMPARE(state.exposure,.4);
+    }
+    void radialMaskControllerUndoAndProjectPersistence() {
+        QTemporaryDir temp;
+        QImage image(19,17,QImage::Format_RGB32);image.fill(QColor(76,120,158));
+        const auto photo=temp.filePath("oval.png");QVERIFY(image.save(photo));
+        QFile bytes(photo);QVERIFY(bytes.open(QIODevice::ReadOnly));
+        const auto originalBytes=bytes.readAll();bytes.close();
+        PhotoController c(nullptr);c.setGpuEnabled(false);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(photo)));
+        QVERIFY(c.setRadialMaskParameter("exposure",-1.5));
+        QVERIFY(c.setRadialMaskParameter("centerX",.42));
+        QVERIFY(c.setRadialMaskParameter("radiusY",.25));
+        QVERIFY(c.setRadialMaskInverted(true));
+        QVERIFY(c.setRadialMaskEnabled(true));
+        const auto saved=c.gpuPlan(true).state.toJson();
+        QVERIFY(saved.contains("radialMask"));
+        QCOMPARE(c.radialMask().value("centerX").toDouble(),.42);
+        c.finishInteraction();c.resetRadialMask();
+        QVERIFY(!c.gpuPlan(true).state.toJson().contains("radialMask"));
+        c.undo();QCOMPARE(c.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(temp.path()),"Radial"));
+        QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(reopened.setRadialMaskEnabled(false));
+        reopened.undo();QCOMPARE(reopened.gpuPlan(true).state.toJson(),saved);
+        QVERIFY(bytes.open(QIODevice::ReadOnly));QCOMPARE(bytes.readAll(),originalBytes);
+    }
     void linearMaskSceneLinearPixelGeometryAndViewport() {
         const auto legacy=AdjustmentState{}.toJson();
         QVERIFY(!legacy.contains("linearMask"));

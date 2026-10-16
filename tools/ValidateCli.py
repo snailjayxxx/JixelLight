@@ -38,7 +38,7 @@ def main():
             return process
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 15
-        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
@@ -178,6 +178,37 @@ def main():
         result=json.loads(run('--commands',commands,source,reset_png).stdout)
         assert 'linearMask' not in result['adjustments']
         assert png_pixel_stream(reset_png)==png_pixel_stream(plain)
+        oval = [
+            {'command':'mask.radial.enable','enabled':True},
+            {'command':'mask.radial.set','parameter':'exposure','value':-1.4},
+            {'command':'mask.radial.set','parameter':'centerX','value':.5},
+            {'command':'mask.radial.set','parameter':'centerY','value':.5},
+            {'command':'mask.radial.set','parameter':'radiusX','value':.4},
+            {'command':'mask.radial.set','parameter':'radiusY','value':.9},
+            {'command':'mask.radial.set','parameter':'feather','value':.5},
+        ]
+        commands.write_text(json.dumps(exposure+oval))
+        radial_png=root/'radial-mask.png'
+        result=json.loads(run('--commands',commands,source,radial_png).stdout)
+        assert result['adjustments']['radialMask']=={
+            'schema':1,'enabled':True,'inverted':False,'exposure':-1.4,
+            'centerX':.5,'centerY':.5,'radiusX':.4,'radiusY':.9,'feather':.5}
+        assert png_pixel_stream(radial_png)!=png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure+oval+[{'command':'mask.radial.invert','inverted':True}]))
+        inverted_png=root/'radial-mask-inverted.png'
+        result=json.loads(run('--commands',commands,source,inverted_png).stdout)
+        assert result['adjustments']['radialMask']['inverted'] is True
+        assert png_pixel_stream(inverted_png)!=png_pixel_stream(radial_png)
+        commands.write_text(json.dumps(exposure+oval+[{'command':'mask.radial.enable','enabled':False}]))
+        disabled_radial=root/'radial-mask-disabled.png'
+        result=json.loads(run('--commands',commands,source,disabled_radial).stdout)
+        assert result['adjustments']['radialMask']['enabled'] is False
+        assert png_pixel_stream(disabled_radial)==png_pixel_stream(plain)
+        commands.write_text(json.dumps(exposure+oval+[{'command':'mask.radial.reset'}]))
+        reset_radial=root/'radial-mask-reset.png'
+        result=json.loads(run('--commands',commands,source,reset_radial).stdout)
+        assert 'radialMask' not in result['adjustments']
+        assert png_pixel_stream(reset_radial)==png_pixel_stream(plain)
         grading = [
             {'command': 'grading.enable', 'enabled': True},
             {'command': 'grading.set', 'region': 0, 'component': 'hue', 'value': 18},
@@ -232,6 +263,16 @@ def main():
             {'command': 'mask.linear.set', 'parameter': 'unknown', 'value': 0},
             {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': '2'},
             {'command': 'mask.linear.reset', 'extra': 1},
+            {'command': 'mask.radial.enable', 'enabled': 1},
+            {'command': 'mask.radial.invert', 'inverted': 'yes'},
+            {'command': 'mask.radial.set', 'parameter': 'radiusX', 'value': .01},
+            {'command': 'mask.radial.set', 'parameter': 'radiusY', 'value': 1.01},
+            {'command': 'mask.radial.set', 'parameter': 'centerY', 'value': -1},
+            {'command': 'mask.radial.set', 'parameter': 'feather', 'value': 0},
+            {'command': 'mask.radial.set', 'parameter': 'exposure', 'value': 4},
+            {'command': 'mask.radial.set', 'parameter': 'unknown', 'value': .5},
+            {'command': 'mask.radial.set', 'parameter': 'centerX', 'value': '0.5'},
+            {'command': 'mask.radial.reset', 'extra': True},
             {'command': 'develop.set', 'parameter': 'vignetteAmount', 'value': '-1'},
             {'command': 'develop.set', 'parameter': 'vignetteFeather', 'value': None},
             {'command': 'geometry.flip', 'axis': 'diagonal'},
@@ -522,7 +563,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 #version 440
 layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
-layout(std140, binding=0) uniform Plan { vec4 p[49]; };
+layout(std140, binding=0) uniform Plan { vec4 p[51]; };
 layout(rgba32f, binding=1) readonly uniform image2D sourceImage;
 layout(rgba32f, binding=2) writeonly uniform image2D outputImage;
 layout(rgba32f,binding=3) readonly uniform image2D lookLut;
@@ -152,6 +152,14 @@ void main() {
         float position=delta.x*p[47].w+delta.y*p[48].x;
         float weight=smooth01(.5+(position-p[47].y)/p[47].z);
         v*=exp2(p[47].x*weight);
+    }
+    if(p[49].x!=0.0) {
+        precise vec2 xy=p[39].xy+(vec2(coord)-(p[24].xy-vec2(1.0))*.5)*p[39].zw;
+        precise vec2 d=(xy-p[49].yz)/p[50].xy;
+        float radius=sqrt(d.x*d.x+d.y*d.y);
+        float interior=1.0-smooth01((radius-(1.0-p[49].w))/p[49].w);
+        float weight=p[50].z>0.5 ? 1.0-interior : interior;
+        v*=exp2(p[49].x*weight);
     }
     if(p[37].x!=0.0) {
         precise vec2 delta=p[39].xy+(vec2(coord)-(p[24].xy-vec2(1.0))*.5)*p[39].zw;

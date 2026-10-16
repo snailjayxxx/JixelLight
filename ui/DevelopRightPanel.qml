@@ -17,6 +17,7 @@ Rectangle {
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
     property bool linearMaskExpanded: false
+    property bool radialMaskExpanded: false
     property bool blackWhiteExpanded: false
     property bool colorGradingExpanded: false
     color: "#15191f"
@@ -33,6 +34,7 @@ Rectangle {
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
+        property alias radialMaskExpanded: root.radialMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
         property alias colorGradingExpanded: root.colorGradingExpanded
     }
@@ -538,8 +540,80 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("初版支持一个手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；画布手柄、笔刷、径向及颜色蒙版尚未实现。",
-                                     "One manual gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles, brush, radial and color masks are not yet available.")
+                        text: root.t("手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；画布手柄、笔刷及颜色选择尚未实现。",
+                                     "One linear gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles, brush and color selections are not yet available.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "radialMaskToggle"; Layout.fillWidth: true; font.bold: true
+                        text: (root.radialMaskExpanded ? "▾ " : "▸ ") + root.t("椭圆／径向蒙版 (1)", "RADIAL MASK (1)")
+                        onClicked: root.radialMaskExpanded = !root.radialMaskExpanded
+                    }
+                    Button {
+                        objectName: "radialMaskReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage
+                        onClicked: root.controller.resetRadialMask()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 6; visible: root.radialMaskExpanded
+                    CheckBox {
+                        objectName: "radialMaskEnable"; Layout.fillWidth: true
+                        text: root.t("启用局部曝光", "Enable local exposure")
+                        checked: root.controller.radialMask.enabled
+                        enabled: root.controller.hasImage
+                        onToggled: root.controller.setRadialMaskEnabled(checked)
+                    }
+                    CheckBox {
+                        objectName: "radialMaskInvert"; Layout.fillWidth: true
+                        text: root.t("反转：调整椭圆外侧", "Invert: adjust outside oval")
+                        checked: root.controller.radialMask.inverted
+                        enabled: root.controller.hasImage
+                        onToggled: root.controller.setRadialMaskInverted(checked)
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskExposureSlider"
+                        label: root.t("曝光 EV", "Exposure EV"); from: -3; to: 3; decimals: 2
+                        value: root.controller.radialMask.exposure
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("exposure",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskCenterXSlider"
+                        label: root.t("中心 X", "Center X"); from: 0; to: 1; decimals: 2
+                        value: root.controller.radialMask.centerX
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("centerX",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskCenterYSlider"
+                        label: root.t("中心 Y", "Center Y"); from: 0; to: 1; decimals: 2
+                        value: root.controller.radialMask.centerY
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("centerY",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskRadiusXSlider"
+                        label: root.t("横向半径", "Radius X"); from: .05; to: 1; decimals: 2
+                        value: root.controller.radialMask.radiusX
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("radiusX",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskRadiusYSlider"
+                        label: root.t("纵向半径", "Radius Y"); from: .05; to: 1; decimals: 2
+                        value: root.controller.radialMask.radiusY
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("radiusY",v) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskFeatherSlider"
+                        label: root.t("羽化", "Feather"); from: .02; to: 1; decimals: 2
+                        value: root.controller.radialMask.feather
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("feather",v) }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；画布拖动、旋转椭圆和多个同类蒙版尚未实现。",
+                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Canvas dragging, rotated oval and multiple radial layers remain future work.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

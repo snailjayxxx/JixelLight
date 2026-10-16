@@ -74,6 +74,36 @@ struct CommandRegistry {
         if (name == "develop.reset") {
             if (!fields(command,{})) return fail(); state = {}; return true;
         }
+        if (name == "mask.radial.enable") {
+            if (!fields(command,{"enabled"}) || !command.value("enabled").isBool()) return fail();
+            state.radialMaskEnabled=command.value("enabled").toBool(); return true;
+        }
+        if (name == "mask.radial.invert") {
+            if (!fields(command,{"inverted"}) || !command.value("inverted").isBool()) return fail();
+            state.radialMaskInverted=command.value("inverted").toBool(); return true;
+        }
+        if (name == "mask.radial.set") {
+            if (!fields(command,{"parameter","value"}) || !command.value("parameter").isString()
+                || !number(command,"value")) return fail();
+            const QString key=command.value("parameter").toString();
+            const double value=command.value("value").toDouble();
+            double *field=nullptr,minimum=0,maximum=0;
+            if (key=="exposure") { field=&state.radialMaskExposure; minimum=-3; maximum=3; }
+            else if (key=="centerX") { field=&state.radialMaskCenterX; minimum=0; maximum=1; }
+            else if (key=="centerY") { field=&state.radialMaskCenterY; minimum=0; maximum=1; }
+            else if (key=="radiusX") { field=&state.radialMaskRadiusX; minimum=.05; maximum=1; }
+            else if (key=="radiusY") { field=&state.radialMaskRadiusY; minimum=.05; maximum=1; }
+            else if (key=="feather") { field=&state.radialMaskFeather; minimum=.02; maximum=1; }
+            if (!field || value<minimum || value>maximum) return fail();
+            *field=value; return true;
+        }
+        if (name == "mask.radial.reset") {
+            if (!fields(command,{})) return fail();
+            state.radialMaskEnabled=false;state.radialMaskInverted=false;state.radialMaskExposure=0;
+            state.radialMaskCenterX=.5;state.radialMaskCenterY=.5;
+            state.radialMaskRadiusX=.35;state.radialMaskRadiusY=.35;state.radialMaskFeather=.25;
+            return true;
+        }
         if (name == "mask.linear.enable") {
             if (!fields(command,{"enabled"}) || !command.value("enabled").isBool()) return fail();
             state.linearMaskEnabled=command.value("enabled").toBool();
@@ -200,6 +230,16 @@ struct CommandRegistry {
         const QJsonArray commands{
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
+            QJsonObject{{"name","mask.radial.enable"},{"fields",QJsonArray{"enabled"}},
+                {"operation","enable or disable one independent oval local exposure gradient"}},
+            QJsonObject{{"name","mask.radial.invert"},{"fields",QJsonArray{"inverted"}},
+                {"operation","apply exposure outside rather than inside the feathered oval"}},
+            QJsonObject{{"name","mask.radial.set"},{"fields",QJsonArray{"parameter","value"}},
+                {"parameters",QJsonArray{"exposure","centerX","centerY","radiusX","radiusY","feather"}},
+                {"ranges","exposure [-3,3] EV; centerX/Y [0,1]; radiusX/Y [.05,1]; feather [.02,1]"},
+                {"range_policy","reject"}},
+            QJsonObject{{"name","mask.radial.reset"},{"fields",QJsonArray{}},
+                {"operation","reset radial mask only; preserve linear mask and other edits"}},
             QJsonObject{{"name","mask.linear.enable"},{"fields",QJsonArray{"enabled"}},
                 {"operation","enable or disable one linear gradient without losing stored controls"}},
             QJsonObject{{"name","mask.linear.set"},{"fields",QJsonArray{"parameter","value"}},

@@ -42,6 +42,17 @@ struct AdjustmentState {
     double linearMaskFeather = 0.25; // half-width .02..1
     double linearMaskAngle = 0.0;    // degrees -180..180, down=0, right=90
 
+    // F4 M2: one independent elliptic radial gradient, no rasterized mask data.
+    // Center/radii are normalized post-geometry/crop image fractions.
+    bool radialMaskEnabled = false;
+    bool radialMaskInverted = false;
+    double radialMaskExposure = 0.0; // EV -3..3
+    double radialMaskCenterX = 0.5;  // 0..1
+    double radialMaskCenterY = 0.5;  // 0..1
+    double radialMaskRadiusX = 0.35; // horizontal fraction .05..1
+    double radialMaskRadiusY = 0.35; // vertical fraction .05..1
+    double radialMaskFeather = 0.25; // transition fraction .02..1
+
     // Independent monochrome rendering and eight hue-weighted luminance controls.
     // Values -100..100 map to -1..+1 EV; they do not modify Sony Look state.
     bool blackWhite = false;
@@ -98,6 +109,14 @@ struct AdjustmentState {
             result["linearMask"]=QJsonObject{{"schema",1},{"enabled",linearMaskEnabled},
                 {"exposure",linearMaskExposure},{"center",linearMaskCenter},
                 {"feather",linearMaskFeather},{"angle",linearMaskAngle}};
+        if (radialMaskEnabled || radialMaskInverted || radialMaskExposure!=0
+            || radialMaskCenterX!=.5 || radialMaskCenterY!=.5
+            || radialMaskRadiusX!=.35 || radialMaskRadiusY!=.35 || radialMaskFeather!=.25)
+            result["radialMask"]=QJsonObject{{"schema",1},{"enabled",radialMaskEnabled},
+                {"inverted",radialMaskInverted},{"exposure",radialMaskExposure},
+                {"centerX",radialMaskCenterX},{"centerY",radialMaskCenterY},
+                {"radiusX",radialMaskRadiusX},{"radiusY",radialMaskRadiusY},
+                {"feather",radialMaskFeather}};
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
@@ -112,6 +131,31 @@ struct AdjustmentState {
                 {"hue",toJsonArray(gradingHue)},{"saturation",toJsonArray(gradingSaturation)},
                 {"balance",gradingBalance}};
         return result;
+    }
+
+    static bool validRadialMaskJson(const QJsonObject &object) {
+        if (!object.contains("radialMask")) return true;
+        if (!object.value("radialMask").isObject()) return false;
+        const auto mask=object.value("radialMask").toObject();
+        if (mask.size()!=9 || !mask.value("schema").isDouble()
+            || mask.value("schema").toDouble()!=1
+            || !mask.value("enabled").isBool()
+            || !mask.value("inverted").isBool()) return false;
+        const auto range=[&](const char *name,double lo,double hi) {
+            const QJsonValue v=mask.value(QLatin1String(name));
+            return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble()>=lo && v.toDouble()<=hi;
+        };
+        if (!range("exposure",-3,3) || !range("centerX",0,1) || !range("centerY",0,1)
+            || !range("radiusX",.05,1) || !range("radiusY",.05,1)
+            || !range("feather",.02,1)) return false;
+        // Reject a redundant all-default block; retain inactive nondefault intent.
+        return mask.value("enabled").toBool() || mask.value("inverted").toBool()
+            || mask.value("exposure").toDouble()!=0
+            || mask.value("centerX").toDouble()!=.5
+            || mask.value("centerY").toDouble()!=.5
+            || mask.value("radiusX").toDouble()!=.35
+            || mask.value("radiusY").toDouble()!=.35
+            || mask.value("feather").toDouble()!=.25;
     }
 
     static bool validLinearMaskJson(const QJsonObject &object) {
@@ -197,6 +241,17 @@ struct AdjustmentState {
         s.hue = o.value("hue").toDouble();
         s.saturation = o.value("saturation").toDouble();
         s.vibrance = o.value("vibrance").toDouble();
+        if (o.contains("radialMask") && validRadialMaskJson(o)) {
+            const auto m=o.value("radialMask").toObject();
+            s.radialMaskEnabled=m.value("enabled").toBool();
+            s.radialMaskInverted=m.value("inverted").toBool();
+            s.radialMaskExposure=m.value("exposure").toDouble();
+            s.radialMaskCenterX=m.value("centerX").toDouble();
+            s.radialMaskCenterY=m.value("centerY").toDouble();
+            s.radialMaskRadiusX=m.value("radiusX").toDouble();
+            s.radialMaskRadiusY=m.value("radiusY").toDouble();
+            s.radialMaskFeather=m.value("feather").toDouble();
+        }
         if (o.contains("linearMask") && validLinearMaskJson(o)) {
             const auto m=o.value("linearMask").toObject();
             s.linearMaskEnabled=m.value("enabled").toBool();

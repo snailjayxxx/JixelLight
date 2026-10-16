@@ -257,6 +257,9 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
                     auto adjustments = AdjustmentState::fromJson(doc.object());
+                    if (!AdjustmentState::validRadialMaskJson(doc.object())) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported radial mask for project photo"); break;
+                    }
                     if (!AdjustmentState::validLinearMaskJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported linear mask for project photo"); break;
                     }

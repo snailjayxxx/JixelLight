@@ -392,6 +392,33 @@ private slots:
                 QVERIFY(!engine->lastProcessUsedCpuFallback());
             }
     }
+    void radialMaskCpuGpuParityInvertedEllipseViewportAndSourceAlpha() {
+        QImage source(73,91,QImage::Format_RGBA64);
+        const std::array<quint16,4> alpha{0,1,23456,65535};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*911+y*107)%65536,(x*487+y*311)%65536,(x*1177+y*59)%65536,alpha[(x+y)%4]);
+        for(int mode=0;mode<4;++mode) {
+            AdjustmentState state;state.radialMaskEnabled=true;
+            state.radialMaskExposure=mode==0?1.5:mode==1?-2.5:mode==2?2.0:-1.2;
+            state.radialMaskCenterX=mode==0?.5:mode==1?.25:mode==2?.78:.4;
+            state.radialMaskCenterY=mode==0?.5:mode==1?.68:mode==2?.3:.6;
+            state.radialMaskRadiusX=mode==1?.12:mode==2?.7:.35;
+            state.radialMaskRadiusY=mode==1?.68:mode==2?.17:.4;
+            state.radialMaskFeather=mode==1?.02:mode==2?.9:.33;
+            state.radialMaskInverted=mode>=2;
+            if(mode==3) {state.linearMaskEnabled=true;state.linearMaskExposure=.65;
+                          state.linearMaskAngle=32;state.vignetteAmount=-.5;}
+            for(const auto &frame : {QRectF(0,0,1,1),QRectF(.17,.23,.46,.4)})
+                for(int encoding=0;encoding<2;++encoding)
+                    for(int space=0;space<4;++space) {
+                        verifyParity(source,state,ImagePipeline::InputEncoding(encoding),
+                                     ColorManagement::OutputSpace(space),true,
+                                     "independent radial mask",frame);
+                        if(QTest::currentTestFailed())return;
+                    }
+        }
+    }
     void linearMaskCpuGpuParityIncludesFullImageViewportAndAlpha() {
         QImage source(71,93,QImage::Format_RGBA64);
         const std::array<quint16,4> alpha{0,1,23456,65535};

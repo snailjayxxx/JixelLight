@@ -94,6 +94,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteMidpoint READ vignetteMidpoint WRITE setVignetteMidpoint NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool blackWhite READ blackWhite WRITE setBlackWhite NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList blackWhiteMix READ blackWhiteMix NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool gradingEnabled READ gradingEnabled WRITE setGradingEnabled NOTIFY adjustmentsChanged)
@@ -240,6 +241,14 @@ public:
                 {"center",state.linearMaskCenter},{"feather",state.linearMaskFeather},
                 {"angle",state.linearMaskAngle}};
     }
+    QVariantMap radialMask() const {
+        const auto state=currentState();
+        return {{"enabled",state.radialMaskEnabled},{"inverted",state.radialMaskInverted},
+                {"exposure",state.radialMaskExposure},
+                {"centerX",state.radialMaskCenterX},{"centerY",state.radialMaskCenterY},
+                {"radiusX",state.radialMaskRadiusX},{"radiusY",state.radialMaskRadiusY},
+                {"feather",state.radialMaskFeather}};
+    }
     bool blackWhite() const { return currentState().blackWhite; }
     QVariantList blackWhiteMix() const;
     bool gradingEnabled() const { return currentState().gradingEnabled; }
@@ -256,6 +265,10 @@ public:
     Q_INVOKABLE bool setLinearMaskEnabled(bool enabled);
     Q_INVOKABLE bool setLinearMaskParameter(const QString &parameter,double value);
     Q_INVOKABLE void resetLinearMask();
+    Q_INVOKABLE bool setRadialMaskEnabled(bool enabled);
+    Q_INVOKABLE bool setRadialMaskInverted(bool inverted);
+    Q_INVOKABLE bool setRadialMaskParameter(const QString &parameter,double value);
+    Q_INVOKABLE void resetRadialMask();
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();
