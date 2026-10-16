@@ -147,6 +147,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         QElapsedTimer elapsed; int phase=0;
         bool radial=false,linear=false,undo=false,zoom=false,unchanged=false,finished=false;
         QRectF frame;
+        QString lastWait;
     };
     auto state=std::make_shared<State>();state->elapsed.start();
     auto dir=std::make_shared<QTemporaryDir>();
@@ -166,6 +167,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             {"radial_drag_passed",state->radial},{"linear_drag_passed",state->linear},
             {"undo_redo_passed",state->undo},{"zoom_roi_passed",state->zoom},
             {"source_unchanged",state->unchanged},
+            {"last_wait",state->lastWait},
             {"zoom_frame_width",state->frame.width()},
             {"qml_overlay_found",window->findChild<QQuickItem *>("maskCanvasOverlay")!=nullptr}
         };
@@ -183,13 +185,28 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         }
         if(state->phase==0) {
             if(!controller->previewReady() || controller->loading() || controller->rendering())return;
-            if(!clickItem(window,window->findChild<QQuickItem *>("editRadialMaskCanvas")))
+            auto *button=window->findChild<QQuickItem *>("editRadialMaskCanvas");
+            if(!clickItem(window,button))
                 {finish(QStringLiteral("Cannot select radial tool"));return;}
+            const auto mode=canvas->property("maskTool").toString();
+            if(mode!="radial") {
+                const double bx=button?button->mapToItem(canvas,{0,0}).x():-1;
+                state->lastWait=QStringLiteral("button-x=%1 canvas-width=%2 button-width=%3")
+                    .arg(bx).arg(canvas->width()).arg(button?button->width():-1);
+                finish(QStringLiteral("Radial tool click did not activate: mode=%1").arg(mode));
+                return;
+            }
             state->phase=1;
         } else if(state->phase==1) {
-            if(canvas->property("maskTool").toString()!="radial" || !overlay->isVisible())return;
+            const auto mode=canvas->property("maskTool").toString();
             auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_radialCenter");
-            if(!handle || !handle->isVisible())return;
+            if(mode!="radial" || !overlay->isVisible() || !handle || !handle->isVisible()) {
+                state->lastWait=QStringLiteral("phase1 mode=%1 overlay-visible=%2 size=%3x%4 handle=%5 visible=%6")
+                    .arg(mode).arg(overlay->isVisible()).arg(overlay->width()).arg(overlay->height())
+                    .arg(handle!=nullptr).arg(handle?handle->isVisible():false);
+                if(state->elapsed.elapsed()>6000)finish(QStringLiteral("Radial handle unavailable after activation"));
+                return;
+            }
             const auto original=controller->radialMask();
             if(!dragHandle(window,handle,{38,24})) {finish(QStringLiteral("Oval drag event failed"));return;}
             const auto changed=controller->radialMask();

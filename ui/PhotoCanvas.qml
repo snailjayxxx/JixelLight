@@ -113,25 +113,34 @@ Item {
         }
         onReleased: controller.finishInteraction()
     }
-    Row {
-        anchors.left: parent.left; anchors.top: parent.top; spacing: 5; z: 6
+    // Keep the two mask tools in their own row. A long one-row toolbar
+    // overflowed narrow canvas layouts and left the Oval button outside
+    // the clipped hit-test surface even when isVisible() returned true.
+    Column {
+        anchors.left: parent.left; anchors.top: parent.top; spacing: 4; z: 6
         visible: !controller.cropEditing
-        Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
-        Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
-        Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
-        Button {
-            objectName: "editLinearMaskCanvas"
-            enabled: controller.hasImage && controller.previewReady && !controller.loading
-            highlighted: root.maskTool === "linear"
-            text: root.t("线性蒙版手柄", "Linear handles")
-            onClicked: root.maskTool = root.maskTool === "linear" ? "" : "linear"
+        Row {
+            spacing: 5
+            Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
+            Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
+            Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
         }
-        Button {
-            objectName: "editRadialMaskCanvas"
-            enabled: controller.hasImage && controller.previewReady && !controller.loading
-            highlighted: root.maskTool === "radial"
-            text: root.t("椭圆蒙版手柄", "Oval handles")
-            onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
+        Row {
+            spacing: 5
+            Button {
+                objectName: "editLinearMaskCanvas"
+                enabled: controller.hasImage && controller.previewReady && !controller.loading
+                highlighted: root.maskTool === "linear"
+                text: root.t("线性蒙版手柄", "Linear handles")
+                onClicked: root.maskTool = root.maskTool === "linear" ? "" : "linear"
+            }
+            Button {
+                objectName: "editRadialMaskCanvas"
+                enabled: controller.hasImage && controller.previewReady && !controller.loading
+                highlighted: root.maskTool === "radial"
+                text: root.t("椭圆蒙版手柄", "Oval handles")
+                onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
+            }
         }
     }
     Label {
