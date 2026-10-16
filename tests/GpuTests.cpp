@@ -407,6 +407,7 @@ private slots:
             state.radialMaskRadiusY=mode==1?.68:mode==2?.17:.4;
             state.radialMaskFeather=mode==1?.02:mode==2?.9:.33;
             state.radialMaskInverted=mode>=2;
+            state.radialMaskAngle=mode==0?0:mode==1?45:mode==2?90:-125;
             if(mode==3) {state.linearMaskEnabled=true;state.linearMaskExposure=.65;
                           state.linearMaskAngle=32;state.vignetteAmount=-.5;}
             for(const auto &frame : {QRectF(0,0,1,1),QRectF(.17,.23,.46,.4)})

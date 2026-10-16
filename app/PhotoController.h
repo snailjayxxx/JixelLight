@@ -247,7 +247,7 @@ public:
                 {"exposure",state.radialMaskExposure},
                 {"centerX",state.radialMaskCenterX},{"centerY",state.radialMaskCenterY},
                 {"radiusX",state.radialMaskRadiusX},{"radiusY",state.radialMaskRadiusY},
-                {"feather",state.radialMaskFeather}};
+                {"feather",state.radialMaskFeather},{"angle",state.radialMaskAngle}};
     }
     bool blackWhite() const { return currentState().blackWhite; }
     QVariantList blackWhiteMix() const;

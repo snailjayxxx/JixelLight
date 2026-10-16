@@ -155,7 +155,9 @@ void main() {
     }
     if(p[49].x!=0.0) {
         precise vec2 xy=p[39].xy+(vec2(coord)-(p[24].xy-vec2(1.0))*.5)*p[39].zw;
-        precise vec2 d=(xy-p[49].yz)/p[50].xy;
+        precise vec2 delta=xy-p[49].yz;
+        float c=cos(p[50].w),s=sin(p[50].w);
+        precise vec2 d=vec2(delta.x*c+delta.y*s,-delta.x*s+delta.y*c)/p[50].xy;
         float radius=sqrt(d.x*d.x+d.y*d.y);
         float interior=1.0-smooth01((radius-(1.0-p[49].w))/p[49].w);
         float weight=p[50].z>0.5 ? 1.0-interior : interior;

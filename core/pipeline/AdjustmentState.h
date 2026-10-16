@@ -52,6 +52,7 @@ struct AdjustmentState {
     double radialMaskRadiusX = 0.35; // horizontal fraction .05..1
     double radialMaskRadiusY = 0.35; // vertical fraction .05..1
     double radialMaskFeather = 0.25; // transition fraction .02..1
+    double radialMaskAngle = 0.0; // ellipse rotation degrees [-180, 180]
 
     // Independent monochrome rendering and eight hue-weighted luminance controls.
     // Values -100..100 map to -1..+1 EV; they do not modify Sony Look state.
@@ -111,12 +112,17 @@ struct AdjustmentState {
                 {"feather",linearMaskFeather},{"angle",linearMaskAngle}};
         if (radialMaskEnabled || radialMaskInverted || radialMaskExposure!=0
             || radialMaskCenterX!=.5 || radialMaskCenterY!=.5
-            || radialMaskRadiusX!=.35 || radialMaskRadiusY!=.35 || radialMaskFeather!=.25)
+            || radialMaskRadiusX!=.35 || radialMaskRadiusY!=.35 || radialMaskFeather!=.25
+            || radialMaskAngle!=0)
             result["radialMask"]=QJsonObject{{"schema",1},{"enabled",radialMaskEnabled},
                 {"inverted",radialMaskInverted},{"exposure",radialMaskExposure},
                 {"centerX",radialMaskCenterX},{"centerY",radialMaskCenterY},
                 {"radiusX",radialMaskRadiusX},{"radiusY",radialMaskRadiusY},
                 {"feather",radialMaskFeather}};
+        if (radialMaskAngle!=0) {
+            auto m=result.value("radialMask").toObject();
+            m.insert("angle",radialMaskAngle); result.insert("radialMask",m);
+        }
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
@@ -137,7 +143,8 @@ struct AdjustmentState {
         if (!object.contains("radialMask")) return true;
         if (!object.value("radialMask").isObject()) return false;
         const auto mask=object.value("radialMask").toObject();
-        if (mask.size()!=9 || !mask.value("schema").isDouble()
+        if ((mask.size()!=9 && mask.size()!=10) || (mask.size()==10 && !mask.contains("angle"))
+            || !mask.value("schema").isDouble()
             || mask.value("schema").toDouble()!=1
             || !mask.value("enabled").isBool()
             || !mask.value("inverted").isBool()) return false;
@@ -147,7 +154,9 @@ struct AdjustmentState {
         };
         if (!range("exposure",-3,3) || !range("centerX",0,1) || !range("centerY",0,1)
             || !range("radiusX",.05,1) || !range("radiusY",.05,1)
-            || !range("feather",.02,1)) return false;
+            || !range("feather",.02,1)
+            || (mask.contains("angle") && (!range("angle",-180,180) || mask.value("angle").toDouble()==0)))
+            return false;
         // Reject a redundant all-default block; retain inactive nondefault intent.
         return mask.value("enabled").toBool() || mask.value("inverted").toBool()
             || mask.value("exposure").toDouble()!=0
@@ -251,6 +260,7 @@ struct AdjustmentState {
             s.radialMaskRadiusX=m.value("radiusX").toDouble();
             s.radialMaskRadiusY=m.value("radiusY").toDouble();
             s.radialMaskFeather=m.value("feather").toDouble();
+            s.radialMaskAngle=m.value("angle").toDouble(0);
         }
         if (o.contains("linearMask") && validLinearMaskJson(o)) {
             const auto m=o.value("linearMask").toObject();

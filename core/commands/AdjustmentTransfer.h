@@ -52,6 +52,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.radialMaskRadiusX=source.radialMaskRadiusX;
             target.radialMaskRadiusY=source.radialMaskRadiusY;
             target.radialMaskFeather=source.radialMaskFeather;
+            target.radialMaskAngle=source.radialMaskAngle;
         }
         else if (group=="geometry") target.geometry=source.geometry;
     }

@@ -94,6 +94,7 @@ struct CommandRegistry {
             else if (key=="radiusX") { field=&state.radialMaskRadiusX; minimum=.05; maximum=1; }
             else if (key=="radiusY") { field=&state.radialMaskRadiusY; minimum=.05; maximum=1; }
             else if (key=="feather") { field=&state.radialMaskFeather; minimum=.02; maximum=1; }
+            else if (key=="angle") { field=&state.radialMaskAngle; minimum=-180; maximum=180; }
             if (!field || value<minimum || value>maximum) return fail();
             *field=value; return true;
         }
@@ -102,6 +103,7 @@ struct CommandRegistry {
             state.radialMaskEnabled=false;state.radialMaskInverted=false;state.radialMaskExposure=0;
             state.radialMaskCenterX=.5;state.radialMaskCenterY=.5;
             state.radialMaskRadiusX=.35;state.radialMaskRadiusY=.35;state.radialMaskFeather=.25;
+            state.radialMaskAngle=0;
             return true;
         }
         if (name == "mask.linear.enable") {
@@ -235,7 +237,7 @@ struct CommandRegistry {
             QJsonObject{{"name","mask.radial.invert"},{"fields",QJsonArray{"inverted"}},
                 {"operation","apply exposure outside rather than inside the feathered oval"}},
             QJsonObject{{"name","mask.radial.set"},{"fields",QJsonArray{"parameter","value"}},
-                {"parameters",QJsonArray{"exposure","centerX","centerY","radiusX","radiusY","feather"}},
+                {"parameters",QJsonArray{"exposure","centerX","centerY","radiusX","radiusY","feather","angle"}},
                 {"ranges","exposure [-3,3] EV; centerX/Y [0,1]; radiusX/Y [.05,1]; feather [.02,1]"},
                 {"range_policy","reject"}},
             QJsonObject{{"name","mask.radial.reset"},{"fields",QJsonArray{}},

@@ -1524,6 +1524,34 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    void radialMaskRotationRetainsLegacyAndInvalidDataIsRejected() {
+        AdjustmentState mask;mask.radialMaskEnabled=true;mask.radialMaskExposure=1.5;
+        mask.radialMaskRadiusX=.16;mask.radialMaskRadiusY=.55;
+        const auto legacy=mask.toJson();
+        QVERIFY(!legacy.value("radialMask").toObject().contains("angle"));
+        mask.radialMaskAngle=90;
+        const auto json=mask.toJson();
+        QVERIFY(AdjustmentState::validRadialMaskJson(json));
+        QCOMPARE(AdjustmentState::fromJson(json).toJson(),json);
+        QVERIFY(CommandRegistry::execute(mask,{{"command","mask.radial.set"},{"parameter","angle"},{"value",-45}}));
+        QVERIFY(!CommandRegistry::execute(mask,{{"command","mask.radial.set"},{"parameter","angle"},{"value",181}}));
+        auto invalid=json; auto node=invalid["radialMask"].toObject();node["angle"]=181;invalid["radialMask"]=node;
+        QVERIFY(!AdjustmentState::validRadialMaskJson(invalid));
+        node["angle"]=0;invalid["radialMask"]=node;
+        QVERIFY(!AdjustmentState::validRadialMaskJson(invalid));
+        QImage source(41,41,QImage::Format_RGBA64);source.fill(QColor::fromRgba64(9000,9000,9000,65535));
+        const auto raw=ImagePipeline::InputEncoding::LinearProPhoto;
+        const auto before=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(
+            AdjustmentState{},raw,ColorManagement::OutputSpace::SRgb,false,0));
+        mask.radialMaskAngle=0;
+        const auto unrotated=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(mask,raw,ColorManagement::OutputSpace::SRgb,false,0));
+        mask.radialMaskAngle=90;
+        const auto rotated=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(mask,raw,ColorManagement::OutputSpace::SRgb,false,0));
+        QVERIFY(unrotated.pixelColor(20,8).red()>before.pixelColor(20,8).red());
+        QVERIFY(rotated.pixelColor(8,20).red()>before.pixelColor(8,20).red());
+        QVERIFY(rotated.pixelColor(20,8).red()<unrotated.pixelColor(20,8).red());
+        mask.radialMaskAngle=0;QCOMPARE(mask.toJson(),legacy);
+    }
     void radialMaskSceneLinearEllipseInversionAndTiling() {
         const auto plainState=AdjustmentState{};
         const auto plainJson=plainState.toJson();

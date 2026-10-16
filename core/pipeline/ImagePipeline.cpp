@@ -379,8 +379,18 @@ inline Vec3 applyRadialMask(Vec3 v,const ColorKernel &kernel,int x,int y) {
     if (mask.x==0.0f) return v;
     const auto shape=kernel.plan.data[ProcessingPlan::RadialMaskShape];
     const auto map=kernel.pixelMap;
-    const float dx=(map.x+(float(x)-kernel.centerX)*map.z-mask.y)/shape.x;
-    const float dy=(map.y+(float(y)-kernel.centerY)*map.w-mask.z)/shape.y;
+    const float xFull=map.x+(float(x)-kernel.centerX)*map.z-mask.y;
+    const float yFull=map.y+(float(y)-kernel.centerY)*map.w-mask.z;
+    const float cosine=shape.w, sine=kernel.plan.data[ProcessingPlan::RadialMask].x!=0
+        ? kernel.plan.data[ProcessingPlan::RadialMaskShape].w : 0.0f;
+    Q_UNUSED(cosine);
+    Q_UNUSED(sine);
+    const float angle=kernel.plan.state.radialMaskAngle==0 ? 0.0f :
+        float(kernel.plan.state.radialMaskAngle*3.14159265358979323846/180.0);
+    const float c=kernel.plan.state.radialMaskAngle==0 ? 1.0f : std::cos(angle);
+    const float s=kernel.plan.state.radialMaskAngle==0 ? 0.0f : std::sin(angle);
+    const float dx=(xFull*c+yFull*s)/shape.x;
+    const float dy=(-xFull*s+yFull*c)/shape.y;
     const float radius=std::sqrt(dx*dx+dy*dy);
     const float interior=1.0f-smooth((radius-(1.0f-mask.w))/mask.w);
     const float weight=shape.z>0.5f ? 1.0f-interior : interior;
@@ -572,7 +582,8 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[RadialMaskShape]={
         2*finite(state.radialMaskRadiusX,.35,.05,1),
         2*finite(state.radialMaskRadiusY,.35,.05,1),
-        state.radialMaskInverted?1.0f:0.0f,0
+        state.radialMaskInverted?1.0f:0.0f,
+        finite(state.radialMaskAngle,0,-180,180)*(3.14159265358979323846f/180.0f)
     };
     plan.rawSource = rawSource;
     plan.baseExposureStops = rawSource ? std::clamp(baseExposureStops, -8.0f, 8.0f) : 0.0f;

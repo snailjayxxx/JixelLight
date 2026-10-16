@@ -610,10 +610,16 @@ Rectangle {
                         value: root.controller.radialMask.feather
                         onEdited: function(v) { root.controller.setRadialMaskParameter("feather",v) }
                     }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "radialMaskAngleSlider"
+                        label: root.t("椭圆旋转 (°)", "Ellipse rotation (°)"); from: -180; to: 180; decimals: 0
+                        value: root.controller.radialMask.angle
+                        onEdited: function(v) { root.controller.setRadialMaskParameter("angle",v) }
+                    }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；画布拖动、旋转椭圆和多个同类蒙版尚未实现。",
-                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Canvas dragging, rotated oval and multiple radial layers remain future work.")
+                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；现在支持旋转椭圆，画布拖动和多个同类蒙版尚未实现。",
+                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval is supported; canvas dragging and multiple radial layers remain future work.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
