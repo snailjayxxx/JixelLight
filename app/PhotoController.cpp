@@ -7,6 +7,7 @@
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/pipeline/MaskCanvasGeometry.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
@@ -589,7 +590,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -677,6 +678,26 @@ void PhotoController::resetLinearMask() {
     if (!CommandRegistry::execute(*state,{{"command","mask.linear.reset"}})) return;
     persistAndApply("linear_mask_reset");
 }
+QPointF PhotoController::maskCanvasPoint(double x,double y,double width,double height) const {
+    if (!hasImage() || !previewReady()) return MaskCanvasGeometry::invalidPoint();
+    return MaskCanvasGeometry::imageAt({x,y},{width,height},m_previewFrameRect);
+}
+
+bool PhotoController::setRadialMaskCenter(double x,double y) {
+    if (!std::isfinite(x) || !std::isfinite(y) || x<0 || x>1 || y<0 || y>1) return false;
+    auto *state=mutableCurrentState();
+    if (!state) return false;
+    auto candidate=*state;
+    if (!CommandRegistry::execute(candidate,{{"command","mask.radial.set"},
+                                             {"parameter","centerX"},{"value",x}})
+        || !CommandRegistry::execute(candidate,{{"command","mask.radial.set"},
+                                                {"parameter","centerY"},{"value",y}})) return false;
+    if (candidate.toJson()==state->toJson()) return true;
+    *state=std::move(candidate);
+    persistAndApply("radial_mask_canvas_center");
+    return true;
+}
+
 bool PhotoController::setRadialMaskEnabled(bool enabled) {
     auto *state=mutableCurrentState(); if (!state) return false;
     if (state->radialMaskEnabled==enabled) return true;

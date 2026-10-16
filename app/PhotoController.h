@@ -131,6 +131,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double copyImportProgress READ copyImportProgress NOTIFY copyImportChanged)
     Q_PROPERTY(QString copyImportStatus READ copyImportStatus NOTIFY copyImportChanged)
     Q_PROPERTY(QSizeF previewDisplaySize READ previewDisplaySize NOTIFY previewGeometryChanged)
+    Q_PROPERTY(QRectF previewFrameRect READ previewFrameRect NOTIFY previewGeometryChanged)
     Q_PROPERTY(qulonglong renderRevision READ renderRevision NOTIFY gpuFrameChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(bool diagnosticBusy READ diagnosticBusy NOTIFY diagnosticChanged)
@@ -180,6 +181,10 @@ public:
     bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
     double exportProgress() const { return m_exportProgress; }
     QSizeF previewDisplaySize() const { return m_displayPixels / m_devicePixelRatio; }
+    QRectF previewFrameRect() const { return m_previewFrameRect; }
+    // Returns normalized full-image coordinates for a pointer on the current
+    // preview plane (including a zoom/pan ROI). NaN on invalid/unloaded input.
+    Q_INVOKABLE QPointF maskCanvasPoint(double x,double y,double width,double height) const;
     qulonglong renderRevision() const { return m_requestedRevision; }
     QImage gpuSource() const { return m_preparing ? QImage{} : m_gpuSource; }
     float rawBaseExposureStops() const {
@@ -268,6 +273,8 @@ public:
     Q_INVOKABLE bool setRadialMaskEnabled(bool enabled);
     Q_INVOKABLE bool setRadialMaskInverted(bool inverted);
     Q_INVOKABLE bool setRadialMaskParameter(const QString &parameter,double value);
+    // Atomic 2D center change: one undo entry per completed canvas drag.
+    Q_INVOKABLE bool setRadialMaskCenter(double x,double y);
     Q_INVOKABLE void resetRadialMask();
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);

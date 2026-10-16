@@ -10,6 +10,8 @@ Item {
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
+    // Edit-mode state is UI-only, never persisted in a photo or a project.
+    property string maskTool: ""
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
     function refresh() {
         if (controller && width>0 && height>0)
@@ -21,7 +23,17 @@ Item {
     onCenterXChanged: geometryTimer.restart()
     onCenterYChanged: geometryTimer.restart()
     Component.onCompleted: refresh()
-    onVisibleChanged: { if (!visible && controller.cropEditing) controller.cancelCrop() }
+    onVisibleChanged: {
+        if (!visible) {
+            root.maskTool = ""
+            if (controller.cropEditing) controller.cancelCrop()
+        }
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: root.visible && root.maskTool !== "" && !controller.cropEditing
+        onActivated: root.maskTool = ""
+    }
     Shortcut { sequence: "Escape"; enabled: root.visible && controller.cropEditing; onActivated: controller.cancelCrop() }
     Shortcut { sequence: "Return"; enabled: root.visible && controller.cropEditing; onActivated: root.applyCrop() }
     function applyCrop() {
@@ -31,9 +43,13 @@ Item {
     Timer { id: geometryTimer; interval: 16; onTriggered: root.refresh() }
     Connections {
         target: root.controller
-        function onCurrentIndexChanged() { root.centerX=.5;root.centerY=.5;root.refresh() }
+        function onCurrentIndexChanged() {
+            root.maskTool=""
+            root.centerX=.5;root.centerY=.5;root.refresh()
+        }
         function onCropEditingChanged() {
             if (root.controller.cropEditing) {
+                root.maskTool=""
                 root.zoom=0; cropOverlay.aspectRatio=0; cropAspect.currentIndex=0
                 cropOverlay.selection=root.controller.cropOverlay
             }
@@ -62,6 +78,16 @@ Item {
             }
             z: 0
         }
+        MaskCanvasOverlay {
+            id: maskOverlay
+            objectName: "maskCanvasOverlay"
+            anchors.fill: parent; z: 4
+            controller: root.controller
+            mode: root.maskTool
+            visible: root.maskTool !== "" && !controller.cropEditing
+                     && controller.previewReady && !controller.loading
+            enabled: visible
+        }
         CropOverlay {
             id: cropOverlay
             objectName: "interactiveCropOverlay"
@@ -72,7 +98,7 @@ Item {
     }
     MouseArea {
         anchors.fill: parent
-        enabled: root.zoom>0 && controller.previewReady && !controller.cropEditing
+        enabled: root.zoom>0 && controller.previewReady && !controller.cropEditing && root.maskTool === ""
         property real oldX: 0
         property real oldY: 0
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
@@ -88,11 +114,37 @@ Item {
         onReleased: controller.finishInteraction()
     }
     Row {
-        anchors.left: parent.left; anchors.top: parent.top; spacing: 5
+        anchors.left: parent.left; anchors.top: parent.top; spacing: 5; z: 6
         visible: !controller.cropEditing
         Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
         Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
         Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
+        Button {
+            objectName: "editLinearMaskCanvas"
+            enabled: controller.hasImage && controller.previewReady && !controller.loading
+            highlighted: root.maskTool === "linear"
+            text: root.t("线性蒙版手柄", "Linear handles")
+            onClicked: root.maskTool = root.maskTool === "linear" ? "" : "linear"
+        }
+        Button {
+            objectName: "editRadialMaskCanvas"
+            enabled: controller.hasImage && controller.previewReady && !controller.loading
+            highlighted: root.maskTool === "radial"
+            text: root.t("椭圆蒙版手柄", "Oval handles")
+            onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
+        }
+    }
+    Label {
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
+        anchors.bottomMargin: 44; z: 6
+        visible: root.maskTool !== ""
+        text: root.maskTool === "linear"
+              ? root.t("拖动黄色手柄移动线性渐变，蓝色手柄旋转；曝光在右侧面板调整",
+                       "Drag the yellow handle to move the gradient, blue to rotate; set exposure in the right panel")
+              : root.t("拖动中心、半径及蓝色旋转手柄；曝光与内外反转在右侧面板调整",
+                       "Drag center, radius and blue rotation handles; adjust exposure and invert in the right panel")
+        font.pixelSize: 11; color: "#e5edf5"
+        background: Rectangle { color: "#dd101820"; radius: 4 }
     }
     Row {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 24

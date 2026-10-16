@@ -31,6 +31,7 @@
 #include "core/library/CatalogSelection.h"
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/MaskCanvasGeometry.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/FloatSceneResampler.h"
@@ -1523,6 +1524,49 @@ private slots:
             QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),bytes);
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
+    }
+    void maskCanvasCoordinateMappingAndAtomicCenterUndo() {
+        const QSizeF display(600,360);
+        const QRectF full(0,0,1,1);
+        QVERIFY(MaskCanvasGeometry::valid(full,display));
+        QCOMPARE(MaskCanvasGeometry::imageAt({300,180},display,full),QPointF(.5,.5));
+        QCOMPARE(MaskCanvasGeometry::onDisplay({.5,.5},display,full),QPointF(300,180));
+        const QRectF zoomed(.22,.16,.4,.3);
+        const QPointF displayed(300,180);
+        const auto image=MaskCanvasGeometry::imageAt(displayed,display,zoomed);
+        QVERIFY(std::abs(image.x()-.42)<1e-12);
+        QVERIFY(std::abs(image.y()-.31)<1e-12);
+        const auto back=MaskCanvasGeometry::onDisplay(image,display,zoomed);
+        QVERIFY(std::abs(back.x()-displayed.x())<1e-8);
+        QVERIFY(std::abs(back.y()-displayed.y())<1e-8);
+        QVERIFY(!MaskCanvasGeometry::valid(QRectF(0,0,0,1),display));
+        QVERIFY(!std::isfinite(MaskCanvasGeometry::imageAt({50,10},{0,100},full).x()));
+        const QPointF delta(.1,-.2);
+        QVERIFY(std::abs(MaskCanvasGeometry::movedLinearCenter(.5,delta,0)-.3)<1e-12);
+        QVERIFY(std::abs(MaskCanvasGeometry::movedLinearCenter(.5,delta,90)-.6)<1e-12);
+        QCOMPARE(MaskCanvasGeometry::movedRadialCenter({.95,.05},{.2,-.2}),QPointF(1,0));
+        QTemporaryDir dir;QImage fixture(35,23,QImage::Format_RGB32);fixture.fill(Qt::gray);
+        const auto path=dir.filePath("mask-gesture.png");QVERIFY(fixture.save(path));
+        const auto sourceBefore=fixtureBytes(path);
+        PhotoController controller(nullptr);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QVERIFY(!controller.setRadialMaskCenter(-.01,.5));
+        QVERIFY(!controller.setRadialMaskCenter(.5,std::numeric_limits<double>::quiet_NaN()));
+        const auto original=controller.gpuPlan(true).state.toJson();
+        QVERIFY(controller.setRadialMaskCenter(.55,.53));
+        QVERIFY(controller.setRadialMaskCenter(.67,.72));
+        controller.finishInteraction();
+        QCOMPARE(controller.radialMask().value("centerX").toDouble(),.67);
+        QCOMPARE(controller.radialMask().value("centerY").toDouble(),.72);
+        QCOMPARE(controller.editHistory().last().toMap()["action"].toString(),
+                 QString("radial_mask_canvas_center"));
+        controller.undo();
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),original);
+        controller.redo();
+        QCOMPARE(controller.radialMask().value("centerY").toDouble(),.72);
+        // No origin file mutations through local mask editing.
+        QFile originalFile(path);QVERIFY(originalFile.open(QIODevice::ReadOnly));
+        QCOMPARE(originalFile.readAll(),sourceBefore);
     }
     void radialMaskRotationRetainsLegacyAndInvalidDataIsRejected() {
         AdjustmentState mask;mask.radialMaskEnabled=true;mask.radialMaskExposure=1.5;

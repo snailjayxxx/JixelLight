@@ -98,6 +98,16 @@ jobs:
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          python tools/ValidateMaskCanvas.py "$EXE" gui-mask-canvas.json
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -304,6 +314,12 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
         run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateMaskCanvas.py ./build/bin/JixelLight gui-mask-canvas.json
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

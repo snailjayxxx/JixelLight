@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include <QCryptographicHash>
 #include <exiv2/exiv2.hpp>
 #include <memory>
 #include <cmath>
@@ -63,6 +64,23 @@ bool revealItem(QQuickItem *item) {
         return true;
     }
     return false;
+}
+bool dragHandle(QQuickWindow *window,QQuickItem *item,const QPointF &delta) {
+    if(!item || !item->isVisible() || !item->isEnabled()) return false;
+    const QPointF start=item->mapToScene(QPointF(item->width()/2,item->height()/2));
+    const QPointF finish=start+delta;
+    const QPoint startGlobal=window->mapToGlobal(start.toPoint());
+    const QPoint endGlobal=window->mapToGlobal(finish.toPoint());
+    QMouseEvent press(QEvent::MouseButtonPress,start,start,startGlobal,
+                      Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&press);
+    QMouseEvent move(QEvent::MouseMove,finish,finish,endGlobal,
+                     Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&move);
+    QMouseEvent release(QEvent::MouseButtonRelease,finish,finish,endGlobal,
+                        Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&release);
+    return true;
 }
 bool clickSlider(QQuickWindow *window,QQuickItem *item,double fraction) {
     if (!item || !item->isVisible() || !item->isEnabled()) return false;
@@ -119,6 +137,112 @@ void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, 
     if(!fixture->isValid()||!image.save(source)||!controller->importFile(QUrl::fromLocalFile(source)))
         finish({},QStringLiteral("Cannot create diagnostic fixture"));
     else timer->start();
+}
+
+
+void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath) {
+    // Separate from the strict 60s camera RAW smoke. Only test-owned pixels
+    // and native Qt mouse events; no private files, GPU driver or network.
+    struct State {
+        QElapsedTimer elapsed; int phase=0;
+        bool radial=false,linear=false,undo=false,zoom=false,unchanged=false,finished=false;
+        QRectF frame;
+    };
+    auto state=std::make_shared<State>();state->elapsed.start();
+    auto dir=std::make_shared<QTemporaryDir>();
+    auto checksum=std::make_shared<QByteArray>();
+    auto *timer=new QTimer(controller);timer->setInterval(40);
+    const auto finish=[=](const QString &error) {
+        if(state->finished)return;
+        state->finished=true;timer->stop();
+        QFile original(dir->filePath("owned-mask.png"));
+        if(original.open(QIODevice::ReadOnly))
+            state->unchanged=QCryptographicHash::hash(original.readAll(),QCryptographicHash::Sha256)==*checksum;
+        const bool ok=error.isEmpty() && state->radial && state->linear && state->undo
+            && state->zoom && state->unchanged;
+        const QJsonObject report{
+            {"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+            {"phase",state->phase},{"error",error},{"elapsed_ms",state->elapsed.elapsed()},
+            {"radial_drag_passed",state->radial},{"linear_drag_passed",state->linear},
+            {"undo_redo_passed",state->undo},{"zoom_roi_passed",state->zoom},
+            {"source_unchanged",state->unchanged},
+            {"zoom_frame_width",state->frame.width()},
+            {"qml_overlay_found",window->findChild<QQuickItem *>("maskCanvasOverlay")!=nullptr}
+        };
+        QSaveFile out(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
+        const bool saved=out.open(QIODevice::WriteOnly)&&out.write(bytes)==bytes.size()&&out.commit();
+        LoggingEngine::flush();QCoreApplication::exit(ok&&saved?0:2);
+    };
+    QObject::connect(timer,&QTimer::timeout,controller,[=] {
+        if(state->elapsed.elapsed()>=20000){finish(QStringLiteral("Mask handle smoke timed out"));return;}
+        auto *canvas=window->findChild<QQuickItem *>("photoCanvas");
+        auto *overlay=window->findChild<QQuickItem *>("maskCanvasOverlay");
+        if(!canvas || !overlay) {
+            if(state->elapsed.elapsed()>5000)finish(QStringLiteral("Canvas overlay missing"));
+            return;
+        }
+        if(state->phase==0) {
+            if(!controller->previewReady() || controller->loading() || controller->rendering())return;
+            if(!clickItem(window,window->findChild<QQuickItem *>("editRadialMaskCanvas")))
+                {finish(QStringLiteral("Cannot select radial tool"));return;}
+            state->phase=1;
+        } else if(state->phase==1) {
+            if(canvas->property("maskTool").toString()!="radial" || !overlay->isVisible())return;
+            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_radialCenter");
+            if(!handle || !handle->isVisible())return;
+            const auto original=controller->radialMask();
+            if(!dragHandle(window,handle,{38,24})) {finish(QStringLiteral("Oval drag event failed"));return;}
+            const auto changed=controller->radialMask();
+            state->radial=changed.value("centerX").toDouble()>original.value("centerX").toDouble()+.01
+                && changed.value("centerY").toDouble()>original.value("centerY").toDouble()+.01
+                && controller->editHistory().last().toMap().value("action").toString()=="radial_mask_canvas_center";
+            if(!state->radial){finish(QStringLiteral("Oval center mouse event changed no coordinates"));return;}
+            controller->undo();
+            state->undo=controller->radialMask().value("centerX").toDouble()==original.value("centerX").toDouble()
+                && controller->radialMask().value("centerY").toDouble()==original.value("centerY").toDouble();
+            controller->redo();
+            state->undo=state->undo&&controller->radialMask().value("centerX").toDouble()>original.value("centerX").toDouble()+.01;
+            if(!state->undo){finish(QStringLiteral("Canvas atomic Undo/Redo failed"));return;}
+            state->phase=2;
+        } else if(state->phase==2) {
+            if(!clickItem(window,window->findChild<QQuickItem *>("editLinearMaskCanvas")))
+                {finish(QStringLiteral("Cannot select linear tool"));return;}
+            state->phase=3;
+        } else if(state->phase==3) {
+            if(canvas->property("maskTool").toString()!="linear" || !overlay->isVisible())return;
+            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_linearCenter");
+            if(!handle || !handle->isVisible())return;
+            const double before=controller->linearMask().value("center").toDouble();
+            if(!dragHandle(window,handle,{0,35})){finish(QStringLiteral("Linear drag event failed"));return;}
+            state->linear=controller->linearMask().value("center").toDouble()>before+.01;
+            if(!state->linear){finish(QStringLiteral("Linear center mouse event did not move"));return;}
+            canvas->setProperty("zoom",1.0);
+            state->phase=4;
+        } else if(state->phase==4) {
+            state->frame=controller->previewFrameRect();
+            if(state->frame.width()>=.98 || controller->rendering() || !overlay->isVisible())return;
+            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_linearCenter");
+            if(!handle || !handle->isVisible())return;
+            const QPointF p=handle->mapToItem(overlay,{handle->width()/2,handle->height()/2});
+            const QPointF normalized=controller->maskCanvasPoint(p.x(),p.y(),overlay->width(),overlay->height());
+            const double center=controller->linearMask().value("center").toDouble();
+            state->zoom=std::abs(normalized.x()-.5)<.005 && std::abs(normalized.y()-center)<.005;
+            if(!state->zoom){finish(QStringLiteral("Zoom ROI mask handle maps incorrectly"));return;}
+            state->phase=5;finish({});
+        }
+    });
+    window->setProperty("workspaceIndex",1);
+    controller->setGpuEnabled(false);
+    QImage image(1400,1000,QImage::Format_RGB32);image.fill(QColor(100,130,155));
+    const QString photo=dir->filePath("owned-mask.png");
+    QFile original(photo);
+    if(!dir->isValid() || !image.save(photo) || !original.open(QIODevice::ReadOnly))
+        {finish(QStringLiteral("Cannot create synthetic fixture"));return;}
+    *checksum=QCryptographicHash::hash(original.readAll(),QCryptographicHash::Sha256);
+    original.close();
+    if(!controller->importFile(QUrl::fromLocalFile(photo)))
+        {finish(QStringLiteral("Cannot import synthetic fixture"));return;}
+    timer->start();
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
