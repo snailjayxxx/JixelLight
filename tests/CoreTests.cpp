@@ -1545,7 +1545,13 @@ private slots:
         QCOMPARE(full.pixelColor(12,0),baseline.pixelColor(12,0));
         QVERIFY(full.pixelColor(12,12).red()>baseline.pixelColor(12,12).red());
         QVERIFY(full.pixelColor(18,12).red()>baseline.pixelColor(18,12).red());
-        QCOMPARE(full.pixelColor(12,18),baseline.pixelColor(12,18));
+        // y=18 is deliberately inside the feather band (distance 0.96),
+        // so its effect must be between full center and the untouched exterior.
+        const auto feathered=full.pixelColor(12,18).rgba64();
+        QVERIFY(feathered.red()>baseline.pixelColor(12,18).rgba64().red());
+        QVERIFY(feathered.red()<full.pixelColor(12,12).rgba64().red());
+        // y=19 lies outside the elliptical radius, so its effect is zero.
+        QCOMPARE(full.pixelColor(12,19),baseline.pixelColor(12,19));
         AdjustmentState global;global.exposure=1.5;
         const auto globalPlan=ProcessingPlan::compile(global,
             ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
