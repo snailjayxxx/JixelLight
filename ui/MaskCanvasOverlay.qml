@@ -43,6 +43,11 @@ Item {
             const c = linearAnchor(linear), a = radians(linear.angle)
             return Qt.point(c.x + .24 * Math.cos(a), c.y - .24 * Math.sin(a))
         }
+        if (kind === "linearFeather") {
+            const c = linearAnchor(linear), a = radians(linear.angle)
+            return Qt.point(c.x + linear.feather * .5 * Math.sin(a),
+                            c.y + linear.feather * .5 * Math.cos(a))
+        }
         const x = radial.centerX, y = radial.centerY
         const a = radians(radial.angle)
         if (kind === "radialCenter") return Qt.point(x,y)
@@ -50,6 +55,10 @@ Item {
             return Qt.point(x + radial.radiusX * Math.cos(a), y + radial.radiusX * Math.sin(a))
         if (kind === "radialRadiusY")
             return Qt.point(x - radial.radiusY * Math.sin(a), y + radial.radiusY * Math.cos(a))
+        if (kind === "radialFeather") {
+            const distance = radial.radiusX * (1 - radial.feather)
+            return Qt.point(x + distance * Math.cos(a), y + distance * Math.sin(a))
+        }
         if (kind === "radialAngle")
             return Qt.point(x + (radial.radiusY + .1) * Math.sin(a),
                             y - (radial.radiusY + .1) * Math.cos(a))
@@ -68,11 +77,11 @@ Item {
         // Snapshot all inputs for the gesture. A live controller value changes
         // as the handle moves, and must never become the next delta's origin.
         dragStartState = mode === "linear" ? {
-            center: linear.center, angle: linear.angle
+            center: linear.center, angle: linear.angle, feather: linear.feather
         } : {
             centerX: radial.centerX, centerY: radial.centerY,
             radiusX: radial.radiusX, radiusY: radial.radiusY,
-            angle: radial.angle
+            angle: radial.angle, feather: radial.feather
         }
     }
     function moveDrag(viewX, viewY) {
@@ -85,6 +94,11 @@ Item {
         if (dragHandle === "linearCenter") {
             controller.setLinearMaskParameter("center",
                 clamp(start.center + du * s + dv * c, 0, 1))
+        } else if (dragHandle === "linearFeather") {
+            // The two feather boundaries are center ± feather/2.
+            const normalShift = du*s + dv*c
+            controller.setLinearMaskParameter("feather",
+                clamp(start.feather + 2*normalShift, .02, 1))
         } else if (dragHandle === "linearAngle") {
             const origin = linearAnchor(start)
             const dx = p.x - origin.x, dy = p.y - origin.y
@@ -100,6 +114,11 @@ Item {
         } else if (dragHandle === "radialRadiusY") {
             controller.setRadialMaskParameter("radiusY",
                 clamp(start.radiusY - du*s + dv*c, .05, 1))
+        } else if (dragHandle === "radialFeather") {
+            // The inner oval contour is radiusX * (1 - feather).
+            const localShift=(du*c + dv*s)/Math.max(.05,start.radiusX)
+            controller.setRadialMaskParameter("feather",
+                clamp(start.feather - localShift, .02, 1))
         } else if (dragHandle === "radialAngle") {
             const oldX=dragStartImage.x-start.centerX
             const oldY=dragStartImage.y-start.centerY
@@ -177,8 +196,8 @@ Item {
     }
 
     Repeater {
-        model: root.mode === "linear" ? ["linearCenter","linearAngle"]
-             : root.mode === "radial" ? ["radialCenter","radialRadiusX","radialRadiusY","radialAngle"] : []
+        model: root.mode === "linear" ? ["linearCenter","linearAngle","linearFeather"]
+             : root.mode === "radial" ? ["radialCenter","radialRadiusX","radialRadiusY","radialAngle","radialFeather"] : []
         delegate: Item {
             id: handle
             required property var modelData
@@ -191,7 +210,9 @@ Item {
                 anchors.centerIn: parent
                 width: handle.modelData.endsWith("Center") ? 13 : 11
                 height: width; radius: width/2
-                color: handle.modelData.endsWith("Angle") ? "#85d4ed" : "#f7e6ab"
+                // Blue: rotation, green: feather, yellow: center/radius.
+                color: handle.modelData.endsWith("Angle") ? "#85d4ed"
+                      : handle.modelData.endsWith("Feather") ? "#79dcb0" : "#f7e6ab"
                 border.width: 1; border.color: "#17202b"
             }
             MouseArea {

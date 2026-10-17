@@ -148,10 +148,10 @@ Item {
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
         text: root.maskTool === "linear"
-              ? root.t("拖动黄色手柄移动线性渐变，蓝色手柄旋转；曝光在右侧面板调整",
-                       "Drag the yellow handle to move the gradient, blue to rotate; set exposure in the right panel")
-              : root.t("拖动中心、半径及蓝色旋转手柄；曝光与内外反转在右侧面板调整",
-                       "Drag center, radius and blue rotation handles; adjust exposure and invert in the right panel")
+              ? root.t("拖动黄色手柄移动渐变、蓝色手柄旋转、绿色手柄调整羽化；曝光在右侧面板调整",
+                       "Drag yellow to move the gradient, blue to rotate, green to feather; set exposure in the right panel")
+              : root.t("拖动黄色中心／半径、蓝色旋转和绿色羽化手柄；曝光与反转在右侧调整",
+                       "Drag yellow center/radius, blue rotation and green feather handles; set exposure/invert in the right panel")
         font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }
     }

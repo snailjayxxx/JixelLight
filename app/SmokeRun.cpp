@@ -146,6 +146,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
     struct State {
         QElapsedTimer elapsed; int phase=0;
         bool radial=false,linear=false,undo=false,zoom=false,unchanged=false,finished=false;
+        bool radialFeather=false,linearFeather=false;
         QRectF frame;
         QString lastWait;
     };
@@ -160,11 +161,13 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         if(original.open(QIODevice::ReadOnly))
             state->unchanged=QCryptographicHash::hash(original.readAll(),QCryptographicHash::Sha256)==*checksum;
         const bool ok=error.isEmpty() && state->radial && state->linear && state->undo
-            && state->zoom && state->unchanged;
+            && state->zoom && state->radialFeather && state->linearFeather && state->unchanged;
         const QJsonObject report{
             {"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"phase",state->phase},{"error",error},{"elapsed_ms",state->elapsed.elapsed()},
             {"radial_drag_passed",state->radial},{"linear_drag_passed",state->linear},
+            {"radial_feather_drag_passed",state->radialFeather},
+            {"linear_feather_drag_passed",state->linearFeather},
             {"undo_redo_passed",state->undo},{"zoom_roi_passed",state->zoom},
             {"source_unchanged",state->unchanged},
             {"last_wait",state->lastWait},
@@ -176,7 +179,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         LoggingEngine::flush();QCoreApplication::exit(ok&&saved?0:2);
     };
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
-        if(state->elapsed.elapsed()>=20000){finish(QStringLiteral("Mask handle smoke timed out"));return;}
+        if(state->elapsed.elapsed()>=30000){finish(QStringLiteral("Mask handle smoke timed out"));return;}
         auto *canvas=window->findChild<QQuickItem *>("photoCanvas");
         auto *overlay=window->findChild<QQuickItem *>("maskCanvasOverlay");
         if(!canvas || !overlay) {
@@ -248,7 +251,53 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             const double center=controller->linearMask().value("center").toDouble();
             state->zoom=std::abs(normalized.x()-.5)<.005 && std::abs(normalized.y()-center)<.005;
             if(!state->zoom){finish(QStringLiteral("Zoom ROI mask handle maps incorrectly"));return;}
-            state->phase=5;finish({});
+            canvas->setProperty("zoom",0.0);
+            state->phase=5;
+        } else if(state->phase==5) {
+            const QRectF frame=controller->previewFrameRect();
+            if(frame.width()<.98 || controller->rendering() || !overlay->isVisible())return;
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_linearFeather"));
+            if(!handle || !handle->isVisible()) {
+                if(state->elapsed.elapsed()>18000)finish(QStringLiteral("Linear feather handle missing"));
+                return;
+            }
+            const double before=controller->linearMask().value("feather").toDouble();
+            if(!dragHandle(window,handle,{0,28}))
+                {finish(QStringLiteral("Linear feather mouse drag failed"));return;}
+            const double after=controller->linearMask().value("feather").toDouble();
+            const bool changed=after>before+.03 && after<=1.0;
+            controller->undo();
+            const bool undoOk=controller->linearMask().value("feather").toDouble()==before;
+            controller->redo();
+            state->linearFeather=changed && undoOk
+                && controller->linearMask().value("feather").toDouble()==after;
+            if(!state->linearFeather)
+                {finish(QStringLiteral("Linear feather guide/Undo/Redo mismatch"));return;}
+            state->phase=6;
+        } else if(state->phase==6) {
+            if(!clickItem(window,window->findChild<QQuickItem *>("editRadialMaskCanvas")))
+                {finish(QStringLiteral("Cannot select oval feather tool"));return;}
+            state->phase=7;
+        } else if(state->phase==7) {
+            if(canvas->property("maskTool").toString()!="radial" || !overlay->isVisible())return;
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_radialFeather"));
+            if(!handle || !handle->isVisible()) {
+                if(state->elapsed.elapsed()>20000)finish(QStringLiteral("Oval feather handle missing"));
+                return;
+            }
+            const double before=controller->radialMask().value("feather").toDouble();
+            if(!dragHandle(window,handle,{-28,0}))
+                {finish(QStringLiteral("Oval feather mouse drag failed"));return;}
+            const double after=controller->radialMask().value("feather").toDouble();
+            const bool changed=after>before+.03 && after<=1.0;
+            controller->undo();
+            const bool undoOk=controller->radialMask().value("feather").toDouble()==before;
+            controller->redo();
+            state->radialFeather=changed && undoOk
+                && controller->radialMask().value("feather").toDouble()==after;
+            if(!state->radialFeather)
+                {finish(QStringLiteral("Oval feather guide/Undo/Redo mismatch"));return;}
+            state->phase=8;finish({});
         }
     });
     window->setProperty("workspaceIndex",1);

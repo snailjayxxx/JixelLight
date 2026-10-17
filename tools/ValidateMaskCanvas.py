@@ -32,7 +32,7 @@ def main():
             process = subprocess.run(
                 [str(binary), "--mask-canvas-smoke-report", str(report)],
                 env=env, cwd=folder, text=True, capture_output=True,
-                errors="replace", check=False, timeout=35)
+                errors="replace", check=False, timeout=45)
             code = process.returncode
             log = process.stdout + "\n" + process.stderr
         except subprocess.TimeoutExpired as error:
@@ -45,8 +45,10 @@ def main():
     markers = ("TypeError:", "ReferenceError:", "Unable to assign [undefined]",
                "QQmlApplicationEngine failed")
     qml_errors = [row for row in log.splitlines() if any(marker in row for marker in markers)]
-    conditions = ("radial_drag_passed", "linear_drag_passed", "undo_redo_passed",
-                  "zoom_roi_passed", "source_unchanged", "qml_overlay_found")
+    conditions = ("radial_drag_passed", "linear_drag_passed",
+                  "radial_feather_drag_passed", "linear_feather_drag_passed",
+                  "undo_redo_passed", "zoom_roi_passed",
+                  "source_unchanged", "qml_overlay_found")
     passed = (code == 0 and data.get("passed") is True
               and all(data.get(key) is True for key in conditions)
               and 0 < data.get("zoom_frame_width", 1) < .98
