@@ -199,7 +199,10 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             state->phase=1;
         } else if(state->phase==1) {
             const auto mode=canvas->property("maskTool").toString();
-            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_radialCenter");
+            // Repeater delegates are QQuickItem visual children, not
+            // necessarily QObject children of QQuickWindow. The established
+            // CropOverlay smoke uses the same visualChild traversal.
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_radialCenter"));
             if(mode!="radial" || !overlay->isVisible() || !handle || !handle->isVisible()) {
                 state->lastWait=QStringLiteral("phase1 mode=%1 overlay-visible=%2 size=%3x%4 handle=%5 visible=%6")
                     .arg(mode).arg(overlay->isVisible()).arg(overlay->width()).arg(overlay->height())
@@ -227,7 +230,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             state->phase=3;
         } else if(state->phase==3) {
             if(canvas->property("maskTool").toString()!="linear" || !overlay->isVisible())return;
-            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_linearCenter");
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_linearCenter"));
             if(!handle || !handle->isVisible())return;
             const double before=controller->linearMask().value("center").toDouble();
             if(!dragHandle(window,handle,{0,35})){finish(QStringLiteral("Linear drag event failed"));return;}
@@ -238,7 +241,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         } else if(state->phase==4) {
             state->frame=controller->previewFrameRect();
             if(state->frame.width()>=.98 || controller->rendering() || !overlay->isVisible())return;
-            auto *handle=window->findChild<QQuickItem *>("maskCanvasHandle_linearCenter");
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_linearCenter"));
             if(!handle || !handle->isVisible())return;
             const QPointF p=handle->mapToItem(overlay,{handle->width()/2,handle->height()/2});
             const QPointF normalized=controller->maskCanvasPoint(p.x(),p.y(),overlay->width(),overlay->height());
