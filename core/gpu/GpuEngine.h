@@ -7,15 +7,19 @@
 #include <memory>
 
 // Render-thread-only engine. Source uploads are keyed independently of editing
-// revisions. Output stays on the GPU; only 16,400 histogram bytes are read back.
+// revisions. Normal interaction reads back only 16,400 histogram bytes. An
+// explicit diagnostic request can capture the pre-monitor working output.
 class GpuEngine final {
 public:
     using HistogramReady = std::function<void(quint64, QByteArray, quint64)>;
+    using FrameReady = std::function<void(QJsonObject)>;
     explicit GpuEngine(QRhi *rhi);
     ~GpuEngine();
     bool process(QRhiCommandBuffer *cb, const QImage &linearFloatSource, ProcessingPlan plan,
                  quint64 revision, const HistogramReady &histogramReady, bool forceHistogram = false);
     bool draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
+    bool captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
+                             QString *error = nullptr, qint64 budget = 64 * 1024 * 1024);
     // Display color management is intentionally downstream of m_output so it
     // cannot alter image pixels used by scopes, export, fitting, or CPU/GPU
     // processing parity. The atlas is a 33^3 encoded-sRGB -> monitor-device LUT.
@@ -44,6 +48,8 @@ private:
     int m_groups = 0;
     QElapsedTimer m_histogramClock;
     std::shared_ptr<ReadbackState> m_readback;
+    std::shared_ptr<ReadbackState> m_frameReadback;
+    ColorManagement::OutputSpace m_outputSpace = ColorManagement::OutputSpace::SRgb;
     std::unique_ptr<QRhiTexture> m_source, m_output, m_lutTexture, m_detailBase, m_horizontal, m_displayLutTexture;
     QString m_lutKey;
     std::unique_ptr<QRhiBuffer> m_uniform, m_partial, m_counts, m_vertices;

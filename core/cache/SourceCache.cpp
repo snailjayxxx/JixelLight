@@ -53,6 +53,10 @@ SourceData SourceCache::get(const QString &key) {
     PerformanceRecorder::count("decoded_cache_miss"); return {};
 }
 void SourceCache::put(const SourceData &source) {
+    // A future camera-linear frame must carry a decoder/profile signature,
+    // never alias the legacy 16-bit source key in the shared memory LRU.
+    // Use storeFloatScene() instead of the RGBA64 source API.
+    if (source.image.format()==QImage::Format_RGBA32FPx4) return;
     if (source.image.isNull() || !source.fullResolution || source.key.isEmpty()) return;
     const auto bytes = source.image.sizeInBytes();
     QMutexLocker lock(&m_mutex);
@@ -86,6 +90,9 @@ SourceData SourceCache::diskPreview(const QString &key) {
     return result;
 }
 void SourceCache::storeDiskPreview(const SourceData &source, const CancelToken &token) {
+    // A scene-linear float source cannot be persisted safely using the old
+    // RGBA64 .jlpv format; its >1 and negative values would be silently lost.
+    if (source.image.format()==QImage::Format_RGBA32FPx4) return;
     if (source.key.size()!=64 || source.image.isNull() || cancelled(token)) return;
     PerformanceSpan timer("disk_preview_write");
     QImage preview = source.image;

@@ -62,10 +62,15 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins, const CancelTo
 ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
     if (source.isNull()) return {};
     PerformanceSpan timing("full_resolution_scopes",{{"pixels",qint64(source.width())*source.height()}});
-    const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    // FP32 scenes must enter the *same* color kernel as the preview and
+    // export. The former integer adapter truncated values >1 before user
+    // exposure, making full-resolution scopes disagree with the actual edit.
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    const QImage input=floating || source.format()==QImage::Format_RGBA64
+        ? source : source.convertToFormat(QImage::Format_RGBA64);
+    if (input.isNull()) return {};
     HistogramCounts total;
     for (int y=0; y<input.height() && !cancelled(token); y+=128) {
-        const QImage view(input.constScanLine(y),input.width(),std::min(128,input.height()-y),input.bytesPerLine(),QImage::Format_RGBA64);
         const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull()) return {};
         countRows(rendered,0,rendered.height(),total,token);

@@ -168,7 +168,7 @@ public:
     }
     QImage render(const QImage &input,const ProcessingPlan &plan) {
         QRhiCommandBuffer *cb=nullptr;if(!rhi||rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess)return {};
-        const QImage source=input.convertToFormat(QImage::Format_RGBA32FPx4);
+        const QImage source=ImagePipeline::floatSource(input);
         const bool ok=engine->process(cb,source,plan,++revision,{},false);
         QRhiReadbackResult readback;bool done=false;
         if(ok) {
@@ -178,7 +178,7 @@ public:
         rhi->endOffscreenFrame();rhi->finish();
         if(!ok||!done||readback.data.size()!=input.width()*input.height()*16)return {};
         QImage image(reinterpret_cast<const uchar *>(readback.data.constData()),input.width(),input.height(),input.width()*16,QImage::Format_RGBA32FPx4);
-        QImage out=image.copy().convertToFormat(QImage::Format_RGBA64);out.setColorSpace(QColorSpace::SRgb);return out;
+        QImage out=ImagePipeline::rgba64Source(image);out.setColorSpace(QColorSpace::SRgb);return out;
     }
     QString backend() const{return engine?engine->backendName():QStringLiteral("unavailable");}
 private:
@@ -218,8 +218,40 @@ int main(int argc,char **argv) {
         QString error;QVariantMap metadata=MetadataReader::read(rawPath,&error);
         QJsonObject scene{{"id",id},{"role",item["role"].toString()},{"rawSha256",sha256(rawPath)},{"jpegSha256",sha256(jpegPath)},
                           {"metadataError",error},{"recordedLook",QJsonObject::fromVariantMap(metadata.value("sonyLook").toMap())}};
+        // Read-only, file-hash-bound real-camera evidence for the Stage 6C
+        // hold-out audit. Exif is observational; not a trusted sensor profile.
+        scene["cameraEvidence"]=QJsonObject{
+            {"make",metadata.value("make").toString()},
+            {"model",metadata.value("model").toString()},
+            {"isoText",metadata.value("iso").toString()},
+            {"shutterText",metadata.value("shutter").toString()},
+            {"apertureText",metadata.value("aperture").toString()},
+            {"exposureBiasText",metadata.value("exposureBias").toString()},
+            {"captureTime",metadata.value("captureTime").toString()},
+            {"subSecTime",metadata.value("subSecTime").toString()},
+            {"lens",metadata.value("lens").toString()},
+            {"recordedLookCode",metadata.value("sonyLook").toMap().value("code").toString()}};
         const auto paired=CameraReference::load({rawPath,jpegPath,metadata,1});
-        QImage linear=RawDecoder::decode(rawPath,&error);scene["decodeError"]=error;
+        RawMetadata rawSensor;
+        rawSensor.captureSensorAudit=true;
+        QImage linear=RawDecoder::decode(rawPath,&error,&rawSensor);
+        scene["decodeError"]=error;
+        scene["sensorUnpackedAudit"]=rawSensor.sensorAudit;
+        if(!linear.isNull()) {
+            if(rawSensor.sensorAudit.isEmpty() || rawSensor.sensorAudit["schema"].toInt()!=1) {
+                scene["error"]="Missing diagnostic sensor audit";scenes.append(scene);failed=true;continue;
+            }
+            // Do not make a camera unsupported by the optional mosaic probe
+            // fail legacy Sony RAW/JPEG color-matrix validation.
+            if(rawSensor.sensorAudit["available"].toBool()) {
+                const auto audit=rawSensor.sensorAudit;
+                if(audit["sample_count"].toInteger()<=0
+                    || audit["pixel_sha256"].toString().size()!=64
+                    || audit["raw_width"].toInt()<=0 || audit["raw_height"].toInt()<=0) {
+                    scene["error"]="Invalid available sensor mosaic audit";scenes.append(scene);failed=true;continue;
+                }
+            }
+        }
         if(linear.isNull()||paired.image.isNull()){scene["error"]=linear.isNull()?error:paired.error;scenes.append(scene);failed=true;continue;}
         QVariantMap geometry;linear=calibrationSource(linear,paired.image,&geometry);scene["geometry"]=QJsonObject::fromVariantMap(geometry);
         const QSize size=linear.size().scaled(QSize(512,512),Qt::KeepAspectRatio);

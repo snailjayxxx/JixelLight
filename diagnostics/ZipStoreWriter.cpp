@@ -3,7 +3,7 @@
 #include <algorithm>
 
 ZipStoreWriter::ZipStoreWriter(const QString &filePath) : m_file(filePath) {}
-bool ZipStoreWriter::open() { return m_file.open(QIODevice::WriteOnly | QIODevice::Truncate); }
+bool ZipStoreWriter::open() { return m_file.open(QIODevice::WriteOnly | QIODevice::NewOnly); }
 void ZipStoreWriter::put16(QByteArray &o, quint16 v) { o.append(char(v & 0xff)); o.append(char((v >> 8) & 0xff)); }
 void ZipStoreWriter::put32(QByteArray &o, quint32 v) { put16(o, quint16(v & 0xffff)); put16(o, quint16((v >> 16) & 0xffff)); }
 quint32 ZipStoreWriter::crc32(const QByteArray &data) {

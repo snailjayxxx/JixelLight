@@ -37,7 +37,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Checkout vcpkg
         uses: actions/checkout@v4
@@ -66,6 +66,8 @@ jobs:
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-
       - name: Configure
         id: configure
         shell: bash
@@ -96,6 +98,16 @@ jobs:
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          python tools/ValidateMaskCanvas.py "$EXE" gui-mask-canvas.json
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -105,6 +117,23 @@ jobs:
           test -n "$MATRIX"
           rm -rf build/raw-render-matrix
           "$MATRIX" "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
@@ -142,6 +171,8 @@ jobs:
         run: |
           $process = Start-Process -FilePath ./build/bin/Release/JixelLight.exe -ArgumentList @('--smoke-report','gui-gpu.json','--screenshot','gui-gpu.png',"$env:RUNNER_TEMP/JixelLight-test.DNG") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw 'GUI Direct3D validation failed' }
+          python tools/ValidateDiagnostic.py ./build/bin/Release/JixelLight.exe --mode gpu
+          if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D diagnostic capture failed' }
       - name: GUI Metal integration
         if: runner.os == 'macOS'
         shell: bash
@@ -152,6 +183,7 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           "$APP/Contents/MacOS/JixelLight" --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/JixelLight-test.DNG"
+          python tools/ValidateDiagnostic.py "$APP/Contents/MacOS/JixelLight" --mode gpu
       - name: Synthetic CPU benchmark
         shell: bash
         run: |
@@ -167,7 +199,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json'),Path('build/offline-raw-probe.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -183,11 +215,15 @@ jobs:
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
+            build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             display-color-gpu-validation.txt
             gui-*.json
             gui-*.png
+            diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
       - name: Deploy and validate Windows package
@@ -200,12 +236,15 @@ jobs:
           Copy-Item $exe.FullName package/JixelLight.exe
           $probe = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightSonyValidation.exe | Select-Object -First 1
           Copy-Item $probe.FullName package/JixelLightSonyValidation.exe
+          $cli = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightCli.exe | Select-Object -First 1
+          if (-not $cli) { throw 'JixelLightCli.exe not found' }
+          Copy-Item $cli.FullName package/JixelLightCli.exe
           New-Item -ItemType Directory -Force -Path package/profiles | Out-Null
           Copy-Item build/sony-real-reports/dataset/empirical.jlook.json package/profiles/Sony-ILCE7M4-ST-experimental.jlook.json
           Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
-          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe --cli package/JixelLightCli.exe
           if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
           Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
@@ -217,11 +256,12 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           cp build/bin/JixelLightSonyValidation "$APP/Contents/MacOS/JixelLightSonyValidation"
+          cp build/bin/JixelLightCli "$APP/Contents/MacOS/JixelLightCli"
           mkdir -p "$APP/Contents/Resources/profiles"
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
-          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation"
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation"
+          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli"
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload packaging validation
@@ -256,7 +296,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Build
         run: |
@@ -274,6 +314,12 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
         run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateMaskCanvas.py ./build/bin/JixelLight gui-mask-canvas.json
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen
@@ -282,22 +328,43 @@ jobs:
         run: |
           rm -rf build/raw-render-matrix
           xvfb-run -a ./build/bin/JixelLightRawRenderMatrix "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
           QSG_RHI_BACKEND: opengl
           LIBGL_ALWAYS_SOFTWARE: '1'
           JIXELLIGHT_REQUIRE_GPU: '1'
-        run: xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+        run: |
+          xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+          xvfb-run -a python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode gpu
       - name: GUI CPU fallback
         env:
           QT_QPA_PLATFORM: offscreen
           JIXELLIGHT_FORCE_CPU: '1'
-        run: ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+        run: |
+          ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+          python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode cpu
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json build/float-raw-readiness.json build/offline-raw-probe.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -310,7 +377,11 @@ jobs:
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
+            build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
+            diagnostic-validation/
             raw-render-matrix.log

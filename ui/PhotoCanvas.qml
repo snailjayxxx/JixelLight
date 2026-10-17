@@ -10,6 +10,8 @@ Item {
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
+    // Edit-mode state is UI-only, never persisted in a photo or a project.
+    property string maskTool: ""
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
     function refresh() {
         if (controller && width>0 && height>0)
@@ -21,10 +23,37 @@ Item {
     onCenterXChanged: geometryTimer.restart()
     onCenterYChanged: geometryTimer.restart()
     Component.onCompleted: refresh()
+    onVisibleChanged: {
+        if (!visible) {
+            root.maskTool = ""
+            if (controller.cropEditing) controller.cancelCrop()
+        }
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: root.visible && root.maskTool !== "" && !controller.cropEditing
+        onActivated: root.maskTool = ""
+    }
+    Shortcut { sequence: "Escape"; enabled: root.visible && controller.cropEditing; onActivated: controller.cancelCrop() }
+    Shortcut { sequence: "Return"; enabled: root.visible && controller.cropEditing; onActivated: root.applyCrop() }
+    function applyCrop() {
+        const r=cropOverlay.selection
+        controller.applyCrop(r.x,r.y,r.width,r.height)
+    }
     Timer { id: geometryTimer; interval: 16; onTriggered: root.refresh() }
     Connections {
         target: root.controller
-        function onCurrentIndexChanged() { root.centerX=.5;root.centerY=.5;root.refresh() }
+        function onCurrentIndexChanged() {
+            root.maskTool=""
+            root.centerX=.5;root.centerY=.5;root.refresh()
+        }
+        function onCropEditingChanged() {
+            if (root.controller.cropEditing) {
+                root.maskTool=""
+                root.zoom=0; cropOverlay.aspectRatio=0; cropAspect.currentIndex=0
+                cropOverlay.selection=root.controller.cropOverlay
+            }
+        }
     }
     Item {
         id: picture
@@ -49,10 +78,27 @@ Item {
             }
             z: 0
         }
+        MaskCanvasOverlay {
+            id: maskOverlay
+            objectName: "maskCanvasOverlay"
+            anchors.fill: parent; z: 4
+            controller: root.controller
+            mode: root.maskTool
+            visible: root.maskTool !== "" && !controller.cropEditing
+                     && controller.previewReady && !controller.loading
+            enabled: visible
+        }
+        CropOverlay {
+            id: cropOverlay
+            objectName: "interactiveCropOverlay"
+            anchors.fill: parent; z: 3
+            visible: controller.cropEditing && !controller.rendering
+            enabled: visible
+        }
     }
     MouseArea {
         anchors.fill: parent
-        enabled: root.zoom>0 && controller.previewReady
+        enabled: root.zoom>0 && controller.previewReady && !controller.cropEditing && root.maskTool === ""
         property real oldX: 0
         property real oldY: 0
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
@@ -67,11 +113,59 @@ Item {
         }
         onReleased: controller.finishInteraction()
     }
+    // Keep the two mask tools in their own row. A long one-row toolbar
+    // overflowed narrow canvas layouts and left the Oval button outside
+    // the clipped hit-test surface even when isVisible() returned true.
+    Column {
+        anchors.left: parent.left; anchors.top: parent.top; spacing: 4; z: 6
+        visible: !controller.cropEditing
+        Row {
+            spacing: 5
+            Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
+            Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
+            Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
+        }
+        Row {
+            spacing: 5
+            Button {
+                objectName: "editLinearMaskCanvas"
+                enabled: controller.hasImage && controller.previewReady && !controller.loading
+                highlighted: root.maskTool === "linear"
+                text: root.t("线性蒙版手柄", "Linear handles")
+                onClicked: root.maskTool = root.maskTool === "linear" ? "" : "linear"
+            }
+            Button {
+                objectName: "editRadialMaskCanvas"
+                enabled: controller.hasImage && controller.previewReady && !controller.loading
+                highlighted: root.maskTool === "radial"
+                text: root.t("椭圆蒙版手柄", "Oval handles")
+                onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
+            }
+        }
+    }
+    Label {
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
+        anchors.bottomMargin: 44; z: 6
+        visible: root.maskTool !== ""
+        text: root.maskTool === "linear"
+              ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
+                       "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
+              : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",
+                       "Yellow: center/radius · Blue: rotate · Two green grips: feather · Shift: fine")
+        font.pixelSize: 11; color: "#e5edf5"
+        background: Rectangle { color: "#dd101820"; radius: 4 }
+    }
     Row {
-        anchors.left: parent.left; anchors.top: parent.top; spacing: 5
-        Button { text: root.t("适合", "Fit"); onClicked: root.zoom=0 }
-        Button { text: "100%"; enabled: controller.previewReady; onClicked: root.zoom=1 }
-        Button { text: "200%"; enabled: controller.previewReady; onClicked: root.zoom=2 }
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 24
+        spacing: 4; visible: controller.cropEditing; z: 5
+        ComboBox {
+            id: cropAspect; width: 90
+            model: [root.t("自由", "Free"),"1:1","3:2","4:3","16:9","2:3"]
+            onActivated: cropOverlay.setAspect([0,1,1.5,4/3,16/9,2/3][currentIndex])
+        }
+        Button { text: root.t("全图", "Full"); onClicked: { cropAspect.currentIndex=0; cropOverlay.aspectRatio=0; cropOverlay.selection=Qt.rect(0,0,1,1) } }
+        Button { text: root.t("取消", "Cancel"); onClicked: controller.cancelCrop() }
+        Button { objectName: "applyInteractiveCrop"; text: root.t("应用", "Apply"); enabled: !controller.rendering; onClicked: root.applyCrop() }
     }
     BusyIndicator {
         anchors.right: parent.right; anchors.top: parent.top

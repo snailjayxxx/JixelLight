@@ -3,6 +3,12 @@
 #include "core/metadata/MetadataReader.h"
 #include "core/export/ExportQueue.h"
 #include "core/export/JpegExporter.h"
+#include "core/export/PngExporter.h"
+#include "core/export/RasterExporter.h"
+#include <QFileInfo>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
 #include <algorithm>
@@ -62,10 +68,34 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                     metadata.value("rawBaselineExposure",0.0)).toDouble();
                 if(!std::isfinite(rawBaseExposure))rawBaseExposure=0.0;
                 rawBaseExposure=std::clamp(rawBaseExposure,-8.0,8.0);
-                if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,request.destination,request.space,request.quality,token,&result.error,
+                QString destination=request.destination;
+                std::unique_ptr<QTemporaryDir> staging;
+                if (request.newFileOnly) {
+                    const QFileInfo target(destination);
+                    if (target.exists() || target.isSymLink()) {
+                        result.error="Destination already exists"; results.push_back(result); continue;
+                    }
+                    staging=std::make_unique<QTemporaryDir>(target.absoluteDir().filePath(".jixellight-export-XXXXXX"));
+                    if (!staging->isValid()) {
+                        result.error="Cannot create export staging directory"; results.push_back(result); continue;
+                    }
+                    destination=staging->filePath(target.fileName());
+                }
+                const auto suffix=QFileInfo(request.destination).suffix().toLower();
+                if (!source.image.isNull() && QStringList{"png","tif","tiff","webp"}.contains(suffix))
+                    result.ok=exportRaster(source.image,state,destination,request.space,
+                        suffix=="png" ? RasterFormat::Png16 : suffix=="webp" ? RasterFormat::WebP8 : RasterFormat::Tiff16,
+                        request.quality,token,&result.error,rawSource,float(rawBaseExposure));
+                else if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,destination,request.space,request.quality,token,&result.error,
                     [this,index,total=requests.size(),file=request.sourcePath](int percent) {
                         QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);
                     },interactive,rawSource,float(rawBaseExposure));
+                if (result.ok && request.newFileOnly) {
+                    QFile publication(destination);
+                    const QFileInfo target(request.destination);
+                    result.ok=!cancelled(token) && !target.exists() && !target.isSymLink() && publication.rename(request.destination);
+                    if (!result.ok) result.error=cancelled(token)?QString("Export cancelled"):QString("Cannot publish a new destination: ")+publication.errorString();
+                }
                 results.push_back(result);
             }
             if (next.valid()) next.get();

@@ -144,13 +144,8 @@ bool PhotoController::loadLookProfile(const QUrl &url) {
         else {look=LookState::fromJson(doc.object()["look"].toObject());error=look.error;
             if(look.mode=="as-shot")error="Profile must contain a materialized look, not an unresolved as-shot request";}
     }
-    if(error.isEmpty() && look.lut) {
-        const auto kind=look.lut->evidence.value("kind").toString();
-        const auto fittedEngine=look.lut->evidence.value("engineVersion").toString();
-        const bool fitted = kind=="image-specific-fit" || kind=="multi-scene-empirical-fit";
-        if(fitted && fittedEngine != QLatin1String(ProcessingPlan::EngineVersion))
-            error="This fitted look was created for a different RAW rendering engine; refit or regenerate it.";
-    }
+    if(error.isEmpty() && !LookProfiles::engineCompatible(look))
+        error="This fitted look was created for a different RAW rendering engine; refit or regenerate it.";
     if(error.isEmpty()&&!LookProfiles::active(look))error="Profile has no supported active look";
     if(!error.isEmpty()){setStatus(uiText("外观未导入：", "Look not imported: ")+error);return false;}
     mutableCurrentState()->look=std::move(look);persistAndApply("look_profile_imported");return true;
