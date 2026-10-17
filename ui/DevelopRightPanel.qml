@@ -540,8 +540,8 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；画布手柄、笔刷及颜色选择尚未实现。",
-                                     "One linear gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles, brush and color selections are not yet available.")
+                        text: root.t("手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；支持画布手柄调整位置、旋转和两侧羽化（Shift 精调）；笔刷、颜色/亮度选择及多层尚未实现。",
+                                     "One linear gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles edit position, rotation and both feather boundaries (Shift for precision); brush, color/luma selection and multiple layers are not yet available.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
@@ -618,8 +618,8 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；现在支持旋转椭圆，画布拖动和多个同类蒙版尚未实现。",
-                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval is supported; canvas dragging and multiple radial layers remain future work.")
+                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；支持旋转椭圆及画布两侧羽化手柄（Shift 精调）；笔刷及多个同类蒙版尚未实现。",
+                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval and two-sided canvas feather handles are supported (Shift for precision); brush and multiple radial layers remain future work.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

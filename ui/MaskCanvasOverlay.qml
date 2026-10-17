@@ -13,6 +13,7 @@ Item {
     readonly property var linear: controller.linearMask
     readonly property var radial: controller.radialMask
     property string dragHandle: ""
+    property bool dragFine: false // Shift is latched at press, not sampled mid-gesture.
     property point dragStartImage: Qt.point(0, 0)
     property var dragStartState: ({})
     clip: true
@@ -43,10 +44,11 @@ Item {
             const c = linearAnchor(linear), a = radians(linear.angle)
             return Qt.point(c.x + .24 * Math.cos(a), c.y - .24 * Math.sin(a))
         }
-        if (kind === "linearFeather") {
+        if (kind === "linearFeather" || kind === "linearFeatherOpposite") {
             const c = linearAnchor(linear), a = radians(linear.angle)
-            return Qt.point(c.x + linear.feather * .5 * Math.sin(a),
-                            c.y + linear.feather * .5 * Math.cos(a))
+            const side = kind === "linearFeather" ? 1 : -1
+            return Qt.point(c.x + side * linear.feather * .5 * Math.sin(a),
+                            c.y + side * linear.feather * .5 * Math.cos(a))
         }
         const x = radial.centerX, y = radial.centerY
         const a = radians(radial.angle)
@@ -55,8 +57,9 @@ Item {
             return Qt.point(x + radial.radiusX * Math.cos(a), y + radial.radiusX * Math.sin(a))
         if (kind === "radialRadiusY")
             return Qt.point(x - radial.radiusY * Math.sin(a), y + radial.radiusY * Math.cos(a))
-        if (kind === "radialFeather") {
-            const distance = radial.radiusX * (1 - radial.feather)
+        if (kind === "radialFeather" || kind === "radialFeatherOpposite") {
+            const side = kind === "radialFeather" ? 1 : -1
+            const distance = side * radial.radiusX * (1 - radial.feather)
             return Qt.point(x + distance * Math.cos(a), y + distance * Math.sin(a))
         }
         if (kind === "radialAngle")
@@ -68,11 +71,12 @@ Item {
         const point = handleImage(kind)
         return viewPoint(point.x, point.y)
     }
-    function beginDrag(kind, viewX, viewY) {
+    function beginDrag(kind, viewX, viewY, fine) {
         if (!active || !controller.hasImage || !controller.previewReady) return
         const p = imagePoint(viewX, viewY)
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return
         dragHandle = kind
+        dragFine = !!fine
         dragStartImage = p
         // Snapshot all inputs for the gesture. A live controller value changes
         // as the handle moves, and must never become the next delta's origin.
@@ -89,19 +93,25 @@ Item {
         const p = imagePoint(viewX, viewY)
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return
         const start = dragStartState
-        const du = p.x - dragStartImage.x, dv = p.y - dragStartImage.y
+        // Use a frozen origin and one scale for the entire gesture. This also
+        // makes rotated guides precise at non-square image aspect ratios.
+        const factor = dragFine ? .2 : 1
+        const du = (p.x - dragStartImage.x) * factor
+        const dv = (p.y - dragStartImage.y) * factor
+        const target = Qt.point(dragStartImage.x + du, dragStartImage.y + dv)
         const a = radians(start.angle), c = Math.cos(a), s = Math.sin(a)
         if (dragHandle === "linearCenter") {
             controller.setLinearMaskParameter("center",
                 clamp(start.center + du * s + dv * c, 0, 1))
-        } else if (dragHandle === "linearFeather") {
-            // The two feather boundaries are center ± feather/2.
+        } else if (dragHandle === "linearFeather" || dragHandle === "linearFeatherOpposite") {
+            // The boundaries remain symmetric around their frozen center.
+            const side = dragHandle === "linearFeather" ? 1 : -1
             const normalShift = du*s + dv*c
             controller.setLinearMaskParameter("feather",
-                clamp(start.feather + 2*normalShift, .02, 1))
+                clamp(start.feather + side*2*normalShift, .02, 1))
         } else if (dragHandle === "linearAngle") {
             const origin = linearAnchor(start)
-            const dx = p.x - origin.x, dy = p.y - origin.y
+            const dx = target.x - origin.x, dy = target.y - origin.y
             if (Math.hypot(dx,dy) > .03)
                 controller.setLinearMaskParameter("angle",
                     signedAngle(Math.atan2(-dy,dx) * 180 / Math.PI))
@@ -114,15 +124,16 @@ Item {
         } else if (dragHandle === "radialRadiusY") {
             controller.setRadialMaskParameter("radiusY",
                 clamp(start.radiusY - du*s + dv*c, .05, 1))
-        } else if (dragHandle === "radialFeather") {
-            // The inner oval contour is radiusX * (1 - feather).
+        } else if (dragHandle === "radialFeather" || dragHandle === "radialFeatherOpposite") {
+            // Opposite inner-contour grips both modify the one stored feather.
+            const side = dragHandle === "radialFeather" ? 1 : -1
             const localShift=(du*c + dv*s)/Math.max(.05,start.radiusX)
             controller.setRadialMaskParameter("feather",
-                clamp(start.feather - localShift, .02, 1))
+                clamp(start.feather - side*localShift, .02, 1))
         } else if (dragHandle === "radialAngle") {
             const oldX=dragStartImage.x-start.centerX
             const oldY=dragStartImage.y-start.centerY
-            const newX=p.x-start.centerX, newY=p.y-start.centerY
+            const newX=target.x-start.centerX, newY=target.y-start.centerY
             if (Math.hypot(oldX,oldY)>.03 && Math.hypot(newX,newY)>.03) {
                 let diff=(Math.atan2(newX,-newY)-Math.atan2(oldX,-oldY))*180/Math.PI
                 controller.setRadialMaskParameter("angle",signedAngle(start.angle+diff))
@@ -132,6 +143,7 @@ Item {
     function endDrag() {
         if (!dragHandle) return
         dragHandle = ""
+        dragFine = false
         controller.finishInteraction() // coalesce the full pointer gesture into one undo step
     }
     onModeChanged: if (dragHandle) endDrag()
@@ -196,8 +208,8 @@ Item {
     }
 
     Repeater {
-        model: root.mode === "linear" ? ["linearCenter","linearAngle","linearFeather"]
-             : root.mode === "radial" ? ["radialCenter","radialRadiusX","radialRadiusY","radialAngle","radialFeather"] : []
+        model: root.mode === "linear" ? ["linearCenter","linearAngle","linearFeather","linearFeatherOpposite"]
+             : root.mode === "radial" ? ["radialCenter","radialRadiusX","radialRadiusY","radialAngle","radialFeather","radialFeatherOpposite"] : []
         delegate: Item {
             id: handle
             required property var modelData
@@ -212,7 +224,7 @@ Item {
                 height: width; radius: width/2
                 // Blue: rotation, green: feather, yellow: center/radius.
                 color: handle.modelData.endsWith("Angle") ? "#85d4ed"
-                      : handle.modelData.endsWith("Feather") ? "#79dcb0" : "#f7e6ab"
+                      : handle.modelData.includes("Feather") ? "#79dcb0" : "#f7e6ab"
                 border.width: 1; border.color: "#17202b"
             }
             MouseArea {
@@ -221,7 +233,7 @@ Item {
                 hoverEnabled: true
                 onPressed: function(mouse) {
                     const p=mapToItem(root,mouse.x,mouse.y)
-                    root.beginDrag(handle.modelData,p.x,p.y)
+                    root.beginDrag(handle.modelData,p.x,p.y,(mouse.modifiers & Qt.ShiftModifier) !== 0)
                 }
                 onPositionChanged: function(mouse) {
                     if (!pressed) return

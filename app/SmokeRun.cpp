@@ -65,20 +65,21 @@ bool revealItem(QQuickItem *item) {
     }
     return false;
 }
-bool dragHandle(QQuickWindow *window,QQuickItem *item,const QPointF &delta) {
+bool dragHandle(QQuickWindow *window,QQuickItem *item,const QPointF &delta,
+                Qt::KeyboardModifiers modifiers=Qt::NoModifier) {
     if(!item || !item->isVisible() || !item->isEnabled()) return false;
     const QPointF start=item->mapToScene(QPointF(item->width()/2,item->height()/2));
     const QPointF finish=start+delta;
     const QPoint startGlobal=window->mapToGlobal(start.toPoint());
     const QPoint endGlobal=window->mapToGlobal(finish.toPoint());
     QMouseEvent press(QEvent::MouseButtonPress,start,start,startGlobal,
-                      Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+                      Qt::LeftButton,Qt::LeftButton,modifiers);
     QCoreApplication::sendEvent(window,&press);
     QMouseEvent move(QEvent::MouseMove,finish,finish,endGlobal,
-                     Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+                     Qt::NoButton,Qt::LeftButton,modifiers);
     QCoreApplication::sendEvent(window,&move);
     QMouseEvent release(QEvent::MouseButtonRelease,finish,finish,endGlobal,
-                        Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+                        Qt::LeftButton,Qt::NoButton,modifiers);
     QCoreApplication::sendEvent(window,&release);
     return true;
 }
@@ -147,6 +148,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         QElapsedTimer elapsed; int phase=0;
         bool radial=false,linear=false,undo=false,zoom=false,unchanged=false,finished=false;
         bool radialFeather=false,linearFeather=false;
+        bool radialOpposite=false,linearOpposite=false,radialFine=false,linearFine=false;
         QRectF frame;
         QString lastWait;
     };
@@ -161,13 +163,19 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         if(original.open(QIODevice::ReadOnly))
             state->unchanged=QCryptographicHash::hash(original.readAll(),QCryptographicHash::Sha256)==*checksum;
         const bool ok=error.isEmpty() && state->radial && state->linear && state->undo
-            && state->zoom && state->radialFeather && state->linearFeather && state->unchanged;
+            && state->zoom && state->radialFeather && state->linearFeather
+            && state->radialOpposite && state->linearOpposite && state->radialFine && state->linearFine
+            && state->unchanged;
         const QJsonObject report{
             {"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"phase",state->phase},{"error",error},{"elapsed_ms",state->elapsed.elapsed()},
             {"radial_drag_passed",state->radial},{"linear_drag_passed",state->linear},
             {"radial_feather_drag_passed",state->radialFeather},
             {"linear_feather_drag_passed",state->linearFeather},
+            {"linear_opposite_drag_passed",state->linearOpposite},
+            {"radial_opposite_drag_passed",state->radialOpposite},
+            {"linear_fine_drag_passed",state->linearFine},
+            {"radial_fine_drag_passed",state->radialFine},
             {"undo_redo_passed",state->undo},{"zoom_roi_passed",state->zoom},
             {"source_unchanged",state->unchanged},
             {"last_wait",state->lastWait},
@@ -275,14 +283,50 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
                 {finish(QStringLiteral("Linear feather guide/Undo/Redo mismatch"));return;}
             state->phase=6;
         } else if(state->phase==6) {
+            // Test a rotated guide, not just the default 0-degree easy path.
+            controller->setLinearMaskParameter("angle",30);
+            controller->finishInteraction();
+            state->phase=7;
+        } else if(state->phase==7 || state->phase==8) {
+            if(canvas->property("maskTool").toString()!="linear" || !overlay->isVisible())return;
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_linearFeatherOpposite"));
+            if(!handle || !handle->isVisible()) {
+                if(state->elapsed.elapsed()>19000)finish(QStringLiteral("Opposite linear feather grip missing"));
+                return;
+            }
+            const double a=controller->linearMask().value("angle").toDouble()*3.14159265358979323846/180.;
+            const QRectF frame=controller->previewFrameRect();
+            // Project a negative image-normal displacement to screen pixels.
+            const QPointF delta(-.025*std::sin(a)*overlay->width()/frame.width(),
+                                -.025*std::cos(a)*overlay->height()/frame.height());
+            const bool fine=state->phase==8;
+            const double before=controller->linearMask().value("feather").toDouble();
+            if(!dragHandle(window,handle,delta,fine?Qt::ShiftModifier:Qt::NoModifier))
+                {finish(QStringLiteral("Opposite linear drag event failed"));return;}
+            const double after=controller->linearMask().value("feather").toDouble();
+            const double effect=after-before;
+            controller->undo();
+            const bool undone=controller->linearMask().value("feather").toDouble()==before;
+            controller->redo();
+            const bool redone=controller->linearMask().value("feather").toDouble()==after;
+            if(fine) {
+                state->linearFine=effect>.006 && effect<.014 && undone && redone;
+                if(!state->linearFine){finish(QStringLiteral("Shift linear feather was not fine/undoable"));return;}
+                state->phase=9;
+            } else {
+                state->linearOpposite=effect>.035 && effect<.065 && undone && redone;
+                if(!state->linearOpposite){finish(QStringLiteral("Opposite rotated linear feather/Undo mismatch"));return;}
+                state->phase=8;
+            }
+        } else if(state->phase==9) {
             if(!clickItem(window,window->findChild<QQuickItem *>("editRadialMaskCanvas")))
                 {finish(QStringLiteral("Cannot select oval feather tool"));return;}
-            state->phase=7;
-        } else if(state->phase==7) {
+            state->phase=10;
+        } else if(state->phase==10) {
             if(canvas->property("maskTool").toString()!="radial" || !overlay->isVisible())return;
             auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_radialFeather"));
             if(!handle || !handle->isVisible()) {
-                if(state->elapsed.elapsed()>20000)finish(QStringLiteral("Oval feather handle missing"));
+                if(state->elapsed.elapsed()>23000)finish(QStringLiteral("Oval feather handle missing"));
                 return;
             }
             const double before=controller->radialMask().value("feather").toDouble();
@@ -297,7 +341,45 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
                 && controller->radialMask().value("feather").toDouble()==after;
             if(!state->radialFeather)
                 {finish(QStringLiteral("Oval feather guide/Undo/Redo mismatch"));return;}
-            state->phase=8;finish({});
+            state->phase=11;
+        } else if(state->phase==11) {
+            controller->setRadialMaskParameter("angle",-40);
+            controller->finishInteraction();
+            state->phase=12;
+        } else if(state->phase==12 || state->phase==13) {
+            if(canvas->property("maskTool").toString()!="radial" || !overlay->isVisible())return;
+            auto *handle=visualChild(overlay,QStringLiteral("maskCanvasHandle_radialFeatherOpposite"));
+            if(!handle || !handle->isVisible()) {
+                if(state->elapsed.elapsed()>26000)finish(QStringLiteral("Opposite radial feather grip missing"));
+                return;
+            }
+            const auto mask=controller->radialMask();
+            const double a=mask.value("angle").toDouble()*3.14159265358979323846/180.;
+            const QRectF frame=controller->previewFrameRect();
+            const QPointF delta(.025*std::cos(a)*overlay->width()/frame.width(),
+                                .025*std::sin(a)*overlay->height()/frame.height());
+            const bool fine=state->phase==13;
+            const double before=mask.value("feather").toDouble();
+            if(!dragHandle(window,handle,delta,fine?Qt::ShiftModifier:Qt::NoModifier))
+                {finish(QStringLiteral("Opposite radial drag event failed"));return;}
+            const double after=controller->radialMask().value("feather").toDouble();
+            const double effect=after-before;
+            const double fullDelta=.025/mask.value("radiusX").toDouble();
+            controller->undo();
+            const bool undone=controller->radialMask().value("feather").toDouble()==before;
+            controller->redo();
+            const bool redone=controller->radialMask().value("feather").toDouble()==after;
+            const bool range= fine ? effect>fullDelta*.13 && effect<fullDelta*.27
+                                   : effect>fullDelta*.8 && effect<fullDelta*1.2;
+            if(fine) {
+                state->radialFine=range && undone && redone;
+                if(!state->radialFine){finish(QStringLiteral("Shift radial feather was not fine/undoable"));return;}
+                state->phase=14; finish({});
+            } else {
+                state->radialOpposite=range && undone && redone;
+                if(!state->radialOpposite){finish(QStringLiteral("Opposite rotated oval feather/Undo mismatch"));return;}
+                state->phase=13;
+            }
         }
     });
     window->setProperty("workspaceIndex",1);
