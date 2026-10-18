@@ -1610,7 +1610,8 @@ private slots:
         QVERIFY(!BD::validDocument(invalidDoc));
         QJsonObject untouched{{"sentinel",true}};
         QVERIFY(!BD::toJson(invalidDoc,&untouched));
-        QCOMPARE(untouched,QJsonObject{{"sentinel",true}});
+        const QJsonObject expectedUntouched{{"sentinel",true}};
+        QCOMPARE(untouched,expectedUntouched);
         invalidDoc=document;invalidDoc.layers.resize(BD::MaxLayers+1,first);
         QVERIFY(!BD::validDocument(invalidDoc));
         invalidDoc=document;invalidDoc.layers.resize(1);
