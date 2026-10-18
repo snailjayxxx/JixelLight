@@ -49,6 +49,7 @@ def main():
                   "radial_feather_drag_passed", "linear_feather_drag_passed",
                   "linear_opposite_drag_passed", "radial_opposite_drag_passed",
                   "linear_fine_drag_passed", "radial_fine_drag_passed",
+                  "mode_repaint_passed",
                   "undo_redo_passed", "zoom_roi_passed",
                   "source_unchanged", "qml_overlay_found")
     passed = (code == 0 and data.get("passed") is True

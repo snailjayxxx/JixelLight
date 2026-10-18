@@ -14,6 +14,9 @@ Item {
     readonly property var radial: controller.radialMask
     property string dragHandle: ""
     property bool dragFine: false // Shift is latched at press, not sampled mid-gesture.
+    // Last completed paint is observable by native GUI smoke, not photo/project state.
+    property string guidePaintMode: ""
+    property int guidePaintSerial: 0
     property point dragStartImage: Qt.point(0, 0)
     property var dragStartState: ({})
     clip: true
@@ -146,7 +149,12 @@ Item {
         dragFine = false
         controller.finishInteraction() // coalesce the full pointer gesture into one undo step
     }
-    onModeChanged: if (dragHandle) endDrag()
+    onModeChanged: {
+        if (dragHandle) endDrag()
+        // QML Canvas does not track root.mode as an automatic paint dependency.
+        // Without this, switching linear <-> oval can leave the old guide ink.
+        if (guides) guides.requestPaint()
+    }
     onVisibleChanged: if (!visible && dragHandle) endDrag()
     onFrameRectChanged: {
         if (dragHandle) endDrag() // no stale ROI mapping mid-gesture
@@ -165,6 +173,8 @@ Item {
         onPaint: {
             const ctx=getContext("2d")
             ctx.clearRect(0,0,width,height)
+            root.guidePaintMode=root.mode
+            root.guidePaintSerial+=1
             if (!root.active) return
             ctx.lineWidth=1.6
             ctx.strokeStyle="#e9bd65"

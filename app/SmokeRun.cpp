@@ -149,6 +149,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         bool radial=false,linear=false,undo=false,zoom=false,unchanged=false,finished=false;
         bool radialFeather=false,linearFeather=false;
         bool radialOpposite=false,linearOpposite=false,radialFine=false,linearFine=false;
+        bool modeRepaint=false; int paintSerialBefore=0,settleFrames=0;
         QRectF frame;
         QString lastWait;
     };
@@ -165,7 +166,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
         const bool ok=error.isEmpty() && state->radial && state->linear && state->undo
             && state->zoom && state->radialFeather && state->linearFeather
             && state->radialOpposite && state->linearOpposite && state->radialFine && state->linearFine
-            && state->unchanged;
+            && state->modeRepaint && state->unchanged;
         const QJsonObject report{
             {"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"phase",state->phase},{"error",error},{"elapsed_ms",state->elapsed.elapsed()},
@@ -176,6 +177,7 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             {"radial_opposite_drag_passed",state->radialOpposite},
             {"linear_fine_drag_passed",state->linearFine},
             {"radial_fine_drag_passed",state->radialFine},
+            {"mode_repaint_passed",state->modeRepaint},
             {"undo_redo_passed",state->undo},{"zoom_roi_passed",state->zoom},
             {"source_unchanged",state->unchanged},
             {"last_wait",state->lastWait},
@@ -374,12 +376,46 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
             if(fine) {
                 state->radialFine=range && undone && redone;
                 if(!state->radialFine){finish(QStringLiteral("Shift radial feather was not fine/undoable"));return;}
-                state->phase=14; finish({});
+                state->phase=14;
             } else {
                 state->radialOpposite=range && undone && redone;
                 if(!state->radialOpposite){finish(QStringLiteral("Opposite rotated oval feather/Undo mismatch"));return;}
                 state->phase=13;
             }
+        } else if(state->phase==14) {
+            // Let earlier parameter-triggered paints settle. Only a mode
+            // switch should then schedule a new Canvas paint.
+            if(++state->settleFrames<4)return;
+            state->paintSerialBefore=overlay->property("guidePaintSerial").toInt();
+            if(!clickItem(window,window->findChild<QQuickItem *>("editLinearMaskCanvas")))
+                {finish(QStringLiteral("Cannot switch oval to linear for guide repaint check"));return;}
+            state->phase=15;
+        } else if(state->phase==15) {
+            if(canvas->property("maskTool").toString()!="linear")
+                {finish(QStringLiteral("Linear guide repaint mode was not activated"));return;}
+            const auto paintMode=overlay->property("guidePaintMode").toString();
+            const int serial=overlay->property("guidePaintSerial").toInt();
+            if(paintMode!="linear" || serial<=state->paintSerialBefore) {
+                state->lastWait=QStringLiteral("linear guide mode=%1 serial=%2 before=%3")
+                    .arg(paintMode).arg(serial).arg(state->paintSerialBefore);
+                return;
+            }
+            state->paintSerialBefore=serial;
+            if(!clickItem(window,window->findChild<QQuickItem *>("editRadialMaskCanvas")))
+                {finish(QStringLiteral("Cannot switch linear to oval for guide repaint check"));return;}
+            state->phase=16;
+        } else if(state->phase==16) {
+            if(canvas->property("maskTool").toString()!="radial")
+                {finish(QStringLiteral("Oval guide repaint mode was not activated"));return;}
+            const auto paintMode=overlay->property("guidePaintMode").toString();
+            const int serial=overlay->property("guidePaintSerial").toInt();
+            if(paintMode!="radial" || serial<=state->paintSerialBefore) {
+                state->lastWait=QStringLiteral("oval guide mode=%1 serial=%2 before=%3")
+                    .arg(paintMode).arg(serial).arg(state->paintSerialBefore);
+                return;
+            }
+            state->modeRepaint=true;
+            state->phase=17;finish({});
         }
     });
     window->setProperty("workspaceIndex",1);

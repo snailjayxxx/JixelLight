@@ -32,6 +32,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/MaskCanvasGeometry.h"
+#include "core/pipeline/BrushMaskGeometry.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/FloatSceneResampler.h"
@@ -1525,6 +1526,73 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    // F4 M4.0 opt-in brush geometry only: do not expose an unimplemented
+    // brush control or mutate saved photos until native rendering is validated.
+    void brushMaskGeometryUsesPixelRoundRadiusAndStableStrokeSpacing() {
+        using namespace BrushMaskGeometry;
+        const Style style{.1,.5,.8};
+        QVERIFY(validFrame(1200,800));
+        QVERIFY(!validFrame(0,800));
+        QVERIFY(validStyle(style));
+        QVERIFY(!validStyle({.001,.5,.8}));
+        QVERIFY(!validStyle({.1,1.01,.8}));
+        QVERIFY(!validStyle({.1,.5,1.01}));
+        QVERIFY(!validDab({{.5,.5},-1}));
+        QVERIFY(!validPoint({-1,.5}));
+        QVERIFY(!validPoint({std::numeric_limits<double>::quiet_NaN(),.5}));
+        QVERIFY(std::abs(shortEdgeDistance({.5,.5},{.56,.5},1200,800)-.09)<1e-12);
+        QVERIFY(std::abs(shortEdgeDistance({.5,.5},{.5,.09},800,1200)-.615)<1e-12);
+        const Stroke oneDab{style,{{{.5,.5},1.}}};
+        QVERIFY(validStroke(oneDab));
+        const auto box=bounds(oneDab,1200,800);
+        QVERIFY(box);
+        QVERIFY(std::abs(box->left-(.5-.1*800./1200.))<1e-12);
+        QVERIFY(std::abs(box->top-.4)<1e-12);
+        QVERIFY(std::abs(*strokeOpacity(oneDab,{.5,.5},1200,800)-.8)<1e-12);
+        QVERIFY(std::abs(*strokeOpacity(oneDab,{.54,.5},1200,800)-.7168)<1e-12);
+        QCOMPARE(*strokeOpacity(oneDab,{.8,.5},1200,800),0.0);
+        // A circle in pixels is not a normalized-coordinate ellipse.
+        QVERIFY(std::abs(*strokeOpacity(oneDab,{.54,.5},1200,800)
+                        -*strokeOpacity(oneDab,{.5,.56},1200,800))<1e-12);
+        const Stroke withDuplicate{style,{{{.5,.5},1.},{{.5,.5},1.}}};
+        QVERIFY(std::abs(*strokeOpacity(withDuplicate,{.5,.5},1200,800)-.8)<1e-12);
+        const std::vector<Stroke> two={oneDab,oneDab};
+        QVERIFY(std::abs(*combinedOpacity(two,{.5,.5},1200,800)-.96)<1e-12);
+        QVERIFY(!combinedOpacity(two,{-1,.5},1200,800));
+        QVERIFY(!strokeOpacity(Stroke{Style{.1,.5,1},{}},{.5,.5},1200,800));
+        QVERIFY(!strokeOpacity(oneDab,{.5,.5},0,800));
+
+        StrokeBuilder sparse(1200,800,style);
+        QVERIFY(sparse.append({{.1,.5},.4}));
+        QVERIFY(sparse.append({{.9,.5},1.}));
+        auto first=sparse.finish();
+        QVERIFY(first);
+        QVERIFY(first->dabs.size()>15);
+        QVERIFY(!sparse.append({{.95,.5},1.}));
+        QVERIFY(!sparse.finish());
+        StrokeBuilder many(1200,800,style);
+        for(int i=0;i<=100;++i)
+            QVERIFY(many.append({{.1+.8*i/100.,.5},.4+.6*i/100.}));
+        auto second=many.finish();
+        QVERIFY(second);
+        QCOMPARE(first->dabs.size(),second->dabs.size());
+        for(std::size_t i=0;i<first->dabs.size();++i) {
+            QVERIFY(std::abs(first->dabs[i].center.x-second->dabs[i].center.x)<1e-12);
+            QVERIFY(std::abs(first->dabs[i].center.y-second->dabs[i].center.y)<1e-12);
+            QVERIFY(std::abs(first->dabs[i].pressure-second->dabs[i].pressure)<1e-12);
+        }
+        StrokeBuilder invalid(1200,800,style);
+        QVERIFY(invalid.append({{.5,.5},1.}));
+        QVERIFY(!invalid.append({{2.,.5},1.}));
+        QVERIFY(invalid.invalid());
+        QVERIFY(!invalid.finish());
+        StrokeBuilder tooLong(100000,100,{.002,.5,1});
+        QVERIFY(tooLong.append({{0,.5},1.}));
+        QVERIFY(!tooLong.append({{1,.5},1.}));
+        QVERIFY(tooLong.invalid());
+        QVERIFY(!tooLong.finish());
+    }
+
     void maskCanvasCoordinateMappingAndAtomicCenterUndo() {
         const QSizeF display(600,360);
         const QRectF full(0,0,1,1);
