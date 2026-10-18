@@ -33,6 +33,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/MaskCanvasGeometry.h"
 #include "core/pipeline/BrushMaskGeometry.h"
+#include "core/pipeline/BrushMaskDocument.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/FloatSceneResampler.h"
@@ -1526,6 +1527,101 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    // F4 M4.1: isolated versioned brush-layer document. Not connected to
+    // saved project edits until CPU/GPU rendering and migrations are accepted.
+    void brushMaskDocumentStrictLayerIdentityAndAtomicRefusal() {
+        namespace BM = BrushMaskGeometry;
+        namespace BD = BrushMaskDocument;
+        const BM::Stroke dab{BM::Style{.1,.5,.8},{{{.5,.5},1.}}};
+        BD::Layer first; first.id="brush_a";first.enabled=true;first.exposureEv=-1;
+        first.strokes={dab};
+        BD::Layer second; second.id="brush_b";second.enabled=true;second.exposureEv=2;
+        second.strokes={dab};
+        BD::Document document{{first,second}};
+        QVERIFY(BD::validDocument(document));
+        const auto exposure=BD::weightedExposureStops(document,{.5,.5},1200,800);
+        QVERIFY(exposure);
+        QVERIFY(std::abs(*exposure-.8)<1e-12); // -1*.8 + 2*.8
+        QVERIFY(std::abs(*BD::weightedExposureStops(document,{.8,.8},1200,800))<1e-12);
+        QVERIFY(!BD::weightedExposureStops(document,{-1,.5},1200,800));
+        auto disabled=document; disabled.layers[1].enabled=false;
+        QVERIFY(std::abs(*BD::weightedExposureStops(disabled,{.5,.5},1200,800)+.8)<1e-12);
+        QCOMPARE(disabled.layers[1].strokes.size(),std::size_t(1));
+        QJsonObject stored;
+        QVERIFY(BD::toJson(document,&stored));
+        QCOMPARE(stored.value("schema").toInt(),BD::Schema);
+        QCOMPARE(stored.value("layers").toArray().size(),2);
+        BD::Document roundTrip;
+        QVERIFY(BD::fromJson(QJsonValue(stored),&roundTrip));
+        QJsonObject restored; QVERIFY(BD::toJson(roundTrip,&restored));
+        QCOMPARE(restored,stored);
+        QCOMPARE(roundTrip.layers[0].id,QString("brush_a"));
+        QCOMPARE(roundTrip.layers[1].id,QString("brush_b"));
+        QVERIFY(std::abs(*BD::weightedExposureStops(roundTrip,{.5,.5},1200,800)-.8)<1e-12);
+        BD::Document oldProject;
+        QVERIFY(BD::fromJson(QJsonObject{}.value("brushMasks"),&oldProject));
+        QVERIFY(oldProject.layers.empty());
+        QJsonObject oldField; QVERIFY(BD::toJson(oldProject,&oldField)); QVERIFY(oldField.isEmpty());
+        QVERIFY(!AdjustmentState{}.toJson().contains("brushMasks")); // no new live intent
+
+        const auto originalLayer=stored.value("layers").toArray()[0].toObject();
+        const auto originalStroke=originalLayer.value("strokes").toArray()[0].toObject();
+        const auto badLayer=[&](const QJsonObject &replacement) {
+            auto root=stored;auto array=root.value("layers").toArray();
+            array.replace(0,replacement);root.insert("layers",array);return root;
+        };
+        const auto badStroke=[&](const QJsonObject &replacement) {
+            auto layer=originalLayer;auto array=layer.value("strokes").toArray();
+            array.replace(0,replacement);layer.insert("strokes",array);
+            return badLayer(layer);
+        };
+        const auto badDab=[&](const QJsonValue &replacement) {
+            auto stroke=originalStroke;auto array=stroke.value("dabs").toArray();
+            array.replace(0,replacement);stroke.insert("dabs",array);
+            return badStroke(stroke);
+        };
+        QList<QJsonValue> invalid{
+            QJsonValue(QJsonValue::Null),QJsonArray{},QJsonObject{},
+            QJsonObject{{"schema",1},{"layers",QJsonArray{}}},
+            badDab(QJsonArray{.5,.5}),badDab(QJsonArray{.5,.5,1,1}),
+            badDab(QJsonArray{1.01,.5,1}),badDab(QJsonArray{.5,.5,-.01}),
+            badDab(QJsonArray{QStringLiteral("x"),.5,1})
+        };
+        auto future=stored;future.insert("schema",2);invalid.append(future);
+        auto extra=stored;extra.insert("unknown",1);invalid.append(extra);
+        auto invalidLayer=originalLayer;invalidLayer.insert("id","../../raw");invalid.append(badLayer(invalidLayer));
+        invalidLayer=originalLayer;invalidLayer.insert("enabled",1);invalid.append(badLayer(invalidLayer));
+        invalidLayer=originalLayer;invalidLayer.insert("exposure",-3.1);invalid.append(badLayer(invalidLayer));
+        invalidLayer=originalLayer;invalidLayer.insert("extra",true);invalid.append(badLayer(invalidLayer));
+        invalidLayer=originalLayer;invalidLayer.insert("strokes",QJsonArray{});invalid.append(badLayer(invalidLayer));
+        auto invalidStroke=originalStroke;invalidStroke.insert("dabs",QJsonArray{});invalid.append(badStroke(invalidStroke));
+        invalidStroke=originalStroke;invalidStroke.insert("radius",0);invalid.append(badStroke(invalidStroke));
+        invalidStroke=originalStroke;invalidStroke.insert("hardness",1.1);invalid.append(badStroke(invalidStroke));
+        invalidStroke=originalStroke;invalidStroke.insert("extra",1);invalid.append(badStroke(invalidStroke));
+        auto duplicates=stored;auto layers=duplicates.value("layers").toArray();
+        auto duplicate=layers[1].toObject();duplicate.insert("id","brush_a");
+        layers.replace(1,duplicate);duplicates.insert("layers",layers);invalid.append(duplicates);
+        for(const auto &item:invalid) {
+            QVERIFY(!BD::fromJson(item,&roundTrip));
+            QJsonObject unchanged;QVERIFY(BD::toJson(roundTrip,&unchanged));
+            QCOMPARE(unchanged,stored); // fail without corrupting an existing edit
+        }
+        auto invalidDoc=document;invalidDoc.layers[1].id="brush_a";
+        QVERIFY(!BD::validDocument(invalidDoc));
+        QJsonObject untouched{{"sentinel",true}};
+        QVERIFY(!BD::toJson(invalidDoc,&untouched));
+        QCOMPARE(untouched,QJsonObject{{"sentinel",true}});
+        invalidDoc=document;invalidDoc.layers.resize(BD::MaxLayers+1,first);
+        QVERIFY(!BD::validDocument(invalidDoc));
+        invalidDoc=document;invalidDoc.layers.resize(1);
+        invalidDoc.layers[0].strokes.resize(BM::MaxStrokes+1,dab);
+        QVERIFY(!BD::validDocument(invalidDoc));
+        invalidDoc=document;invalidDoc.layers.resize(1);
+        BM::Stroke longStroke=dab;longStroke.dabs.assign(BM::MaxDabsPerStroke,{{.5,.5},1.});
+        invalidDoc.layers[0].strokes.assign(5,longStroke);
+        QVERIFY(!BD::validDocument(invalidDoc)); // 20,480 > 16,384 total dabs
+    }
+
     // F4 M4.0 opt-in brush geometry only: do not expose an unimplemented
     // brush control or mutate saved photos until native rendering is validated.
     void brushMaskGeometryUsesPixelRoundRadiusAndStableStrokeSpacing() {
