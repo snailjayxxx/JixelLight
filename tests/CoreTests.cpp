@@ -34,6 +34,7 @@
 #include "core/pipeline/MaskCanvasGeometry.h"
 #include "core/pipeline/BrushMaskGeometry.h"
 #include "core/pipeline/BrushMaskDocument.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/FloatSceneResampler.h"
@@ -1527,6 +1528,106 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    // F4 M4.2 research-only CPU pixel tile oracle; no live editor path.
+    void brushMaskTileRasterMatchesScalarAndCropsWithoutSideEffects() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        namespace BT=BrushMaskTileRaster;
+        constexpr int width=29, height=19;
+        const BM::Style style{.12,.4,.8};
+        BD::Layer dark;dark.id="shade";dark.enabled=true;dark.exposureEv=-1.2;
+        dark.strokes={BM::Stroke{style,{{{.5,.5},1.},{{.61,.5},.65}}}};
+        BD::Layer light;light.id="raise";light.enabled=true;light.exposureEv=2;
+        light.strokes={BM::Stroke{BM::Style{.08,.7,.5},{{{.5,.5},1.}}}};
+        const BD::Document doc{{dark,light}};
+        QVERIFY(BD::validDocument(doc));
+        std::vector<float> source(std::size_t(width)*height*4);
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const std::size_t offset=(std::size_t(y)*width+x)*4;
+            source[offset+0]=1.3f+float(x)*.02f;     // scene-linear >1
+            source[offset+1]=-.2f+float(y)*.008f;    // negative wide-gamut
+            source[offset+2]=.25f;
+            source[offset+3]=x%3==0?0.f:x%3==1?.5f:1.f;
+        }
+        const auto original=source;
+        BT::Output full;
+        QVERIFY(BT::render(doc,width,height,{0,0,width,height},source,&full));
+        QVERIFY(source==original); // input is never mutated
+        QCOMPARE(full.rgba32f.size(),source.size());
+        QCOMPARE(full.weightedExposureEv.size(),std::size_t(width)*height);
+        QVERIFY(full.visitedDabPixels>0);
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const std::size_t index=std::size_t(y)*width+x;
+            const auto reference=BD::weightedExposureStops(
+                doc,{(x+.5)/width,(y+.5)/height},width,height);
+            QVERIFY(reference);
+            const double gain=std::exp2(*reference);
+            QVERIFY(std::abs(double(full.weightedExposureEv[index])-*reference)<2e-6);
+            for(int c=0;c<3;++c)
+                QVERIFY(std::abs(double(full.rgba32f[index*4+c])
+                                 -double(source[index*4+c])*gain)<2e-6);
+            QCOMPARE(full.rgba32f[index*4+3],source[index*4+3]);
+        }
+        // Split into nonuniform tiles. Pixel centers must be frame-anchored,
+        // never shifted to each tile's own local coordinates.
+        const BT::Rect pieces[]{{0,0,13,8},{13,0,16,8},
+                                {0,8,13,11},{13,8,16,11}};
+        for(const auto tile:pieces) {
+            std::vector<float> input;
+            input.reserve(std::size_t(tile.width)*tile.height*4);
+            for(int y=tile.y;y<tile.y+tile.height;++y)
+                for(int x=tile.x;x<tile.x+tile.width;++x)
+                    for(int c=0;c<4;++c)
+                        input.push_back(source[(std::size_t(y)*width+x)*4+c]);
+            BT::Output result;
+            QVERIFY(BT::render(doc,width,height,tile,input,&result));
+            std::size_t local=0;
+            for(int y=tile.y;y<tile.y+tile.height;++y)
+                for(int x=tile.x;x<tile.x+tile.width;++x,++local) {
+                    const auto whole=std::size_t(y)*width+x;
+                    QCOMPARE(result.weightedExposureEv[local],full.weightedExposureEv[whole]);
+                    for(int c=0;c<4;++c)
+                        QCOMPARE(result.rgba32f[local*4+c],full.rgba32f[whole*4+c]);
+                }
+        }
+        const BD::Document legacy;
+        BT::Output identity;
+        QVERIFY(BT::render(legacy,width,height,{0,0,width,height},source,&identity));
+        QVERIFY(identity.rgba32f==source);
+        for(float ev:identity.weightedExposureEv) QCOMPARE(ev,0.f);
+        auto invalidSource=source;
+        invalidSource[0]=std::numeric_limits<float>::quiet_NaN();
+        BT::Output sentinel;sentinel.rgba32f={1,2,3,4};sentinel.weightedExposureEv={42};
+        QVERIFY(!BT::render(doc,width,height,{0,0,width,height},invalidSource,&sentinel));
+        QVERIFY(sentinel.rgba32f==(std::vector<float>{1,2,3,4}));
+        QVERIFY(sentinel.weightedExposureEv==(std::vector<float>{42}));
+        invalidSource=source;invalidSource[3]=1.25f;
+        QVERIFY(!BT::render(doc,width,height,{0,0,width,height},invalidSource,&sentinel));
+        QVERIFY(!BT::render(doc,width,height,{-1,0,4,4},source,&sentinel));
+        QVERIFY(!BT::render(doc,width,height,{0,0,width,height},std::span<const float>{},&sentinel));
+        std::atomic_bool cancel{true};
+        QVERIFY(!BT::render(doc,width,height,{0,0,width,height},source,&sentinel,&cancel));
+        cancel.store(false);
+        // Reject gain overflow without clipping a valid scene-linear source.
+        auto boosted=doc;boosted.layers[0].exposureEv=3;
+        boosted.layers[1].enabled=false;
+        const std::vector<float> high{65536.f,0.f,0.f,1.f};
+        QVERIFY(!BT::render(boosted,width,height,{14,9,1,1},high,&sentinel));
+        QVERIFY(sentinel.rgba32f==(std::vector<float>{1,2,3,4}));
+
+        // Maximum valid document can still exceed a bounded tile CPU budget;
+        // refusal must leave the caller's prior output untouched.
+        BM::Stroke broad{BM::Style{.5,1,1},{}};
+        broad.dabs.assign(BM::MaxDabsPerStroke,{{.5,.5},1.});
+        BD::Layer heavy;heavy.id="bounded";heavy.enabled=true;heavy.exposureEv=1;
+        heavy.strokes.assign(4,broad);
+        BD::Document expensive{{heavy}};
+        QVERIFY(BD::validDocument(expensive));
+        const std::vector<float> heavyInput(128*128*4,.25f);
+        QVERIFY(!BT::render(expensive,128,128,{0,0,128,128},heavyInput,&sentinel));
+        QVERIFY(sentinel.weightedExposureEv==(std::vector<float>{42}));
+    }
+
     // F4 M4.1: isolated versioned brush-layer document. Not connected to
     // saved project edits until CPU/GPU rendering and migrations are accepted.
     void brushMaskDocumentStrictLayerIdentityAndAtomicRefusal() {
