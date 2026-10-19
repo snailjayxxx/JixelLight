@@ -276,6 +276,9 @@ public:
     // Atomic 2D center change: one undo entry per completed canvas drag.
     Q_INVOKABLE bool setRadialMaskCenter(double x,double y);
     Q_INVOKABLE void resetRadialMask();
+    // C++-only draft entrypoint. QML/CLI do NOT expose painting until the
+    // live image pipeline can render and export these masks correctly.
+    bool replaceBrushMaskDraft(const QJsonObject &document);
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();

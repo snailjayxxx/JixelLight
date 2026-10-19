@@ -91,6 +91,9 @@ public:
 private:
     static bool snapshot(AdjustmentState *state, QString *error) {
         if (!state || !state->look.error.isEmpty()) return fail(error,"Cannot save an invalid Sony Look");
+        if (!BrushMaskDocument::validDocument(state->brushMasks)
+            || !AdjustmentState::validBrushMaskJson(state->toJson()))
+            return fail(error,"Cannot save an invalid or enabled brush draft");
         state->geometry={}; const auto json=state->toJson(); const auto checked=AdjustmentState::fromJson(json);
         if (!checked.look.error.isEmpty() || !LookProfiles::engineCompatible(checked.look) || checked.toJson()!=json)
             return fail(error,"Cannot save an unsupported preset snapshot");

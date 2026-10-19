@@ -257,6 +257,9 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
                     if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
                     auto adjustments = AdjustmentState::fromJson(doc.object());
+                    if (!AdjustmentState::validBrushMaskJson(doc.object())) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported brush mask draft for project photo"); break;
+                    }
                     if (!AdjustmentState::validRadialMaskJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported radial mask for project photo"); break;
                     }
@@ -396,6 +399,8 @@ bool ProjectDatabase::addVirtualCopy(const QString &key, const QString &source, 
     QStringList checkedName{name}; CatalogTags checkedTags; EditHistory checkedHistory;
     if (!m_open || !validCopyKey(key) || source.isEmpty() || !CatalogTags::normalize(&checkedName,1)
         || checkedName.size() != 1 || checkedName[0] != name || !CatalogTags::fromJson(tags.toJson(),&checkedTags)
+        || !BrushMaskDocument::validDocument(adjustments.brushMasks)
+        || !AdjustmentState::validBrushMaskJson(adjustments.toJson())
         || !checkedHistory.restore(history.toJson(),adjustments) || curation.rating < 0 || curation.rating > 5
         || (curation.flag != "none" && curation.flag != "pick" && curation.flag != "reject")) return false;
     PhotoTimeline checkedDates; if (!PhotoTimeline::fromJson(timeline.toJson(),&checkedDates) || !flush()) return false;
@@ -528,6 +533,18 @@ bool ProjectDatabase::updateTagsBatch(const QHash<QString, CatalogTags> &changes
 bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states, const QHash<QString, EditHistory> &histories, const QHash<QString, PhotoTimeline> &timelines) {
     if (!m_open) return false;
     if (states.isEmpty()) return timelines.isEmpty();
+    // Fail before scheduling any database writes: malformed or enabled
+    // draft masks cannot silently disappear from a serialized photo.
+    for (auto it=states.cbegin();it!=states.cend();++it) {
+        if (!BrushMaskDocument::validDocument(it.value().brushMasks)
+            || !AdjustmentState::validBrushMaskJson(it.value().toJson())) return false;
+    }
+    for (auto it=histories.cbegin();it!=histories.cend();++it) {
+        for (const auto &entry:it.value().entries()) {
+            if (!BrushMaskDocument::validDocument(entry.state.brushMasks)
+                || !AdjustmentState::validBrushMaskJson(entry.state.toJson())) return false;
+        }
+    }
     for (auto it = timelines.begin(); it != timelines.end(); ++it) {
         PhotoTimeline checked; if (!states.contains(it.key()) || !PhotoTimeline::fromJson(it.value().toJson(),&checked)) return false;
     }

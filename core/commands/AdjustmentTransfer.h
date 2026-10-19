@@ -19,7 +19,11 @@ inline bool validGroups(const QStringList &groups) {
     return true;
 }
 inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QStringList &groups) {
-    if (!validGroups(groups)) return false;
+    if (!validGroups(groups)
+        || (groups.contains("masks") &&
+            (!BrushMaskDocument::validDocument(source.brushMasks)
+             || !AdjustmentState::validBrushMaskJson(source.toJson()))))
+        return false;
     for (const auto &group : groups) {
         if (group=="exposure") target.exposure=source.exposure;
         else if (group=="white_balance") { target.temperature=source.temperature; target.tint=source.tint; }
@@ -53,6 +57,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.radialMaskRadiusY=source.radialMaskRadiusY;
             target.radialMaskFeather=source.radialMaskFeather;
             target.radialMaskAngle=source.radialMaskAngle;
+            target.brushMasks=source.brushMasks; // disabled draft only; no visual effect yet
         }
         else if (group=="geometry") target.geometry=source.geometry;
     }

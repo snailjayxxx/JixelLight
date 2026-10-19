@@ -730,6 +730,27 @@ void PhotoController::resetRadialMask() {
     if (!CommandRegistry::execute(*state,{{"command","mask.radial.reset"}})) return;
     persistAndApply("radial_mask_reset");
 }
+bool PhotoController::replaceBrushMaskDraft(const QJsonObject &document) {
+    auto *state=mutableCurrentState();
+    if (!state) return false;
+    BrushMaskDocument::Document nextDraft;
+    if (!document.isEmpty()) {
+        const QJsonObject wrapper{{"brushMasks",document}};
+        if (!AdjustmentState::validBrushMaskJson(wrapper)
+            || !BrushMaskDocument::fromJson(QJsonValue(document),&nextDraft))
+            return false; // unchanged editor/photo/history on failure
+    }
+    auto next=*state;
+    next.brushMasks=std::move(nextDraft);
+    if (next.toJson()==state->toJson()) return true;
+    m_photos[m_currentIndex].history.finish();
+    *state=std::move(next);
+    // Existing history/save path. Source bytes are never written. Current
+    // rendering intentionally ignores disabled drafts; this is NOT painting.
+    persistAndApply("brush_draft_replace",
+        {{"layer_count",int(state->brushMasks.layers.size())},{"rendering",QStringLiteral("disabled")}});
+    return true;
+}
 void PhotoController::setBlackWhite(bool enabled) {
     auto *state=mutableCurrentState(); if (!state || state->blackWhite==enabled) return;
     m_photos[m_currentIndex].history.finish();

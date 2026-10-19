@@ -1528,6 +1528,193 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    // F4 M4.3: persist future brush intent using the existing non-destructive
+    // adjustment/history/project/preset/XMP implementation. Rendering remains
+    // explicitly disabled in this milestone, including saved drafts.
+    void brushDraftControllerHistoryVirtualCopyPresetAndXmpRoundTrip() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QImage pixels(62,46,QImage::Format_RGB32);pixels.fill(QColor(80,120,160));
+        const auto path=dir.filePath("brush-original.png");
+        QVERIFY(pixels.save(path));
+        const auto originalBytes=fixtureBytes(path);
+        BD::Layer first;first.id="portrait_base";first.enabled=false;first.exposureEv=1.4;
+        first.strokes={BM::Stroke{BM::Style{.09,.4,.75},{{{.5,.5},1.},{{.6,.5},.5}}}};
+        BD::Layer second;second.id="portrait_shadow";second.enabled=false;second.exposureEv=-.65;
+        second.strokes={BM::Stroke{BM::Style{.07,.7,1.},{{{.3,.4},1.}}}};
+        const BD::Document document{{first,second}};
+        QJsonObject draft; QVERIFY(BD::toJson(document,&draft));
+        QVERIFY(!draft.isEmpty());
+        AdjustmentState settings;
+        QVERIFY(!settings.toJson().contains("brushMasks"));
+        settings.brushMasks=document;
+        const auto saved=settings.toJson();
+        QVERIFY(AdjustmentState::validBrushMaskJson(saved));
+        QCOMPARE(saved.value("brushMasks").toObject(),draft);
+        QCOMPARE(AdjustmentState::fromJson(saved).toJson(),saved);
+        QVERIFY(!StageGraph::describe("test-photo",{},settings,false,0)
+                     .value("brush_draft").toObject().value("active_rendering").toBool());
+
+        // Disabled drafts cannot alter a single rendered pixel. This is a
+        // safety boundary until the future production CPU/GPU brush renderer.
+        const auto render=[](const AdjustmentState &edit,const QImage &image) {
+            return ImagePipeline::processWithPlan(image,ProcessingPlan::compile(
+                edit,ImagePipeline::InputEncoding::SRgb,
+                ColorManagement::OutputSpace::SRgb,false,0.0f));
+        };
+        const auto neutral=render({},pixels);
+        QVERIFY(!neutral.isNull());
+        QCOMPARE(render(settings,pixels),neutral);
+
+        EditHistory history;history.initialize({});
+        QVERIFY(history.record(settings,QStringLiteral("brush_draft_replace")));
+        EditHistory restored;QVERIFY(restored.restore(history.toJson(),settings));
+        QVERIFY(restored.canUndo());
+        QVERIFY(!restored.undo().toJson().contains("brushMasks"));
+        QCOMPARE(restored.redo().toJson(),saved);
+
+        AdjustmentState copied; copied.exposure=-.75;
+        QVERIFY(AdjustmentTransfer::apply(copied,settings,{"masks"}));
+        QCOMPARE(copied.toJson().value("brushMasks").toObject(),draft);
+        QCOMPARE(copied.exposure,-.75);
+        AdjustmentState untouched; untouched.exposure=2.0;
+        QVERIFY(AdjustmentTransfer::apply(untouched,settings,{"tone"}));
+        QVERIFY(!untouched.toJson().contains("brushMasks"));
+
+        QString error;
+        NamedPresets presets(dir.filePath("brush-presets.json"));
+        QVERIFY2(presets.load(&error),qPrintable(error));
+        QVERIFY2(presets.save("Disabled brush intent",settings,&error),qPrintable(error));
+        auto invalidForExport=settings;
+        invalidForExport.brushMasks.layers[0].enabled=true;
+        QVERIFY(!presets.save("Active brush not supported",invalidForExport,&error));
+        error.clear();
+        NamedPresets reloaded(dir.filePath("brush-presets.json"));
+        QVERIFY2(reloaded.load(&error),qPrintable(error));
+        AdjustmentState preset;
+        QVERIFY(reloaded.get("Disabled brush intent",&preset));
+        QCOMPARE(preset.toJson(),saved);
+        const auto xmp=dir.filePath("brush-draft.xmp");
+        QVERIFY2(XmpSidecar::writeNew(xmp,settings,{},0,"none",&error),qPrintable(error));
+        const auto unsafeXmp=dir.filePath("active-not-renderable.xmp");
+        QVERIFY(!XmpSidecar::writeNew(unsafeXmp,invalidForExport,{},0,"none",&error));
+        QVERIFY(!QFile::exists(unsafeXmp));
+        error.clear();
+        XmpSidecar::Document imported;
+        QVERIFY2(XmpSidecar::read(xmp,&imported,&error),qPrintable(error));
+        QVERIFY(imported.hasAdjustments);
+        QCOMPARE(imported.adjustments.toJson(),saved);
+
+        PhotoController controller(nullptr);
+        controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.rendering(),15000);
+        const auto defaultJson=controller.gpuPlan(true).state.toJson();
+        QVERIFY(!defaultJson.contains("brushMasks"));
+        const int historyBeforeRejected=controller.editHistory().size();
+        auto unsupported=draft;
+        auto layers=unsupported.value("layers").toArray();
+        auto firstLayer=layers[0].toObject();
+        firstLayer.insert("enabled",true);layers.replace(0,firstLayer);
+        unsupported.insert("layers",layers);
+        QVERIFY(!AdjustmentState::validBrushMaskJson(QJsonObject{{"brushMasks",unsupported}}));
+        QVERIFY(!controller.replaceBrushMaskDraft(unsupported));
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),defaultJson);
+        auto unknown=draft;unknown.insert("future",2);
+        QVERIFY(!controller.replaceBrushMaskDraft(unknown));
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),defaultJson);
+        QCOMPARE(controller.editHistory().size(),historyBeforeRejected);
+        QVERIFY(controller.replaceBrushMaskDraft(draft));
+        QCOMPARE(controller.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(controller.canUndo());
+        controller.undo();
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),defaultJson);
+        controller.redo();
+        QCOMPARE(controller.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"BrushDraftProject"));
+        QVERIFY(controller.flushEdits());
+        QCOMPARE(fixtureBytes(path),originalBytes);
+
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);
+        QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(reopened.canUndo());
+        reopened.undo();
+        QVERIFY(!reopened.gpuPlan(true).state.toJson().contains("brushMasks"));
+        reopened.redo();
+        QCOMPARE(reopened.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(reopened.createVirtualCopy("Brush-disabled version"));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(reopened.flushEdits());
+        PhotoController copies(nullptr);copies.setGpuEnabled(false);
+        QVERIFY(copies.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(copies.library().size(),2);
+        copies.selectPhoto(1);
+        QCOMPARE(copies.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        copies.selectPhoto(0);
+        QCOMPARE(copies.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QVERIFY(copies.replaceBrushMaskDraft(QJsonObject{}));
+        QVERIFY(!copies.gpuPlan(true).state.toJson().contains("brushMasks"));
+        copies.undo();
+        QCOMPARE(copies.gpuPlan(true).state.toJson().value("brushMasks").toObject(),draft);
+        QCOMPARE(fixtureBytes(path),originalBytes);
+    }
+
+    void brushDraftProjectRejectsUnknownAndEnabledPayloadAtomically() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        ProjectDatabase active,source;
+        QVERIFY(active.create(dir.path(),"BrushActive"));
+        QVERIFY(source.create(dir.path(),"BrushUntrusted"));
+        BD::Layer layer;layer.id="saved_draft";layer.enabled=false;layer.exposureEv=1.5;
+        layer.strokes={BM::Stroke{BM::Style{.05,.5,1},{{{.4,.6},1.}}}};
+        AdjustmentState settings;settings.brushMasks.layers.push_back(layer);
+        const auto saved=settings.toJson();
+        QVERIFY(AdjustmentState::validBrushMaskJson(saved));
+        QVERIFY(source.addOrUpdatePhoto("image.png",settings));
+        QVERIFY(source.flush());
+        const auto activePath=active.projectPath();
+        const auto database=QDir(source.projectPath()).filePath("Project.db");
+        auto unsupported=saved.value("brushMasks").toObject();
+        auto layers=unsupported.value("layers").toArray();
+        auto enabled=layers[0].toObject();
+        enabled.insert("enabled",true);layers.replace(0,enabled);
+        unsupported.insert("layers",layers);
+        auto future=unsupported;future.insert("schema",2);
+        auto extras=unsupported;extras.insert("unknown","new-version");
+        const QList<QJsonValue> payloads{QJsonValue(QJsonValue::Null),QJsonArray{},QJsonObject{},
+                                         unsupported,future,extras};
+        for(const auto &payload:payloads) {
+            const QString connection="brush-draft-untrusted-write";
+            {
+                auto sql=QSqlDatabase::addDatabase("QSQLITE",connection);
+                sql.setDatabaseName(database);QVERIFY(sql.open());
+                auto tampered=saved;tampered.insert("brushMasks",payload);
+                QSqlQuery query(sql);
+                QVERIFY(query.prepare("UPDATE photos SET adjustment_json=?"));
+                query.addBindValue(QString::fromUtf8(QJsonDocument(tampered).toJson(QJsonDocument::Compact)));
+                QVERIFY(query.exec());
+            }
+            QSqlDatabase::removeDatabase(connection);
+            const auto original=fixtureBytes(database);
+            QVector<ProjectDatabase::SavedPhoto> staging;
+            QVERIFY(!active.open(source.projectPath(),&staging));
+            QVERIFY(active.lastError().contains("brush mask draft"));
+            QCOMPARE(active.projectPath(),activePath);
+            QVERIFY(active.isOpen());
+            QVERIFY(staging.isEmpty());
+            QVERIFY(active.flush());
+            QCOMPARE(fixtureBytes(database),original);
+        }
+        // Reject malformed/active internal drafts *before* any database write.
+        auto bad=settings;bad.brushMasks.layers[0].enabled=true;
+        QVERIFY(!active.updateAdjustment("active.png",bad));
+        bad=settings;bad.brushMasks.layers[0].id="../escaped";
+        QVERIFY(!active.updateAdjustment("invalid.png",bad));
+    }
+
     // F4 M4.2 research-only CPU pixel tile oracle; no live editor path.
     void brushMaskTileRasterMatchesScalarAndCropsWithoutSideEffects() {
         namespace BM=BrushMaskGeometry;

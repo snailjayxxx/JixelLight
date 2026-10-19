@@ -8,6 +8,7 @@
 #include <cmath>
 #include "core/look/LookState.h"
 #include "core/pipeline/GeometryState.h"
+#include "core/pipeline/BrushMaskDocument.h"
 
 struct AdjustmentState {
     static constexpr int ColorBandCount = 8;
@@ -53,6 +54,9 @@ struct AdjustmentState {
     double radialMaskRadiusY = 0.35; // vertical fraction .05..1
     double radialMaskFeather = 0.25; // transition fraction .02..1
     double radialMaskAngle = 0.0; // ellipse rotation degrees [-180, 180]
+    // M4.3: non-rendered brush DRAFT. Stored intent is allowed only while
+    // every layer is disabled; no active brush may be silently mis-rendered.
+    BrushMaskDocument::Document brushMasks;
 
     // Independent monochrome rendering and eight hue-weighted luminance controls.
     // Values -100..100 map to -1..+1 EV; they do not modify Sony Look state.
@@ -123,6 +127,9 @@ struct AdjustmentState {
             auto m=result.value("radialMask").toObject();
             m.insert("angle",radialMaskAngle); result.insert("radialMask",m);
         }
+        QJsonObject brushDraft;
+        if (BrushMaskDocument::toJson(brushMasks,&brushDraft) && !brushDraft.isEmpty())
+            result["brushMasks"]=brushDraft;
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
@@ -139,6 +146,19 @@ struct AdjustmentState {
         return result;
     }
 
+    static bool validBrushMaskJson(const QJsonObject &object) {
+        if (!object.contains("brushMasks")) return true; // canonical legacy absence
+        BrushMaskDocument::Document parsed;
+        QJsonObject canonical;
+        if (!BrushMaskDocument::fromJson(object.value("brushMasks"),&parsed)
+            || !BrushMaskDocument::toJson(parsed,&canonical)
+            || canonical.isEmpty() || canonical != object.value("brushMasks").toObject())
+            return false;
+        // M4.3 has no user-visible brush or CPU/GPU photo renderer. Reject any
+        // enabled layer instead of accepting an edit which exports no effect.
+        return std::all_of(parsed.layers.begin(),parsed.layers.end(),
+                           [](const BrushMaskDocument::Layer &layer) { return !layer.enabled; });
+    }
     static bool validRadialMaskJson(const QJsonObject &object) {
         if (!object.contains("radialMask")) return true;
         if (!object.value("radialMask").isObject()) return false;
@@ -250,6 +270,8 @@ struct AdjustmentState {
         s.hue = o.value("hue").toDouble();
         s.saturation = o.value("saturation").toDouble();
         s.vibrance = o.value("vibrance").toDouble();
+        if (validBrushMaskJson(o))
+            BrushMaskDocument::fromJson(o.value("brushMasks"),&s.brushMasks);
         if (o.contains("radialMask") && validRadialMaskJson(o)) {
             const auto m=o.value("radialMask").toObject();
             s.radialMaskEnabled=m.value("enabled").toBool();
