@@ -429,8 +429,11 @@ private slots:
                 if (QTest::currentTestFailed()) return;
                 QVERIFY(engine->lastProcessUsedCpuFallback());
             }
+        // The sixth argument is the explicit full-image ROI. {} is an EMPTY
+        // QRectF, not the default {0,0,1,1}; it correctly fails the strict
+        // research mask viewport check and poisons this test engine.
         auto withDiagnostic=render(source,brush,true,ImagePipeline::InputEncoding::LinearProPhoto,
-                                   ColorManagement::OutputSpace::SRgb,{},true);
+                                   ColorManagement::OutputSpace::SRgb,QRectF(0,0,1,1),true);
         QVERIFY(!withDiagnostic.image.isNull());
         QVERIFY(engine->lastProcessUsedCpuFallback());
         QCOMPARE(withDiagnostic.diagnostic.value("producer").toString(),
