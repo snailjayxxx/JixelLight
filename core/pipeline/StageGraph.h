@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/preview/PreviewTasks.h"
 #include "core/scopes/ScopePlot.h"
 #include <QCryptographicHash>
@@ -47,6 +48,7 @@ struct StageGraph {
     // Geometry is already applied to source; monitor ICC and request revisions
     // are presentation/delivery concerns, not point-color dependencies.
     static QString renderKey(const QImage &source, const ProcessingPlan &plan) {
+        if (!BrushMaskDocument::validDocument(plan.state.brushMasks)) return {};
         QByteArray bytes;
         QDataStream stream(&bytes, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_8);
@@ -60,6 +62,12 @@ struct StageGraph {
         const auto lut = plan.data[ProcessingPlan::LookStyle].w > 0 ? plan.state.look.lut : nullptr;
         stream << quint64(reinterpret_cast<quintptr>(lut.get()));
         if (lut) stream << lut->size << lut->digest;
+        if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) {
+            QJsonObject mask;
+            if (!BrushMaskDocument::toJson(plan.state.brushMasks,&mask)) return {};
+            stream << QStringLiteral("brush-cpu-research-m44a")
+                   << QJsonDocument(mask).toJson(QJsonDocument::Compact);
+        }
         return digest(bytes);
     }
     static QJsonObject describe(const QString &sourceKey, const PrepareRequest &request,
@@ -105,10 +113,15 @@ struct StageGraph {
                      {"order","perceptual look -> optional B&W -> grading -> output transform"}}},
                  {"brush_draft",QJsonObject{{"schema",BrushMaskDocument::Schema},
                      {"layer_count",int(state.brushMasks.layers.size())},
-                     {"active_rendering",false},{"state","stored-disabled-draft-only"},
-                     {"backend","not enabled; opt-in C++ draft storage"},
+                     {"active_rendering",BrushMaskTileRaster::anyEnabled(state.brushMasks)},
+                     {"state",BrushMaskTileRaster::anyEnabled(state.brushMasks)
+                         ? "research-in-memory-only; cannot save or enable in UI"
+                         : "stored-disabled-draft-only"},
+                     {"backend",BrushMaskTileRaster::anyEnabled(state.brushMasks)
+                         ? "bounded CPU tile research; GPU CPU numeric fallback"
+                         : "not enabled; opt-in C++ draft storage"},
                      {"coordinates","normalized post-geometry/crop/orientation"},
-                     {"warning","brush pixels are not processed by CPU, GPU or export"}}},
+                     {"warning","active brush is restricted to research in-memory source; project/XMP/CLI reject enabled brush until production acceptance"}}},
                  {"radial_mask",QJsonObject{{"schema",1},
                     {"enabled",state.radialMaskEnabled},{"inverted",state.radialMaskInverted},
                     {"exposure_ev",state.radialMaskExposure},

@@ -2,6 +2,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/ColorStageDiagnostics.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/ParallelRows.h"
 #include "core/look/LookProfiles.h"
 #include "core/look/LookDetail.h"
@@ -15,7 +16,9 @@
 #include <cmath>
 #include <bit>
 #include <cstdint>
+#include <span>
 #include <utility>
+#include <vector>
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
@@ -506,12 +509,15 @@ inline Vec3 lookLut(Vec3 v, const ColorKernel &kernel) {
     return v;
 }
 struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
-template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe) {
+template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     observe(ColorStage::InputLinear,v);
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
     // Preexisting vignette diagnostic boundary includes this spatial gain.
     v=applyLinearMask(v,kernel,x,y);
     v=applyRadialMask(v,kernel,x,y);
+    // M4.4A: research-only, validated per-pixel scene-linear brush EV plane.
+    // Existing no-brush and disabled-draft pixels keep the exact old path.
+    if (brushEv!=0.0f) v=scale(v,std::exp2(brushEv));
     v=applyVignette(v,kernel,x,y); observe(ColorStage::Vignette,v);
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
     v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
@@ -522,13 +528,13 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
     return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),alpha);
 }
-template<class Observer> inline QRgba64 colorPixel(QRgba64 original,const ColorKernel &kernel,int x,int y,Observer observe) {
-    return colorPixelLinear(inputLinear(original,kernel),original.alpha(),kernel,x,y,observe);
+template<class Observer> inline QRgba64 colorPixel(QRgba64 original,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
+    return colorPixelLinear(inputLinear(original,kernel),original.alpha(),kernel,x,y,observe,brushEv);
 }
-template<class Observer> inline QRgba64 colorPixelFloat(const float *pixel,const ColorKernel &kernel,int x,int y,Observer observe) {
+template<class Observer> inline QRgba64 colorPixelFloat(const float *pixel,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     const Vec3 encoded{pixel[0],pixel[1],pixel[2]};
     const quint16 alpha=quint16(std::lround(pixel[3]*65535.0f));
-    return colorPixelLinear(inputLinear(encoded,kernel),alpha,kernel,x,y,observe);
+    return colorPixelLinear(inputLinear(encoded,kernel),alpha,kernel,x,y,observe,brushEv);
 }
 QImage finishColor(QImage out, const ProcessingPlan &plan, const CancelToken &token) {
     if (out.isNull() || cancelled(token)) return {};
@@ -708,7 +714,13 @@ QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state
 }
 namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,const QSize &sourceSize,const QPoint &origin) {
-    if (source.isNull() || cancelled(token)) return {};
+    if (source.isNull() || cancelled(token)
+        || !BrushMaskDocument::validDocument(plan.state.brushMasks)) return {};
+    const bool brushResearch=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
+    // In-memory research only. Large real RAW brush rendering needs a separate
+    // performance/tiling acceptance gate before any persisted layer is enabled.
+    constexpr qint64 MaxBrushResearchPixels=2'097'152;
+    if (brushResearch && qint64(source.width())*source.height()>MaxBrushResearchPixels) return {};
     const bool floating=source.format()==QImage::Format_RGBA32FPx4;
     PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()},
                            {"parallel",parallel},{"input_fp32",floating}});
@@ -723,6 +735,48 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     const uchar *src=input.constBits(); const qsizetype srcStride=input.bytesPerLine();
     uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
     const ColorKernel kernel(plan,sourceSize);
+    if (brushResearch) {
+        constexpr int Edge=BrushMaskTileRaster::MaxTileEdge;
+        constexpr std::size_t MaxFrameVisits=96*1024*1024;
+        std::vector<float> zeroSource(std::size_t(Edge)*Edge*4,0.0f);
+        std::size_t totalVisits=0;
+        const auto rect=plan.data[ProcessingPlan::FrameRect];
+        const BrushMaskTileRaster::NormalizedFrame frame{rect.x,rect.y,rect.z,rect.w};
+        if (!BrushMaskTileRaster::validNormalizedFrame(frame)) return {};
+        for(int tileY=0;tileY<out.height();tileY+=Edge) {
+            if(cancelled(token))return {};
+            for(int tileX=0;tileX<out.width();tileX+=Edge) {
+                if(cancelled(token))return {};
+                const int w=std::min(Edge,out.width()-tileX);
+                const int h=std::min(Edge,out.height()-tileY);
+                BrushMaskTileRaster::Output mask;
+                const auto count=std::size_t(w)*h;
+                if (!BrushMaskTileRaster::render(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
+                        {tileX+origin.x(),tileY+origin.y(),w,h},
+                        std::span<const float>(zeroSource.data(),count*4),&mask,token.get(),frame)
+                    || mask.visitedDabPixels>MaxFrameVisits-totalVisits) return {};
+                totalVisits+=mask.visitedDabPixels;
+                for(int yy=0;yy<h;++yy) {
+                    if(cancelled(token))return {};
+                    auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
+                    const auto *raw=src+(tileY+yy)*srcStride;
+                    const auto *rgba= floating ? reinterpret_cast<const float *>(raw) : nullptr;
+                    const auto *rgba64= floating ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
+                    for(int xx=0;xx<w;++xx) {
+                        const int x=tileX+xx;
+                        const float ev=mask.weightedExposureEv[std::size_t(yy)*w+xx];
+                        if (!std::isfinite(ev) || std::abs(ev)>8.0f) return {};
+                        line[x]=floating
+                            ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
+                            : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
+                    }
+                }
+            }
+        }
+        PerformanceRecorder::count("brush_research_cpu_tiles",(out.width()+Edge-1)/Edge*((out.height()+Edge-1)/Edge));
+        PerformanceRecorder::count("brush_research_dab_pixel_visits",qint64(totalVisits));
+        return finishColor(std::move(out),plan,token);
+    }
     ParallelRows::run(out.height(),out.width(),token,[&](int y) {
         auto *line=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
         if (floating) {
@@ -745,6 +799,15 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
 ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
     if (source.isNull() || cancelled(token)) return result;
+    if (!BrushMaskDocument::validDocument(plan.state.brushMasks)) {
+        result.stages.insert("error","Invalid brush document");
+        return result;
+    }
+    if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) {
+        result.stages.insert("error","Research brush stage observations unavailable: do not report stale stage hashes");
+        result.stages.insert("brush_research",true);
+        return result;
+    }
     QElapsedTimer timer; timer.start();
     const bool floating=source.format()==QImage::Format_RGBA32FPx4;
     if (floating && !validFloatSource(source,token)) {

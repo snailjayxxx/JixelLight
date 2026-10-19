@@ -392,6 +392,55 @@ private slots:
                 QVERIFY(!engine->lastProcessUsedCpuFallback());
             }
     }
+    // In-memory research-only brush plans cannot be saved or enabled in the
+    // user interface. Until the QRhi brush shader is validated, ALL backends
+    // must use the existing CPU reference upload and preserve scopes/alpha.
+    void researchBrushCpuGpuFallbackFullViewportAndHdrParity() {
+        QImage source(47,39,QImage::Format_RGBA32FPx4);
+        const std::array<float,4> alphas{0.0f,1.0f/65535.0f,.5f,1.0f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.21f+float(x)*.031f; // HDR scene samples >1
+            p[1]=-.03f+float(y)*.016f;
+            p[2]=.4f+float((x+y)%9)*.06f;
+            p[3]=alphas[(x+y)%4];
+        }
+        const QImage original=source.copy();
+        BrushMaskDocument::Layer oval;
+        oval.id="cpu_research";oval.enabled=true;oval.exposureEv=1.7;
+        oval.strokes={BrushMaskGeometry::Stroke{
+            BrushMaskGeometry::Style{.19,.4,.85},
+            {{{.44,.51},1.},{{.56,.47},.65}}}};
+        BrushMaskDocument::Layer darker;
+        darker.id="shadow_research";darker.enabled=true;darker.exposureEv=-.85;
+        darker.strokes={BrushMaskGeometry::Stroke{
+            BrushMaskGeometry::Style{.13,.72,.65},{{{.59,.41},1.}}}};
+        AdjustmentState brush;brush.brushMasks.layers={oval,darker};
+        QVERIFY(BrushMaskDocument::validDocument(brush.brushMasks));
+        QVERIFY(!AdjustmentState::validBrushMaskJson(brush.toJson()));
+        brush.linearMaskEnabled=true;brush.linearMaskExposure=-.4;brush.linearMaskAngle=22;
+        brush.vignetteAmount=-.4;
+        for(const auto frame : {QRectF(0,0,1,1),QRectF(.18,.13,.61,.58)})
+            for(const auto output : {ColorManagement::OutputSpace::SRgb,
+                                     ColorManagement::OutputSpace::DisplayP3,
+                                     ColorManagement::OutputSpace::ProPhotoRgb}) {
+                verifyParity(source,brush,ImagePipeline::InputEncoding::LinearProPhoto,
+                             output,true,"M4.4A research CPU brush GPU fallback",frame);
+                if (QTest::currentTestFailed()) return;
+                QVERIFY(engine->lastProcessUsedCpuFallback());
+            }
+        auto withDiagnostic=render(source,brush,true,ImagePipeline::InputEncoding::LinearProPhoto,
+                                   ColorManagement::OutputSpace::SRgb,{},true);
+        QVERIFY(!withDiagnostic.image.isNull());
+        QVERIFY(engine->lastProcessUsedCpuFallback());
+        QCOMPARE(withDiagnostic.diagnostic.value("producer").toString(),
+                 QString("cpu-reference-upload"));
+        QCOMPARE(source,original);
+        for(auto &layer:brush.brushMasks.layers) layer.enabled=false;
+        auto disabled=render(source,brush,false);
+        QVERIFY(!disabled.image.isNull());
+        QVERIFY(!engine->lastProcessUsedCpuFallback()); // ordinary GPU compute
+    }
     void radialMaskCpuGpuParityInvertedEllipseViewportAndSourceAlpha() {
         QImage source(73,91,QImage::Format_RGBA64);
         const std::array<quint16,4> alpha{0,1,23456,65535};

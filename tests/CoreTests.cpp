@@ -1528,6 +1528,116 @@ private slots:
         }
         QVERIFY(!AdjustmentState{}.toJson().contains("radialMask"));
     }
+    // M4.4A: actual scene-linear CPU processing of an active brush in a
+    // *transient in-memory* research plan. Persisted/UI brush stays disabled.
+    void brushResearchCpuSceneFrameRegionRoiAndRefusal() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        namespace BT=BrushMaskTileRaster;
+        QImage source(43,31,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=1.25f+.013f*x; p[1]=-.12f+.009f*y; p[2]=.18f+.004f*x;
+            p[3]=float((x+y)%4)/3.0f;
+        }
+        const QImage original=source.copy();
+        BD::Layer first;first.id="local_ev";first.enabled=true;first.exposureEv=1.75;
+        first.strokes={BM::Stroke{BM::Style{.22,.45,.9},{{{.48,.57},1.},{{.59,.55},.55}}}};
+        BD::Layer second;second.id="shadow";second.enabled=true;second.exposureEv=-.65;
+        second.strokes={BM::Stroke{BM::Style{.16,.65,.7},{{{.6,.5},1.}}}};
+        AdjustmentState state;state.brushMasks.layers={first,second};
+        QVERIFY(BD::validDocument(state.brushMasks));
+        QVERIFY(BT::anyEnabled(state.brushMasks));
+        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                ColorManagement::OutputSpace::SRgb,false,0);
+        const auto neutralPlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
+                                                       ColorManagement::OutputSpace::SRgb,false,0);
+        const QImage actual=ImagePipeline::processWithPlan(source,plan);
+        const QImage neutral=ImagePipeline::processWithPlan(source,neutralPlan);
+        QVERIFY(!actual.isNull());QVERIFY(!neutral.isNull());
+        QVERIFY(actual!=neutral);
+        QVERIFY(actual.pixelColor(0,0)==neutral.pixelColor(0,0));
+        QVERIFY(actual.pixelColor(22,17)!=neutral.pixelColor(22,17));
+        QCOMPARE(source,original); // non-destructive even with negative/HDR channels
+        const auto key=StageGraph::renderKey(source,plan);
+        QVERIFY(!key.isEmpty());
+        QVERIFY(key!=StageGraph::renderKey(source,neutralPlan));
+        auto changed=state;changed.brushMasks.layers[0].strokes[0].dabs[0].center.x=.46;
+        QVERIFY(StageGraph::renderKey(source,ProcessingPlan::compile(changed,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0))!=key);
+        for (const QRect roi : {QRect(0,0,19,13),QRect(10,7,16,12),
+                                QRect(26,19,17,12),QRect(2,2,38,27)}) {
+            const QImage tile=ImagePipeline::processRegion(source,plan,roi);
+            QVERIFY(!tile.isNull());
+            QCOMPARE(tile,actual.copy(roi));
+        }
+        // Changed post-crop viewport mapping still places the brush over
+        // *full-image* normalized coordinates, not a new local center.
+        auto viewport=plan; viewport.setFrameRect(QRectF(.20,.25,.50,.50));
+        QCOMPARE(viewport.data[ProcessingPlan::FrameRect].x,.20f);
+        QCOMPARE(viewport.data[ProcessingPlan::FrameRect].y,.25f);
+        QCOMPARE(viewport.data[ProcessingPlan::FrameRect].z,.50f);
+        QCOMPARE(viewport.data[ProcessingPlan::FrameRect].w,.50f);
+        const auto vp=ImagePipeline::processWithPlan(source,viewport);
+        QVERIFY(!vp.isNull());
+        QCOMPARE(ImagePipeline::processRegion(source,viewport,QRect(7,6,17,14)),
+                 vp.copy(QRect(7,6,17,14)));
+        const auto descr=StageGraph::describe("synthetic-brush",{},state,false,0);
+        QVERIFY(descr.value("brush_draft").toObject().value("active_rendering").toBool());
+        const auto diag=ImagePipeline::diagnoseWithPlan(source,plan);
+        QVERIFY(diag.image.isNull());
+        QVERIFY(diag.stages.value("error").toString().contains("Research brush"));
+
+        // M4.2's own tile raster is also the source of mask values for M4.4A.
+        // For a symmetric half-frame ROI, compare independent scalar sampling.
+        const BD::Document document=state.brushMasks;
+        const BT::NormalizedFrame mapped{.2,.25,.5,.5};
+        const int w=32,h=20;
+        const std::vector<float> dummy(std::size_t(w)*h*4,0.0f);
+        BT::Output raster;
+        QVERIFY(BT::render(document,w,h,{0,0,w,h},dummy,&raster,nullptr,mapped));
+        for(int y=0;y<h;++y)for(int x=0;x<w;++x) {
+            const BM::Point point{mapped.x+(x+.5)*mapped.width/w,
+                                  mapped.y+(y+.5)*mapped.height/h};
+            const auto ev=BD::weightedExposureStops(document,point,64,40);
+            QVERIFY(ev);
+            QVERIFY(std::abs(raster.weightedExposureEv[std::size_t(y)*w+x]-*ev)<2e-6);
+        }
+        BT::Output sentinel;sentinel.weightedExposureEv={42};
+        QVERIFY(!BT::render(document,w,h,{0,0,w,h},dummy,&sentinel,nullptr,{.2,.25,0,.5}));
+        QVERIFY(sentinel.weightedExposureEv==(std::vector<float>{42}));
+        QVERIFY(!BT::render(document,w,h,{0,0,w,h},dummy,&sentinel,nullptr,{.2,.25,-.3,.5}));
+        QVERIFY(!BT::render(document,w,h,{0,0,w,h},dummy,&sentinel,nullptr,{.99,0,.5,1}));
+
+        auto invalid=state; invalid.brushMasks.layers[1].id="local_ev";
+        QVERIFY(ImagePipeline::processWithPlan(source,ProcessingPlan::compile(invalid,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)).isNull());
+        QVERIFY(StageGraph::renderKey(source,ProcessingPlan::compile(invalid,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)).isEmpty());
+
+        auto oversized=state;
+        for(int i=0;i<4;++i) {
+            auto copy=first;copy.id=QString("high_%1").arg(i);copy.exposureEv=3;
+            oversized.brushMasks.layers.push_back(copy);
+        }
+        QVERIFY(BD::validDocument(oversized.brushMasks));
+        const auto excessive=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(oversized,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0));
+        QVERIFY(excessive.isNull()); // >8 EV local research cap, never clip silently
+        QImage huge(2048,1025,QImage::Format_RGBA64);
+        huge.fill(Qt::gray);
+        QVERIFY(ImagePipeline::processWithPlan(huge,plan).isNull()); // research budget
+        QCOMPARE(source,original);
+        // Disabled drafts retain the exact previous renderer and cache key.
+        auto disabled=state;for(auto &layer:disabled.brushMasks.layers)layer.enabled=false;
+        QCOMPARE(ImagePipeline::processWithPlan(source,ProcessingPlan::compile(disabled,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)),neutral);
+        QCOMPARE(StageGraph::renderKey(source,ProcessingPlan::compile(disabled,
+            ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0)),
+                 StageGraph::renderKey(source,neutralPlan));
+    }
+
     // F4 M4.3: persist future brush intent using the existing non-destructive
     // adjustment/history/project/preset/XMP implementation. Rendering remains
     // explicitly disabled in this milestone, including saved drafts.

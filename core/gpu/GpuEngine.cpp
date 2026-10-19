@@ -2,6 +2,7 @@
 #include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
 #include <QResource>
@@ -19,6 +20,9 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+    // All QRhi backends require the established CPU numeric upload while the
+    // M4.4A brush is a research-only CPU kernel. No silent GPU omission.
+    if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) return true;
     // Metal stays inside the original 40/65535 bound. D3D11 and OpenGL have
     // a few backend-specific ULP divergences that sRGB encoding amplifies near
     // an Oklab/HSL gamut edge, so only those parameter regions use the CPU
@@ -189,6 +193,8 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
                         quint64 revision, const HistogramReady &histogramReady, bool forceHistogram) {
     if (!m_error.isEmpty()) return false;
     if (source.isNull() || source.format() != QImage::Format_RGBA32FPx4) return fail(QStringLiteral("GPU source must be linear RGBA32FPx4"));
+    if (!BrushMaskDocument::validDocument(plan.state.brushMasks))
+        return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
     m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;
@@ -234,7 +240,10 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
             updates->uploadTexture(m_output.get(), {{0, 0, upload}});
             cb->resourceUpdate(updates);
             PerformanceRecorder::count("gpu_numeric_cpu_fallbacks");
-            PerformanceRecorder::value("gpu_last_execution", QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
+            PerformanceRecorder::value("gpu_last_execution",
+                BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)
+                    ? QStringLiteral("M4.4A research brush CPU numeric -> GPU display/scopes")
+                    : QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
         } else {
             cb->beginComputePass(updates);
             cb->setComputePipeline(m_pipeline.get());

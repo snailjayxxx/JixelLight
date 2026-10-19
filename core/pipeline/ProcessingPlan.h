@@ -34,7 +34,12 @@ struct ProcessingPlan {
     float baseExposureStops = 0.0f;
 
     void setFrameRect(const QRectF &rect) {
-        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0) data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
+        // A research-only brush must use the same normalized viewport ROI as
+        // legacy spatial edits, even if no linear/radial/vignette is active.
+        const bool brush=std::any_of(state.brushMasks.layers.begin(),state.brushMasks.layers.end(),
+            [](const auto &layer){return layer.enabled;});
+        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0 || brush)
+            data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
     }
     Float4 pixelMap(const QSize &size) const {
         const auto rect=data[FrameRect];
