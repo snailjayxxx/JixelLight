@@ -13,6 +13,7 @@ struct ExportRequest {
     AdjustmentState state;
     ColorManagement::OutputSpace space=ColorManagement::OutputSpace::SRgb;
     int quality=92;
+    bool newFileOnly=false;
 };
 struct ExportResult { QString source, destination, error; bool ok=false; };
 class ExportQueue final : public QObject {

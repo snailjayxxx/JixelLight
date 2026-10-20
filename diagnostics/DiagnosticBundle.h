@@ -10,5 +10,5 @@ public:
     static QString create(const QImage &preview, const QString &currentFile,
                           const QString &projectPath, const AdjustmentState &state,
                           double shadowClip, double highlightClip,
-                          const QString &pipelineDescription = QString(), const QJsonObject &scopeContext = {});
+                          const QString &pipelineDescription = QString(), const QJsonObject &scopeContext = {}, const QJsonObject &stageOutputs = {});
 };

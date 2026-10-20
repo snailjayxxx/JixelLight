@@ -49,7 +49,7 @@ private:
     bool process(const QImage &input) {
         QRhiCommandBuffer *cb=nullptr;
         if(rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess)return false;
-        const QImage source=input.format()==QImage::Format_RGBA32FPx4?input:input.convertToFormat(QImage::Format_RGBA32FPx4);
+        const QImage source=ImagePipeline::floatSource(input);
         const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
                                                 ColorManagement::OutputSpace::SRgb,false,0.0f);
         const bool ok=engine->process(cb,source,plan,++revision,{},false);

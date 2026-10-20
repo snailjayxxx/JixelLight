@@ -102,10 +102,12 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
     if (source.isNull() || cancelled(token)) { if (error) *error="Cancelled or no source image"; return false; }
     PerformanceSpan timing("jpeg_export",{{"pixels",qint64(source.width())*source.height()},{"space",ColorManagement::key(space)},
                                            {"raw",rawSource},{"raw_base_ev",rawBaseExposureStops}});
+    const QImage transformed = state.geometry.apply(source,token);
+    if (transformed.isNull() || cancelled(token)) { if (error) *error="Cancelled or invalid geometry"; return false; }
     Writer writer(path);
-    if (!writer.begin(source.width(),source.height(),quality,ColorManagement::iccProfile(space))) { if (error) *error=writer.failure; return false; }
+    if (!writer.begin(transformed.width(),transformed.height(),quality,ColorManagement::iccProfile(space))) { if (error) *error=writer.failure; return false; }
     const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
-    const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    const QImage input=transformed.format()==QImage::Format_RGBA64 ? transformed : transformed.convertToFormat(QImage::Format_RGBA64);
     for (int y=0;y<input.height();y+=128) {
         while (interactive && interactive->load(std::memory_order_relaxed) && !cancelled(token)) QThread::msleep(10);
         if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
