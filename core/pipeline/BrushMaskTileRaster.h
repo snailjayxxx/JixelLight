@@ -10,11 +10,12 @@
 #include <utility>
 #include <vector>
 
-// F4 M4.2: standalone scene-linear CPU TILE ORACLE for synthetic testing.
-// NO live RAW/GUI/project integration: the committed adjustment source and
-// QRhi shader are untouched. All input is nonpremultiplied, row-tight RGBA32F.
-// The builder never mutates output unless ALL validation, computation and
-// optional cancellation checks have passed.
+// F4 M4.2 / M4.4B.1: bounded mask coverage oracle with an optional RGBA32F
+// reference renderer. exposureOnly computes just the exposure plane used by
+// the M4.4A in-memory scene-linear CPU pipeline, without staging dummy color
+// buffers. render keeps its original signed-HDR RGBA input-validation and
+// double-precision gain semantics. Both APIs publish results atomically.
+// Production RAW/GUI enabled brush editing remains gated pending future work.
 namespace BrushMaskTileRaster {
 
 constexpr int MaxTileEdge = 128;
@@ -54,29 +55,27 @@ inline bool stopped(const std::atomic_bool *cancel) {
     return cancel && cancel->load(std::memory_order_relaxed);
 }
 
-inline bool render(const BrushMaskDocument::Document &document,
-                   int frameWidth,int frameHeight,Rect tile,
-                   std::span<const float> rgbaInput,Output *out,
-                   const std::atomic_bool *cancel=nullptr,
-                   NormalizedFrame frame={}) {
+// A mask-only API avoids staging dummy RGBA32F input or allocating a
+// synthetic RGBA32F output inside the real CPU renderer. Both public APIs
+// deliberately reuse exactly one double-precision coverage implementation.
+struct ExposureOutput {
+    std::vector<float> weightedExposureEv;
+    std::size_t visitedDabPixels=0;
+};
+
+namespace detail {
+struct Coverage {
+    std::vector<double> stops;
+    std::size_t visitedDabPixels=0;
+};
+inline bool calculateCoverage(const BrushMaskDocument::Document &document,
+                              int frameWidth,int frameHeight,Rect tile,Coverage *out,
+                              const std::atomic_bool *cancel,NormalizedFrame frame) {
     if (!out || !validRect(tile,frameWidth,frameHeight)
         || !validNormalizedFrame(frame)
         || !BrushMaskDocument::validDocument(document) || stopped(cancel))
         return false;
     const std::size_t count=std::size_t(tile.width)*std::size_t(tile.height);
-    if (rgbaInput.size()!=count*4) return false;
-    for (std::size_t i=0;i<count;++i) {
-        if (stopped(cancel)) return false;
-        const std::size_t offset=i*4;
-        for (int channel=0;channel<3;++channel) {
-            const double value=rgbaInput[offset+channel];
-            if (!std::isfinite(value) || std::abs(value)>MaxChannelMagnitude)
-                return false;
-        }
-        const double alpha=rgbaInput[offset+3];
-        if (!std::isfinite(alpha) || alpha<0 || alpha>1) return false;
-    }
-
     std::vector<double> stops(count,0.0);
     std::vector<double> layerAlpha(count,0.0),strokeAlpha(count,0.0);
     // Pixels per full-image normalized coordinate depend on the viewport.
@@ -136,15 +135,73 @@ inline bool render(const BrushMaskDocument::Document &document,
             stops[i]+=layer.exposureEv*layerAlpha[i];
     }
 
+
+    if (stopped(cancel)) return false;
+    *out=Coverage{std::move(stops),visited};
+    return true;
+}
+} // namespace detail
+
+// Only computes scalar exposure weights, with no pixel/alpha input and no
+// RGBA scratch output. Preserve *out exactly on malformed frame, cancellation,
+// oversized candidate work, or an invalid document.
+inline bool exposureOnly(const BrushMaskDocument::Document &document,
+                         int frameWidth,int frameHeight,Rect tile,
+                         ExposureOutput *out,const std::atomic_bool *cancel=nullptr,
+                         NormalizedFrame frame={}) {
+    if (!out) return false;
+    detail::Coverage coverage;
+    if (!detail::calculateCoverage(document,frameWidth,frameHeight,tile,
+                                   &coverage,cancel,frame)) return false;
+    ExposureOutput ready;
+    ready.visitedDabPixels=coverage.visitedDabPixels;
+    ready.weightedExposureEv.reserve(coverage.stops.size());
+    for (double value : coverage.stops) {
+        if (stopped(cancel) || !std::isfinite(value)
+            || std::abs(value)>double(std::numeric_limits<float>::max())) return false;
+        ready.weightedExposureEv.push_back(float(value));
+    }
+    if (stopped(cancel)) return false;
+    *out=std::move(ready);
+    return true;
+}
+
+// Legacy M4.2 RGBA oracle retains double-precision gain and full input
+// validation, now sharing the exact coverage core with exposureOnly.
+inline bool render(const BrushMaskDocument::Document &document,
+                   int frameWidth,int frameHeight,Rect tile,
+                   std::span<const float> rgbaInput,Output *out,
+                   const std::atomic_bool *cancel=nullptr,
+                   NormalizedFrame frame={}) {
+    if (!out || !validRect(tile,frameWidth,frameHeight)
+        || !validNormalizedFrame(frame)
+        || !BrushMaskDocument::validDocument(document) || stopped(cancel))
+        return false;
+    const std::size_t count=std::size_t(tile.width)*std::size_t(tile.height);
+    if (rgbaInput.size()!=count*4) return false;
+    for (std::size_t i=0;i<count;++i) {
+        if (stopped(cancel)) return false;
+        const std::size_t offset=i*4;
+        for (int channel=0;channel<3;++channel) {
+            const double value=rgbaInput[offset+channel];
+            if (!std::isfinite(value) || std::abs(value)>MaxChannelMagnitude)
+                return false;
+        }
+        const double alpha=rgbaInput[offset+3];
+        if (!std::isfinite(alpha) || alpha<0 || alpha>1) return false;
+    }
+    detail::Coverage coverage;
+    if (!detail::calculateCoverage(document,frameWidth,frameHeight,tile,
+                                   &coverage,cancel,frame)) return false;
     Output generated;
     generated.weightedExposureEv.resize(count);
     generated.rgba32f.assign(rgbaInput.begin(),rgbaInput.end());
-    generated.visitedDabPixels=visited;
+    generated.visitedDabPixels=coverage.visitedDabPixels;
     for (std::size_t i=0;i<count;++i) {
         if (stopped(cancel)) return false;
-        const double gain=std::exp2(stops[i]);
+        const double gain=std::exp2(coverage.stops[i]);
         if (!std::isfinite(gain)) return false;
-        generated.weightedExposureEv[i]=float(stops[i]);
+        generated.weightedExposureEv[i]=float(coverage.stops[i]);
         for(int channel=0;channel<3;++channel) {
             const double value=double(rgbaInput[i*4+channel])*gain;
             if (!std::isfinite(value) || std::abs(value)>MaxChannelMagnitude)

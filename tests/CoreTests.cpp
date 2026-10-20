@@ -1825,6 +1825,112 @@ private slots:
         QVERIFY(!active.updateAdjustment("invalid.png",bad));
     }
 
+    // F4 M4.4B.1: mask-only weights and the earlier RGBA oracle must share
+    // exactly one bounded raster, including tile offsets and zoom ROI.
+    void brushExposureOnlyMatchesRgbaOracleWithoutScratchColor() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        namespace BT=BrushMaskTileRaster;
+        constexpr int width=47,height=31;
+        BD::Layer first;first.id="lighter";first.enabled=true;first.exposureEv=1.35;
+        first.strokes={
+            BM::Stroke{BM::Style{.20,.35,.85},{{{.45,.48},1.},{{.67,.56},.65}}},
+            BM::Stroke{BM::Style{.07,.8,.4},{{{.52,.62},1.}}}};
+        BD::Layer dark;dark.id="darker";dark.enabled=true;dark.exposureEv=-.8;
+        dark.strokes={BM::Stroke{BM::Style{.15,.55,.9},{{{.40,.55},.8}}}};
+        BD::Document document{{first,dark}};
+        QVERIFY(BD::validDocument(document));
+        const BT::NormalizedFrame frame{.25,.25,.5,.5};
+        const BT::Rect fullRect{0,0,width,height};
+        std::vector<float> source(std::size_t(width)*height*4);
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const std::size_t i=(std::size_t(y)*width+x)*4;
+            source[i]=1.5f+.003f*x;source[i+1]=-.14f+.008f*y;
+            source[i+2]=.42f;source[i+3]=x%2?0.0f:1.0f;
+        }
+        const auto unchanged=source;
+        BT::ExposureOutput weights;
+        BT::Output legacy;
+        QVERIFY(BT::exposureOnly(document,width,height,fullRect,&weights,nullptr,frame));
+        QVERIFY(BT::render(document,width,height,fullRect,source,&legacy,nullptr,frame));
+        QVERIFY(source==unchanged); // existing image input remains read-only
+        QVERIFY(weights.weightedExposureEv==legacy.weightedExposureEv);
+        QCOMPARE(weights.visitedDabPixels,legacy.visitedDabPixels);
+        QCOMPARE(weights.weightedExposureEv.size(),std::size_t(width)*height);
+        QVERIFY(weights.visitedDabPixels>0);
+
+        // The ROI covers half of a 94x62 reference image. Keep the sample
+        // centers anchored in the full source, not in each sub-tile.
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const BM::Point point{frame.x+frame.width*(x+.5)/width,
+                                  frame.y+frame.height*(y+.5)/height};
+            const auto scalar=BD::weightedExposureStops(document,point,width*2,height*2);
+            QVERIFY(scalar);
+            const std::size_t pixel=std::size_t(y)*width+x;
+            const float ev=weights.weightedExposureEv[pixel];
+            QVERIFY(std::abs(double(ev)-*scalar)<2e-6);
+            QCOMPARE(legacy.rgba32f[pixel*4+3],source[pixel*4+3]); // exact unassociated alpha
+        }
+        const BT::Rect pieces[]{
+            {0,0,19,14},{19,0,28,14},{0,14,19,17},{19,14,28,17}};
+        for(const auto tile:pieces) {
+            BT::ExposureOutput sliced;
+            QVERIFY(BT::exposureOnly(document,width,height,tile,&sliced,nullptr,frame));
+            std::vector<float> tileInput;
+            tileInput.reserve(std::size_t(tile.width)*tile.height*4);
+            for(int y=tile.y;y<tile.y+tile.height;++y)
+                for(int x=tile.x;x<tile.x+tile.width;++x)
+                    for(int channel=0;channel<4;++channel)
+                        tileInput.push_back(source[(std::size_t(y)*width+x)*4+channel]);
+            BT::Output rendered;
+            QVERIFY(BT::render(document,width,height,tile,tileInput,&rendered,nullptr,frame));
+            QVERIFY(sliced.weightedExposureEv==rendered.weightedExposureEv);
+            std::size_t offset=0;
+            for(int y=tile.y;y<tile.y+tile.height;++y)
+                for(int x=tile.x;x<tile.x+tile.width;++x,++offset) {
+                    const std::size_t full=std::size_t(y)*width+x;
+                    QCOMPARE(sliced.weightedExposureEv[offset],weights.weightedExposureEv[full]);
+                    for(int channel=0;channel<4;++channel)
+                        QCOMPARE(rendered.rgba32f[offset*4+channel],legacy.rgba32f[full*4+channel]);
+                }
+        }
+        const BD::Document disabled;
+        BT::ExposureOutput empty;
+        QVERIFY(BT::exposureOnly(disabled,width,height,fullRect,&empty,nullptr,frame));
+        QCOMPARE(empty.visitedDabPixels,std::size_t(0));
+        for(float value:empty.weightedExposureEv) QCOMPARE(value,0.0f);
+
+        // Never overwrite the last accepted mask on an unsafe newer request.
+        BT::ExposureOutput sentinel;
+        sentinel.weightedExposureEv={42.f,-7.f};
+        sentinel.visitedDabPixels=123;
+        auto checkUntouched=[&]() {
+            QVERIFY(sentinel.weightedExposureEv==(std::vector<float>{42.f,-7.f}));
+            QCOMPARE(sentinel.visitedDabPixels,std::size_t(123));
+        };
+        QVERIFY(!BT::exposureOnly(document,width,height,{-1,0,10,10},&sentinel));
+        checkUntouched();
+        QVERIFY(!BT::exposureOnly(document,width,height,fullRect,&sentinel,nullptr,{.3,.3,0,.5}));
+        checkUntouched();
+        auto duplicate=document;duplicate.layers[1].id=duplicate.layers[0].id;
+        QVERIFY(!BT::exposureOnly(duplicate,width,height,fullRect,&sentinel));
+        checkUntouched();
+        std::atomic_bool cancel{true};
+        QVERIFY(!BT::exposureOnly(document,width,height,fullRect,&sentinel,&cancel,frame));
+        checkUntouched();
+
+        // Work-budget exhaustion must also reject the mask-only path, without
+        // allocating or publishing an incomplete plane.
+        BM::Stroke broad{BM::Style{.5,1,1},{}};
+        broad.dabs.assign(BM::MaxDabsPerStroke,{{.5,.5},1.});
+        BD::Layer heavy;heavy.id="budget";heavy.enabled=true;heavy.exposureEv=1;
+        heavy.strokes.assign(4,broad);
+        BD::Document large{{heavy}};
+        QVERIFY(BD::validDocument(large));
+        QVERIFY(!BT::exposureOnly(large,128,128,{0,0,128,128},&sentinel));
+        checkUntouched();
+    }
+
     // F4 M4.2 research-only CPU pixel tile oracle; no live editor path.
     void brushMaskTileRasterMatchesScalarAndCropsWithoutSideEffects() {
         namespace BM=BrushMaskGeometry;

@@ -16,7 +16,6 @@
 #include <cmath>
 #include <bit>
 #include <cstdint>
-#include <span>
 #include <utility>
 #include <vector>
 
@@ -738,7 +737,8 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     if (brushResearch) {
         constexpr int Edge=BrushMaskTileRaster::MaxTileEdge;
         constexpr std::size_t MaxFrameVisits=96*1024*1024;
-        std::vector<float> zeroSource(std::size_t(Edge)*Edge*4,0.0f);
+        // The mask-only API allocates exactly the exposure weights needed for
+        // a tile, not a dummy RGBA32F source and duplicate color output.
         std::size_t totalVisits=0;
         const auto rect=plan.data[ProcessingPlan::FrameRect];
         const BrushMaskTileRaster::NormalizedFrame frame{rect.x,rect.y,rect.z,rect.w};
@@ -749,11 +749,9 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                 if(cancelled(token))return {};
                 const int w=std::min(Edge,out.width()-tileX);
                 const int h=std::min(Edge,out.height()-tileY);
-                BrushMaskTileRaster::Output mask;
-                const auto count=std::size_t(w)*h;
-                if (!BrushMaskTileRaster::render(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
-                        {tileX+origin.x(),tileY+origin.y(),w,h},
-                        std::span<const float>(zeroSource.data(),count*4),&mask,token.get(),frame)
+                BrushMaskTileRaster::ExposureOutput mask;
+                if (!BrushMaskTileRaster::exposureOnly(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
+                        {tileX+origin.x(),tileY+origin.y(),w,h},&mask,token.get(),frame)
                     || mask.visitedDabPixels>MaxFrameVisits-totalVisits) return {};
                 totalVisits+=mask.visitedDabPixels;
                 for(int yy=0;yy<h;++yy) {
