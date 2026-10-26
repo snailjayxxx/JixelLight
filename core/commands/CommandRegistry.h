@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/AdjustmentState.h"
+#include "core/look/LookProfiles.h"
 #include <QJsonArray>
 #include <QStringList>
 #include <algorithm>
@@ -7,6 +8,9 @@
 
 // UI and offline CLI share parameter names, finite checks and existing ranges.
 struct CommandRegistry {
+    // Constructed by GUI/CLI from the actual source; never accepted in command
+    // JSON. A single batch uses one immutable source metadata snapshot.
+    struct LookContext { bool rawSource=false; QVariantMap metadata; };
     struct Parameter { const char *name; double AdjustmentState::*member; double minimum, maximum; };
     struct GeometryParameter { const char *name; double GeometryState::*member; double minimum, maximum; };
     static const auto &geometryParameters() {
@@ -63,10 +67,96 @@ struct CommandRegistry {
         const auto value = command.value(QLatin1String(key)).toDouble();
         return value >= minimum && value <= maximum && value == std::floor(value);
     }
-    static bool execute(AdjustmentState &state, const QJsonObject &command, QString *error = nullptr) {
+    static bool requiresLookContext(const AdjustmentState &state,const QJsonArray &commands) {
+        bool asShot=state.look.mode=="as-shot";
+        for(const auto &entry:commands) {
+            const auto object=entry.toObject();
+            const auto name=object.value("command").toString();
+            if(name=="look.mode") {
+                const auto mode=object.value("mode").toString();
+                if(mode=="as_shot" || (mode=="manual" && asShot)) return true;
+                if(mode=="off" || mode=="manual")asShot=false;
+            } else if(name=="look.parameter" && asShot) return true;
+            else if(name=="look.code" || name=="look.reset" || name=="develop.reset")asShot=false;
+        }
+        return false;
+    }
+    static bool executeBatch(AdjustmentState &state,const QJsonArray &commands,QString *error=nullptr,
+                             const LookContext *context=nullptr) {
+        if(error)error->clear();
+        if(commands.size()>10000) {
+            if(error)*error="Commands must contain at most 10000 entries";
+            return false;
+        }
+        auto staged=state;
+        for(qsizetype i=0;i<commands.size();++i) {
+            QString reason;
+            if(!commands[i].isObject() || !execute(staged,commands[i].toObject(),&reason,context)) {
+                if(error)*error=QString("Command %1: %2").arg(i+1).arg(reason.isEmpty()?QStringLiteral("Expected a command object"):reason);
+                return false;
+            }
+        }
+        state=std::move(staged); return true;
+    }
+    static bool execute(AdjustmentState &state, const QJsonObject &command, QString *error = nullptr,
+                        const LookContext *context = nullptr) {
         if (error) error->clear();
         const auto name = command.value("command").toString();
         auto fail = [&] { if (error) *error = "Invalid or unsupported command: " + name; return false; };
+        if(name=="look.mode") {
+            if(!fields(command,{"mode"}) || !command["mode"].isString())return fail();
+            const auto mode=command["mode"].toString();
+            if(mode!="off" && mode!="as_shot" && mode!="manual")return fail();
+            auto look=state.look;
+            if(mode=="off")look.mode="off";
+            else if(mode=="as_shot") {
+                if(!context || !context->rawSource) {
+                    if(error)*error="As-shot Look requires a RAW source context";
+                    return false;
+                }
+                look={};look.mode="as-shot";
+            } else {
+                if(look.mode=="as-shot") {
+                    if(!context) { if(error)*error="Materializing as-shot Look requires source context"; return false; }
+                    look=LookProfiles::resolveAsShot(state,context->metadata,context->rawSource).look;
+                }
+                look.mode=look.lut?"calibrated":"manual";
+                if(!look.lut) {
+                    QString normalized;
+                    look.code=LookProfiles::normalizeCommandCode(look.code,&normalized)?normalized:QStringLiteral("ST");
+                }
+            }
+            state.look=std::move(look);return true;
+        }
+        if(name=="look.code") {
+            if(!fields(command,{"code"}) || !command["code"].isString())return fail();
+            QString code;
+            if(!LookProfiles::normalizeCommandCode(command["code"].toString(),&code,error))return false;
+            LookState look;look.mode="manual";look.code=code;state.look=std::move(look);return true;
+        }
+        if(name=="look.strength") {
+            if(!fields(command,{"value"}) || !number(command,"value"))return fail();
+            double value=0;
+            if(!LookProfiles::normalizeCommandStrength(command["value"].toDouble(),&value,error))return false;
+            state.look.strength=value;return true;
+        }
+        if(name=="look.parameter") {
+            if(!fields(command,{"parameter","value"}) || !command["parameter"].isString() || !number(command,"value"))return fail();
+            const auto parameter=command["parameter"].toString();double value=0;
+            if(!LookProfiles::normalizeCommandParameter(parameter,command["value"].toDouble(),&value,error))return false;
+            auto look=state.look;
+            if(look.mode=="as-shot") {
+                if(!context) { if(error)*error="Materializing as-shot Look requires source context"; return false; }
+                look=LookProfiles::resolveAsShot(state,context->metadata,context->rawSource).look;
+            }
+            look.mode=look.lut?"calibrated":"manual";
+            if(!look.lut && look.code.isEmpty())look.code="ST";
+            look.parameters[parameter]=value;
+            state.look=std::move(look);return true;
+        }
+        if(name=="look.reset") {
+            if(!fields(command,{}))return fail();state.look={};return true;
+        }
         if (name == "develop.set") {
             if (!fields(command,{"parameter","value"}) || !command["parameter"].isString() || !number(command,"value")) return fail();
             return set(state,command["parameter"].toString(),command["value"].toDouble(),error);
@@ -230,6 +320,21 @@ struct CommandRegistry {
         for (const auto &p : parameters()) descriptors.append(QJsonObject{{"name",p.name},{"minimum",p.minimum},{"maximum",p.maximum}});
         for (const auto &p : geometryParameters()) geometryDescriptors.append(QJsonObject{{"name",p.name},{"minimum",p.minimum},{"maximum",p.maximum}});
         const QJsonArray commands{
+            QJsonObject{{"name","look.mode"},{"fields",QJsonArray{"mode"}},
+                {"mode",QJsonArray{"off","as_shot","manual"}},{"stored_as_shot_mode","as-shot"},
+                {"source_context","RAW-only as_shot; source-specific metadata required to materialize as-shot into manual"},
+                {"operation","off retains controls/LUT; as_shot resets Look intent; manual preserves controls and any existing validated LUT"}},
+            QJsonObject{{"name","look.code"},{"fields",QJsonArray{"code"}},
+                {"codes",QJsonArray::fromStringList(LookProfiles::commandCodes())},
+                {"code_aliases",QJsonArray{"STANDARD","PORTRAIT","NEUTRAL","VIVID","VIVID 2","B&W","BLACK & WHITE","SEPIA"}},
+                {"normalization","trim and uppercase supported codes/aliases; reject control characters and inputs longer than 32"},
+                {"operation","fresh manual approximation, strength 1, clear overrides and existing LUT"}},
+            QJsonObject{{"name","look.strength"},{"fields",QJsonArray{"value"}},
+                {"range",QJsonArray{0,1}},{"range_policy","clamp"},{"precision","finite fractional double; no integer rounding"}},
+            QJsonObject{{"name","look.parameter"},{"fields",QJsonArray{"parameter","value"}},
+                {"parameters",QJsonArray::fromVariantList(LookProfiles::commandParameters())},
+                {"value_policy","round_then_clamp"},{"rounding","nearest integer; half ties away from zero"}},
+            QJsonObject{{"name","look.reset"},{"fields",QJsonArray{}},{"operation","reset Look only; preserve all other edits"}},
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
             QJsonObject{{"name","mask.radial.enable"},{"fields",QJsonArray{"enabled"}},
@@ -272,6 +377,8 @@ struct CommandRegistry {
             QJsonObject{{"name","curve.set"},{"fields",QJsonArray{"channel","point","value"}},{"channel",QJsonArray{"master","red","green","blue"}},{"point",QJsonArray{0,4}},{"value",QJsonArray{0,1}}},
             QJsonObject{{"name","curve.reset"},{"fields",QJsonArray{"channel"}},{"channel",QJsonArray{"master","red","green","blue"}}}
         };
-        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"unknown_fields","reject"},{"range_policy","clamp"}};
+        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"unknown_fields","reject"},{"range_policy","clamp"},
+            {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
+                {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
     }
 };

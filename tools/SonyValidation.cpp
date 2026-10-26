@@ -17,9 +17,77 @@
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/StageGraph.h"
+#include "core/commands/CommandRegistry.h"
+#include "core/export/RasterExporter.h"
+#include <QColorSpace>
+#include <cmath>
+#include <cstring>
 
 QString fileHash(const QString &path) {QFile f(path);if(!f.open(QIODevice::ReadOnly))return {};QCryptographicHash h(QCryptographicHash::Sha256);if(!h.addData(&f))return {};return h.result().toHex();}
 bool writeJson(const QString &path,const QJsonObject &o){QSaveFile f(path);if(!f.open(QIODevice::WriteOnly))return false;const auto b=QJsonDocument(o).toJson();return f.write(b)==b.size()&&f.commit();}
+QJsonObject portableLookCommandPixels(const QImage &source,const QVariantMap &metadata) {
+ const auto recorded=metadata.value("sonyLook").toMap();
+ if(source.isNull()||!recorded.value("autoEligible").toBool())return {{"passed",false},{"error","Eligible real Sony pixels/metadata required"}};
+ const CommandRegistry::LookContext context{true,metadata};
+ AdjustmentState base;base.exposure=.3;base.look.mode="as-shot";
+ AdjustmentState recordedManual=base;recordedManual.look.mode="manual";recordedManual.look.code=recorded.value("code").toString();
+ const auto parameters=recorded.value("parameters").toMap();
+ for(auto i=parameters.cbegin();i!=parameters.cend();++i)recordedManual.look.parameters[i.key()]=i.value().toDouble();
+ AdjustmentState manual=base;manual.look={};manual.look.mode="manual";manual.look.code="FL";
+ auto strength=manual;strength.look.strength=.65;
+ auto detail=strength;detail.look.parameters={{"sharpness",3},{"clarity",5},{"contrast",-4}};
+ auto materialized=recordedManual;materialized.look.strength=.4;materialized.look.parameters["clarity"]=5;
+ auto off=base;off.look.mode="off";
+ auto reset=base;reset.look={};
+ struct Case {QString name;QJsonArray commands;AdjustmentState expected;};
+ const QVector<Case> cases{
+  {"off",{QJsonObject{{"command","look.mode"},{"mode","off"}}},off},
+  {"as_shot",{QJsonObject{{"command","look.mode"},{"mode","as_shot"}}},recordedManual},
+  {"manual",{QJsonObject{{"command","look.code"},{"code","FL"}}},manual},
+  {"strength",{QJsonObject{{"command","look.code"},{"code","FL"}},QJsonObject{{"command","look.strength"},{"value",.65}}},strength},
+  {"detail",{QJsonObject{{"command","look.code"},{"code","FL"}},QJsonObject{{"command","look.strength"},{"value",.65}},
+    QJsonObject{{"command","look.parameter"},{"parameter","sharpness"},{"value",3.2}},
+    QJsonObject{{"command","look.parameter"},{"parameter","clarity"},{"value",4.6}},
+    QJsonObject{{"command","look.parameter"},{"parameter","contrast"},{"value",-3.5}}},detail},
+  {"materialized_parameter",{QJsonObject{{"command","look.mode"},{"mode","as_shot"}},QJsonObject{{"command","look.strength"},{"value",.4}},
+    QJsonObject{{"command","look.parameter"},{"parameter","clarity"},{"value",4.6}}},materialized},
+  {"reset",{QJsonObject{{"command","look.code"},{"code","FL"}},QJsonObject{{"command","look.reset"}}},reset}
+ };
+ QJsonArray results;bool passed=true;
+ for(const auto &test:cases) {
+  auto actual=base;QString error;
+  const bool applied=CommandRegistry::executeBatch(actual,test.commands,&error,&context);
+  const auto effective=LookProfiles::resolveAsShot(actual,metadata,true);
+  const auto rendered=applied?ImagePipeline::process(source,effective,ImagePipeline::InputEncoding::LinearProPhoto):QImage{};
+  const auto reference=ImagePipeline::process(source,test.expected,ImagePipeline::InputEncoding::LinearProPhoto);
+  const bool exact=!rendered.isNull()&&rendered==reference;
+  const bool values=effective.look.code==test.expected.look.code && effective.look.strength==test.expected.look.strength
+    && effective.look.parameters==test.expected.look.parameters && effective.exposure==test.expected.exposure;
+  const bool intent=test.name!="as_shot" || (actual.look.mode=="as-shot"&&actual.look.code.isEmpty()&&actual.look.parameters.isEmpty());
+  passed=passed&&applied&&exact&&values&&intent;
+  results.append(QJsonObject{{"case",test.name},{"applied",applied},{"error",error},{"exact_pixels",exact},
+   {"effective_values_match",values},{"symbolic_intent_preserved",intent},{"pixels",qint64(rendered.width())*rendered.height()},
+   {"output",StageGraph::outputFingerprint(rendered)},{"reference",StageGraph::outputFingerprint(reference)}});
+ }
+ auto rejected=base;const auto before=rejected.toJson();QString error;
+ const bool atomic=!CommandRegistry::executeBatch(rejected,{QJsonObject{{"command","look.code"},{"code","FL"}},
+   QJsonObject{{"command","look.mode"},{"mode","calibrated"}}},&error,&context)&&rejected.toJson()==before;
+ const bool injection=!CommandRegistry::execute(rejected,{{"command","look.mode"},{"mode","manual"},{"lut",LookLut::identity(2)->toJson()}},&error,&context)&&rejected.toJson()==before;
+ const CommandRegistry::LookContext jpeg{false,metadata};
+ const bool jpegRejected=!CommandRegistry::execute(rejected,{{"command","look.mode"},{"mode","as_shot"}},&error,&jpeg)&&rejected.toJson()==before;
+ return {{"passed",passed&&atomic&&injection&&jpegRejected},{"cases",results},{"invalid_batch_atomic",atomic},
+  {"lut_injection_rejected",injection},{"jpeg_as_shot_rejected",jpegRejected},{"source","real decoded ARW; existing 1024-edge probe sample"}};
+}
+int comparePortablePng(const QString &first,const QString &second,const QString &reportPath) {
+ const auto a=QImage(first).convertToFormat(QImage::Format_RGBA64),b=QImage(second).convertToFormat(QImage::Format_RGBA64);
+ bool exact=!a.isNull()&&!b.isNull()&&a.size()==b.size();
+ if(exact)for(int y=0;y<a.height();++y)if(std::memcmp(a.constScanLine(y),b.constScanLine(y),size_t(a.width())*8)!=0){exact=false;break;}
+ const bool icc=!a.isNull()&&a.colorSpace().iccProfile()==b.colorSpace().iccProfile();
+ const QJsonObject report{{"passed",exact&&icc},{"exact_pixels",exact},{"icc_equal",icc},
+  {"pixels",qint64(a.width())*a.height()},{"reference",StageGraph::outputFingerprint(a)},{"actual",StageGraph::outputFingerprint(b)}};
+ return writeJson(reportPath,report)?(exact&&icc?0:1):3;
+}
 int fitDatasetFile(const QString &manifestPath,const QString &directory) {
  if(QFileInfo::exists(directory+"/empirical.jlook.json")){qCritical("Choose a new output directory; empirical profile already exists");return 3;}
  QFile manifest(manifestPath);if(!manifest.open(QIODevice::ReadOnly)||manifest.size()>65536)return 2;
@@ -62,6 +130,7 @@ int fitDatasetFile(const QString &manifestPath,const QString &directory) {
 }
 int main(int argc,char **argv){
  QCoreApplication app(argc,argv);const auto args=app.arguments();
+ if(args.size()==5&&args[1]=="--compare-portable-png")return comparePortablePng(args[2],args[3],args[4]);
  if(args.size()==4&&args[1]=="--dataset")return fitDatasetFile(args[2],args[3]);
  if(args.size()!=4){qCritical("Usage: JixelLightSonyValidation RAW JPEG output-directory");return 2;}
  const QString rawPath=QFileInfo(args[1]).absoluteFilePath(),jpegPath=QFileInfo(args[2]).absoluteFilePath(),dir=args[3];
@@ -76,6 +145,21 @@ int main(int argc,char **argv){
  const auto automatic=CameraReference::load({rawPath,{},completeMeta,1});report["automaticReference"]=QJsonObject::fromVariantMap(automatic.info);
  if(!raw.isNull()&&!ref.image.isNull()){
    auto small=raw.scaled(1024,1024,Qt::KeepAspectRatio,Qt::SmoothTransformation);
+   report["portableLookCommands"]=portableLookCommandPixels(small,completeMeta);
+   // Independent direct-state oracle for an actual CLI RAW decode/export. Crop
+   // keeps only the published test output small; RAW decoding remains real.
+   AdjustmentState commandReference;commandReference.exposure=.3;
+   const auto recorded=completeMeta.value("sonyLook").toMap();
+   commandReference.look.mode="manual";commandReference.look.code=recorded.value("code").toString();commandReference.look.strength=.4;
+   const auto controls=recorded.value("parameters").toMap();
+   for(auto i=controls.cbegin();i!=controls.cend();++i)commandReference.look.parameters[i.key()]=i.value().toDouble();
+   commandReference.look.parameters["clarity"]=5;
+   commandReference.geometry.crop={.1,.1,.04,.04};
+   const auto oraclePath=dir+"/portable-cli-reference.png";
+   const double rawBase=completeMeta.value("rawBaseExposureStops",0).toDouble();QString oracleError;
+   const bool oracle=exportRaster(raw,commandReference,oraclePath,ColorManagement::OutputSpace::SRgb,
+      RasterFormat::Png16,92,{},&oracleError,true,float(rawBase));
+   report["portableCliReference"]=QJsonObject{{"saved",oracle},{"error",oracleError},{"file",QFileInfo(oraclePath).fileName()}};
    auto baseline=ImagePipeline::process(small,{},ImagePipeline::InputEncoding::LinearProPhoto);baseline.save(dir+"/baseline.png");
    ref.image.save(dir+"/reference.png");
    auto fit=calibrateLook({raw,ref.image,0,0,ref.info});report["fit"]=QJsonObject::fromVariantMap(fit.report);report["fitError"]=fit.error;report["fitAccepted"]=bool(fit.lut);

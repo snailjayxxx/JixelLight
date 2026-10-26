@@ -6732,6 +6732,164 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),before);
     }
 
+    void portableLookCommandsNormalizeKnownControlsAndRejectJsonLutInjection() {
+        const auto schema=CommandRegistry::schema();
+        QSet<QString> names;
+        for(const auto &entry:schema["commands"].toArray())names.insert(entry.toObject()["name"].toString());
+        for(const auto &name:QStringList{"look.mode","look.code","look.strength","look.parameter","look.reset"})QVERIFY(names.contains(name));
+        QCOMPARE(LookProfiles::commandCodes().size(),12);QCOMPARE(LookProfiles::commandParameters().size(),8);
+        AdjustmentState state;state.exposure=.7;state.geometry.straighten=2;
+        for(const auto &code:LookProfiles::commandCodes()) {
+            QVERIFY(CommandRegistry::execute(state,{{"command","look.code"},{"code",code}}));
+            QCOMPARE(state.look.mode,QString("manual"));QCOMPARE(state.look.code,code);
+            QCOMPARE(state.look.strength,1.);QVERIFY(state.look.parameters.isEmpty());QVERIFY(!state.look.lut);
+        }
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.code"},{"code","  vivid 2 "}}));QCOMPARE(state.look.code,QString("VV2"));
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.strength"},{"value",.3141592653589793}}));
+        QCOMPARE(state.look.strength,.3141592653589793);
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.strength"},{"value",-12.}}));QCOMPARE(state.look.strength,0.);
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.strength"},{"value",17.}}));QCOMPARE(state.look.strength,1.);
+        for(const auto &entry:LookProfiles::commandParameters()) {
+            const auto descriptor=entry.toMap();const auto name=descriptor["name"].toString();
+            const auto minimum=descriptor["minimum"].toDouble(),maximum=descriptor["maximum"].toDouble();
+            for(double value:{-100.,-.5,4.6,100.,std::numeric_limits<double>::max()}) {
+                QVERIFY(CommandRegistry::execute(state,{{"command","look.parameter"},{"parameter",name},{"value",value}}));
+                QCOMPARE(state.look.parameters[name],std::clamp(std::round(value),minimum,maximum));
+            }
+        }
+        QCOMPARE(state.exposure,.7);QCOMPARE(state.geometry.straighten,2.);
+        state.look.mode="calibrated";state.look.lut=LookLut::identity(3);
+        const auto before=state.toJson();const auto lut=state.look.lut;
+        const QVector<QJsonObject> invalid{
+            {{"command","look.code"},{"code","FUTURE"}},
+            {{"command","look.code"},{"code",QString::fromLatin1("F\0L",3)}},
+            {{"command","look.code"},{"code",QString(33,'S')}},
+            {{"command","look.code"},{"code",1}},
+            {{"command","look.mode"},{"mode","calibrated"}},
+            {{"command","look.mode"},{"mode","as-shot"}},
+            {{"command","look.mode"},{"mode","manual"},{"lut",lut->toJson()}},
+            {{"command","look.code"},{"code","FL"},{"evidence",QJsonObject{{"kind","image-specific-fit"}}}},
+            {{"command","look.parameter"},{"parameter","unknown"},{"value",3}},
+            {{"command","look.parameter"},{"parameter","clarity"},{"value",true}},
+            {{"command","look.parameter"},{"parameter","clarity"},{"value","4"}},
+            {{"command","look.parameter"},{"parameter","clarity"},{"value",std::numeric_limits<double>::infinity()}},
+            {{"command","look.strength"},{"value",std::numeric_limits<double>::quiet_NaN()}},
+            {{"command","look.strength"},{"value",.5},{"metadata",QJsonObject{}}},
+            {{"command","look.reset"},{"rawSource",true}}
+        };
+        for(const auto &command:invalid) {
+            QString error;QVERIFY(!CommandRegistry::execute(state,command,&error));QVERIFY(!error.isEmpty());
+            QCOMPARE(state.toJson(),before);QCOMPARE(state.look.lut,lut);
+        }
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.mode"},{"mode","off"}}));QCOMPARE(state.look.lut,lut);
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.strength"},{"value",.6}}));QCOMPARE(state.look.lut,lut);QCOMPARE(state.look.mode,QString("off"));
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.mode"},{"mode","manual"}}));QCOMPARE(state.look.mode,QString("calibrated"));
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.parameter"},{"parameter","fade"},{"value",2.6}}));
+        QCOMPARE(state.look.parameters["fade"],3.);QCOMPARE(state.look.lut,lut);
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.code"},{"code","FL"}}));QVERIFY(!state.look.lut);
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.reset"}}));QCOMPARE(state.look.toJson(),LookState{}.toJson());
+        QCOMPARE(state.exposure,.7);QCOMPARE(state.geometry.straighten,2.);
+    }
+
+    void portableLookSourceContextMaterializesEachRecordedLookWithoutMetadataMutation() {
+        const QVariantMap controls{{"contrast",3},{"highlights",-2},{"shadows",-3},{"fade",1},
+            {"saturation",-1},{"sharpness",3},{"sharpnessRange",2},{"clarity",1}};
+        const QVariantMap firstLook{{"autoEligible",true},{"code","FL"},{"parameters",controls}};
+        const CommandRegistry::LookContext first{true,QVariantMap{{"sonyLook",firstLook}}};
+        auto second=first;auto sony=second.metadata["sonyLook"].toMap();sony["code"]="VV2";second.metadata["sonyLook"]=sony;
+        const auto originalMetadata=first.metadata;
+        const QJsonArray change{QJsonObject{{"command","look.mode"},{"mode","as_shot"}},
+            QJsonObject{{"command","look.strength"},{"value",.6}},
+            QJsonObject{{"command","look.parameter"},{"parameter","clarity"},{"value",4.6}}};
+        for(const auto *context:std::array<const CommandRegistry::LookContext *,2>{&first,&second}) {
+            AdjustmentState state;state.exposure=.5;
+            QVERIFY(CommandRegistry::requiresLookContext(state,change));
+            QVERIFY(CommandRegistry::executeBatch(state,change,nullptr,context));
+            QCOMPARE(state.look.mode,QString("manual"));QCOMPARE(state.look.strength,.6);
+            QCOMPARE(state.look.code,context==&first?QString("FL"):QString("VV2"));
+            QCOMPARE(state.look.parameters.size(),8);
+            for(auto it=controls.cbegin();it!=controls.cend();++it)
+                QCOMPARE(state.look.parameters[it.key()],it.key()=="clarity"?5.:it.value().toDouble());
+            QCOMPARE(state.exposure,.5);
+            state.look.mode="as-shot";state.look.code.clear();state.look.parameters.clear();
+            QVERIFY(CommandRegistry::execute(state,{{"command","look.mode"},{"mode","manual"}},nullptr,context));
+            QCOMPARE(state.look.parameters["clarity"],1.);QCOMPARE(state.look.strength,.6);
+        }
+        QCOMPARE(first.metadata,originalMetadata);
+        AdjustmentState state;state.look.mode="as-shot";const auto before=state.toJson();
+        for(const auto &command:QVector<QJsonObject>{{{"command","look.mode"},{"mode","manual"}},
+                {{"command","look.parameter"},{"parameter","fade"},{"value",2}}}) {
+            QVERIFY(!CommandRegistry::execute(state,command));QCOMPARE(state.toJson(),before);
+        }
+        const CommandRegistry::LookContext jpeg{false,first.metadata};
+        QVERIFY(!CommandRegistry::execute(state,{{"command","look.mode"},{"mode","as_shot"}},nullptr,&jpeg));QCOMPARE(state.toJson(),before);
+        auto ineligible=first;sony=ineligible.metadata["sonyLook"].toMap();sony["autoEligible"]=false;ineligible.metadata["sonyLook"]=sony;
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.mode"},{"mode","as_shot"}},nullptr,&ineligible));
+        QVERIFY(!LookProfiles::active(LookProfiles::resolveAsShot(state,ineligible.metadata,true).look));
+        QVERIFY(CommandRegistry::execute(state,{{"command","look.mode"},{"mode","manual"}},nullptr,&ineligible));QCOMPARE(state.look.code,QString("ST"));
+        const QJsonArray explicitManual{QJsonObject{{"command","look.code"},{"code","FL"}},QJsonObject{{"command","look.parameter"},{"parameter","fade"},{"value",2}}};
+        state.look.mode="as-shot";QVERIFY(!CommandRegistry::requiresLookContext(state,explicitManual));
+        QVERIFY(CommandRegistry::executeBatch(state,explicitManual));QCOMPARE(state.look.code,QString("FL"));
+    }
+
+    void portableLookBatchIsAtomicAndUiHistoryPersistenceAndExportSharePixels() {
+        AdjustmentState trusted;trusted.exposure=.2;trusted.look.mode="calibrated";trusted.look.lut=LookLut::identity(3);
+        const auto trustedBefore=trusted.toJson();const auto trustedLut=trusted.look.lut;
+        const QJsonArray invalid{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",1}},
+            QJsonObject{{"command","look.code"},{"code","FL"}},QJsonObject{{"command","look.mode"},{"mode","calibrated"}}};
+        QString error;QVERIFY(!CommandRegistry::executeBatch(trusted,invalid,&error));QVERIFY(error.startsWith("Command 3:"));
+        QCOMPARE(trusted.toJson(),trustedBefore);QCOMPARE(trusted.look.lut,trustedLut);
+        QVERIFY(!CommandRegistry::executeBatch(trusted,{QJsonObject{{"command","look.reset"}},false},&error));QCOMPARE(trusted.toJson(),trustedBefore);
+        QJsonArray oversized;for(int i=0;i<10001;++i)oversized.append(QJsonObject{{"command","look.reset"}});
+        QVERIFY(!CommandRegistry::executeBatch(trusted,oversized,&error));QCOMPARE(trusted.toJson(),trustedBefore);
+
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));
+        const auto sourceBytes=fixtureBytes(source);PhotoController controller(nullptr);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.loading() && controller.previewReady(),10000);
+        const auto initial=controller.gpuPlan(true).state.toJson();
+        const auto initialHistory=QJsonArray::fromVariantList(controller.editHistory());
+        QSignalSpy adjustments(&controller,&PhotoController::adjustmentsChanged),history(&controller,&PhotoController::historyChanged);
+        QVERIFY(!controller.executeEditCommands(invalid.toVariantList()));
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),initial);QCOMPARE(QJsonArray::fromVariantList(controller.editHistory()),initialHistory);
+        QCOMPARE(adjustments.size(),0);QCOMPARE(history.size(),0);
+        const QJsonArray commands{QJsonObject{{"command","look.code"},{"code","FL"}},
+            QJsonObject{{"command","look.strength"},{"value",.37}},
+            QJsonObject{{"command","look.parameter"},{"parameter","clarity"},{"value",4.6}},
+            QJsonObject{{"command","look.parameter"},{"parameter","contrast"},{"value",-3.5}},
+            QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",.4}},
+            QJsonObject{{"command","geometry.crop"},{"x",.1},{"y",.1},{"width",.8},{"height",.8}}};
+        AdjustmentState expected;expected.look.mode="manual";expected.look.code="FL";expected.look.strength=.37;
+        expected.look.parameters={{"clarity",5},{"contrast",-4}};expected.exposure=.4;expected.geometry.crop={.1,.1,.8,.8};
+        QVERIFY(controller.executeEditCommands(commands.toVariantList()));
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),LookProfiles::effective(expected).toJson());QCOMPARE(adjustments.size(),1);QCOMPARE(history.size(),1);
+        QCOMPARE(controller.editHistory().size(),initialHistory.size()+1);
+        controller.undo();QCOMPARE(controller.gpuPlan(true).state.toJson(),initial);
+        controller.redo();QCOMPARE(controller.gpuPlan(true).state.toJson(),LookProfiles::effective(expected).toJson());
+        // Existing GUI wrappers use the same normalization and merge semantics.
+        controller.setLookParameter("fade",2.6);expected.look.parameters["fade"]=3;
+        controller.setLookStrength(.41);expected.look.strength=.41;controller.finishInteraction();
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),LookProfiles::effective(expected).toJson());
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"PortableLook"));QVERIFY(controller.flushEdits());
+        ProjectDatabase project;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(project.readSnapshot(controller.projectPath(),&saved));
+        QCOMPARE(saved.size(),1);QCOMPARE(saved[0].adjustments.toJson(),expected.toJson());QVERIFY(saved[0].history.canUndo());
+        const auto xmp=dir.filePath("portable.xmp");QVERIFY(controller.exportXmp(QUrl::fromLocalFile(xmp)));
+        XmpSidecar::Document sidecar;QVERIFY2(XmpSidecar::read(xmp,&sidecar,&error),qPrintable(error));QCOMPARE(sidecar.adjustments.toJson(),expected.toJson());
+        NamedPresets presets(dir.filePath("presets.json"));QVERIFY(presets.load(&error));QVERIFY(presets.save("Portable",expected,&error));
+        AdjustmentState preset;QVERIFY(presets.get("Portable",&preset));QCOMPARE(preset.look.toJson(),expected.look.toJson());QCOMPARE(preset.exposure,.4);
+        AdjustmentState target;target.exposure=-1;QVERIFY(AdjustmentTransfer::apply(target,expected,{"sony_look"}));
+        QCOMPARE(target.look.toJson(),expected.look.toJson());QCOMPARE(target.exposure,-1.);
+        const auto destination=dir.filePath("export.png");QSignalSpy exported(&controller,&PhotoController::exportFinished);
+        QVERIFY(controller.exportCurrent(QUrl::fromLocalFile(destination),"display-p3",100));
+        QTRY_COMPARE_WITH_TIMEOUT(exported.size(),1,10000);QCOMPARE(exported[0][0].toInt(),1);QCOMPARE(exported[0][1].toInt(),0);
+        SourceCache cache(4*1024*1024,dir.filePath("decode"));const auto reference=selectedExportCpuReference(cache,source,expected,ColorManagement::OutputSpace::DisplayP3);
+        QCOMPARE(QImage(destination).convertToFormat(QImage::Format_RGBA64),reference);
+        QCOMPARE(QImage(destination).colorSpace().iccProfile(),ColorManagement::iccProfile(ColorManagement::OutputSpace::DisplayP3));
+        QCOMPARE(fixtureBytes(source),sourceBytes);
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);QVERIFY(reopened.openProject(QUrl::fromLocalFile(controller.projectPath())));
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),LookProfiles::effective(expected).toJson());QVERIFY(reopened.canUndo());
+    }
+
     void commandRegistryRejectsInvalidAndMatchesUiRanges() {
         AdjustmentState state;
         QString error;

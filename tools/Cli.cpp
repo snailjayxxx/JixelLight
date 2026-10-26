@@ -15,7 +15,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QImageWriter>
+#include <QHash>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -25,6 +27,7 @@ struct ExportJob {
     QString source, destination, space;
     AdjustmentState state;
     QString catalogKey, versionName;
+    QJsonArray commands;
 };
 
 bool readJson(const QString &path, qint64 limit, QJsonDocument *document, QString *error) {
@@ -37,12 +40,9 @@ bool readJson(const QString &path, qint64 limit, QJsonDocument *document, QStrin
     return true;
 }
 
-bool applyCommands(AdjustmentState &state, const QJsonValue &commands, QString *error) {
+bool parseCommands(const QJsonValue &commands, QJsonArray *result, QString *error) {
     if (!commands.isArray() || commands.toArray().size()>10000) { *error="Commands must be an array of at most 10000 entries"; return false; }
-    for (const auto &entry:commands.toArray()) {
-        if (!entry.isObject()) { *error="Invalid command"; return false; }
-        if (!CommandRegistry::execute(state,entry.toObject(),error)) return false;
-    }
+    *result=commands.toArray();
     return true;
 }
 
@@ -74,7 +74,7 @@ bool readBatch(const QString &path, const QString &defaultSpace, QVector<ExportJ
         ExportJob job{base.absoluteFilePath(entry.value("source").toString()),base.absoluteFilePath(entry.value("destination").toString()),entry.value("space").toString(defaultSpace),{}};
         if (RawDecoder::isRawFile(job.source)) job.state.look.mode="as-shot";
         QString commandError;
-        if (!applyCommands(job.state,entry.value("commands"),&commandError)) return fail(commandError);
+        if (!parseCommands(entry.value("commands"),&job.commands,&commandError)) return fail(commandError);
         jobs->push_back(std::move(job));
     }
     return true;
@@ -127,6 +127,8 @@ bool readCatalog(const QString &path, const QString &destination, const QString 
         for (const auto &photo : photos) {
             const auto source=base.absoluteFilePath(photo.path); auto time=photo.timeline.captureTime;
             if (exportTemplateNeedsCaptureTime(naming.pattern) && !photo.timeline.captureChecked) {
+                const QFileInfo info(source);
+                if (!info.isFile() || !info.isReadable()) { *error="Source is not a readable file: "+source; return false; }
                 if (!captured.contains(source)) captured.insert(source,PhotoTimeline::cameraTime(MetadataReader::read(source).value("captureTime").toString()));
                 time=captured.value(source);
             }
@@ -171,6 +173,37 @@ bool preflight(QVector<ExportJob> *jobs, QString *error) {
         if (destinations.contains(key)) return fail("Duplicate destination in batch");
         destinations.insert(key);
     }
+    // Only after every source/destination is valid may source-aware commands
+    // read small metadata. No image decode, staging or output occurs here.
+    // Reuse metadata only for the same source, never across catalog versions
+    // of different photographs; symbolic as-shot intent stays per-source.
+    QHash<QString,QVariantMap> sourceMetadata;
+    for (qsizetype i=0;i<jobs->size();++i) {
+        auto &job=(*jobs)[i];
+        if (job.commands.isEmpty()) continue;
+        CommandRegistry::LookContext supplied;
+        const CommandRegistry::LookContext *context=nullptr;
+        if (CommandRegistry::requiresLookContext(job.state,job.commands)) {
+            const QFileInfo source(job.source);
+            if (!source.isFile() || !source.isReadable()) { *error=QString("Job %1: Source is not a readable file: %2").arg(i+1).arg(job.source); return false; }
+            const auto identity=source.canonicalFilePath();
+            if (identity.isEmpty()) { *error=QString("Job %1: Source identity is unavailable").arg(i+1); return false; }
+            // Raw admission belongs to this job's decoder route, even when
+            // two differently suffixed aliases share one canonical file.
+            supplied.rawSource=RawDecoder::isRawFile(job.source);
+            if (supplied.rawSource) {
+                auto found=sourceMetadata.find(identity);
+                if (found==sourceMetadata.end()) found=sourceMetadata.insert(identity,MetadataReader::read(job.source));
+                supplied.metadata=found.value();
+            }
+            context=&supplied;
+        }
+        QString reason;
+        if (!CommandRegistry::executeBatch(job.state,job.commands,&reason,context)) {
+            *error=QString("Job %1: %2").arg(i+1).arg(reason);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -197,7 +230,7 @@ bool executeExport(const ExportJob &job, SourceCache &cache, QJsonObject *result
     if (!publication.rename(job.destination)) { *error="Cannot publish new destination: "+publication.errorString(); return false; }
     *result={{"ok",true},{"backend","cpu-reference"},{"source_commit",JIXELLIGHT_GIT_COMMIT},
         {"engine",ProcessingPlan::EngineVersion},{"source",job.source},{"destination",job.destination},
-        {"space",job.space},{"adjustments",state.toJson()}};
+        {"space",job.space},{"stored_look",job.state.look.toJson()},{"adjustments",state.toJson()}};
     return true;
 }
 }
@@ -269,7 +302,9 @@ int main(int argc, char **argv) {
         if (parser.isSet("commands")) {
             QJsonDocument document;
             if (!readJson(parser.value("commands"),1024*1024,&document,&error)) return fail(error);
-            for (auto &job:jobs) if (!document.isArray() || !applyCommands(job.state,QJsonValue(document.array()),&error)) return fail(error.isEmpty()?QStringLiteral("Commands must be a JSON array"):error);
+            QJsonArray commands;
+            if (!document.isArray() || !parseCommands(QJsonValue(document.array()),&commands,&error)) return fail(error.isEmpty()?QStringLiteral("Commands must be a JSON array"):error);
+            for (auto &job:jobs) job.commands=commands;
         }
     } else if (batch) {
         if (!paths.isEmpty() || parser.isSet("commands")) return fail("Batch cannot be combined with positional paths or --commands");
@@ -281,7 +316,7 @@ int main(int argc, char **argv) {
         if (parser.isSet("commands")) {
             QJsonDocument document;
             if (!readJson(parser.value("commands"),1024*1024,&document,&error)) return fail(error);
-            if (!document.isArray() || !applyCommands(job.state,QJsonValue(document.array()),&error)) return fail(error.isEmpty()?QStringLiteral("Commands must be a JSON array"):error);
+            if (!document.isArray() || !parseCommands(QJsonValue(document.array()),&job.commands,&error)) return fail(error.isEmpty()?QStringLiteral("Commands must be a JSON array"):error);
         }
         jobs.push_back(std::move(job));
     }

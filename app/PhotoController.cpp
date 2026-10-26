@@ -618,13 +618,32 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 }
 
 bool PhotoController::executeEditCommand(const QVariantMap &command) {
-    auto *state = mutableCurrentState(); if (!state) return false;
-    QString error; auto staged = *state;
-    if (!CommandRegistry::execute(staged,QJsonObject::fromVariantMap(command),&error)) {
+    if (!hasImage()) return false;
+    QString error; auto staged = m_photos[m_currentIndex].state;
+    const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
+    if (!CommandRegistry::executeBatch(staged,{QJsonObject::fromVariantMap(command)},&error,&context)) {
         setStatus(uiText("命令未执行：", "Command rejected: ") + error); return false;
     }
+    auto *state=mutableCurrentState(); if(!state)return false;
     m_photos[m_currentIndex].history.finish(); *state = std::move(staged);
     persistAndApply("command_replay",{{"command",command}}); return true;
+}
+
+bool PhotoController::executeEditCommands(const QVariantList &commands) {
+    if (!hasImage()) return false;
+    if (commands.isEmpty()) return true;
+    if (commands.size()>10000) {
+        setStatus(uiText("命令批次超过 10000 条。", "Command batch exceeds 10000 entries.")); return false;
+    }
+    const auto batch=QJsonArray::fromVariantList(commands);
+    QString error; auto staged=m_photos[m_currentIndex].state;
+    const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
+    if (!CommandRegistry::executeBatch(staged,batch,&error,&context)) {
+        setStatus(uiText("命令批次未执行：", "Command batch rejected: ")+error); return false;
+    }
+    auto *state=mutableCurrentState(); if(!state)return false;
+    m_photos[m_currentIndex].history.finish(); *state=std::move(staged);
+    persistAndApply("command_batch",{{"commands",commands}}); return true;
 }
 
 void PhotoController::setAdjustment(const char *name, double value, double AdjustmentState::*member) {

@@ -17,6 +17,53 @@ def chunk(kind, data):
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
 
 
+def png16_pixels(path):
+    """Independently decode lossless PNG rows/ICC for command-vs-state oracles."""
+    data = path.read_bytes()
+    assert data.startswith(b'\x89PNG\r\n\x1a\n')
+    chunks, offset, compressed = {}, 8, bytearray()
+    while offset + 12 <= len(data):
+        size = struct.unpack_from('>I', data, offset)[0]
+        kind, payload = data[offset+4:offset+8], data[offset+8:offset+8+size]
+        assert zlib.crc32(kind + payload) & 0xffffffff == struct.unpack_from('>I', data, offset+8+size)[0]
+        if kind == b'IDAT':
+            compressed.extend(payload)
+        else:
+            chunks[kind] = payload
+        offset += size + 12
+    width, height, depth, color, compression, filtering, interlace = struct.unpack('>2I5B', chunks[b'IHDR'])
+    assert depth == 16 and color in (2, 6) and (compression, filtering, interlace) == (0, 0, 0)
+    pixel_bytes = (3 if color == 2 else 4) * 2
+    stride = width * pixel_bytes
+    encoded = zlib.decompress(compressed)
+    assert len(encoded) == height * (stride + 1)
+    previous, pixels = bytearray(stride), bytearray()
+    for y in range(height):
+        kind = encoded[y * (stride + 1)]
+        assert 0 <= kind <= 4
+        row = bytearray(encoded[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            left = row[x-pixel_bytes] if x >= pixel_bytes else 0
+            up, corner = previous[x], previous[x-pixel_bytes] if x >= pixel_bytes else 0
+            prediction = 0
+            if kind == 1:
+                prediction = left
+            elif kind == 2:
+                prediction = up
+            elif kind == 3:
+                prediction = (left + up) // 2
+            elif kind == 4:
+                p = left + up - corner
+                distances = (abs(p-left), abs(p-up), abs(p-corner))
+                prediction = (left, up, corner)[distances.index(min(distances))]
+            row[x] = (row[x] + prediction) & 255
+        pixels.extend(row)
+        previous = row
+    icc = chunks[b'iCCP'].split(b'\0', 1)[1]
+    assert icc[0] == 0
+    return width, height, color, bytes(pixels), zlib.decompress(icc[1:])
+
+
 @contextlib.contextmanager
 def open_database(path):
     with contextlib.closing(sqlite3.connect(path)) as connection, connection:
@@ -39,6 +86,7 @@ def main():
         schema = json.loads(run('--schema').stdout)
         assert len(schema['parameters']) == 15
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
+        assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
@@ -378,6 +426,179 @@ def main():
         assert struct.unpack('>II', Path(snapshot['results'][1]['destination']).read_bytes()[16:24]) == (2, 2)
         assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_catalog
         assert set(p.name for p in catalog.iterdir()) == {'Project.db'}  # No migration, backup or WAL switch.
+        # Portable Look commands are checked against separately constructed
+        # saved states, not another replay of the same command implementation.
+        # Decode PNG16 rows/ICC independently so metadata-only success cannot
+        # pass while the rendered Look is missing or applied to the wrong job.
+        look_source = root / 'look-source.png'
+        look_rows = []
+        for y in range(24):
+            row = bytearray()
+            for x in range(32):
+                row.extend(((x*19+y*7) % 256, (x*3+y*23) % 256,
+                            (x*29+y*5) % 256, (0, 96, 255)[(x+y) % 3]))
+            look_rows.append(b'\0' + row)
+        look_source.write_bytes(b'\x89PNG\r\n\x1a\n'
+                                + chunk(b'IHDR', struct.pack('>2I5B', 32, 24, 8, 6, 0, 0, 0))
+                                + chunk(b'IDAT', zlib.compress(b''.join(look_rows))) + chunk(b'IEND', b''))
+        look_source_hash = hashlib.sha256(look_source.read_bytes()).hexdigest()
+        look_commands = root / 'look-commands.json'
+        look_base = copy.deepcopy(rendered['adjustments'])
+        look_base['exposure'] = 0
+        def manual_look(code, strength=1, parameters=None):
+            return {'schema': 1, 'mode': 'manual', 'code': code,
+                    'strength': strength, 'parameters': parameters or {}}
+        def look_reference(tag, state, input_file=look_source, space='srgb'):
+            reference_catalog = root / ('look-reference-' + tag + '.jlp')
+            reference_catalog.mkdir()
+            with open_database(reference_catalog / 'Project.db') as db:
+                db.executescript("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);"
+                                 "INSERT INTO meta VALUES('project_name','Look reference');"
+                                 "CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT);")
+                db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)',
+                           ('../' + input_file.name, json.dumps(state)))
+            output = root / ('look-reference-' + tag)
+            output.mkdir()
+            reference = json.loads(run('--catalog', reference_catalog, '--output-dir', output, '--space', space).stdout)
+            assert reference['ok'] and reference['completed'] == 1
+            return Path(reference['results'][0]['destination'])
+        def command_look(tag, recipe, expected_state, input_file=look_source, space='srgb'):
+            look_commands.write_text(json.dumps(recipe))
+            target = root / ('look-command-' + tag + '.png')
+            report = json.loads(run('--commands', look_commands, '--space', space, input_file, target).stdout)
+            assert report['stored_look'] == expected_state['look']
+            assert report['adjustments']['look'] == expected_state['look']
+            assert report['adjustments']['exposure'] == expected_state['exposure']
+            assert report['adjustments']['geometry'] == expected_state['geometry']
+            expected = look_reference(tag, expected_state, input_file, space)
+            assert png16_pixels(target) == png16_pixels(expected)
+            return target
+        for code in ('ST', 'PT', 'NT', 'VV', 'VV2', 'FL', 'FL2', 'FL3', 'IN', 'SH', 'BW', 'SE'):
+            expected = copy.deepcopy(look_base)
+            expected['look'] = manual_look(code)
+            command_look(code, [{'command': 'look.code', 'code': code}], expected)
+        expected = copy.deepcopy(look_base)
+        expected['look'] = manual_look('VV2')
+        command_look('alias', [{'command': 'look.code', 'code': ' vivid 2 '}], expected)
+        normalized = {'contrast': -9, 'highlights': 9, 'shadows': -3, 'fade': 1,
+                      'saturation': 0, 'sharpness': 3, 'sharpnessRange': 1, 'clarity': 9}
+        raw_parameters = {'contrast': -9.5, 'highlights': 9.5, 'shadows': -2.5, 'fade': .5,
+                          'saturation': .49, 'sharpness': 2.5, 'sharpnessRange': .5, 'clarity': 10}
+        look_recipe = [{'command': 'look.code', 'code': 'fl'},
+                       {'command': 'look.strength', 'value': .625}]
+        look_recipe += [{'command': 'look.parameter', 'parameter': name, 'value': value}
+                        for name, value in raw_parameters.items()]
+        expected = copy.deepcopy(look_base)
+        expected['look'] = manual_look('FL', .625, normalized)
+        command_look('normalized', look_recipe, expected, space='display-p3')
+        off = copy.deepcopy(expected)
+        off['look']['mode'] = 'off'
+        command_look('off', look_recipe + [{'command': 'look.mode', 'mode': 'off'}], off)
+        reset = copy.deepcopy(look_base)
+        command_look('reset', look_recipe + [{'command': 'look.reset'}], reset)
+        strength_zero = copy.deepcopy(expected)
+        strength_zero['look']['strength'] = 0
+        command_look('strength-zero', look_recipe + [{'command': 'look.strength', 'value': -2}], strength_zero)
+        strength_one = copy.deepcopy(expected)
+        strength_one['look']['strength'] = 1
+        command_look('strength-one', look_recipe + [{'command': 'look.strength', 'value': 2}], strength_one)
+        expected = copy.deepcopy(look_base)
+        expected['look'] = manual_look('ST')
+        command_look('manual-on-png', [{'command': 'look.mode', 'mode': 'manual'}], expected)
+        jpeg_source = root / 'result.jpg'
+        jpeg_source_hash = hashlib.sha256(jpeg_source.read_bytes()).hexdigest()
+        command_look('manual-on-jpeg', [{'command': 'look.mode', 'mode': 'manual'}], expected, jpeg_source)
+        isolated = [{'command': 'develop.set', 'parameter': 'exposure', 'value': .4},
+                    {'command': 'geometry.rotate', 'quarterTurns': 1}]
+        for mode, ending in [('off', {'command': 'look.mode', 'mode': 'off'}),
+                             ('reset', {'command': 'look.reset'})]:
+            expected = copy.deepcopy(off if mode == 'off' else reset)
+            expected['exposure'] = .4
+            expected['geometry']['quarterTurns'] = 1
+            command_look('isolated-' + mode, isolated + look_recipe + [ending], expected)
+        assert png16_pixels(root / 'look-command-FL.png')[3] != png16_pixels(root / 'look-command-reset.png')[3]
+        invalid_looks = [
+            {'command': 'look.mode', 'mode': 'as_shot'},  # explicit RAW-only admission
+            {'command': 'look.mode', 'mode': 'as-shot'},
+            {'command': 'look.mode', 'mode': 'calibrated'},
+            {'command': 'look.mode', 'mode': True},
+            {'command': 'look.code', 'code': 'not-a-look'},
+            {'command': 'look.code', 'code': 'F\0L'},
+            {'command': 'look.code', 'code': 1},
+            {'command': 'look.code', 'code': 'FL', 'lut': {}},
+            {'command': 'look.mode', 'mode': 'as_shot', 'rawSource': True},
+            {'command': 'look.strength', 'value': '0.5'},
+            {'command': 'look.strength', 'value': True},
+            {'command': 'look.strength', 'value': None},
+            {'command': 'look.parameter', 'parameter': 'sharpnessrange', 'value': 3},
+            {'command': 'look.parameter', 'parameter': 'clarity', 'value': '4'},
+            {'command': 'look.parameter', 'parameter': 'clarity', 'value': False},
+            {'command': 'look.parameter', 'parameter': 'clarity', 'value': 4, 'metadata': {'autoEligible': True}},
+            {'command': 'look.reset', 'evidence': 'fake'},
+        ]
+        rejected_look = root / 'look-rejected.png'
+        for invalid in invalid_looks:
+            look_commands.write_text(json.dumps(look_recipe + [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}, invalid]))
+            run('--commands', look_commands, look_source, rejected_look, success=False)
+            assert not rejected_look.exists()
+        look_commands.write_text(json.dumps([{'command': 'look.mode', 'mode': 'as_shot'}]))
+        run('--commands', look_commands, jpeg_source, rejected_look, success=False)
+        assert not rejected_look.exists()
+        assert hashlib.sha256(jpeg_source.read_bytes()).hexdigest() == jpeg_source_hash
+        # The first valid job must not write before a late command in another
+        # job is rejected. Manual-on-JPEG/PNG is explicit; as-shot is not.
+        look_plan = root / 'look-batch.json'
+        look_plan.write_text(json.dumps({'schema': 1, 'engine': rendered['engine'], 'jobs': [
+            {'source': look_source.name, 'destination': 'look-late-first.png', 'commands': look_recipe},
+            {'source': source.name, 'destination': 'look-late-second.png',
+             'commands': [{'command': 'look.mode', 'mode': 'as_shot'}]},
+        ]}))
+        late = run('--batch', look_plan, success=False)
+        assert 'Job 2:' in late.stderr
+        assert not (root / 'look-late-first.png').exists() and not (root / 'look-late-second.png').exists()
+        second_state = copy.deepcopy(look_base)
+        second_state['look'] = manual_look('PT', .4)
+        look_plan.write_text(json.dumps({'schema': 1, 'engine': rendered['engine'], 'jobs': [
+            {'source': look_source.name, 'destination': 'look-batch-first.png', 'commands': look_recipe},
+            {'source': source.name, 'destination': 'look-batch-second.png',
+             'commands': [{'command': 'look.code', 'code': 'PT'}, {'command': 'look.strength', 'value': .4}]},
+        ]}))
+        look_batch = json.loads(run('--batch', look_plan).stdout)
+        assert look_batch['ok'] and look_batch['completed'] == 2
+        normalized_state = copy.deepcopy(look_base)
+        normalized_state['look'] = manual_look('FL', .625, normalized)
+        assert png16_pixels(root / 'look-batch-first.png') == png16_pixels(look_reference('batch-first', normalized_state))
+        assert png16_pixels(root / 'look-batch-second.png') == png16_pixels(look_reference('batch-second', second_state, source))
+        # Different saved sources/base modes use independent contexts: only the
+        # stored as-shot version requires materialization; the manual FL keeps
+        # its code, strength and other overrides instead of inheriting ST.
+        look_catalog = root / 'LookContexts.jlp'
+        look_catalog.mkdir()
+        first_base, second_base = copy.deepcopy(look_base), copy.deepcopy(look_base)
+        first_base['look'] = manual_look('FL', .42, {'sharpness': 2})
+        second_base['look'] = {'schema': 1, 'mode': 'as-shot', 'code': '', 'strength': .7, 'parameters': {}}
+        with open_database(look_catalog / 'Project.db') as db:
+            db.executescript("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);"
+                             "INSERT INTO meta VALUES('project_name','Look contexts');"
+                             "CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT);")
+            for input_file, state in ((look_source, first_base), (source, second_base)):
+                db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)', ('../' + input_file.name, json.dumps(state)))
+        look_catalog_hash = hashlib.sha256((look_catalog / 'Project.db').read_bytes()).hexdigest()
+        look_catalog_output = root / 'look-context-output'
+        look_catalog_output.mkdir()
+        look_commands.write_text(json.dumps([{'command': 'look.parameter', 'parameter': 'fade', 'value': 2.6}]))
+        contexts = json.loads(run('--catalog', look_catalog, '--output-dir', look_catalog_output, '--commands', look_commands).stdout)
+        assert contexts['ok'] and contexts['completed'] == 2
+        first_expected, second_expected = copy.deepcopy(first_base), copy.deepcopy(second_base)
+        first_expected['look']['parameters']['fade'] = 3
+        second_expected['look'] = manual_look('ST', .7, {'fade': 3})
+        for result, state, input_file, tag in zip(contexts['results'], (first_expected, second_expected),
+                                                  (look_source, source), ('context-first', 'context-second')):
+            assert result['stored_look'] == state['look']
+            assert png16_pixels(Path(result['destination'])) == png16_pixels(look_reference(tag, state, input_file))
+        assert hashlib.sha256((look_catalog / 'Project.db').read_bytes()).hexdigest() == look_catalog_hash
+        assert set(p.name for p in look_catalog.iterdir()) == {'Project.db'}
+        assert hashlib.sha256(look_source.read_bytes()).hexdigest() == look_source_hash
         listing = json.loads(run('--catalog', catalog, '--list-catalog').stdout)
         assert listing['ok'] and listing['read_only'] and listing['mode'] == 'catalog-list' and listing['count'] == 2
         assert [v['catalog_key'] for v in listing['versions']] == ['../original.png', key]
@@ -563,7 +784,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

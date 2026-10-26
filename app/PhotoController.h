@@ -347,6 +347,7 @@ public:
     QStringList currentAlbums() const;
     QString currentColorLabel() const;
     Q_INVOKABLE bool executeEditCommand(const QVariantMap &command);
+    Q_INVOKABLE bool executeEditCommands(const QVariantList &commands);
     Q_INVOKABLE bool createVirtualCopy(const QString &name = {});
     Q_INVOKABLE bool renameCurrentVirtualCopy(const QString &name);
     Q_INVOKABLE bool removeCurrentVirtualCopy();
@@ -548,6 +549,7 @@ private:
     std::unique_ptr<LatestJob<CameraReferenceRequest,CameraReferenceResult>> m_referenceJob;
     std::unique_ptr<LatestJob<LookCalibrationRequest,LookCalibrationResult>> m_calibrationJob;
     void initializeLookJobs();
+    bool applyLookEdit(const QJsonObject &command, const QString &action, const QVariantMap &details = {});
     void resetReference();
     void requestReference();
     bool isProtectedPhoto(const QString &path) const;
