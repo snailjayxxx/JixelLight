@@ -618,7 +618,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 }
 
 bool PhotoController::executeEditCommand(const QVariantMap &command) {
-    if (!hasImage()) return false;
+    if (!currentSourceAvailable()) return false;
     QString error; auto staged = m_photos[m_currentIndex].state;
     const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
     if (!CommandRegistry::executeBatch(staged,{QJsonObject::fromVariantMap(command)},&error,&context)) {
@@ -630,7 +630,7 @@ bool PhotoController::executeEditCommand(const QVariantMap &command) {
 }
 
 bool PhotoController::executeEditCommands(const QVariantList &commands) {
-    if (!hasImage()) return false;
+    if (!currentSourceAvailable()) return false;
     if (commands.isEmpty()) return true;
     if (commands.size()>10000) {
         setStatus(uiText("命令批次超过 10000 条。", "Command batch exceeds 10000 entries.")); return false;
@@ -1133,6 +1133,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
         cancelRelink(); ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+        m_catalogDatesJob->cancel(); m_catalogDateTimer.start();
         // A new catalog stores absolute source keys; an opened legacy catalog
         // keeps its original relative keys until it is explicitly copied here.
         for (auto &photo : m_photos) {
@@ -1151,6 +1152,12 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
             m_dirtyDates.insert(p.storageKey(),p.timeline);
         }
         enqueueEdits();
+        for(const auto &photo:m_photos)if(photo.identity.isKnown() && !m_identityEstablished.contains(photo.path)) {
+            if(!m_project.recordOriginalIdentity(photo.path,photo.identity)) {
+                setStatus(uiText("原片内容身份未能复制：", "Source identity could not be copied: ")+m_project.lastError());return false;
+            }
+            m_identityEstablished.insert(photo.path);
+        }
         for(const auto &photo:m_photos)if(sourceReadable(photo))queueSourceIdentity(photo.path);
         emit projectChanged();
         setStatus(uiText(QStringLiteral("项目已创建：") + m_project.projectName(), QStringLiteral("Project created: ") + m_project.projectName()));
@@ -1212,6 +1219,7 @@ bool PhotoController::openProject(const QUrl &url) {
                             RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString(),record.timeline});
         auto &photo=m_photos.last();
         photo.available=available; photo.sourceKey=record.sourceKey.isEmpty()?record.path:record.sourceKey;
+        photo.identity=record.identity;
         if(record.identity.isKnown())m_identityEstablished.insert(absolute);
         if (record.copyKey.isEmpty() && !identity.isEmpty()) m_importedPaths.insert(identity);
     }

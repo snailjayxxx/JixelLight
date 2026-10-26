@@ -79,7 +79,7 @@ void PhotoController::setShowCameraReference(bool show) {
     if(show&&m_referenceImage.isNull()&&!m_referenceBusy)requestReference();
 }
 bool PhotoController::applyLookEdit(const QJsonObject &command,const QString &action,const QVariantMap &details) {
-    if(!hasImage())return false;
+    if(!currentSourceAvailable())return false;
     auto staged=m_photos[m_currentIndex].state; QString error;
     const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
     if(!CommandRegistry::execute(staged,command,&error,&context)) {
@@ -89,7 +89,7 @@ bool PhotoController::applyLookEdit(const QJsonObject &command,const QString &ac
     persistAndApply(action,details);return true;
 }
 void PhotoController::setLookMode(const QString &mode) {
-    if(!hasImage())return;
+    if(!currentSourceAvailable())return;
     if(mode=="as-shot" && !currentIsRaw()) {
         setStatus(uiText("JPEG/TIFF 已包含外观，不会自动重复套用。", "JPEG/TIFF already contains rendered color; no automatic double application."));return;
     }

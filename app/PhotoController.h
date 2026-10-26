@@ -444,6 +444,7 @@ private:
         QString sourceKey;
         bool available=true;
         quint64 thumbnailRevision=0;
+        ProjectDatabase::OriginalIdentity identity;
         QString storageKey() const { return copyKey.isEmpty() ? (originalKey.isEmpty() ? path : originalKey) : copyKey; }
     };
     QVector<PhotoEntry> resolveExportVersions(const QStringList &keys, QString *error) const;

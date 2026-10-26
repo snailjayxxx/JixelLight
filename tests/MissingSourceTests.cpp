@@ -55,6 +55,10 @@ private slots:
         QCOMPARE(controller.currentRating(),4);QCOMPARE(controller.currentKeywords(),QStringList{"retained"});
         const auto exposure=controller.exposure();controller.setExposure(2);QCOMPARE(controller.exposure(),exposure);QVERIFY(!controller.canUndo());
         QVERIFY(!controller.executeEditCommand({{"command","develop.set"},{"parameter","exposure"},{"value",2}}));
+        const auto storedLook=controller.lookState();const auto storedHistory=controller.editHistory();
+        QVERIFY(!controller.executeEditCommands({QVariantMap{{"command","look.code"},{"code","FL"}},QVariantMap{{"command","develop.set"},{"parameter","exposure"},{"value",2}}}));
+        controller.setLookCode("FL");controller.setLookMode("manual");controller.setLookParameter("fade",3);controller.setLookStrength(.3);
+        QCOMPARE(controller.lookState(),storedLook);QCOMPARE(controller.editHistory(),storedHistory);
         const QByteArray cube="LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
         QString error;QVERIFY(LookLut::fromCube(cube,&error));const auto profile=dir.filePath("valid.cube");
         {QFile file(profile);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write(cube),cube.size());}
@@ -87,6 +91,11 @@ private slots:
         {ProjectDatabase db;QVERIFY(db.create(dir.path(),"Known"));project=db.projectPath();QVERIFY(db.updateBatch({{original,state},{other,{}}}));QVERIFY(db.flush());
          QVERIFY(db.addVirtualCopy(copyKey,original,"Copy",state,history,tags,{4,"pick"}));QVERIFY(db.recordOriginalIdentity(original,identity(original)));}
         QVERIFY(QFile::rename(original,moved));PhotoController controller(nullptr);controller.setGpuEnabled(false);QVERIFY(controller.openProject(QUrl::fromLocalFile(project)));
+        const auto previousProject=project;
+        QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"KnownCopy"));project=controller.projectPath();
+        {ProjectDatabase reader;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(reader.readSnapshot(project,&saved));int knownMembers=0;
+         for(const auto &photo:saved)if(photo.path==original){++knownMembers;QCOMPARE(photo.identity,identity(moved));}QCOMPARE(knownMembers,2);
+         QVERIFY(reader.readSnapshot(previousProject,&saved));QCOMPARE(saved[0].path,original);QCOMPARE(saved[0].identity,identity(moved));}
         QVERIFY(controller.beginRelink(copyKey,QUrl::fromLocalFile(moved)));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
         QCOMPARE(controller.relinkPreview().value("status").toString(),QString("ready"));QVERIFY(controller.relinkPreview().value("identityKnown").toBool());
         const auto requestId=controller.relinkPreview().value("requestId").toString();

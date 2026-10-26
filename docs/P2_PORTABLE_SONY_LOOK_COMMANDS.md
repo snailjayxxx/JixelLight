@@ -1,6 +1,6 @@
 # P2 — portable Sony Look commands
 
-Local implementation on `codex/p2-look-commands`, based on `8dc75fa`. This stage exposes the existing independent Sony Look approximations through the shared command registry, GUI adapters and offline CLI. It changes command routing/validation, not Sony metadata interpretation, rendering coefficients or the engine version. Final CI and deployed-package acceptance remain pending.
+Implementation developed on `codex/p2-look-commands` from `8dc75fa` and integrated into `design/lightcraft-fusion-20261008` after missing-source recovery. This stage exposes the existing independent Sony Look approximations through the shared command registry, GUI adapters and offline CLI. It changes command routing/validation, not Sony metadata interpretation, rendering coefficients or the engine version. Combined-tree local acceptance passed; final-tree CI and deployed-package acceptance remain pending.
 
 ## Command contract
 
@@ -87,3 +87,11 @@ The existing real Sony native probe reuses each already-decoded public ARW's 102
 | Final-tree CI/deployed packages | Pending; no remote branch, PR or deployment changed by this stage. |
 
 No speedup or Sony in-camera JPEG equivalence is claimed. The original GPU parity, source/scope pixel, active-brush, output-safety and test-timeout gates are unchanged.
+
+## Combined recovery integration
+
+Look GUI adapters and single/batch command entry points require `currentSourceAvailable()`. Missing catalog entries continue to expose stored history/curation, while a Look or mixed command batch cannot change them. The missing-source regression exercises all four Look setters plus a mixed command array and requires unchanged Look/history. A localized grouped-adjustments history title covers accepted command batches. The standalone worktree evidence above does not claim acceptance of this later combined tree.
+
+The integrated missing-source/Look tree passed **12/12 CTest in106.24s**, **212 Core/36 actual Metal GPU/39 performance/21 Sony Look/9 project-relink/9 missing-source**, required public Sony/DNG, zero failures/skips. All three real Sony scenes passed seven command pixel cases plus actual53,298-pixel CLI PNG16/ICC comparisons; generated PNG count after cleanup was zero. Combined serial CPU/native-Metal RAW GUI passed **14,391/14,993ms**, all23 screenshots,10,340,960 final full scopes,QML0 and selected-export checks under the old60,000ms deadline. Native missing-source pointer smoke (offscreen/Cocoa) and the existing mask-canvas pointer smoke also passed. Reports: `build-local/local-combined-look-relink-tests.xml`, `local-combined-gui-{cpu,metal}`, `local-combined-{relink-offscreen,relink-cocoa,mask-canvas}.json`; external build logs use the prefix `combined-look-relink-`. These are working-tree results; CI must validate the committed tree and actual seven-mode deployed packages.
+
+After the final catalog-generation/identity-copy follow-up, focused project/date/Look Core checks passed10/0/0 in355ms and the full missing-source suite passed9/0/0 in971ms (including init/cleanup). Serial final RAW GUI passed **14,233ms CPU /15,296ms native Metal**, each23/23 saved screenshots,10340960 scopes, selected-export checks and QML0 under60000ms. Reports: `build-local/local-combined-final-gui-{cpu,metal}`; focused logs: external `combined-final-project-look-targeted.txt` and `combined-final-missing-targeted.txt`.

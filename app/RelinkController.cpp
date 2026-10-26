@@ -131,6 +131,7 @@ void PhotoController::initializeRelinkJobs() {
                 if (photo.copyKey.isEmpty()) photo.originalKey=request.candidatePath;
                 photo.name=QFileInfo(photo.path).fileName()+(photo.copyKey.isEmpty()?QString():QStringLiteral(" · ")+photo.versionName);
                 photo.raw=RawDecoder::isRawFile(photo.path); photo.available=true; photo.thumbnailRevision=thumbnail;
+                photo.identity=result.identity;
             }
             m_identityEstablished.insert(request.candidatePath);
             m_importedPaths.clear();
@@ -165,8 +166,11 @@ void PhotoController::initializeRelinkJobs() {
             for(const auto &path:request.paths)m_identityPending.remove(path);
             for(auto it=result.cbegin();it!=result.cend();++it) {
                 const auto photo=std::find_if(m_photos.cbegin(),m_photos.cend(),[&](const auto &p){return p.path==it.key();});
-                if(photo!=m_photos.cend() && m_project.recordOriginalIdentity(photo->sourceKey.isEmpty()?photo->path:photo->sourceKey,it.value()))
+                if(photo!=m_photos.cend() && m_project.recordOriginalIdentity(photo->sourceKey.isEmpty()?photo->path:photo->sourceKey,it.value())) {
                     m_identityEstablished.insert(it.key());
+                    const auto family=sourceFamily(*photo);
+                    for(auto &member:m_photos)if(sourceFamily(member)==family)member.identity=it.value();
+                }
             }
             startSourceIdentities();
         });
