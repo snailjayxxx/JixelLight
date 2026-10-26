@@ -26,6 +26,8 @@
 
 #include "app/PhotoController.h"
 #include "app/SmokePhasePolicy.h"
+#include "core/async/ParallelRows.h"
+#include "core/look/LookDetail.h"
 #include "core/color/ColorManagement.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
@@ -1749,6 +1751,295 @@ private slots:
     }
     // M4.4A: actual scene-linear CPU processing of an active brush in a
     // *transient in-memory* research plan. Persisted/UI brush stays disabled.
+    void brushParallelTilesKeepExactWholeRoiViewportAndDetailPixels() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        auto &workerPool=ParallelRows::pool();
+        workerPool.waitForDone();
+        const int previousPoolMax=workerPool.maxThreadCount();
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        const auto restore=qScopeGuard([&] {
+            workerPool.waitForDone();
+            workerPool.setMaxThreadCount(previousPoolMax);
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        QImage source(541,509,QImage::Format_RGBA32FPx4);
+        const std::array<float,4> alphas{0.f,1.f/65535.f,.375f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=1.2f+.001f*x;pixel[1]=-.04f+.001f*y;
+            pixel[2]=.25f+.0004f*(x+y);pixel[3]=alphas[(x+y)%4];
+        }
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        BD::Layer light;light.id="parallel_light";light.enabled=true;light.exposureEv=.9;
+        light.strokes={BM::Stroke{BM::Style{.16,.35,.8},
+            {{{.35,.4},1.},{{.5,.5},.7}}}};
+        BD::Layer dark;dark.id="parallel_dark";dark.enabled=true;dark.exposureEv=-.45;
+        dark.strokes={BM::Stroke{BM::Style{.12,.7,.6},{{{.62,.58},1.}}}};
+        AdjustmentState state;state.brushMasks.layers={light,dark};
+        state.exposure=-.6;state.vignetteAmount=-.3;
+        state.look.mode="manual";state.look.code="ST";state.look.parameters={{"sharpness",2}};
+        const QRect roi(5,7,529,497);
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        for(const auto viewport:{QRectF(0,0,1,1),QRectF(.2,.15,.6,.7)}) {
+            auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+            plan.setFrameRect(viewport);
+            const auto detail=plan.data[ProcessingPlan::LookDetail];
+            const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w});
+            QVERIFY(pad>0);
+            const auto normalized=plan.data[ProcessingPlan::FrameRect];
+            const BT::NormalizedFrame frame{normalized.x,normalized.y,normalized.z,normalized.w};
+            qputenv("JIXELLIGHT_CPU_THREADS","1");
+            workerPool.waitForDone();workerPool.setMaxThreadCount(1);
+            const auto serial=ImagePipeline::processWithPlan(source,plan,{},false);
+            QVERIFY(!serial.isNull());
+            QCOMPARE(ImagePipeline::processRegion(source,plan,roi),serial.copy(roi));
+            for(bool regionOnly:{false,true}) {
+                const QRect renderedRect=regionOnly
+                    ? roi.adjusted(-pad,-pad,pad,pad).intersected(source.rect()):source.rect();
+                BT::FramePlan expectedPlan;
+                QVERIFY(BT::planFrame(state.brushMasks,source.width(),source.height(),
+                    {renderedRect.x(),renderedRect.y(),renderedRect.width(),renderedRect.height()},
+                    &expectedPlan,nullptr,frame));
+                const auto rasterized=std::count_if(expectedPlan.tiles.begin(),expectedPlan.tiles.end(),
+                    [](const auto &tile){return tile.candidateVisits!=0;});
+                QVERIFY(expectedPlan.candidateVisits>0);
+                // Keep a representative frame below 32 tiles. Submission
+                // counters prove scheduling, not concurrent pixel execution;
+                // fetch_add(1) still needs source review and timing evidence.
+                QVERIFY(expectedPlan.tiles.size()>1 && expectedPlan.tiles.size()<32);
+                for(const QByteArray budget:{QByteArray("1"),QByteArray("2"),QByteArray("8")}) {
+                    qputenv("JIXELLIGHT_CPU_THREADS",budget);
+                    workerPool.waitForDone();
+                    workerPool.setMaxThreadCount(std::max(1,budget.toInt()-1));
+                    const auto before=PerformanceRecorder::snapshot()["counters"].toObject();
+                    const auto result=regionOnly?ImagePipeline::processRegion(source,plan,roi)
+                        :ImagePipeline::processWithPlan(source,plan,{},true);
+                    QVERIFY(!result.isNull());
+                    QCOMPARE(result,regionOnly?serial.copy(roi):serial);
+                    const auto after=PerformanceRecorder::snapshot()["counters"].toObject();
+                    const auto delta=[&](const char *key) {
+                        return after.value(key).toInteger()-before.value(key).toInteger();
+                    };
+                    QCOMPARE(delta("brush_research_cpu_tiles"),qint64(expectedPlan.tiles.size()));
+                    QCOMPARE(delta("brush_research_rasterized_tiles"),qint64(rasterized));
+                    QCOMPARE(delta("brush_research_pruned_tiles"),qint64(expectedPlan.tiles.size()-rasterized));
+                    QCOMPARE(delta("brush_research_dab_pixel_visits"),qint64(expectedPlan.candidateVisits));
+                    QCOMPARE(delta("brush_research_candidate_references"),qint64(expectedPlan.candidateReferences()));
+                    QVERIFY(delta("brush_research_helper_tasks")<=budget.toInt()-1);
+                    if(budget=="1") {
+                        QCOMPARE(delta("brush_research_helper_tasks"),qint64(0));
+                        QCOMPARE(delta("brush_research_serial_frames"),qint64(1));
+                        QCOMPARE(delta("brush_research_parallel_frames"),qint64(0));
+                    } else {
+                        QVERIFY(delta("brush_research_helper_tasks")>0);
+                        QCOMPARE(delta("brush_research_parallel_frames"),qint64(1));
+                        QCOMPARE(delta("brush_research_serial_frames"),qint64(0));
+                    }
+                }
+            }
+            qputenv("JIXELLIGHT_CPU_THREADS","8");
+            workerPool.waitForDone();workerPool.setMaxThreadCount(7);
+            const auto helpers=counter("brush_research_helper_tasks");
+            const auto serialFrames=counter("brush_research_serial_frames");
+            QCOMPARE(ImagePipeline::processWithPlan(source,plan,{},false),serial);
+            QCOMPARE(counter("brush_research_helper_tasks"),helpers);
+            QCOMPARE(counter("brush_research_serial_frames"),serialFrames+1);
+        }
+        auto baselineState=state;baselineState.brushMasks={};
+        auto zeroState=state;
+        for(auto &layer:zeroState.brushMasks.layers)layer.exposureEv=0;
+        const auto baselinePlan=ProcessingPlan::compile(baselineState,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                       ColorManagement::OutputSpace::SRgb,false,0);
+        const auto zeroPlan=ProcessingPlan::compile(zeroState,ImagePipeline::InputEncoding::LinearProPhoto,
+                                                   ColorManagement::OutputSpace::SRgb,false,0);
+        const auto baseline=ImagePipeline::processWithPlan(source,baselinePlan,{},true);
+        const auto zeroHelpers=counter("brush_research_helper_tasks");
+        const auto zeroSerial=counter("brush_research_serial_frames");
+        const auto zeroParallel=counter("brush_research_parallel_frames");
+        // Enabled masks with no candidate work keep the old row renderer and
+        // do not enter the nonzero-candidate brush scheduling diagnostics.
+        QCOMPARE(ImagePipeline::processWithPlan(source,zeroPlan,{},true),baseline);
+        QCOMPARE(counter("brush_research_helper_tasks"),zeroHelpers);
+        QCOMPARE(counter("brush_research_serial_frames"),zeroSerial);
+        QCOMPARE(counter("brush_research_parallel_frames"),zeroParallel);
+        QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+    }
+
+    void brushParallelRequestsIsolateRuntimeFailureAndInFlightCancellation() {
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        auto &workerPool=ParallelRows::pool();
+        workerPool.waitForDone();
+        const int previousPoolMax=workerPool.maxThreadCount();
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        const auto restore=qScopeGuard([&] {
+            workerPool.waitForDone();
+            workerPool.setMaxThreadCount(previousPoolMax);
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        QImage source(513,513,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=1.4f+.0005f*x;pixel[1]=-.02f+.0005f*y;
+            pixel[2]=.3f;pixel[3]=(x+y)%3?.75f:0.f;
+        }
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        BD::Layer layer;layer.id="parallel_request";layer.enabled=true;layer.exposureEv=.7;
+        layer.strokes={BM::Stroke{BM::Style{.22,.4,.8},{{{.46,.52},1.},{{.6,.45},.7}}}};
+        AdjustmentState good;good.exposure=-.5;good.brushMasks.layers={layer};
+        const auto compile=[](const AdjustmentState &settings) {
+            return ProcessingPlan::compile(settings,ImagePipeline::InputEncoding::LinearProPhoto,
+                                           ColorManagement::OutputSpace::SRgb,false,0);
+        };
+        const auto goodPlan=compile(good);
+        auto secondPlan=goodPlan;secondPlan.setFrameRect(QRectF(.2,.1,.6,.7));
+        qputenv("JIXELLIGHT_CPU_THREADS","1");
+        workerPool.waitForDone();workerPool.setMaxThreadCount(1);
+        const auto reference=ImagePipeline::processWithPlan(source,goodPlan,{},false);
+        const auto secondReference=ImagePipeline::processWithPlan(source,secondPlan,{},false);
+        QVERIFY(!reference.isNull());QVERIFY(!secondReference.isNull());
+        AdjustmentState bad;
+        for(int i=0;i<3;++i) {
+            auto high=layer;high.id=QStringLiteral("parallel_refusal_%1").arg(i);high.exposureEv=3;
+            high.strokes={BM::Stroke{BM::Style{.5,1,1},{{{.5,.5},1.}}}};
+            bad.brushMasks.layers.push_back(std::move(high));
+        }
+        const auto badPlan=compile(bad);
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(source.size(),badPlan,source.height()));
+        QImage heavy(1024,1024,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<heavy.height();++y)for(int x=0;x<heavy.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(heavy.scanLine(y))+4*x;
+            pixel[0]=2.f;pixel[1]=.4f;pixel[2]=-.05f;pixel[3]=1.f;
+        }
+        auto load=layer;load.id="parallel_cancel_load";
+        load.strokes={BM::Stroke{BM::Style{.3,.4,.7},{}}};
+        load.strokes[0].dabs.assign(144,{{.5,.5},1.});
+        AdjustmentState heavyState;heavyState.exposure=-1;heavyState.brushMasks.layers={load};
+        const auto heavyPlan=compile(heavyState);
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(heavy.size(),heavyPlan,heavy.height()));
+        const auto heavyFingerprint=FloatFrameFingerprint::capture(heavy);
+        auto cancel=std::make_shared<std::atomic_bool>(false);
+        auto independentToken=std::make_shared<std::atomic_bool>(false);
+        std::array<QFuture<QImage>,4> work;
+        const auto join=qScopeGuard([&] {
+            cancel->store(true,std::memory_order_relaxed);
+            for(auto &future:work)future.waitForFinished();
+        });
+        qputenv("JIXELLIGHT_CPU_THREADS","8");
+        workerPool.waitForDone();workerPool.setMaxThreadCount(7);
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto helpers=counter("brush_research_helper_tasks");
+        const auto serialFrames=counter("brush_research_serial_frames");
+        const auto parallelFrames=counter("brush_research_parallel_frames");
+        work[2]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(heavy,heavyPlan,cancel,true);});
+        // Observe the brush request's own helpers before starting any other
+        // request: cancellation must exercise an active tile worker, rather
+        // than only the serial planning/source-validation preamble.
+        QElapsedTimer helperWait;helperWait.start();
+        while(workerPool.activeThreadCount()==0 && !work[2].isFinished()
+              && helperWait.elapsed()<5000)QTest::qWait(1);
+        const bool helpersActive=workerPool.activeThreadCount()>0;
+        const bool pending=!work[2].isFinished();
+        work[0]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,goodPlan,{},true);});
+        work[1]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,badPlan,independentToken,true);});
+        work[3]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,secondPlan,{},true);});
+        cancel->store(true,std::memory_order_relaxed);
+        for(auto &future:work)future.waitForFinished();
+        QVERIFY(helpersActive);QVERIFY(pending);QVERIFY(work[2].result().isNull());
+        QVERIFY(work[1].result().isNull());QVERIFY(!independentToken->load());
+        QCOMPARE(work[0].result(),reference);QCOMPARE(work[3].result(),secondReference);
+        // Only the two successful color passes publish scheduling counters.
+        QVERIFY(counter("brush_research_helper_tasks")-helpers<=2*(8-1));
+        QCOMPARE(counter("brush_research_serial_frames")-serialFrames
+                 +counter("brush_research_parallel_frames")-parallelFrames,qint64(2));
+        // Failure/cancellation state is per request, including later callers.
+        const auto recoveryHelpers=counter("brush_research_helper_tasks");
+        QCOMPARE(ImagePipeline::processWithPlan(source,goodPlan,{},true),reference);
+        QVERIFY(counter("brush_research_helper_tasks")-recoveryHelpers<=8-1);
+        QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+        QCOMPARE(FloatFrameFingerprint::capture(heavy),heavyFingerprint);
+    }
+
+    void brushParallelSaturatedSharedPoolCompletesOnCallerWithoutQueueing() {
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        auto &sharedPool=ParallelRows::pool();
+        sharedPool.waitForDone();
+        const int previousPoolMax=sharedPool.maxThreadCount();
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        const auto restore=qScopeGuard([&] {
+            sharedPool.waitForDone();
+            sharedPool.setMaxThreadCount(previousPoolMax);
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        QImage source(541,509,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=1.4f;pixel[1]=-.02f+.001f*y;pixel[2]=.3f;pixel[3]=1.f;
+        }
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        BD::Layer layer;layer.id="saturated_pool";layer.enabled=true;layer.exposureEv=.8;
+        layer.strokes={BM::Stroke{BM::Style{.2,.4,.7},{{{.45,.5},1.},{{.65,.6},.7}}}};
+        AdjustmentState state;state.exposure=-.5;state.brushMasks.layers={layer};
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+        qputenv("JIXELLIGHT_CPU_THREADS","1");
+        sharedPool.waitForDone();sharedPool.setMaxThreadCount(1);
+        const auto reference=ImagePipeline::processWithPlan(source,plan,{},false);
+        QVERIFY(!reference.isNull());
+        qputenv("JIXELLIGHT_CPU_THREADS","4");
+        sharedPool.waitForDone();sharedPool.setMaxThreadCount(3);
+        const int blockers=std::max(1,sharedPool.maxThreadCount());
+        QSemaphore started,release;
+        int submitted=0;bool released=false;
+        QThreadPool callerPool;callerPool.setMaxThreadCount(1);
+        QFuture<QImage> result;
+        const auto unblockAndJoin=qScopeGuard([&] {
+            if(!released)release.release(submitted);
+            sharedPool.waitForDone();
+            result.waitForFinished();callerPool.waitForDone();
+        });
+        for(int i=0;i<blockers;++i) {
+            auto *task=QRunnable::create([&] {started.release();release.acquire();});
+            if(sharedPool.tryStart(task))++submitted;
+            else {delete task;QFAIL("Cannot establish an idle shared-pool saturation fixture");}
+        }
+        QVERIFY(started.tryAcquire(submitted,5000));
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto helpers=counter("brush_research_helper_tasks");
+        const auto serialFrames=counter("brush_research_serial_frames");
+        const auto parallelFrames=counter("brush_research_parallel_frames");
+        result=QtConcurrent::run(&callerPool,[&] {return ImagePipeline::processWithPlan(source,plan,{},true);});
+        QElapsedTimer wait;wait.start();
+        while(!result.isFinished() && wait.elapsed()<10000)QTest::qWait(1);
+        const bool completedWhileSaturated=result.isFinished();
+        // Release before checking the assertion, so even an incorrectly
+        // queued implementation cannot leave this test or CI deadlocked.
+        release.release(submitted);released=true;
+        sharedPool.waitForDone();result.waitForFinished();callerPool.waitForDone();
+        QVERIFY(completedWhileSaturated);
+        QCOMPARE(result.result(),reference);
+        QCOMPARE(counter("brush_research_helper_tasks"),helpers);
+        QCOMPARE(counter("brush_research_serial_frames"),serialFrames+1);
+        QCOMPARE(counter("brush_research_parallel_frames"),parallelFrames);
+        QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+    }
+
     void brushSparseTilesPruneOnlyProvenZeroCoverage() {
         namespace BM=BrushMaskGeometry; namespace BD=BrushMaskDocument;
         namespace BT=BrushMaskTileRaster;

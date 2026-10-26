@@ -11,8 +11,11 @@
 #include <QColorSpace>
 #include <QRgba64>
 #include <QElapsedTimer>
+#include <QSemaphore>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <memory>
 #include <cmath>
 #include <bit>
 #include <cstdint>
@@ -848,38 +851,85 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     if (brushResearch && brushFrame.candidateVisits!=0) {
         // Zero-candidate tiles have a provably zero EV plane. Do not allocate
         // coverage/alpha/output arrays or scan the document again for them.
-        std::size_t totalVisits=0,rasterized=0;
-        for(std::size_t tileIndex=0;tileIndex<brushFrame.tiles.size();++tileIndex) {
-                const auto &tile=brushFrame.tiles[tileIndex];
-                if(cancelled(token))return {};
-                const int tileX=tile.rect.x-origin.x(),tileY=tile.rect.y-origin.y();
-                const int w=tile.rect.width,h=tile.rect.height;
-                BrushMaskTileRaster::ExposureOutput mask;
-                if (tile.candidateVisits!=0) {
-                    if (!BrushMaskTileRaster::exposureOnly(brushFrame,tileIndex,&mask,token.get())
-                        || mask.visitedDabPixels!=tile.candidateVisits) return {};
-                    totalVisits+=mask.visitedDabPixels;
-                    ++rasterized;
+        std::atomic_size_t next{0},totalVisits{0},rasterized{0};
+        std::atomic_bool failed{false};
+        const auto renderTile=[&](std::size_t tileIndex) {
+            const auto &tile=brushFrame.tiles[tileIndex];
+            const int tileX=tile.rect.x-origin.x(),tileY=tile.rect.y-origin.y();
+            const int w=tile.rect.width,h=tile.rect.height;
+            BrushMaskTileRaster::ExposureOutput mask;
+            if (tile.candidateVisits!=0) {
+                if (!BrushMaskTileRaster::exposureOnly(brushFrame,tileIndex,&mask,token.get())
+                    || mask.visitedDabPixels!=tile.candidateVisits) return false;
+            }
+            for(int yy=0;yy<h;++yy) {
+                if(cancelled(token) || failed.load(std::memory_order_relaxed)) return false;
+                auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
+                const auto *raw=src+(tileY+yy)*srcStride;
+                const auto *rgba=floating ? reinterpret_cast<const float *>(raw) : nullptr;
+                const auto *rgba64=floating ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
+                for(int xx=0;xx<w;++xx) {
+                    const int x=tileX+xx;
+                    const float ev=tile.candidateVisits==0 ? 0.0f
+                        : mask.weightedExposureEv[std::size_t(yy)*w+xx];
+                    if (!std::isfinite(ev) || std::abs(ev)>8.0f) return false;
+                    line[x]=floating
+                        ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
+                        : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
                 }
-                for(int yy=0;yy<h;++yy) {
-                    if(cancelled(token))return {};
-                    auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
-                    const auto *raw=src+(tileY+yy)*srcStride;
-                    const auto *rgba= floating ? reinterpret_cast<const float *>(raw) : nullptr;
-                    const auto *rgba64= floating ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
-                    for(int xx=0;xx<w;++xx) {
-                        const int x=tileX+xx;
-                        const float ev=tile.candidateVisits==0 ? 0.0f
-                            : mask.weightedExposureEv[std::size_t(yy)*w+xx];
-                        if (!std::isfinite(ev) || std::abs(ev)>8.0f) return {};
-                        line[x]=floating
-                            ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
-                            : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
+            }
+            totalVisits.fetch_add(mask.visitedDabPixels,std::memory_order_relaxed);
+            if (tile.candidateVisits!=0) rasterized.fetch_add(1,std::memory_order_relaxed);
+            return true;
+        };
+        // A worker owns only one tile's scratch. The immutable plan/kernel and
+        // raw image pointers are shared; no worker calls a QImage detach API.
+        // Claim one tile at a time, so fewer than 32 tiles still use helpers.
+        const auto work=[&] {
+            try {
+                while (!cancelled(token) && !failed.load(std::memory_order_relaxed)) {
+                    const auto tileIndex=next.fetch_add(1,std::memory_order_relaxed);
+                    if (tileIndex>=brushFrame.tiles.size()) break;
+                    if (!renderTile(tileIndex)) {
+                        failed.store(true,std::memory_order_relaxed);
+                        break;
                     }
                 }
+            } catch (...) {
+                // Allocation/render failure must not escape a QRunnable or
+                // leave another worker referring to a destroyed stack frame.
+                failed.store(true,std::memory_order_relaxed);
+            }
+        };
+        const int budget=ParallelRows::threadBudget();
+        const bool useHelpers=parallel && budget>1 && brushFrame.tiles.size()>1
+            && std::size_t(source.width())*source.height()+brushFrame.candidateVisits>=262144;
+        QSemaphore done;
+        int submitted=0;
+        try {
+            if (useHelpers) {
+                const auto helperLimit=std::min(std::size_t(budget-1),brushFrame.tiles.size()-1);
+                for (std::size_t i=0;i<helperLimit && !cancelled(token)
+                     && !failed.load(std::memory_order_relaxed);++i) {
+                    auto task=std::unique_ptr<QRunnable>(QRunnable::create([&] { work(); done.release(); }));
+                    if (!ParallelRows::pool().tryStart(task.get())) break;
+                    task.release();
+                    ++submitted;
+                }
+            }
+        } catch (...) {
+            failed.store(true,std::memory_order_relaxed);
         }
-        if (totalVisits!=brushFrame.candidateVisits) return {};
-        recordBrushTiles(rasterized);
+        // The calling thread always participates. tryStart never queues work
+        // behind tasks waiting for this caller; saturation stays caller-only.
+        work();
+        done.acquire(submitted);
+        if (cancelled(token) || failed.load(std::memory_order_relaxed)
+            || totalVisits.load(std::memory_order_relaxed)!=brushFrame.candidateVisits) return {};
+        recordBrushTiles(rasterized.load(std::memory_order_relaxed));
+        PerformanceRecorder::count("brush_research_helper_tasks",submitted);
+        PerformanceRecorder::count("brush_research_parallel_frames",submitted>0?1:0);
+        PerformanceRecorder::count("brush_research_serial_frames",submitted==0?1:0);
         return finishColor(std::move(out),plan,token);
     }
     // An all-zero candidate frame uses the historical row renderer, including

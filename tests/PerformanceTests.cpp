@@ -20,6 +20,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/LatestJob.h"
+#include "core/async/ParallelRows.h"
 #include "core/cache/SourceCache.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
@@ -94,6 +95,10 @@ private slots:
         QTest::newRow("distributed-sparse-16k")<<512<<384<<8192<<.002<<false<<false<<1;
         QTest::newRow("mostly-offscreen-4k")<<512<<384<<2048<<.002<<true<<false<<2;
         QTest::newRow("mostly-offscreen-16k")<<512<<384<<8192<<.002<<true<<false<<2;
+        // Large enough to admit parallel tiles even when coverage is sparse;
+        // the overlap case measures candidate work on the same source size.
+        QTest::newRow("parallel-sparse-landscape")<<1024<<768<<8<<.025<<false<<false<<0;
+        QTest::newRow("parallel-overlap-landscape")<<1024<<768<<96<<.12<<false<<false<<0;
     }
     void brushRepresentativeWorkloads() {
         namespace BT=BrushMaskTileRaster;
@@ -211,9 +216,14 @@ private slots:
         };
         const auto beforePruned=counter("brush_research_pruned_tiles");
         const auto beforeRaster=counter("brush_research_rasterized_tiles");
+        const auto beforeTiles=counter("brush_research_cpu_tiles");
         const auto beforeVisits=counter("brush_research_dab_pixel_visits");
         const auto beforeReferences=counter("brush_research_candidate_references");
+        const auto beforeIndexBytes=counter("brush_research_candidate_index_bytes");
         const auto beforeFallbacks=counter("brush_research_candidate_index_fallbacks");
+        const auto beforeHelpers=counter("brush_research_helper_tasks");
+        const auto beforeParallel=counter("brush_research_parallel_frames");
+        const auto beforeSerial=counter("brush_research_serial_frames");
         std::vector<double> cpuMs;QImage processed;
         for(int repeat=0;repeat<3;++repeat) {
             QElapsedTimer timer;timer.start();
@@ -226,10 +236,17 @@ private slots:
         QCOMPARE(counter("brush_research_pruned_tiles")-beforePruned,qint64(3*expectedPruned));
         QCOMPARE(counter("brush_research_rasterized_tiles")-beforeRaster,
                  qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        QCOMPARE(counter("brush_research_cpu_tiles")-beforeTiles,qint64(3*framePlan.tiles.size()));
         QCOMPARE(counter("brush_research_dab_pixel_visits")-beforeVisits,qint64(3*framePlan.candidateVisits));
         QCOMPARE(counter("brush_research_candidate_references")-beforeReferences,
                  qint64(3*framePlan.candidateReferences()));
+        QCOMPARE(counter("brush_research_candidate_index_bytes")-beforeIndexBytes,
+                 qint64(3*framePlan.candidateIndexBytes()));
         QCOMPARE(counter("brush_research_candidate_index_fallbacks"),beforeFallbacks);
+        QCOMPARE(counter("brush_research_helper_tasks"),beforeHelpers);
+        QCOMPARE(counter("brush_research_parallel_frames"),beforeParallel);
+        QCOMPARE(counter("brush_research_serial_frames")-beforeSerial,
+                 framePlan.candidateVisits ? qint64(3) : qint64(0));
         if(offscreen) {
             QCOMPARE(framePlan.candidateVisits,std::size_t(0));
             QCOMPARE(processed,ImagePipeline::processWithPlan(source,nonRawLinearPlan(),{},false));
@@ -237,6 +254,48 @@ private slots:
         std::sort(cpuMs.begin(),cpuMs.end());
         qInfo()<<"brush-frame-pruning"<<QTest::currentDataTag()<<"tiles"<<framePlan.tiles.size()
                <<"pruned_tiles"<<expectedPruned<<"median_cpu_frame_ms"<<cpuMs[1];
+
+        const auto parallelBefore=PerformanceRecorder::snapshot()["counters"].toObject();
+        const int budget=ParallelRows::threadBudget();
+        const bool eligible=framePlan.candidateVisits && framePlan.tiles.size()>1 && budget>1
+            && std::size_t(width)*height+framePlan.candidateVisits>=262144;
+        std::vector<double> parallelMs;
+        for(int repeat=0;repeat<3;++repeat) {
+            const auto helpers=counter("brush_research_helper_tasks");
+            const auto parallelFrames=counter("brush_research_parallel_frames");
+            const auto serialFrames=counter("brush_research_serial_frames");
+            QElapsedTimer timer;timer.start();
+            const auto result=ImagePipeline::processWithPlan(source,plan,{},true);
+            parallelMs.push_back(timer.nsecsElapsed()/1e6);
+            QVERIFY(!result.isNull());QCOMPARE(result,processed);
+            const auto submitted=counter("brush_research_helper_tasks")-helpers;
+            if(!framePlan.candidateVisits) {
+                QCOMPARE(submitted,qint64(0));
+                QCOMPARE(counter("brush_research_parallel_frames"),parallelFrames);
+                QCOMPARE(counter("brush_research_serial_frames"),serialFrames);
+            } else {
+                QVERIFY(submitted>=0 && submitted<=std::max(0,budget-1));
+                if(!eligible) QCOMPARE(submitted,qint64(0));
+                QCOMPARE(counter("brush_research_parallel_frames")-parallelFrames,
+                         submitted>0 ? qint64(1) : qint64(0));
+                QCOMPARE(counter("brush_research_serial_frames")-serialFrames,
+                         submitted>0 ? qint64(0) : qint64(1));
+            }
+        }
+        const auto delta=[&](const char *key) { return counter(key)-parallelBefore.value(key).toInteger(); };
+        QCOMPARE(delta("brush_research_cpu_tiles"),qint64(3*framePlan.tiles.size()));
+        QCOMPARE(delta("brush_research_pruned_tiles"),qint64(3*expectedPruned));
+        QCOMPARE(delta("brush_research_rasterized_tiles"),qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        QCOMPARE(delta("brush_research_dab_pixel_visits"),qint64(3*framePlan.candidateVisits));
+        QCOMPARE(delta("brush_research_candidate_references"),qint64(3*framePlan.candidateReferences()));
+        QCOMPARE(delta("brush_research_candidate_index_bytes"),qint64(3*framePlan.candidateIndexBytes()));
+        QCOMPARE(delta("brush_research_candidate_index_fallbacks"),qint64(0));
+        std::sort(parallelMs.begin(),parallelMs.end());
+        qInfo()<<"brush-frame-parallel"<<QTest::currentDataTag()<<"thread_budget"<<budget
+               <<"parallel_eligible"<<eligible<<"helper_tasks"<<delta("brush_research_helper_tasks")
+               <<"parallel_frames"<<delta("brush_research_parallel_frames")
+               <<"serial_frames"<<delta("brush_research_serial_frames")
+               <<"median_serial_cpu_frame_ms"<<cpuMs[1]<<"median_parallel_cpu_frame_ms"<<parallelMs[1];
         auto token=std::make_shared<std::atomic_bool>(true);
         QVERIFY(ImagePipeline::processWithPlan(source,plan,token,false).isNull());
     }

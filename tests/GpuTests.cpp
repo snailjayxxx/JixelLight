@@ -2,6 +2,7 @@
 #include <QGuiApplication>
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
+#include <QScopeGuard>
 #include <QRgba64>
 #include <random>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include "core/scopes/ScopesEngine.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
+#include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
 #include <QDir>
 #include <QJsonDocument>
@@ -473,6 +475,81 @@ private slots:
         }
         const auto captured=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,
                                    ColorManagement::OutputSpace::SRgb,viewport,true);
+        QVERIFY(!captured.image.isNull());
+        QVERIFY(captured.diagnostic.value("available").toBool());
+        QCOMPARE(captured.diagnostic.value("producer").toString(),QString("cpu-reference-upload"));
+        QCOMPARE(captured.histogram.pixelCount,quint64(source.width())*source.height());
+        QVERIFY(engine->lastProcessUsedCpuFallback());
+        QCOMPARE(source,original);
+    }
+
+    void researchBrushParallelTilesKeepHdrViewportFallbackAndScopes() {
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        // Exceed ParallelRows' 262144-pixel threshold with partial edge tiles,
+        // HDR/negative scene channels and alpha that must survive unchanged.
+        QImage source(541,509,QImage::Format_RGBA32FPx4);
+        const std::array<float,4> alphas{0.f,1.f/65535.f,.375f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=.12f+.0025f*x;
+            pixel[1]=-.035f+.0017f*y;
+            pixel[2]=.22f+.001f*((x+y)%97);
+            pixel[3]=alphas[(x+y)%4];
+        }
+        const QImage original=source.copy();
+        BD::Layer lighter;lighter.id="parallel_hdr";lighter.enabled=true;lighter.exposureEv=1.3;
+        lighter.strokes={BM::Stroke{BM::Style{.12,.4,.85},
+            {{{.36,.38},1.},{{.56,.47},.65},{{.72,.62},.9}}}};
+        BD::Layer darker;darker.id="parallel_shadow";darker.enabled=true;darker.exposureEv=-.85;
+        darker.strokes={BM::Stroke{BM::Style{.09,.72,.65},{{{.59,.41},1.}}}};
+        AdjustmentState state;state.brushMasks.layers={lighter,darker};
+        state.linearMaskEnabled=true;state.linearMaskExposure=-.4;state.linearMaskAngle=22;
+        state.vignetteAmount=-.4;
+        QVERIFY(BD::validDocument(state.brushMasks));
+        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previousBudget=qgetenv("JIXELLIGHT_CPU_THREADS");
+        const auto restoreBudget=qScopeGuard([&] {
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previousBudget);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        qputenv("JIXELLIGHT_CPU_THREADS","4");
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        for(const auto frame:{QRectF(0,0,1,1),QRectF(.18,.13,.61,.58)})
+            for(const auto output:{ColorManagement::OutputSpace::SRgb,
+                                   ColorManagement::OutputSpace::DisplayP3,
+                                   ColorManagement::OutputSpace::ProPhotoRgb}) {
+                auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output);
+                plan.setFrameRect(frame);
+                const auto beforeHelpers=counter("brush_research_helper_tasks");
+                const auto beforeParallel=counter("brush_research_parallel_frames");
+                const auto beforeSerial=counter("brush_research_serial_frames");
+                const auto serial=ImagePipeline::processWithPlan(source,plan,{},false);
+                QVERIFY(!serial.isNull());
+                QCOMPARE(counter("brush_research_helper_tasks"),beforeHelpers);
+                QCOMPARE(counter("brush_research_parallel_frames"),beforeParallel);
+                QCOMPARE(counter("brush_research_serial_frames")-beforeSerial,qint64(1));
+                const auto parallel=ImagePipeline::processWithPlan(source,plan,{},true);
+                QCOMPARE(parallel,serial);
+                const auto helpers=counter("brush_research_helper_tasks")-beforeHelpers;
+                const auto parallelFrames=counter("brush_research_parallel_frames")-beforeParallel;
+                const auto serialFrames=counter("brush_research_serial_frames")-beforeSerial-1;
+                // A busy shared pool may legitimately submit no helper. The
+                // isolated CoreTests exercise successful helper submission;
+                // here provenance must describe the work actually accepted.
+                QVERIFY(helpers>=0 && helpers<=3);
+                QCOMPARE(parallelFrames,qint64(helpers>0));
+                QCOMPARE(serialFrames,qint64(helpers==0));
+                verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,
+                             output,true,"M4.4B.6 parallel HDR brush tiles",frame);
+                if(QTest::currentTestFailed())return;
+                QVERIFY(engine->lastProcessUsedCpuFallback());
+            }
+        const auto captured=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,
+                                   ColorManagement::OutputSpace::SRgb,QRectF(.18,.13,.61,.58),true);
         QVERIFY(!captured.image.isNull());
         QVERIFY(captured.diagnostic.value("available").toBool());
         QCOMPARE(captured.diagnostic.value("producer").toString(),QString("cpu-reference-upload"));
