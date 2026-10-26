@@ -11,6 +11,8 @@ struct ScopesResult {
     QVariantList red, green, blue, luma;
     double shadowClipPercent = 0.0, highlightClipPercent = 0.0;
     quint64 pixelCount = 0;
+    QString error;
+    bool retryableBudget=false;
 };
 class BrushRenderRequest;
 struct HistogramCounts {
@@ -31,7 +33,8 @@ public:
     // Optional plots are explicitly requested and share the same admitted
     // color pass. Results publish only after the entire strip visit succeeds.
     static ScopesResult analyzeAdmitted(BrushRenderRequest &request,const CancelToken &cancel={},
-                                       QString *error=nullptr,std::array<ScopePlotResult,3> *plots=nullptr);
+                                       QString *error=nullptr,std::array<ScopePlotResult,3> *plots=nullptr,
+                                       const RenderedStripObserver &completedStrip={});
     static ScopesResult fromGpu(const QByteArray &bytes, quint64 expectedPixels);
     static ScopesResult result(const HistogramCounts &counts, int bins = 1024);
 };

@@ -4,6 +4,7 @@
 #include <QMutex>
 struct ScopeRequest;
 class AnalysisFrameCache;
+class BrushRenderBudget;
 
 // Completed exact histogram results, keyed before geometry allocates a new
 // image. Histogram entries retain no frames or partial counts. An optional
@@ -11,7 +12,8 @@ class AnalysisFrameCache;
 class FullScopesCache final {
 public:
     explicit FullScopesCache(qint64 budgetBytes = 4 * 1024 * 1024,
-                             std::shared_ptr<AnalysisFrameCache> analysisFrames = {});
+                             std::shared_ptr<AnalysisFrameCache> analysisFrames = {},
+                             std::shared_ptr<BrushRenderBudget> brushBudget = {});
     ScopesResult analyze(const ScopeRequest &request, const CancelToken &cancel = {});
     QJsonObject snapshot() const;
 private:
@@ -21,5 +23,6 @@ private:
     mutable QMutex m_mutex;
     QCache<QString, Entry> m_entries;
     std::shared_ptr<AnalysisFrameCache> m_analysisFrames;
+    std::shared_ptr<BrushRenderBudget> m_brushBudget;
     qint64 m_hits=0, m_misses=0, m_bypasses=0, m_evictions=0, m_cancelled=0;
 };

@@ -1,4 +1,5 @@
 #include "ScopePlot.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QRgba64>
 #include <algorithm>
@@ -160,5 +161,37 @@ std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request,c
         PerformanceRecorder::count("scope_plot_shared_passes");
     } catch (const std::exception &e) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(QString::fromUtf8(e.what())); }
       catch (...) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail("Scope plot allocation or rendering failed"); }
+    return results;
+}
+ScopePlotResult renderScopePlot(BrushRenderRequest &request,const QString &mode,const CancelToken &cancel) {
+    ScopePlotResult result;
+    try {
+        ScopePlotCounts counts(mode);
+        if(counts.bins.isEmpty()){result.error="Unknown scope plot mode";return result;}
+        if(!request.visitStrips([&](const BrushImageLease &lease,int){return counts.add(lease.image(),cancel);},cancel,&result.error))
+            return cancelled(cancel)?ScopePlotResult{}:result;
+        if(cancelled(cancel))return {};
+        result.image=counts.image();result.pixels=counts.pixels;
+        if(result.image.isNull())result.error="Scope plot allocation failed";
+    }catch(...){result.error="Admitted scope plot failed";}
+    return result;
+}
+std::array<ScopePlotResult,3> renderScopePlots(BrushRenderRequest &request,const CancelToken &cancel) {
+    std::array<ScopePlotResult,3> results;
+    const auto failed=[&](const QString &error){for(auto &r:results)r={{},0,error};return results;};
+    try {
+        std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
+        QString error;
+        if(!request.visitStrips([&](const BrushImageLease &lease,int){
+            for(auto &count:counts)if(!count.add(lease.image(),cancel))return false;
+            PerformanceRecorder::count("scope_plot_shared_tiles");return true;
+        },cancel,&error))return cancelled(cancel)?std::array<ScopePlotResult,3>{}:failed(error);
+        for(int i=0;i<3;++i) {
+            if(cancelled(cancel))return {};
+            results[std::size_t(i)]={counts[std::size_t(i)].image(),counts[std::size_t(i)].pixels,{}};
+            if(results[std::size_t(i)].image.isNull())return failed("Scope plot allocation failed");
+        }
+        PerformanceRecorder::count("scope_plot_shared_passes");
+    }catch(...){return cancelled(cancel)?std::array<ScopePlotResult,3>{}:failed("Admitted scope plots failed");}
     return results;
 }

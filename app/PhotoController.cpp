@@ -10,6 +10,8 @@
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/MaskCanvasGeometry.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/BrushRenderRequest.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/AnalysisFrameCache.h"
@@ -41,8 +43,8 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include "core/look/LookProfiles.h"
 
-PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *parent)
-    : QObject(parent), m_provider(provider) {
+PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget)
+    : QObject(parent),m_provider(provider),m_brushBudget(brushBudget?std::move(brushBudget):BrushRenderBudget::sharedDefault()) {
     QSettings settings;
     m_language = settings.value(QStringLiteral("ui/language"), QStringLiteral("zh_CN")).toString();
     if (m_language != QStringLiteral("zh_CN") && m_language != QStringLiteral("en_US")) m_language = QStringLiteral("zh_CN");
@@ -1535,7 +1537,17 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
     // even if a photo, viewport, or parameter changes while the GPU responds.
     const auto diagnosticPreview = preparePreview(snapshot.prepare, {});
     auto diagnosticPlan = snapshot.plan; diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
-    const auto colorCapture = ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal, diagnosticPlan);
+    ImagePipeline::DiagnosticResult colorCapture;
+    if(BrushMaskTileRaster::anyEnabled(diagnosticPlan.state.brushMasks)) {
+        QString error;
+        if(qint64(diagnosticPreview.normal.width())*diagnosticPreview.normal.height()*16<=FloatFrameFingerprint::BudgetBytes) {
+            auto admitted=BrushRenderRequest::createPrepared(diagnosticPreview.normal,diagnosticPlan,
+                BrushRenderRequest::Layout::Whole,{},&error,m_brushBudget);
+            if(admitted)colorCapture.image=admitted->render({},&error).sharedImage();
+        }else error="Admitted diagnostic frame exceeds the existing readback budget";
+        colorCapture.stages={{"available",false},{"reason","Per-stage brush trace is unavailable"},
+            {"final_frame_admitted",!colorCapture.image.isNull()},{"error",error}};
+    }else colorCapture=ImagePipeline::diagnoseWithPlan(diagnosticPreview.normal,diagnosticPlan);
     const QImage capture = colorCapture.image;
     QElapsedTimer hashTimer; hashTimer.start();
     QJsonObject gpuContext{{"source_cache_key", QString::number(snapshot.gpuSource.cacheKey())},
@@ -1544,7 +1556,14 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
     if (gpuOutput.value("available").toBool()) {
         // Frozen CPU oracle now consumes the identical FP32 source, without
         // clipping values above one before the shared color kernel.
-        const QImage reference = ImagePipeline::processWithPlan(snapshot.gpuSource, snapshot.visiblePlan);
+        QImage reference;
+        if(BrushMaskTileRaster::anyEnabled(snapshot.visiblePlan.state.brushMasks)) {
+            if(snapshot.gpuSource.sizeInBytes()<=FloatFrameFingerprint::BudgetBytes) {
+                auto admitted=BrushRenderRequest::createPrepared(snapshot.gpuSource,snapshot.visiblePlan,
+                    BrushRenderRequest::Layout::Whole,{},nullptr,m_brushBudget);
+                if(admitted)reference=admitted->render().sharedImage();
+            }
+        }else reference=ImagePipeline::processWithPlan(snapshot.gpuSource,snapshot.visiblePlan);
         gpuContext["cpu_reference"] = FloatFrameFingerprint::capture(ImagePipeline::floatSource(reference));
         gpuContext["reference_storage"] = "FP32 source -> CPU scene color kernel -> RGBA64 display quantization -> FP32 reference";
     }
@@ -1653,6 +1672,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_budgetRetryTimer.stop();
     m_relinkJob.reset(); m_identityJob.reset();
     m_importNameDatesJob.reset();
     m_copyImportQueue.reset();
@@ -1707,13 +1727,16 @@ void PhotoController::initializeJobs() {
     m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
     connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
     m_analysisFrameCache=std::make_shared<AnalysisFrameCache>();
-    m_scopePlotCache=std::make_shared<ScopePlotCache>(16*1024*1024,m_analysisFrameCache);
+    m_scopePlotCache=std::make_shared<ScopePlotCache>(16*1024*1024,m_analysisFrameCache,m_brushBudget);
     const auto plotCache=m_scopePlotCache;
     m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(
         [plotCache](const ScopePlotRequest &request,const CancelToken &cancel) { return plotCache->render(request,cancel); },
         [this](const ScopePlotRequest &request,ScopePlotResult result) {
             if (m_closing || request.revision!=m_requestedRevision || request.mode!=m_scopeMode || request.fullResolution!=m_exactScopes || m_preparing) return;
             if (result.image.isNull() && result.error.isEmpty()) result.error="Scope plot rendering failed";
+            if(result.retryableBudget)deferBudgetJob(2,request.revision);
+            else m_deferredBudgetJobs[2]={};
+            if(result.image.isNull()&&!result.error.isEmpty()) {result.image=m_scopePlot.image;result.pixels=m_scopePlot.pixels;}
             m_scopePlot=std::move(result); m_plotRevision=request.revision; m_plotFull=request.fullResolution; ++m_plotImageId;
             if (m_provider) m_provider->setScopePlot(m_scopePlot.image);
             emit scopePlotChanged();
@@ -1744,9 +1767,9 @@ void PhotoController::initializeJobs() {
         if (!paths.isEmpty()) m_catalogDatesJob->submit({m_catalogEpoch,paths});
     });
     m_sourceCache = std::make_shared<SourceCache>();
-    m_renderCache = std::make_shared<RenderedPreviewCache>();
-    m_fullScopesCache = std::make_shared<FullScopesCache>(4*1024*1024,m_analysisFrameCache);
-    m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache);
+    m_renderCache = std::make_shared<RenderedPreviewCache>(64*1024*1024,m_brushBudget);
+    m_fullScopesCache = std::make_shared<FullScopesCache>(4*1024*1024,m_analysisFrameCache,m_brushBudget);
+    m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache,nullptr,m_brushBudget);
     const auto cache = m_sourceCache;
     m_loader = std::make_unique<LatestJob<LoadRequest, SourceData>>(
         [this, cache](const LoadRequest &request, const CancelToken &cancel) {
@@ -1780,16 +1803,28 @@ void PhotoController::initializeJobs() {
             if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
         });
     const auto renderCache = m_renderCache;
-    m_render = std::make_unique<LatestJob<RenderRequest, QImage>>(
+    m_render = std::make_unique<LatestJob<RenderRequest, RenderedFrame>>(
         [renderCache](const RenderRequest &request, const CancelToken &cancel) {
-            try { return renderCache->render(request.source, request.plan, cancel); }
-            catch (...) { return QImage{}; }
-        }, [this](const RenderRequest &request, QImage image) {
+            RenderedFrame result;BrushAdmissionFailure reason=BrushAdmissionFailure::None;
+            try {result.image=renderCache->render(request.source,request.plan,cancel,&result.error,&reason);}
+            catch (...) {result.error="Preview rendering failed";}
+            result.retryableBudget=reason==BrushAdmissionFailure::BudgetUnavailable;return result;
+        }, [this](const RenderRequest &request, RenderedFrame result) {
             if (request.revision != m_requestedRevision || m_gpuActive) {
                 PerformanceRecorder::count("preview_results_discarded");
                 return;
             }
-            if (image.isNull()) { setBusy(false); setStatus(uiText(QStringLiteral("预览处理失败。"), QStringLiteral("Preview processing failed."))); return; }
+            if (result.image.isNull()) {
+                setBusy(false);
+                if(result.error.isEmpty())result.error="Preview rendering failed";
+                setStatus(result.retryableBudget?uiText("图像内存正被其他任务使用，暂时保留旧预览。","Image memory is busy; retaining the previous preview."):
+                    uiText("预览处理失败：","Preview processing failed: ")+result.error);
+                ScopesResult failed;failed.error=result.error.isEmpty()?QString("Preview rendering failed"):result.error;
+                if(result.retryableBudget)deferBudgetJob(0,request.revision);else m_deferredBudgetJobs[0]={};
+                failed.retryableBudget=result.retryableBudget;acceptScopes(request.revision,failed,0,{});
+                return;
+            }
+            m_deferredBudgetJobs[0]={};auto image=std::move(result.image);
             m_processedPreview = image;
             if (m_provider) m_provider->setImage(image);
             ++m_previewRevision;
@@ -1809,6 +1844,7 @@ void PhotoController::initializeJobs() {
             try { return fullScopesCache->analyze(request, cancel); }
             catch (...) { return ScopesResult{}; }
         }, [this](const ScopeRequest &request, ScopesResult scopes) {
+            if(!scopes.pixelCount&&scopes.error.isEmpty())scopes.error="Full-resolution statistics failed";
             acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")));
         });
     for (QTimer *timer : {&m_saveTimer, &m_saveMaxTimer, &m_refineTimer, &m_exactTimer, &m_prefetchTimer}) timer->setSingleShot(true);
@@ -1818,6 +1854,8 @@ void PhotoController::initializeJobs() {
     connect(&m_saveMaxTimer, &QTimer::timeout, this, &PhotoController::enqueueEdits);
     connect(&m_refineTimer, &QTimer::timeout, this, &PhotoController::finishInteraction);
     connect(&m_exactTimer, &QTimer::timeout, this, &PhotoController::requestFullScopes);
+    m_budgetRetryTimer.setSingleShot(true);m_budgetRetryTimer.setInterval(5000);
+    connect(&m_budgetRetryTimer,&QTimer::timeout,this,[this]{retryBudgetJobs();});
     connect(&m_prefetchTimer, &QTimer::timeout, this, &PhotoController::prefetchNeighbor);
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { flushEdits(); });
     connect(&m_project, &ProjectDatabase::writeFailed, this, [this](const QString &message) {
@@ -1846,6 +1884,7 @@ void PhotoController::initializeJobs() {
         setStatus(uiText(QStringLiteral("导出%1：成功 %2，失败 %3").arg(stopped ? QStringLiteral("已取消") : QStringLiteral("结束")).arg(succeeded).arg(failed),
                          QStringLiteral("Export %1: %2 succeeded, %3 failed").arg(stopped ? QStringLiteral("cancelled") : QStringLiteral("finished")).arg(succeeded).arg(failed)));
         emit exportChanged(); emit exportFinished(succeeded, failed, stopped);
+        retryBudgetJobs(true);
     });
 }
 
@@ -2039,12 +2078,30 @@ void PhotoController::gpuScopes(quint64 revision, const QByteArray &counts, quin
     acceptScopes(revision, scopes, 0, m_viewportOnly ? uiText(QStringLiteral("GPU 视区预览"), QStringLiteral("GPU viewport preview")) : uiText(QStringLiteral("GPU 预览统计"), QStringLiteral("GPU preview statistics")));
 }
 void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label) {
-    if (revision != m_requestedRevision || !scopes.pixelCount || rank < m_scopesRank) return;
+    if (revision != m_requestedRevision) return;
+    if(!scopes.pixelCount) {
+        if(scopes.error.isEmpty())return;
+        if(m_scopesErrorRevision!=revision||rank>=m_scopesErrorRank) {
+            m_scopesError=scopes.error;m_scopesErrorRevision=revision;m_scopesErrorRank=rank;m_scopesUpdating=false;
+        }
+        if(rank==1) {
+            if(scopes.retryableBudget)deferBudgetJob(1,revision);else m_deferredBudgetJobs[1]={};
+        }
+        emit scopesChanged();return;
+    }
+    if(rank<m_scopesRank)return;
+    const bool keepError=m_scopesErrorRevision==revision&&!m_scopesError.isEmpty()&&rank<m_scopesErrorRank;
+    if(!keepError){m_scopesError.clear();m_scopesErrorRank=-1;}
+    if(rank==1)m_deferredBudgetJobs[1]={};
     m_scopes = scopes; m_scopesRevision = revision; m_scopesRank = rank; m_scopesLabel = label;
-    m_scopesUpdating = m_exactScopes && rank < 1;
+    m_scopesUpdating = m_exactScopes && rank < 1&&!keepError;
     emit scopesChanged();
 }
 QString PhotoController::scopesStatus() const {
+    if(m_scopesErrorRevision==m_requestedRevision&&!m_scopesError.isEmpty())
+        return m_deferredBudgetJobs[std::size_t(m_scopesErrorRank==1?1:0)].pending
+            ?uiText("统计暂不可用：图像内存正被其他任务使用。","Statistics unavailable: image memory is busy.")
+            :uiText("统计计算失败：","Statistics failed: ")+m_scopesError;
     if (m_previewSource.isNull()) return m_scopesLabel.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : m_scopesLabel;
     if (m_scopesRevision != m_requestedRevision) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
     return m_scopesLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
@@ -2053,6 +2110,8 @@ QString PhotoController::scopesStatus() const {
 void PhotoController::setExactScopes(bool enabled) {
     if (m_exactScopes == enabled) return;
     m_exactScopes = enabled;
+    m_deferredBudgetJobs[1]={};m_deferredBudgetJobs[2]={};
+    if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
     m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();
     if (m_scopeMode!="histogram") m_plotTimer.start();
     m_fullScopeJob->cancel(); m_exactTimer.stop();
@@ -2069,13 +2128,40 @@ void PhotoController::requestFullScopes() {
         PerformanceRecorder::count("full_scopes_deferred_while_preparing");
         return;
     }
+    if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
+    m_scopesUpdating=true;emit scopesChanged();
     m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry()});
+}
+void PhotoController::deferBudgetJob(int job,quint64 revision) {
+    auto &state=m_deferredBudgetJobs[std::size_t(job)];
+    if(state.revision!=revision)state={revision,0,false};
+    state.pending=true;
+    if(!m_closing&&state.attempts<8&&!m_budgetRetryTimer.isActive())m_budgetRetryTimer.start();
+}
+void PhotoController::retryBudgetJobs(bool afterExport) {
+    m_budgetRetryTimer.stop();if(m_closing)return;
+    bool later=false;
+    for(int i=0;i<3;++i) {
+        auto &state=m_deferredBudgetJobs[std::size_t(i)];
+        if(!state.pending)continue;
+        if(state.revision!=m_requestedRevision){state={};continue;}
+        if(afterExport)state.attempts=0;
+        if(state.attempts>=8)continue;
+        if(m_preparing||m_interacting||(i==2&&m_rendering)){later=true;continue;}
+        state.pending=false;++state.attempts;
+        if(i==0){if(!m_gpuActive&&!m_previewSource.isNull())scheduleRender(false);}
+        else if(i==1){if(m_exactScopes)requestFullScopes();}
+        else if(m_scopeMode!="histogram")requestScopePlot();
+    }
+    if(later)m_budgetRetryTimer.start();
 }
 QString PhotoController::scopePlotUrl() const {
     return m_scopePlot.image.isNull() ? QString{} : QString("image://processed/scopes/%1").arg(m_plotImageId);
 }
 QString PhotoController::scopePlotStatus() const {
     if (!hasImage()) return uiText("尚无统计", "No statistics");
+    if(m_scopePlot.retryableBudget&&m_plotRevision==m_requestedRevision&&m_plotFull==m_exactScopes)
+        return uiText("示波器暂不可用：图像内存正被其他任务使用。","Scope unavailable: image memory is busy.");
     if (!m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && m_plotFull==m_exactScopes)
         return uiText("CPU 示波器失败：", "CPU scope failed: ")+m_scopePlot.error;
     if (m_scopeMode=="histogram") return {};
@@ -2085,6 +2171,7 @@ QString PhotoController::scopePlotStatus() const {
 }
 void PhotoController::setScopeMode(const QString &mode) {
     if (!QStringList{"histogram","waveform","parade","vectorscope"}.contains(mode) || mode==m_scopeMode) return;
+    m_deferredBudgetJobs[2]={};
     m_scopeMode=mode; m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
     emit scopePlotChanged();

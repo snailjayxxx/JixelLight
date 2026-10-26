@@ -27,15 +27,17 @@ void RenderedPreviewCache::recordLocked() {
     PerformanceRecorder::value("render_cache", snapshotLocked());
 }
 
-QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel,QString *error) {
+QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel,QString *error,BrushAdmissionFailure *failure) {
     if(error)error->clear();
+    if(failure)*failure=BrushAdmissionFailure::None;
     PerformanceSpan timing("preview_render_cached");
     if (cancelled(cancel)) {
+        if(failure)*failure=BrushAdmissionFailure::Cancelled;
         QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {};
     }
     if (source.isNull()) return {};
     const bool brush=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
-    if(brush&&!BrushRenderRequest::validPreparedPlan(plan,error))return {};
+    if(brush&&!BrushRenderRequest::validPreparedPlan(plan,error)){if(failure)*failure=BrushAdmissionFailure::Invalid;return {};}
     const auto lut = plan.data[ProcessingPlan::LookStyle].w > 0 ? plan.state.look.lut : nullptr;
     const qint64 bytes = qint64(source.width()) * source.height() * sizeof(QRgba64)
         + (lut ? qint64(lut->rgb.capacity()) * sizeof(float) : 0);
@@ -58,9 +60,10 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
     }
     QImage image;
     if(brush) {
-        auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,cancel,error,m_brushBudget);
+        auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,cancel,error,m_brushBudget,failure);
         if(request)image=request->render(cancel,error).sharedImage();
     }else image=ImagePipeline::processWithPlan(source,plan,cancel);
+    if(image.isNull()&&failure&&*failure==BrushAdmissionFailure::None)*failure=cancelled(cancel)?BrushAdmissionFailure::Cancelled:BrushAdmissionFailure::Invalid;
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     if (image.isNull() || !cacheable) return image;

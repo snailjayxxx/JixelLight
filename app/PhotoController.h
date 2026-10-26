@@ -165,7 +165,9 @@ public:
     Q_INVOKABLE void saveLookProfileDialog();
     Q_INVOKABLE bool loadLookProfile(const QUrl &url);
     Q_INVOKABLE bool saveLookProfile(const QUrl &url);
-    explicit PhotoController(ProcessedImageProvider *provider, QObject *parent = nullptr);
+    explicit PhotoController(ProcessedImageProvider *provider,QObject *parent=nullptr,
+                             std::shared_ptr<BrushRenderBudget> brushBudget={});
+    std::shared_ptr<BrushRenderBudget> brushRenderBudget() const {return m_brushBudget;}
     ~PhotoController() override;
     QVariantList library() const;
     bool loading() const { return m_loading; }
@@ -181,7 +183,7 @@ public:
     Q_INVOKABLE void setScopeMode(const QString &mode);
     QString scopePlotUrl() const;
     QString scopePlotStatus() const;
-    bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes; }
+    bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes; }
     qulonglong scopePlotPixels() const { return m_scopePlot.pixels; }
     bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
     double exportProgress() const { return m_exportProgress; }
@@ -487,6 +489,7 @@ private:
     QString m_statusMessage;
     QVariantMap m_currentMetadata;
     std::shared_ptr<SourceCache> m_sourceCache;
+    std::shared_ptr<BrushRenderBudget> m_brushBudget;
     std::shared_ptr<RenderedPreviewCache> m_renderCache;
     std::shared_ptr<FullScopesCache> m_fullScopesCache;
     std::shared_ptr<AnalysisFrameCache> m_analysisFrameCache;
@@ -530,7 +533,7 @@ private:
     QElapsedTimer m_renderClock;
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;
-    std::unique_ptr<LatestJob<RenderRequest, QImage>> m_render;
+    std::unique_ptr<LatestJob<RenderRequest, RenderedFrame>> m_render;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
     std::unique_ptr<LatestJob<ScopePlotRequest, ScopePlotResult>> m_plotJob;
     ScopePlotResult m_scopePlot;
@@ -538,6 +541,15 @@ private:
     QTimer m_plotTimer;
     quint64 m_plotRevision = 0, m_plotImageId = 0, m_plotSubmittedRevision = 0;
     bool m_plotFull = false;
+    QString m_scopesError;
+    quint64 m_scopesErrorRevision=0;
+    int m_scopesErrorRank=-1;
+    struct DeferredBudgetJob {quint64 revision=0;int attempts=0;bool pending=false;};
+    std::array<DeferredBudgetJob,3> m_deferredBudgetJobs{};
+    QTimer m_budgetRetryTimer;
+    void deferBudgetJob(int job,quint64 revision);
+    void retryBudgetJobs(bool afterExport=false);
+    friend class BrushScopeRoutingTests;
     void requestScopePlot();
 
     bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;

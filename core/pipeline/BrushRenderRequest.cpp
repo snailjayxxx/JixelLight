@@ -164,23 +164,43 @@ bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *e
     }catch(...){return fail(error,"Cannot validate prepared brush intent");}
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &source,const AdjustmentState &state,
-    const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget) {
-    return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr);
+    const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr,failure);
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
-    Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget) {
+    Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
     if(error)error->clear();
+    if(failure)*failure=BrushAdmissionFailure::Invalid;
+    if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
     if(!plan.m_brushIntent){fail(error,"Prepared brush plan has no original intent");return {};}
     Spec spec;spec.sourceStage=SourceStage::Prepared;spec.layout=layout;
     spec.encoding=plan.encoding;spec.output=plan.output;spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
     const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
-    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan);
+    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan,failure);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createOriginal(const QImage &source,const ProcessingPlan &plan,
+    const GeometryState &geometry,Layout layout,const CancelToken &cancel,QString *error,
+    std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    if(failure)*failure=BrushAdmissionFailure::Invalid;
+    if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
+    if(!validPreparedPlan(plan,error))return {};
+    try {
+        auto state=*plan.m_brushIntent;state.geometry=geometry;
+        Spec spec;spec.layout=layout;spec.encoding=plan.encoding;spec.output=plan.output;
+        spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
+        const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
+        return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr,failure);
+    }catch(...){fail(error,"Cannot capture original brush request");return {};}
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
-    const ProcessingPlan *expectedPlan) {
+    const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure) {
     if(error)error->clear();
-    const auto refuse=[&](const QString &message)->std::unique_ptr<BrushRenderRequest>{fail(error,message);return {};};
+    if(failure)*failure=BrushAdmissionFailure::Invalid;
+    const auto refuse=[&](const QString &message)->std::unique_ptr<BrushRenderRequest>{
+        if(failure&&cancelled(cancel))*failure=BrushAdmissionFailure::Cancelled;
+        fail(error,message);return {};
+    };
     try {
         if(source.isNull()||cancelled(cancel))return refuse("Cancelled or no source");
         if(!BrushMaskDocument::validDocument(state.brushMasks)||!BrushMaskTileRaster::anyEnabled(state.brushMasks))return refuse("Admitted brush requests require a valid enabled document");
@@ -206,12 +226,15 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
         plan.setFrameRect(spec.normalizedFrame);
         for(const auto &v:plan.data)for(const auto x:{v.x,v.y,v.z,v.w})if(!std::isfinite(x))return refuse("Non-finite admitted brush plan");
         const auto bytes=estimateBytes(source,region,size,plan,spec.layout);
+        if(bytes<=0)return refuse("Invalid admitted brush memory estimate");
         if(!budget)budget=BrushRenderBudget::sharedDefault();
         auto reservation=budget->reserve(bytes);
-        if(!reservation)return refuse("Admitted brush memory budget is exhausted");
+        if(!reservation){if(failure)*failure=BrushAdmissionFailure::BudgetUnavailable;return refuse("Admitted brush memory budget is exhausted");}
         if(!validState(state))return refuse("Invalid active brush or adjustment state");
         if(expectedPlan&&!samePreparedPlan(plan,*expectedPlan))return refuse("Prepared brush plan differs from its original intent");
-        if(!ImagePipeline::preflightAdmittedBrush(size,plan,region,spec.layout==Layout::Whole?region.height():128,cancel,error))return {};
+        if(!ImagePipeline::preflightAdmittedBrush(size,plan,region,spec.layout==Layout::Whole?region.height():128,cancel,error)) {
+            if(failure&&cancelled(cancel))*failure=BrushAdmissionFailure::Cancelled;return {};
+        }
         // QImage can wrap caller-owned memory. A deep pixel snapshot prevents
         // later writes through an external buffer from changing this request.
         auto frozenSource=source.copy();
@@ -225,6 +248,7 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
         PerformanceRecorder::count("brush_admitted_requests");
         PerformanceRecorder::value("brush_admitted_reserved_bytes",bytes);
         PerformanceRecorder::value("brush_admitted_budget_bytes",request->m_budget->snapshot().limit);
+        if(failure)*failure=BrushAdmissionFailure::None;
         return request;
     }catch(const std::exception &e){return refuse(QString::fromUtf8(e.what()));}
     catch(...){return refuse("Admitted brush allocation failed");}

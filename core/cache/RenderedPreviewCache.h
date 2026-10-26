@@ -3,6 +3,7 @@
 #include <QCache>
 #include <QMutex>
 class BrushRenderBudget;
+enum class BrushAdmissionFailure;
 
 // CPU preview results only. Sources/plans are immutable worker snapshots;
 // exports, exact scopes and diagnostic reference captures bypass this cache.
@@ -10,7 +11,8 @@ class RenderedPreviewCache final {
 public:
     explicit RenderedPreviewCache(qint64 budgetBytes = 64 * 1024 * 1024,
                                  std::shared_ptr<BrushRenderBudget> brushBudget={});
-    QImage render(const QImage &source, const ProcessingPlan &plan, const CancelToken &cancel = {},QString *error=nullptr);
+    QImage render(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel={},QString *error=nullptr,
+                  BrushAdmissionFailure *failure=nullptr);
     QJsonObject snapshot() const;
 private:
     struct Entry {

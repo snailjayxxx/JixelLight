@@ -26,6 +26,7 @@ struct RenderRequest {
     quint64 revision = 0;
     bool fast = false;
 };
+struct RenderedFrame {QImage image;QString error;bool retryableBudget=false;};
 struct ScopeRequest {
     QImage image;
     ProcessingPlan plan;

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+enum class BrushAdmissionFailure { None, Cancelled, Invalid, BudgetUnavailable };
 
 // A separate admission boundary. Existing research APIs keep their 2 Mi cap.
 // The budget covers owned operation payloads, including outputs still leased
@@ -56,13 +57,18 @@ public:
     };
     static std::unique_ptr<BrushRenderRequest> create(const QImage &source,const AdjustmentState &state,
         const Spec &spec,const CancelToken &cancel={},QString *error=nullptr,
-        std::shared_ptr<BrushRenderBudget> budget={});
+        std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
     // Explicit bridge for prepared previews/viewport sources. Rejects manually
     // assembled or changed plans; preserves the original Look intent and skips
     // geometry that has already been applied by preview preparation.
     static std::unique_ptr<BrushRenderRequest> createPrepared(const QImage &source,const ProcessingPlan &plan,
         Layout layout=Layout::Whole,const CancelToken &cancel={},QString *error=nullptr,
-        std::shared_ptr<BrushRenderBudget> budget={});
+        std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
+    // Original source plus the caller's trusted view geometry (e.g. the
+    // uncropped crop-editor view). Validate original intent before overriding.
+    static std::unique_ptr<BrushRenderRequest> createOriginal(const QImage &source,const ProcessingPlan &plan,
+        const GeometryState &geometry,Layout layout=Layout::Stripes128,const CancelToken &cancel={},
+        QString *error=nullptr,std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
     // Bounded control-state validation for cache lookup, without pixel work.
     static bool validPreparedPlan(const ProcessingPlan &plan,QString *error=nullptr);
     BrushRenderRequest(const BrushRenderRequest &)=delete;
@@ -83,7 +89,7 @@ private:
     BrushRenderRequest()=default;
     static std::unique_ptr<BrushRenderRequest> createImpl(const QImage &source,const AdjustmentState &state,
         const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
-        const ProcessingPlan *expectedPlan);
+        const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure);
     QImage prepare(const CancelToken &cancel,QString *error) const;
     QImage retainFloatUpload(QImage image);
     friend class GpuEngine;

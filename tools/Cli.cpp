@@ -4,6 +4,8 @@
 #include "core/export/PngExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/export/ExportNaming.h"
+#include "core/pipeline/BrushRenderRequest.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
@@ -223,8 +225,16 @@ bool executeExport(const ExportJob &job, SourceCache &cache, QJsonObject *result
     if (!staging.isValid()) { *error=staging.errorString(); return false; }
     const auto temporary=QDir(staging.path()).filePath("output."+suffix);
     const auto space=ColorManagement::fromKey(job.space);
-    const bool rendered=(suffix=="jpg" || suffix=="jpeg") ? exportJpegTiled(source.image,state,temporary,space,92,{},error,{}, {},raw,float(base))
-        : exportRaster(source.image,state,temporary,space,suffix=="png" ? RasterFormat::Png16 : suffix=="webp" ? RasterFormat::WebP8 : RasterFormat::Tiff16,92,{},error,raw,float(base));
+    const bool jpeg=suffix=="jpg"||suffix=="jpeg";
+    const auto format=suffix=="png"?RasterFormat::Png16:suffix=="webp"?RasterFormat::WebP8:RasterFormat::Tiff16;
+    bool rendered=false;
+    if(BrushMaskTileRaster::anyEnabled(state.brushMasks)) {
+        BrushRenderRequest::Spec spec;spec.output=space;spec.rawSource=raw;spec.rawBaseExposureStops=float(base);
+        spec.layout=jpeg?BrushRenderRequest::Layout::Stripes128:BrushRenderRequest::Layout::Whole;
+        auto admitted=BrushRenderRequest::create(source.image,state,spec,{},error);
+        if(admitted)rendered=jpeg?exportJpegTiled(*admitted,temporary,92,{},error):exportRaster(*admitted,temporary,format,92,{},error);
+    }else rendered=jpeg?exportJpegTiled(source.image,state,temporary,space,92,{},error,{}, {},raw,float(base))
+        :exportRaster(source.image,state,temporary,space,format,92,{},error,raw,float(base));
     if (!rendered) return false;
     QFile publication(temporary);
     if (!publication.rename(job.destination)) { *error="Cannot publish new destination: "+publication.errorString(); return false; }

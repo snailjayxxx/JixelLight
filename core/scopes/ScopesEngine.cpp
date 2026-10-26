@@ -104,12 +104,12 @@ ScopesResult ScopesEngine::fromGpu(const QByteArray &bytes, quint64 expectedPixe
     return result(counts);
 }
 ScopesResult ScopesEngine::analyzeAdmitted(BrushRenderRequest &request,const CancelToken &token,
-                                          QString *error,std::array<ScopePlotResult,3> *plots) {
+                                          QString *error,std::array<ScopePlotResult,3> *plots,const RenderedStripObserver &completedStrip) {
     if(error)error->clear();
     const auto refuse=[&](const QString &message){if(error)*error=message;return ScopesResult{};};
     if(request.layout()!=BrushRenderRequest::Layout::Stripes128)return refuse("Scopes require a streamed admitted brush request");
     try {
-        HistogramCounts total;int rows=0;
+        HistogramCounts total;int rows=0;bool collecting=bool(completedStrip);
         std::vector<ScopePlotCounts> counts;
         if(plots)for(const auto &mode:{"waveform","parade","vectorscope"})counts.emplace_back(mode);
         if(!request.visitStrips([&](const BrushImageLease &lease,int y) {
@@ -117,6 +117,10 @@ ScopesResult ScopesEngine::analyzeAdmitted(BrushRenderRequest &request,const Can
             if(y!=rows||image.width()!=request.size().width()||image.format()!=QImage::Format_RGBA64)return false;
             countRows(image,0,image.height(),total,token);rows+=image.height();
             for(auto &plot:counts)if(!plot.add(image,token))return false;
+            if(collecting&&!cancelled(token)) {
+                try{completedStrip(image,y);}
+                catch(...){collecting=false;PerformanceRecorder::count("full_scopes_collector_failures");}
+            }
             return !cancelled(token);
         },token,error))return {};
         if(rows!=request.size().height()||total.pixels!=quint64(request.size().width())*request.size().height())return refuse("Incomplete admitted scopes");

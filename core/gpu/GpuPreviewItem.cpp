@@ -52,7 +52,7 @@ public:
             });
         QString failure;
         const bool processed=BrushMaskTileRaster::anyEnabled(m_plan.state.brushMasks)
-            ?m_engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure)
+            ?m_engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure,controller?controller->brushRenderBudget():nullptr)
             :m_engine->process(cb,m_source,m_plan,m_revision,histogram);
         if (!processed || !m_engine->draw(cb,renderTarget())) {
             if(failure.isEmpty())failure=m_engine->error();

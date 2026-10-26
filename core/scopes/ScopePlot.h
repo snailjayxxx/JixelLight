@@ -24,7 +24,10 @@ struct ScopePlotRequest {
     quint64 revision = 0;
     bool fullResolution = false;
 };
-struct ScopePlotResult { QImage image; quint64 pixels = 0; QString error; };
+struct ScopePlotResult { QImage image; quint64 pixels = 0; QString error; bool retryableBudget=false; };
+class BrushRenderRequest;
+ScopePlotResult renderScopePlot(BrushRenderRequest &request,const QString &mode,const CancelToken &cancel={});
+std::array<ScopePlotResult,3> renderScopePlots(BrushRenderRequest &request,const CancelToken &cancel={});
 ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelToken &cancel);
 // Fixed order: waveform, parade, vectorscope. Shares one bounded tile render;
 // counts and display ink keep exactly the individual-mode algorithms above.
