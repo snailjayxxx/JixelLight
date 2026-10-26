@@ -57,7 +57,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.radialMaskRadiusY=source.radialMaskRadiusY;
             target.radialMaskFeather=source.radialMaskFeather;
             target.radialMaskAngle=source.radialMaskAngle;
-            target.brushMasks=source.brushMasks; // disabled draft only; no visual effect yet
+            target.brushMasks=source.brushMasks;
         }
         else if (group=="geometry") target.geometry=source.geometry;
     }

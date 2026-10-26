@@ -456,7 +456,7 @@ private slots:
         }
         QCOMPARE(totalDabs,BD::MaxTotalDabs);
         QVERIFY(BD::validDocument(state.brushMasks));
-        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        QVERIFY(AdjustmentState::validBrushMaskJson(state.toJson()));
         const QRectF viewport(.6,.6,.3,.3);
         BT::FramePlan candidates;
         QVERIFY(BT::planFrame(state.brushMasks,source.width(),source.height(),
@@ -507,7 +507,7 @@ private slots:
         state.linearMaskEnabled=true;state.linearMaskExposure=-.4;state.linearMaskAngle=22;
         state.vignetteAmount=-.4;
         QVERIFY(BD::validDocument(state.brushMasks));
-        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        QVERIFY(AdjustmentState::validBrushMaskJson(state.toJson()));
         const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
         const auto previousBudget=qgetenv("JIXELLIGHT_CPU_THREADS");
         const auto restoreBudget=qScopeGuard([&] {
@@ -580,7 +580,7 @@ private slots:
             BrushMaskGeometry::Style{.13,.72,.65},{{{.59,.41},1.}}}};
         AdjustmentState brush;brush.brushMasks.layers={oval,darker};
         QVERIFY(BrushMaskDocument::validDocument(brush.brushMasks));
-        QVERIFY(!AdjustmentState::validBrushMaskJson(brush.toJson()));
+        QVERIFY(AdjustmentState::validBrushMaskJson(brush.toJson()));
         brush.linearMaskEnabled=true;brush.linearMaskExposure=-.4;brush.linearMaskAngle=22;
         brush.vignetteAmount=-.4;
         for(const auto frame : {QRectF(0,0,1,1),QRectF(.18,.13,.61,.58)})

@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-// F4 M4.1 opt-in DOCUMENT MODEL only. Neither this format nor its weighted-EV
-// reference is connected to projects, presets, history, RAW or QRhi yet.
+// Bounded canonical mask intent for projects, presets, history and commands.
+// Pixel work still requires the separate production admission boundary.
 // An unsupported future schema must never be imported as an empty mask.
 namespace BrushMaskDocument {
 constexpr int Schema = 1;

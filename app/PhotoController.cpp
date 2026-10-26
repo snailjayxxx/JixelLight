@@ -764,7 +764,8 @@ bool PhotoController::replaceBrushMaskDraft(const QJsonObject &document) {
     if (!document.isEmpty()) {
         const QJsonObject wrapper{{"brushMasks",document}};
         if (!AdjustmentState::validBrushMaskJson(wrapper)
-            || !BrushMaskDocument::fromJson(QJsonValue(document),&nextDraft))
+            || !BrushMaskDocument::fromJson(QJsonValue(document),&nextDraft)
+            || std::any_of(nextDraft.layers.begin(),nextDraft.layers.end(),[](const auto &layer){return layer.enabled;}))
             return false; // unchanged editor/photo/history on failure
     }
     auto next=*state;

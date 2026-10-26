@@ -228,7 +228,7 @@ bool XmpSidecar::writeNew(const QString &path, const AdjustmentState &state, con
         || !QDir(target.absolutePath()).exists()) return fail(error,"Choose a new .xmp file in an existing folder");
     if (!BrushMaskDocument::validDocument(state.brushMasks)
         || !AdjustmentState::validBrushMaskJson(state.toJson()))
-        return fail(error,"Invalid or enabled brush draft cannot be exported as XMP");
+        return fail(error,"Invalid brush document cannot be exported as XMP");
     const auto payload = QJsonDocument(QJsonObject{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
         {"adjustments",state.toJson()},{"tags",tags.toJson()},{"rating",rating},{"flag",flag}}).toJson(QJsonDocument::Compact);
     Document checked;

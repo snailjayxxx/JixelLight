@@ -2220,7 +2220,7 @@ private slots:
         AdjustmentState state;state.brushMasks.layers={first,second};
         QVERIFY(BD::validDocument(state.brushMasks));
         QVERIFY(BT::anyEnabled(state.brushMasks));
-        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        QVERIFY(AdjustmentState::validBrushMaskJson(state.toJson()));
         const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
                                                 ColorManagement::OutputSpace::SRgb,false,0);
         const auto neutralPlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,
@@ -2369,8 +2369,8 @@ private slots:
         QVERIFY2(presets.load(&error),qPrintable(error));
         QVERIFY2(presets.save("Disabled brush intent",settings,&error),qPrintable(error));
         auto invalidForExport=settings;
-        invalidForExport.brushMasks.layers[0].enabled=true;
-        QVERIFY(!presets.save("Active brush not supported",invalidForExport,&error));
+        invalidForExport.brushMasks.layers[0].id="../invalid";
+        QVERIFY(!presets.save("Malformed brush not supported",invalidForExport,&error));
         error.clear();
         NamedPresets reloaded(dir.filePath("brush-presets.json"));
         QVERIFY2(reloaded.load(&error),qPrintable(error));
@@ -2400,7 +2400,8 @@ private slots:
         auto firstLayer=layers[0].toObject();
         firstLayer.insert("enabled",true);layers.replace(0,firstLayer);
         unsupported.insert("layers",layers);
-        QVERIFY(!AdjustmentState::validBrushMaskJson(QJsonObject{{"brushMasks",unsupported}}));
+        QVERIFY(AdjustmentState::validBrushMaskJson(QJsonObject{{"brushMasks",unsupported}}));
+        // This legacy C++ draft-only method retains its disabled-only contract.
         QVERIFY(!controller.replaceBrushMaskDraft(unsupported));
         QCOMPARE(controller.gpuPlan(true).state.toJson(),defaultJson);
         auto unknown=draft;unknown.insert("future",2);
@@ -2443,7 +2444,7 @@ private slots:
         QCOMPARE(fixtureBytes(path),originalBytes);
     }
 
-    void brushDraftProjectRejectsUnknownAndEnabledPayloadAtomically() {
+    void brushProjectRejectsUnknownAndMalformedPayloadAtomically() {
         namespace BM=BrushMaskGeometry;
         namespace BD=BrushMaskDocument;
         QTemporaryDir dir; QVERIFY(dir.isValid());
@@ -2466,8 +2467,10 @@ private slots:
         unsupported.insert("layers",layers);
         auto future=unsupported;future.insert("schema",2);
         auto extras=unsupported;extras.insert("unknown","new-version");
+        auto malformed=unsupported;auto badLayers=layers;auto badLayer=enabled;
+        badLayer.insert("enabled",1);badLayers.replace(0,badLayer);malformed.insert("layers",badLayers);
         const QList<QJsonValue> payloads{QJsonValue(QJsonValue::Null),QJsonArray{},QJsonObject{},
-                                         unsupported,future,extras};
+                                         malformed,future,extras};
         for(const auto &payload:payloads) {
             const QString connection="brush-draft-untrusted-write";
             {
@@ -2490,9 +2493,9 @@ private slots:
             QVERIFY(active.flush());
             QCOMPARE(fixtureBytes(database),original);
         }
-        // Reject malformed/active internal drafts *before* any database write.
-        auto bad=settings;bad.brushMasks.layers[0].enabled=true;
-        QVERIFY(!active.updateAdjustment("active.png",bad));
+        // Reject malformed internal documents before any database write.
+        auto bad=settings;bad.brushMasks.layers.push_back(bad.brushMasks.layers.front());
+        QVERIFY(!active.updateAdjustment("duplicate.png",bad));
         bad=settings;bad.brushMasks.layers[0].id="../escaped";
         QVERIFY(!active.updateAdjustment("invalid.png",bad));
     }

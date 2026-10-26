@@ -54,8 +54,8 @@ struct AdjustmentState {
     double radialMaskRadiusY = 0.35; // vertical fraction .05..1
     double radialMaskFeather = 0.25; // transition fraction .02..1
     double radialMaskAngle = 0.0; // ellipse rotation degrees [-180, 180]
-    // M4.3: non-rendered brush DRAFT. Stored intent is allowed only while
-    // every layer is disabled; no active brush may be silently mis-rendered.
+    // Canonical bounded brush intent. Enabled layers use explicit admitted
+    // production render/export/statistics paths; research APIs keep their cap.
     BrushMaskDocument::Document brushMasks;
 
     // Independent monochrome rendering and eight hue-weighted luminance controls.
@@ -154,10 +154,7 @@ struct AdjustmentState {
             || !BrushMaskDocument::toJson(parsed,&canonical)
             || canonical.isEmpty() || canonical != object.value("brushMasks").toObject())
             return false;
-        // M4.3 has no user-visible brush or CPU/GPU photo renderer. Reject any
-        // enabled layer instead of accepting an edit which exports no effect.
-        return std::all_of(parsed.layers.begin(),parsed.layers.end(),
-                           [](const BrushMaskDocument::Layer &layer) { return !layer.enabled; });
+        return true;
     }
     static bool validRadialMaskJson(const QJsonObject &object) {
         if (!object.contains("radialMask")) return true;

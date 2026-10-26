@@ -164,6 +164,29 @@ struct CommandRegistry {
         if (name == "develop.reset") {
             if (!fields(command,{})) return fail(); state = {}; return true;
         }
+        if(name=="mask.brush.replace") {
+            if(!fields(command,{"document"})||!command["document"].isObject())return fail();
+            const auto document=command["document"].toObject();
+            BrushMaskDocument::Document parsed;
+            if(!AdjustmentState::validBrushMaskJson({{"brushMasks",document}})
+                ||!BrushMaskDocument::fromJson(document,&parsed))return fail();
+            state.brushMasks=std::move(parsed);return true;
+        }
+        if(name=="mask.brush.reset") {
+            if(!fields(command,{}))return fail();state.brushMasks={};return true;
+        }
+        if(name=="mask.brush.enable"||name=="mask.brush.exposure") {
+            const bool toggle=name=="mask.brush.enable";
+            if(!fields(command,toggle?QStringList{"layer","enabled"}:QStringList{"layer","value"})
+                ||!command["layer"].isString()||!BrushMaskDocument::validDocument(state.brushMasks)
+                ||(toggle?!command["enabled"].isBool():!number(command,"value")))return fail();
+            if(!toggle&&(command["value"].toDouble()<-3||command["value"].toDouble()>3))return fail();
+            for(auto &layer:state.brushMasks.layers)if(layer.id==command["layer"].toString()) {
+                if(toggle)layer.enabled=command["enabled"].toBool();else layer.exposureEv=command["value"].toDouble();
+                return true;
+            }
+            return fail(); // Unknown identity never selects an arbitrary layer.
+        }
         if (name == "mask.radial.enable") {
             if (!fields(command,{"enabled"}) || !command.value("enabled").isBool()) return fail();
             state.radialMaskEnabled=command.value("enabled").toBool(); return true;
@@ -337,6 +360,16 @@ struct CommandRegistry {
             QJsonObject{{"name","look.reset"},{"fields",QJsonArray{}},{"operation","reset Look only; preserve all other edits"}},
             QJsonObject{{"name","develop.set"},{"fields",QJsonArray{"parameter","value"}}},
             QJsonObject{{"name","develop.reset"},{"fields",QJsonArray{}}},
+            QJsonObject{{"name","mask.brush.replace"},{"fields",QJsonArray{"document"}},
+                {"schema",BrushMaskDocument::Schema},{"maximum_layers",int(BrushMaskDocument::MaxLayers)},
+                {"maximum_dabs",int(BrushMaskDocument::MaxTotalDabs)},
+                {"operation","replace canonical brush document atomically; enabled effects use CPU-reference admission"}},
+            QJsonObject{{"name","mask.brush.enable"},{"fields",QJsonArray{"layer","enabled"}},
+                {"identity","exact existing stable layer id"}},
+            QJsonObject{{"name","mask.brush.exposure"},{"fields",QJsonArray{"layer","value"}},
+                {"range",QJsonArray{-3,3}},{"range_policy","reject"}},
+            QJsonObject{{"name","mask.brush.reset"},{"fields",QJsonArray{}},
+                {"operation","remove brush layers only; preserve gradients and other edits"}},
             QJsonObject{{"name","mask.radial.enable"},{"fields",QJsonArray{"enabled"}},
                 {"operation","enable or disable one independent oval local exposure gradient"}},
             QJsonObject{{"name","mask.radial.invert"},{"fields",QJsonArray{"inverted"}},

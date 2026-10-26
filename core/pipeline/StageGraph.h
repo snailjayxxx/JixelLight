@@ -115,13 +115,13 @@ struct StageGraph {
                      {"layer_count",int(state.brushMasks.layers.size())},
                      {"active_rendering",BrushMaskTileRaster::anyEnabled(state.brushMasks)},
                      {"state",BrushMaskTileRaster::anyEnabled(state.brushMasks)
-                         ? "research-in-memory-only; cannot save or enable in UI"
+                         ? "canonical stored intent; admitted production rendering; pointer painting not yet exposed"
                          : "stored-disabled-draft-only"},
                      {"backend",BrushMaskTileRaster::anyEnabled(state.brushMasks)
-                         ? "bounded CPU tile research; GPU CPU numeric fallback"
+                         ? "admitted CPU reference; GPU display uploads CPU reference"
                          : "not enabled; opt-in C++ draft storage"},
                      {"coordinates","normalized post-geometry/crop/orientation"},
-                     {"warning","active brush is restricted to research in-memory source; project/XMP/CLI reject enabled brush until production acceptance"}}},
+                     {"warning","CPU-reference brush admission; pointer painting, native GPU brush and native FP32 RAW remain unavailable"}}},
                  {"radial_mask",QJsonObject{{"schema",1},
                     {"enabled",state.radialMaskEnabled},{"inverted",state.radialMaskInverted},
                     {"exposure_ev",state.radialMaskExposure},
