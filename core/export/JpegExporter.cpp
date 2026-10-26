@@ -1,4 +1,5 @@
 #include "core/export/JpegExporter.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QSaveFile>
 #include <QThread>
@@ -125,4 +126,28 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
     if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
     if (!writer.finish()) { if (error) *error=writer.failure; return false; }
     return true;
+}
+bool exportJpegTiled(BrushRenderRequest &request,const QString &path,int quality,const CancelToken &token,
+                     QString *error,const std::function<void(int)> &progress,
+                     const std::shared_ptr<std::atomic_bool> &interactive) {
+    if(error)error->clear();
+    const auto refuse=[&](const QString &message){if(error)*error=message;return false;};
+    if(cancelled(token))return refuse("Cancelled");
+    if(request.layout()!=BrushRenderRequest::Layout::Stripes128)return refuse("JPEG requires a streamed admitted brush request");
+    Writer writer(path);
+    if(!writer.begin(request.size().width(),request.size().height(),quality,ColorManagement::iccProfile(request.outputSpace())))return refuse(writer.failure);
+    const bool complete=request.visitStrips([&](const BrushImageLease &lease,int y) {
+        while(interactive&&interactive->load(std::memory_order_relaxed)&&!cancelled(token))QThread::msleep(10);
+        if(cancelled(token))return false;
+        if(!writer.rows(lease.image()))return false;
+        if(progress)progress(std::min(100,(y+lease.image().height())*100/request.size().height()));
+        return true;
+    },token,error);
+    if(!complete) {
+        if(cancelled(token))return refuse("Cancelled");
+        if(!writer.failure.isEmpty())return refuse(writer.failure);
+        return false;
+    }
+    if(cancelled(token))return refuse("Cancelled");
+    return writer.finish()||refuse(writer.failure);
 }

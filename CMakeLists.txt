@@ -77,6 +77,7 @@ add_library(JixelLightCore STATIC
     core/look/CameraReference.cpp
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
+    core/pipeline/BrushRenderRequest.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
     core/pipeline/GeometryCorrections.cpp
@@ -139,6 +140,27 @@ target_link_libraries(JixelLightMissingSourceTests PRIVATE JixelLightCore Qt6::T
 add_test(NAME missing-source COMMAND JixelLightMissingSourceTests -o missing-source-results.txt,txt -o -,txt)
 set_tests_properties(missing-source PROPERTIES TIMEOUT 120)
 set_target_properties(JixelLightMissingSourceTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightBrushAdmissionTests tests/BrushAdmissionTests.cpp)
+target_link_libraries(JixelLightBrushAdmissionTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME brush-admission COMMAND JixelLightBrushAdmissionTests -o brush-admission-results.txt,txt -o -,txt)
+set_tests_properties(brush-admission PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightBrushAdmissionTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightLargeBrushTests tests/LargeBrushTests.cpp)
+target_link_libraries(JixelLightLargeBrushTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightLargeBrushTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-large-float24 COMMAND JixelLightLargeBrushTests float24MpGeometryWholeAndPannedUnevenRoiMatchIndependentStrips -o brush-large-float24-results.txt,txt -o -,txt)
+foreach(space srgb p3 prophoto)
+    add_test(NAME brush-large-sony-${space} COMMAND JixelLightLargeBrushTests sony33MpWholeAndRoiMatchIndependentStrips:${space} -o brush-large-sony-${space}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-large-sony-${space} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-large-scopes COMMAND JixelLightLargeBrushTests sony33MpSharedFullScopesAndPlotsMatchIndependentEncodedFrame -o brush-large-scopes-results.txt,txt -o -,txt)
+set_tests_properties(brush-large-float24 brush-large-scopes PROPERTIES TIMEOUT 120)
+foreach(format png16 tiff16 webp8)
+    add_test(NAME brush-large-${format} COMMAND JixelLightLargeBrushTests sony33MpRasterExportsMatchIndependentPixelsAndIcc:${format} -o brush-large-${format}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-large-${format} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-large-jpeg COMMAND JixelLightLargeBrushTests sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu -o brush-large-jpeg-results.txt,txt -o -,txt)
+set_tests_properties(brush-large-jpeg PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp)
 target_link_libraries(JixelLightPerformanceTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME performance-correctness COMMAND JixelLightPerformanceTests -o performance-results.txt,txt -o -,txt)

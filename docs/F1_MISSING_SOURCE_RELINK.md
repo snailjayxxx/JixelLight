@@ -1,6 +1,6 @@
 # F1 — retain missing sources and relink their version family
 
-Candidate implementation on `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Local acceptance is recorded below; this stage requires its own final-tree three-platform and deployed-package run.
+**Accepted in the combined implementation at `675ef6212bc063aff6c01193f1a26506e9a0ec1d`.** [CI #40294870010](https://github.com/snailjayxxx/JixelLight/actions/runs/40294870010) passed all three platforms and both actual deployed packages. Tested merge `c3e6474089d86b7a3e24afa05f12c6668327391f` and HEAD share tree `9b8c91fe6bc7e6d52ba9fa9aeabb17fafc7f024e`. PR #16 remains Draft.
 
 ## Visible behavior
 
@@ -48,10 +48,25 @@ The original **60,000 ms real-RAW GUI**, all **23** existing screenshots, **40/6
 - Complete local CTest passed **12/12 in85.90s**, including **209 Core /36 actual Metal GPU /39 performance /9 project-relink /9 missing-source** (Qt totals include initialization/cleanup), mandatory real Sony and DNG, zero failures/skips. Logs: `build-local/local-missing-source-tests.xml` and external `missing-source-full-tests.log`.
 - Final compact UI runs passed offscreen in **424 ms** and native Cocoa in **788 ms**, all required flags, three saved screenshots and zero QML markers. Missing, confirmation and restored screenshots were inspected; the missing-source action has its own row.
 - Serial real-DNG CPU/native-Metal GUI passed in **14,603 /15,206 ms**, each all23 screenshots, **10,340,960** final full scopes, selected-export assertions and QML0 under the unchanged60,000ms gate. Reports: `build-local/local-missing-source-gui-{cpu,metal}` and `local-relink-final-{offscreen,cocoa}.json`.
-- A small follow-up clarifies that missing counts represent versions sharing missing sources. Final combined implementation with portable Look commands, its own three-platform CI and seven-mode deployed-package acceptance remain **pending**.
+- A small follow-up clarifies that missing counts represent versions sharing missing sources. Combined implementation and seven-mode package acceptance are recorded below.
 
-The later combined portable-Look integration passed **12/12 in106.24s**,212 Core/36 actual Metal GPU/39 performance/21 Sony Look/9 DB/9 missing-source with zero skips. Its missing-source regression also rejects the new mixed Look/develop command array and all Look GUI setters without changing state/history. Combined native pointer smokes passed and RAW CPU/Metal passed14,391/14,993ms with23/23 screenshots,10340960 scopes and QML0. Final CI/deployed-package evidence remains pending.
+The later combined portable-Look integration passed **12/12 in106.24s**,212 Core/36 actual Metal GPU/39 performance/21 Sony Look/9 DB/9 missing-source with zero skips. Its missing-source regression also rejects the new mixed Look/develop command array and all Look GUI setters without changing state/history. Combined native pointer smokes passed and RAW CPU/Metal passed14,391/14,993ms with23/23 screenshots,10340960 scopes and QML0. Final CI/deployed-package acceptance is recorded below.
 
 Final integration review also preserves known identity when copying an offline catalog into a newly created project, with an existing-family PNG/ICC regression extended to verify both the new and original catalogs. Creating a project reschedules outstanding capture-date indexing under the new catalog generation. Focused recovery/project/date checks cover these last changes; earlier full-suite totals remain the recorded pre-follow-up run until final CI.
 
 After the final catalog-generation/identity-copy follow-up, focused project/date/Look Core checks passed10/0/0 in355ms and the full missing-source suite passed9/0/0 in971ms (including init/cleanup). Serial final RAW GUI passed **14,233ms CPU /15,296ms native Metal**, each23/23 saved screenshots,10340960 scopes, selected-export checks and QML0 under60000ms. Reports: `build-local/local-combined-final-gui-{cpu,metal}`; focused logs: external `combined-final-project-look-targeted.txt` and `combined-final-missing-targeted.txt`.
+
+## Committed-tree CI and actual package acceptance
+
+Run **40294870010** passed Windows x64/macOS arm64/Linux GPU: **12/12 CTest**, **212 Core /36 GPU /39 performance /21 Sony Look /9 project-relink /9 missing-source**, zero failures/skips. All seven database and seven controller recovery cases passed, including the actual Windows case-family branch, offline identity copy into a new project and native-picker catalog-generation refusal. Existing real Sony, sensor, CPU/GPU color, format, command and source-protection gates remain mandatory.
+
+Independent native recovery pointer smokes passed in **3,211 ms Windows /1,394 ms macOS /460 ms Linux**, all required flags. Actual deployed-app recovery passed in **3,145 /1,330 ms Windows/macOS**, three saved screenshots each, zero QML markers, Cancel/acknowledgement/Confirm, two-version export and reopen. `file_picker_automated:false` is retained in each report; no claim of automating the OS file picker is made.
+
+| Actual deployed GUI | Elapsed | Screenshots | Restored full scopes | QML errors |
+| --- | ---: | ---: | ---: | ---: |
+| Windows CPU | 55,134 ms | 23/23 | 10,340,960 | 0 |
+| Windows Direct3D/WARP | 37,442 ms | 23/23 | 10,340,960 | 0 |
+| macOS CPU | 31,203 ms | 23/23 | 10,340,960 | 0 |
+| macOS Metal | 30,568 ms | 23/23 | 10,340,960 | 0 |
+
+Both deployed manifests passed **all seven modes**, including mandatory `source-relink`, with development Qt paths removed. Every old selected-export/naming/RAW assertion and the original60,000ms deadline remained. Five evidence ZIPs matched their GitHub SHA-256 and ZIP CRC. Numeric summary: `/tmp/jixellight-40294870010-summary.json`; extracted package/three-platform evidence uses that same prefix. Later large-brush work is separate and is not accepted by this run.

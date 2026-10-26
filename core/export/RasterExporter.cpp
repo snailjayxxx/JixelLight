@@ -1,4 +1,5 @@
 #include "RasterExporter.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QImageWriter>
 #include <QSaveFile>
@@ -34,4 +35,28 @@ bool exportRaster(const QImage &source, const AdjustmentState &state, const QStr
     if (cancelled(cancel)) { file.cancelWriting(); return fail("Cancelled"); }
     if (!file.commit()) return fail(file.errorString());
     return true;
+}
+bool exportRaster(BrushRenderRequest &request,const QString &path,RasterFormat format,int quality,
+                  const CancelToken &cancel,QString *error) {
+    if(error)error->clear();
+    const auto refuse=[&](const QString &message){if(error)*error=message;return false;};
+    if(cancelled(cancel))return refuse("Cancelled");
+    if(request.layout()!=BrushRenderRequest::Layout::Whole)return refuse("Raster export requires a whole admitted brush request");
+    if(format!=RasterFormat::Png16&&format!=RasterFormat::Tiff16&&format!=RasterFormat::WebP8)return refuse("Unknown raster format");
+    const QByteArray codec=format==RasterFormat::Png16?"png":format==RasterFormat::Tiff16?"tiff":"webp";
+    if(!QImageWriter::supportedImageFormats().contains(codec))return refuse("Required image format plugin is unavailable: "+codec);
+    const auto lease=request.render(cancel,error);if(!lease)return false;
+    QImage rendered=lease.image();
+    if(rendered.format()!=QImage::Format_RGBA64)return refuse("Expected admitted RGBA64 output");
+    if(format==RasterFormat::Tiff16&&rendered.sizeInBytes()>qint64(0xffffffff)-16*1024*1024)return refuse("TIFF exceeds classic TIFF size limit");
+    if(format==RasterFormat::WebP8)rendered=rendered.convertToFormat(QImage::Format_RGBA8888);
+    if(rendered.isNull()||cancelled(cancel))return refuse("Cancelled or output conversion failed");
+    QSaveFile file(path);file.setDirectWriteFallback(false);
+    if(!file.open(QIODevice::WriteOnly))return refuse(file.errorString());
+    QImageWriter writer(&file,codec);
+    if(format==RasterFormat::Tiff16)writer.setCompression(1);
+    if(format==RasterFormat::WebP8)writer.setQuality(std::clamp(quality,1,100));
+    if(!writer.write(rendered)){file.cancelWriting();return refuse(writer.errorString());}
+    if(cancelled(cancel)){file.cancelWriting();return refuse("Cancelled");}
+    return file.commit()||refuse(file.errorString());
 }

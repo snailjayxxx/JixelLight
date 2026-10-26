@@ -171,6 +171,11 @@ inline bool calculateCoverage(const BrushMaskDocument::Document &document,
 } // namespace detail
 
 struct PlannedTile { Rect rect; std::size_t candidateVisits=0; };
+class FramePlan;
+namespace detail {
+inline bool planFrameBounded(const BrushMaskDocument::Document &,int,int,Rect,FramePlan *,
+                             const std::atomic_bool *,NormalizedFrame,std::size_t,std::size_t);
+}
 class FramePlan {
 public:
     std::vector<PlannedTile> tiles;
@@ -197,8 +202,8 @@ private:
         bool indexed=false;
     };
     std::shared_ptr<const Prepared> prepared_;
-    friend bool planFrame(const BrushMaskDocument::Document &,int,int,Rect,
-                          FramePlan *,const std::atomic_bool *,NormalizedFrame,std::size_t);
+    friend bool detail::planFrameBounded(const BrushMaskDocument::Document &,int,int,Rect,
+                          FramePlan *,const std::atomic_bool *,NormalizedFrame,std::size_t,std::size_t);
     friend bool exposureOnly(const FramePlan &,std::size_t,ExposureOutput *,const std::atomic_bool *);
 };
 
@@ -207,16 +212,15 @@ private:
 // once, preserving layer/stroke/dab order in each tile. The index has bounded
 // storage independent of work budgets; index-budget exhaustion uses the accepted
 // scan path. A plan owns immutable inputs and is never a cross-request cache.
-inline bool planFrame(const BrushMaskDocument::Document &document,int width,int height,
-                      Rect region,FramePlan *out,const std::atomic_bool *cancel=nullptr,
-                      NormalizedFrame frame={},
-                      std::size_t indexReferenceBudget=MaxCandidateIndexReferences) {
+inline bool detail::planFrameBounded(const BrushMaskDocument::Document &document,int width,int height,
+                      Rect region,FramePlan *out,const std::atomic_bool *cancel,
+                      NormalizedFrame frame,std::size_t indexReferenceBudget,std::size_t pixelBudget) {
     if (!out || stopped(cancel) || !BrushMaskGeometry::validFrame(width,height)
         || !validNormalizedFrame(frame) || !BrushMaskDocument::validDocument(document)
         || region.x<0 || region.y<0 || region.width<=0 || region.height<=0
         || region.width>width || region.height>height
         || region.x>width-region.width || region.y>height-region.height
-        || std::size_t(region.width)*region.height>MaxResearchFramePixels) return false;
+        || std::size_t(region.width)*region.height>pixelBudget) return false;
     FramePlan ready;
     auto prepared=std::make_shared<FramePlan::Prepared>();
     prepared->document=document;
@@ -285,6 +289,15 @@ inline bool planFrame(const BrushMaskDocument::Document &document,int width,int 
     ready.prepared_=std::move(prepared);
     *out=std::move(ready);
     return true;
+}
+
+// Existing tools retain the original 2 Mi-pixel research boundary. A larger
+// internal plan is usable only through an owning admitted render request.
+inline bool planFrame(const BrushMaskDocument::Document &document,int width,int height,
+                      Rect region,FramePlan *out,const std::atomic_bool *cancel=nullptr,
+                      NormalizedFrame frame={},std::size_t indexReferenceBudget=MaxCandidateIndexReferences) {
+    return detail::planFrameBounded(document,width,height,region,out,cancel,frame,
+                                    indexReferenceBudget,MaxResearchFramePixels);
 }
 
 // Execute a request-local plan. The public summary cannot forge trusted

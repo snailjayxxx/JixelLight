@@ -6,6 +6,7 @@
 #include "core/async/LatestJob.h"
 
 struct ProcessingPlan;
+class BrushRenderRequest;
 class ImagePipeline {
 public:
     enum class InputEncoding { SRgb, LinearProPhoto };
@@ -38,4 +39,10 @@ public:
     // explicit RGBA32FPx4 scene sources retain over-range values until tone mapping.
     static DiagnosticResult diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan,
                                             const CancelToken &cancel = {});
+private:
+    friend class BrushRenderRequest;
+    static bool preflightAdmittedBrush(const QSize &frameSize,const ProcessingPlan &plan,const QRect &region,
+                                      int stripeHeight,const CancelToken &cancel,QString *error);
+    static QImage renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,
+                                     const CancelToken &cancel,bool parallel);
 };
