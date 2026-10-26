@@ -1,6 +1,6 @@
 # F3 — reuse completed color pixels for full-resolution analysis
 
-Implementation and acceptance work in progress on `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This stage adds an optional, independently budgeted `AnalysisFrameCache`. Local component/integration tests, the final combined full suite, a paired workload and quiet GUI runs passed as recorded below. Final-tree CI and actual deployment packages remain pending.
+Accepted at implementation HEAD `62d64d11dfd5d1201bfb943d9e41a968c18bdc80` by [CI #40285937542](https://github.com/snailjayxxx/JixelLight/actions/runs/40285937542) on `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This stage adds an optional, independently budgeted `AnalysisFrameCache`. Local component/integration, full-suite, paired-workload and quiet-GUI evidence is retained below alongside this exact-tree three-platform and actual-package acceptance.
 
 ## Measured duplicate work
 
@@ -13,7 +13,7 @@ The actual Windows x64 deployed CPU GUI report from [CI #40275215812](https://gi
 
 Both groups report a summed `cpu_pipeline.pixels` of **12,222,560**, including the regions the existing detail processing requests beyond the logical strip centers. The subsequent two `scope_plot_cached` requests take 0.091 ms and 0.093 ms and contain no color-pipeline calls: the three plots already share a completed plot batch. The missing reuse is between exact histogram rendering and that first plot batch.
 
-These nested measurements establish duplicate color work in this particular package run. They do not establish a general Windows regression, explain all VM or GUI wall-time variance, or predict a fixed speedup. The original CPU GUI limit remains **60,000 ms**. The local paired comparison below includes both rendering saved and full-frame collection cost; a final Windows deployment comparison remains pending.
+These nested measurements establish duplicate color work in this particular package run. They do not establish a general Windows regression, explain all VM or GUI wall-time variance, or predict a fixed speedup. The original CPU GUI limit remains **60,000 ms**. The local and CI paired comparisons below include both rendering saved and full-frame collection cost. The exact-tree deployment evidence later in this document also verifies that the first plot batch reuses completed pixels without another color pass.
 
 ## Request flow
 
@@ -121,6 +121,73 @@ Whole-process `/usr/bin/time -l` memory measurements are separate:
 
 These process peaks include source/geometry images, other caches, renderer/UI resources and allocator overhead. They are not analysis-cache charges and are not constrained by its 320 MiB limit. Screenshot save time includes PNG encoding and file I/O. The combined local summary is retained at `/tmp/jixellight-analysis-local-summary.json`; these working-tree runs do not establish a final committed-tree or deployed-package acceptance.
 
+## Exact-tree three-platform CI acceptance
+
+[CI #40285937542](https://github.com/snailjayxxx/JixelLight/actions/runs/40285937542) completed **Success** for Windows x64, macOS ARM64 and Linux GPU. Its recorded implementation HEAD is **`62d64d11dfd5d1201bfb943d9e41a968c18bdc80`**; checkout tested merge **`fb56bd6265eb696250be88302613905908395090`**. Both commits have tree **`2dd470da79b69e672a1ecbd1b5f2d8ca3a156566`**, establishing that this exact implementation tree was tested.
+
+Each platform passed **CTest 10/10**, **203 Core / 36 mandatory GPU / 39 performance** checks with **zero failed or skipped checks**. All **11 analysis component/integration slots** listed above and the new paired performance slot passed on all three platforms. The original 16K-dab viewport and six full/panned HDR brush/output-space combinations retained maximum RGB error **0/65535**, exact alpha, complete **1024-bin Scopes** and explicit CPU-reference-upload provenance under the unchanged **40/65535** bound. Checksum-pinned public Sony RAW/JPEG, native GUI/canvas, ICC and sensor/refusal/readiness gates passed.
+
+### Three-platform paired samples
+
+These are separate controlled comparisons within this run, using the same cold-result-cache, alternating baseline/reuse procedure as the local measurement: **2,918,067 post-geometry pixels**, three samples per path, histogram followed by all three plots, including frame collection cost. Every sample retained exactly equal histograms/clipping/pixel counts and plot images. Actual thread budgets are recorded rather than inferred from logical processor counts.
+
+| Platform | Thread budget | Path | Three end-to-end samples (ms), sampling order | Median (ms) | Analysis peak charged bytes |
+| --- | ---: | --- | --- | ---: | ---: |
+| Linux | 2 | Existing histogram + shared plot color | 2495.483311, 2494.546261, 2497.77724 | 2495.483311 | No analysis cache |
+| Linux | 2 | Histogram collection + encoded plots | 1444.65999, 1450.009024, 1461.285927 | 1450.009024 | 23344584 |
+| macOS | 1 | Existing histogram + shared plot color | 3195.189042, 3129.540042, 3050.572583 | 3129.540042 | No analysis cache |
+| macOS | 1 | Histogram collection + encoded plots | 1854.968125, 1845.003625, 1539.737459 | 1845.003625 | 23344584 |
+| Windows | 2 | Existing histogram + shared plot color | 4808.4873, 4803.2003, 4843.8032 | 4808.4873 | No analysis cache |
+| Windows | 2 | Histogram collection + encoded plots | 2800.4089, 2781.5025, 2799.0413 | 2799.0413 | 23344584 |
+
+All three reuse groups report the same **23,344,584-byte** peak under their **33,554,432-byte** test budget. Each platform records **3 baseline shared plot passes**, **3 reuse encoded plot batches** and **3 complete frame publications**; `timing_gate` remains **false**. Performance suites finished in **18.648s Linux / 22.643s macOS / 37.317s Windows**, below the unchanged **120-second** timeout. These same-fixture comparisons include collection overhead and support a measured benefit for the recorded request sequence; they do not establish general slider/GPU performance or cross-machine speedups.
+
+### Actual deployed packages and complete GUI reports
+
+Both `package-validation-Windows` and `package-validation-macOS` manifests report **`passed: true`**, **`sdk_paths_removed: true`**, and six successful modes: GPU GUI, GPU diagnostic, CPU GUI, CPU diagnostic, Sony native CLI and develop CLI. Every mode returned zero; every GUI/diagnostic mode reported **0 QML runtime errors**. GPU diagnostics retain `gpu-compute` producer identity, while active-brush research tests retain their explicit CPU-reference-upload route.
+
+| Deployed package | Path | GUI elapsed | Original deadline | Full Scopes pixels | PNG captures |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Windows x64 | CPU | **53,773ms** | **60,000ms** | **10,340,960** | **22/22 successful** |
+| Windows x64 | Direct3D GPU | **37,157ms** | **60,000ms** | **10,340,960** | **22/22 successful** |
+| macOS ARM64 | CPU | **32,214ms** | **60,000ms** | **10,340,960** | **22/22 successful** |
+| macOS ARM64 | Metal GPU | **29,888ms** | **60,000ms** | **10,340,960** | **22/22 successful** |
+
+All four reports record `source_commit: fb56bd6`, `smoke_passed: true` and **one encoded plot batch counting exactly 10,340,960 pixels**. Their `analysis_frame_cache` snapshots have budget **335,544,320 bytes**, peak charge **82,727,728 bytes**, final charged/cached bytes **24,624**, **one hit**, and one latest entry. Building bytes, leased estimate, in-flight entries, bypasses of every kind, allocation failures, cancelled operations, invalid requests and stale publications are all **zero**. The final small entry does not represent the large frame's peak charge.
+
+| Deployed package/path | Publications | Misses | Cache-ownership evictions | Encoded plot passes / pixels |
+| --- | ---: | ---: | ---: | ---: |
+| Windows CPU | 6 | 6 | 5 | 1 / 10,340,960 |
+| Windows GPU | 6 | 6 | 5 | 1 / 10,340,960 |
+| macOS CPU | 5 | 5 | 4 | 1 / 10,340,960 |
+| macOS GPU | 5 | 5 | 4 | 1 / 10,340,960 |
+
+### Histogram to first-plot color-work evidence
+
+The actual full-resolution `cpu_scope_plots_encoded` batch in **each** deployed report contains **zero `cpu_pipeline` calls and zero geometry/preparation stages**. Its preceding exact histogram still performs the expected 21 color-strip calls. Associating the recorded stage UTC completion times and durations gives:
+
+| Deployed package/path | Preceding histogram duration (ms) | Histogram color calls | Sum of color-call durations (ms) | First encoded three-plot batch (ms) | Color / geometry-preparation calls in plot batch |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Windows CPU | 6378.6161 | 21 | 6284.6971 | 2079.9662 | **0 / 0** |
+| Windows GPU | 6254.7004 | 21 | 6162.7624 | 2078.8414 | **0 / 0** |
+| macOS CPU | 4085.421291 | 21 | 4014.554919 | 653.942459 | **0 / 0** |
+| macOS GPU | 4197.151584 | 21 | 4109.551165 | 653.950916 | **0 / 0** |
+
+The recorded plot windows contain only encoded plot counting and the enclosing plot-cache timing. Combined with exact output checks, a completed-frame hit and the encoded pixel counter, this establishes the intended histogram-to-first-plot reuse in the actual packages. It is stronger evidence of removed duplicate color work than a comparison of whole GUI elapsed times.
+
+### Deployed screenshot timings
+
+| Deployed package/path | Successful entries | Grab total (ms) | PNG save total (ms) | Maximum single grab (ms) | Maximum single save (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Windows CPU | 22/22 | 459.4402 | 1781.8542 | 41.212, export naming invalid | 127.8489, crop |
+| Windows GPU | 22/22 | 808.9297 | 2058.0580 | 89.7318, import dialog English | 182.8231, crop |
+| macOS CPU | 22/22 | 250.860500 | 2290.678375 | 34.816041, presets | 202.046125, parade |
+| macOS GPU | 22/22 | 273.169875 | 2226.673253 | 42.401792, presets | 196.500167, parade |
+
+Screenshot save time includes the existing PNG encoding and file I/O. Cache charges exclude source/geometry images and other process allocations; the 320 MiB cache budget remains distinct from total process memory. **Differences in GUI wall-clock time across CI runs are not attributed to this cache change**: host load, preparation, rendering, presentation and I/O vary. The controlled paired samples and direct zero-color plot windows above provide the performance evidence for this stage.
+
+Acceptance applies only to the exact implementation tree above; later changes require their own unchanged three-platform/package checks. Active-brush size/work and enabled-persistence gates remain unchanged.
+
 ## Acceptance evidence
 
 | Validation | Status |
@@ -131,7 +198,7 @@ These process peaks include source/geometry images, other caches, renderer/UI re
 | New paired performance case | **Passed 3/0/0 in 4,251 ms**, with exact results and the three-sample measurements above. No timing gate was added. |
 | Final combined full local CTest including the new performance case | **Passed 10/10 in 77.61 s:** **203 Core / 36 real Metal GPU / 39 performance**, real Sony fixtures, zero failed or skipped. The original 120 s suite timeout is unchanged. |
 | Quiet local CPU and native Cocoa/Metal GUI | **Passed:** both 22 successful screenshots, complete 10,340,960-pixel scopes, one encoded plot batch, zero QML markers and elapsed time below the unchanged 60,000 ms gate; evidence above. |
-| Three-platform final-tree CI and actual deployment packages | Pending; no earlier CI run accepts this new cache implementation. |
-| Final Windows/deployment performance comparison | Pending. The local paired result establishes a benefit only for the measured device, fixture and request sequence. |
+| Three-platform final-tree CI and actual deployment packages | **Passed at `62d64d11dfd5d1201bfb943d9e41a968c18bdc80`, CI #40285937542:** equal implementation/merge trees, three-platform 203 Core / 36 GPU / 39 performance, CTest 10/10, zero skips and both actual six-mode deployed packages; exact evidence above. |
+| Final Windows/deployment performance comparison | **Recorded:** three-platform paired samples and four deployed zero-color encoded-plot windows above. These establish benefit/reuse for the measured requests, without attributing cross-run GUI wall-clock variation to this implementation. |
 
 An early local app run overlapped compilation and is excluded from performance evidence. Acceptance must use the final integrated tree and retain the original pixel, provenance, cancellation, public-camera-fixture and GUI assertions.

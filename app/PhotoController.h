@@ -214,6 +214,9 @@ public:
     Q_INVOKABLE void setViewport(double width, double height, double dpr, double zoom, double centerX, double centerY);
     Q_INVOKABLE void finishInteraction();
     Q_INVOKABLE QVariantMap exportNamePreview(const QString &pattern, int sequenceStart=1, const QString &format=QStringLiteral("jpeg")) const;
+    Q_INVOKABLE QStringList selectedVersionKeys() const;
+    Q_INVOKABLE QVariantMap exportVersionNamePreview(const QStringList &keys, const QString &pattern, int sequenceStart=1, const QString &format=QStringLiteral("jpeg")) const;
+    Q_INVOKABLE bool exportVersions(const QStringList &keys, const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92, const QString &format = QStringLiteral("jpeg"), const QString &pattern={}, int sequenceStart=1);
     Q_INVOKABLE bool exportAll(const QUrl &folder, const QString &colorSpaceKey = QStringLiteral("srgb"), int quality = 92, const QString &format = QStringLiteral("jpeg"), const QString &pattern={}, int sequenceStart=1);
     Q_INVOKABLE void cancelExport();
     Q_INVOKABLE bool flushEdits();
@@ -426,6 +429,7 @@ private:
         PhotoTimeline timeline;
         QString storageKey() const { return copyKey.isEmpty() ? (originalKey.isEmpty() ? path : originalKey) : copyKey; }
     };
+    QVector<PhotoEntry> resolveExportVersions(const QStringList &keys, QString *error) const;
     QVector<PhotoEntry> m_photos;
     QSet<QString> m_importedPaths;
     QSet<int> m_selectedPhotos;

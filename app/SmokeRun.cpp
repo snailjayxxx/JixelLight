@@ -463,6 +463,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto vignetteTrace=std::make_shared<QJsonObject>();
     auto gradingUiTrace=std::make_shared<QJsonObject>();
     auto exportNamesTrace=std::make_shared<QJsonObject>();
+    auto exportSelectionTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -1036,6 +1037,74 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             exportNamesTrace->insert("edits_unchanged",controller->gpuPlan(true).state.toJson()==exportNamesTrace->value("before").toObject()
                 && historyCursor(controller)==exportNamesTrace->value("before_cursor").toInt(-1));
             exportNamesTrace->insert("no_export_queued",!controller->exportBusy());
+            exportSelectionTrace->insert("before",controller->gpuPlan(true).state.toJson());
+            exportSelectionTrace->insert("before_cursor",historyCursor(controller));
+            exportSelectionTrace->insert("original_selection",QJsonArray::fromVariantList(controller->selectedIndices()));
+            const int other=controller->currentIndex()==0 ? 1:0;
+            exportSelectionTrace->insert("selection_set",controller->setPhotoSelection({other,controller->currentIndex()}));
+            exportSelectionTrace->insert("captured_keys",QJsonArray::fromStringList(controller->selectedVersionKeys()));
+            resizeForSmoke(window,1180,720);
+            auto *menu=window->findChild<QObject *>("exportActionsMenu");
+            exportSelectionTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
+            state->phase=296;
+        } else if (state->phase==296 && exportUiReady) {
+            auto *menu=window->findChild<QObject *>("exportActionsMenu");
+            exportSelectionTrace->insert("menu_visible",menu && menu->property("visible").toBool());
+            exportSelectionTrace->insert("action_clicked",clickItem(window,window->findChild<QQuickItem *>("selectedBatchExportAction")));
+            if (menu) QMetaObject::invokeMethod(menu,"close");
+            state->phase=297;
+        } else if (state->phase==297 && exportUiReady) {
+            auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            auto *format=window->findChild<QQuickItem *>("batchExportFormat");
+            exportSelectionTrace->insert("dialog_visible",dialog && dialog->property("visible").toBool()
+                && dialog->property("batchMode").toBool() && dialog->property("selectedOnly").toBool());
+            if (dialog && format) {
+                const auto x=dialog->property("x").toDouble(),y=dialog->property("y").toDouble();
+                const auto w=dialog->property("width").toDouble(),h=dialog->property("height").toDouble();
+                exportSelectionTrace->insert("compact_fit",x>=0 && y>=0 && x+w<=window->width()+1 && y+h<=window->height()+1);
+                const auto *summary=window->findChild<QQuickItem *>("selectedExportSummary");
+                exportSelectionTrace->insert("summary_visible",summary && summary->isVisible()
+                    && summary->property("text").toString().contains("2"));
+                const auto captured=dialog->property("capturedVersionKeys");
+                const auto keys=captured.canConvert<QJSValue>()
+                    ? captured.value<QJSValue>().toVariant().toStringList():captured.toStringList();
+                exportSelectionTrace->insert("keys_frozen",keys.size()==2
+                    && QJsonArray::fromStringList(keys)==exportSelectionTrace->value("captured_keys").toArray());
+                format->setProperty("currentIndex",1);
+                dialog->setProperty("nameTemplate",QString("{name}_{version}_{seq:4}"));
+                dialog->setProperty("sequenceStart",7);
+                const auto preview=objectMap(dialog,"namingPreview");
+                const auto names=preview["names"].toStringList();
+                exportSelectionTrace->insert("preview",QJsonObject::fromVariantMap(preview));
+                exportSelectionTrace->insert("preview_valid",preview["valid"].toBool() && preview["count"].toInt()==2
+                    && names.size()==2 && names[0].endsWith("_0007.png") && names[1].endsWith("_0008.png"));
+                controller->setPhotoSelection({controller->currentIndex()});
+                exportSelectionTrace->insert("selection_changed",controller->selectedVersionKeys().size()==1);
+                exportSelectionTrace->insert("preview_stays_frozen",objectMap(dialog,"namingPreview")==preview);
+                const auto *ok=visualChild(window->contentItem(),"exportSettingsContinue");
+                exportSelectionTrace->insert("continue_enabled",ok && ok->isEnabled());
+            }
+            state->phase=298;
+        } else if (state->phase==298 && exportUiReady) {
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".export-selected.png");
+            if (auto *dialog=window->findChild<QObject *>("exportSettingsDialog")) {
+                dialog->setProperty("nameTemplate",exportNamesTrace->value("saved_pattern").toString());
+                dialog->setProperty("sequenceStart",exportNamesTrace->value("saved_sequence").toInt(1));
+            }
+            if (auto *format=window->findChild<QQuickItem *>("batchExportFormat"))
+                format->setProperty("currentIndex",exportNamesTrace->value("saved_format").toInt());
+            exportSelectionTrace->insert("cancel_clicked",clickItem(window,visualChild(window->contentItem(),"exportSettingsCancel")));
+            state->phase=299;
+        } else if (state->phase==299 && exportUiReady) {
+            const auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
+            const bool closed=dialog && !dialog->property("visible").toBool();
+            if (!closed && state->elapsed.elapsed()<SmokePhasePolicy::DeadlineMs) return;
+            exportSelectionTrace->insert("closed",closed);
+            exportSelectionTrace->insert("edits_unchanged",controller->gpuPlan(true).state.toJson()==exportSelectionTrace->value("before").toObject()
+                && historyCursor(controller)==exportSelectionTrace->value("before_cursor").toInt(-1));
+            exportSelectionTrace->insert("no_export_queued",!controller->exportBusy());
+            controller->setPhotoSelection(exportSelectionTrace->value("original_selection").toArray().toVariantList());
+            resizeForSmoke(window,1540,920);
             controller->selectPhoto(transferTrace->value("source_index").toInt()); state->phase=50;
         } else if (state->phase==50 && ready) {
             // Restoring the source starts a new asynchronous histogram. Preview
@@ -1074,7 +1143,12 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         for (const auto *key : {"missing_date_fixture_added","menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
                                "translated_buttons","invalid_template_blocked","missing_date_blocked","cancel_clicked","closed","edits_unchanged","no_export_queued"})
             exportNamesOk=exportNamesOk && exportNamesTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && (!gpuRequired || controller->gpuActive());
+        bool exportSelectionOk=true;
+        for (const auto *key : {"selection_set","menu_opened","menu_visible","action_clicked","dialog_visible","compact_fit","summary_visible","keys_frozen",
+                               "preview_valid","selection_changed","preview_stays_frozen","continue_enabled","cancel_clicked",
+                               "closed","edits_unchanged","no_export_queued"})
+            exportSelectionOk=exportSelectionOk && exportSelectionTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -1102,6 +1176,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_color_grading_panel_trace"]=*gradingUiTrace;
         report["ui_export_naming_passed"]=exportNamesOk;
         report["ui_export_naming_trace"]=*exportNamesTrace;
+        report["ui_selected_export_passed"]=exportSelectionOk;
+        report["ui_selected_export_trace"]=*exportSelectionTrace;
         report["smoke_phase_milestones"]=*phaseMilestones;
         report["smoke_deadline_ms"]=SmokePhasePolicy::DeadlineMs;
         report["smoke_final_image_ready"]=ready;

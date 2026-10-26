@@ -82,17 +82,22 @@ ApplicationWindow {
         id: exportSettingsDialog
         objectName: "exportSettingsDialog"
         width: 540
-        title: window.t("导出设置", "Export Settings")
+        title: selectedOnly ? window.t("导出所选照片/版本", "Export Selected Photos/Versions") : window.t("导出设置", "Export Settings")
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         anchors.centerIn: parent
         property bool batchMode: false
+        property bool selectedOnly: false
+        property var capturedVersionKeys: []
         property alias nameTemplate: batchNameTemplate.text
         property alias sequenceStart: batchSequence.value
         readonly property var namingPreview: {
             const photos = photoController.library
             const language = photoController.language
-            return photoController.exportNamePreview(nameTemplate, sequenceStart, ["jpeg", "png", "tiff", "webp"][batchFormatBox.currentIndex])
+            const format = ["jpeg", "png", "tiff", "webp"][batchFormatBox.currentIndex]
+            return selectedOnly
+                ? photoController.exportVersionNamePreview(capturedVersionKeys, nameTemplate, sequenceStart, format)
+                : photoController.exportNamePreview(nameTemplate, sequenceStart, format)
         }
         Settings {
             category: "BatchExportNaming"
@@ -108,9 +113,25 @@ ApplicationWindow {
             standardButton(Dialog.Cancel).objectName = "exportSettingsCancel"
             standardButton(Dialog.Cancel).text = Qt.binding(function() { return window.t("取消", "Cancel") })
         }
-        onAccepted: batchMode ? batchFolder.open() : exportDialog.open()
+        onAccepted: {
+            if (batchMode) {
+                batchFolder.selectedOnly = selectedOnly
+                batchFolder.capturedVersionKeys = capturedVersionKeys.slice()
+                batchFolder.open()
+            } else exportDialog.open()
+        }
         contentItem: ColumnLayout {
             implicitWidth: 500; spacing: 6
+            Label {
+                objectName: "selectedExportSummary"
+                visible: exportSettingsDialog.selectedOnly
+                Layout.fillWidth: true
+                text: window.t(
+                    "已固定 %1 个所选照片/版本，按图库顺序导出。改选或清空选择不会改变本次范围；排队后保留当时的编辑快照。",
+                    "%1 selected photos/versions captured in catalog order. Changing or clearing selection keeps this scope; queued exports retain their captured edits.")
+                    .arg(exportSettingsDialog.capturedVersionKeys.length)
+                wrapMode: Text.WordWrap; color: "#a5bed6"; font.pixelSize: 11
+            }
             Label { text: window.t("输出色彩空间 / ICC", "Output Color Space / ICC"); color: "#d6dee8"; font.bold: true }
             ComboBox {
                 id: exportSpaceBox
@@ -166,7 +187,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
                 text: exportSettingsDialog.namingPreview.valid
-                    ? window.t("导出 %1 个版本 · 前 3 个名称", "Export %1 versions · First 3 names").arg(exportSettingsDialog.namingPreview.count)
+                    ? window.t("导出 %1 个版本 · 名称预览", "Export %1 versions · Name preview").arg(exportSettingsDialog.namingPreview.count)
                         + "\n" + exportSettingsDialog.namingPreview.names.join("\n")
                     : exportSettingsDialog.namingPreview.error
                 wrapMode: Text.WrapAnywhere
@@ -222,7 +243,20 @@ ApplicationWindow {
         target: photoController
         function onCopyImportRequested(urls) { copyImportDialog.openFor(urls) }
     }
-    FolderDialog { id: batchFolder; title: window.t("批量导出文件夹", "Batch export folder"); onAccepted: photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, ["jpeg","png","tiff","webp"][batchFormatBox.currentIndex], exportSettingsDialog.nameTemplate, exportSettingsDialog.sequenceStart) }
+    FolderDialog {
+        id: batchFolder
+        objectName: "batchExportFolderDialog"
+        property bool selectedOnly: false
+        property var capturedVersionKeys: []
+        title: selectedOnly ? window.t("导出所选照片/版本到文件夹", "Export selected photos/versions to folder") : window.t("批量导出文件夹", "Batch export folder")
+        onAccepted: {
+            const format = ["jpeg", "png", "tiff", "webp"][batchFormatBox.currentIndex]
+            if (selectedOnly)
+                photoController.exportVersions(capturedVersionKeys, selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, format, exportSettingsDialog.nameTemplate, exportSettingsDialog.sequenceStart)
+            else
+                photoController.exportAll(selectedFolder, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value, format, exportSettingsDialog.nameTemplate, exportSettingsDialog.sequenceStart)
+        }
+    }
     FolderDialog { id: projectFolder; title: window.t("选择项目上级文件夹", "Choose parent folder for the project"); onAccepted: projectNameDialog.open() }
     FolderDialog { id: openProjectFolder; title: window.t("选择现有 .jlp 项目文件夹", "Select an existing .jlp project folder"); onAccepted: photoController.openProject(selectedFolder) }
     Dialog {
@@ -257,13 +291,24 @@ ApplicationWindow {
             MenuItem {
                 text: window.t("导出当前照片", "Export Current Photo")
                 enabled: photoController.hasImage && !photoController.exportBusy
-                onTriggered: { exportSettingsDialog.batchMode = false; exportSettingsDialog.open() }
+                onTriggered: { exportSettingsDialog.selectedOnly = false; exportSettingsDialog.capturedVersionKeys = []; exportSettingsDialog.batchMode = false; exportSettingsDialog.open() }
             }
             MenuItem {
                 objectName: "batchExportAction"
-                text: window.t("批量导出照片", "Batch Export Photos")
+                text: window.t("导出全部照片/版本…", "Export All Photos/Versions…")
                 enabled: photoController.hasImage && !photoController.exportBusy
-                onTriggered: { exportSettingsDialog.batchMode = true; exportSettingsDialog.open() }
+                onTriggered: { exportSettingsDialog.selectedOnly = false; exportSettingsDialog.capturedVersionKeys = []; exportSettingsDialog.batchMode = true; exportSettingsDialog.open() }
+            }
+            MenuItem {
+                objectName: "selectedBatchExportAction"
+                text: window.t("导出所选照片/版本…", "Export Selected Photos/Versions…")
+                enabled: photoController.selectedIndices.length > 0 && !photoController.exportBusy
+                onTriggered: {
+                    exportSettingsDialog.capturedVersionKeys = photoController.selectedVersionKeys().slice()
+                    exportSettingsDialog.selectedOnly = true
+                    exportSettingsDialog.batchMode = true
+                    exportSettingsDialog.open()
+                }
             }
             MenuSeparator {}
             MenuItem { text: window.t("导出 XMP 侧车文件…", "Export XMP sidecar…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpExportDialog() }

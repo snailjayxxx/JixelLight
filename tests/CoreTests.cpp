@@ -78,6 +78,21 @@ bool fixtureCaptureTime(const QString &path,const char *time) {
         exif["Exif.Photo.DateTimeOriginal"]=time; image->setExifData(exif); image->writeMetadata(); return true;
     } catch (...) { return false; }
 }
+bool selectedExportPngFixture(const QString &path,int seed) {
+    QImage image(27,19,QImage::Format_RGBA64);image.setColorSpace(QColorSpace::SRgb);
+    for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
+        reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(
+            (seed*7919+x*997+y*503)%65536,(seed*1201+x*431+y*2017)%65536,
+            (seed*4001+x*1237+y*307)%65536,(x+y)%3?65535:23456);
+    return image.save(path,"PNG");
+}
+QImage selectedExportCpuReference(SourceCache &cache,const QString &path,const AdjustmentState &state,
+                                 ColorManagement::OutputSpace space=ColorManagement::OutputSpace::SRgb) {
+    const auto source=loadSource(cache,path,{});
+    if(source.image.isNull())return {};
+    return ImagePipeline::processWithPlan(state.geometry.apply(source.image),
+        ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,false,0),{},false);
+}
 QByteArray fixtureBytes(const QString &path) {
     QFile file(path); return file.open(QIODevice::ReadOnly)?file.readAll():QByteArray();
 }
@@ -932,14 +947,14 @@ private slots:
 
     void smokeExportDialogPhasesMustNotWaitForBackgroundImageRendering() {
         QCOMPARE(SmokePhasePolicy::DeadlineMs,60000); // never relax the gate
-        for(int phase=290;phase<=295;++phase) {
+        for(int phase=290;phase<=299;++phase) {
             QVERIFY(SmokePhasePolicy::isRenderIndependentExportUi(phase));
             QVERIFY(SmokePhasePolicy::canAdvance(phase,false));
             QVERIFY(SmokePhasePolicy::canAdvance(phase,true));
         }
         // Opening other tools and returning to the actual RAW/Scopes remain
         // blocked until the real photo is fully rendered.
-        for(const int phase:{0,2,289,50,296}) {
+        for(const int phase:{0,2,289,50,300}) {
             QVERIFY(!SmokePhasePolicy::isRenderIndependentExportUi(phase));
             QVERIFY(!SmokePhasePolicy::canAdvance(phase,false));
             QVERIFY(SmokePhasePolicy::canAdvance(phase,true));
@@ -4059,6 +4074,178 @@ private slots:
         QVERIFY(!controller.exportAll(QUrl::fromLocalFile(out),"srgb",92,"png","{capture_date}_{seq}"));
         QCOMPARE(finished.size(),1); QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(),bytes);
     }
+    void selectedVersionExportOnlyWritesTwoOfTenAndAllStillWritesEntireCatalog() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        QVERIFY(QDir(dir.path()).mkdir("selected"));QVERIFY(QDir(dir.path()).mkdir("all"));
+        PhotoController c(nullptr);c.setGpuEnabled(false);
+        QHash<QString,AdjustmentState> states;QHash<QString,QString> paths;QHash<QString,QByteArray> originalBytes;
+        for(int i=0;i<5;++i) {
+            const auto path=dir.filePath(QString("source%1.png").arg(i));
+            QVERIFY(selectedExportPngFixture(path,i+1));originalBytes.insert(path,fixtureBytes(path));
+            QVERIFY(c.importFile(QUrl::fromLocalFile(path)));c.selectPhoto(c.library().size()-1);c.setExposure(.1*(i+1));c.finishInteraction();
+            auto row=c.library().last().toMap();states.insert(row["id"].toString(),c.gpuPlan(true).state);paths.insert(row["id"].toString(),path);
+            QVERIFY(c.createVirtualCopy(QString("Copy%1").arg(i)));c.setExposure(-.15*(i+1));c.finishInteraction();
+            row=c.library().last().toMap();states.insert(row["id"].toString(),c.gpuPlan(true).state);paths.insert(row["id"].toString(),path);
+        }
+        QCOMPARE(c.library().size(),10);
+        const QStringList wanted{c.library()[4].toMap()["id"].toString(),c.library()[9].toMap()["id"].toString()};
+        QVERIFY(c.setPhotoSelection({9,4}));QCOMPARE(c.selectedVersionKeys(),wanted);
+        const QStringList reversed{wanted[1],wanted[0]};
+        const auto preview=c.exportVersionNamePreview(reversed,"{name}_{version}_{seq:3}",27,"png");
+        QVERIFY2(preview["valid"].toBool(),qPrintable(preview["error"].toString()));QCOMPARE(preview["count"].toInt(),2);
+        QCOMPARE(preview["names"].toStringList(),QStringList({"source2_Original_027.png","source4_Copy4_028.png"}));
+        QSignalSpy finished(&c,&PhotoController::exportFinished);
+        QVERIFY(c.exportVersions(reversed,QUrl::fromLocalFile(dir.filePath("selected")),"srgb",100,"png","{name}_{version}_{seq:3}",27));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);
+        QCOMPARE(finished[0][0].toInt(),2);QCOMPARE(finished[0][1].toInt(),0);QVERIFY(!finished[0][2].toBool());
+        QCOMPARE(QDir(dir.filePath("selected")).entryList(QDir::Files),preview["names"].toStringList());
+        SourceCache cache(4*1024*1024,dir.filePath("decode-cache"));
+        for(int i=0;i<wanted.size();++i) {
+            const auto expected=selectedExportCpuReference(cache,paths[wanted[i]],states[wanted[i]]);QVERIFY(!expected.isNull());
+            QCOMPARE(QImage(QDir(dir.filePath("selected")).filePath(preview["names"].toStringList()[i])).convertToFormat(QImage::Format_RGBA64),expected);
+        }
+        QCOMPARE(c.selectedVersionKeys(),wanted);
+        QCOMPARE(c.exportNamePreview("{seq:3}_{name}_{version}",1,"png")["count"].toInt(),10);
+        QVERIFY(c.exportAll(QUrl::fromLocalFile(dir.filePath("all")),"srgb",100,"png","{seq:3}_{name}_{version}",1));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),2,10000);QCOMPARE(finished[1][0].toInt(),10);QCOMPARE(finished[1][1].toInt(),0);
+        QCOMPARE(QDir(dir.filePath("all")).entryList({"*.png"},QDir::Files).size(),10);
+        for(auto it=originalBytes.cbegin();it!=originalBytes.cend();++it)QCOMPARE(fixtureBytes(it.key()),it.value());
+    }
+
+    void selectedVersionKeysSurviveDialogSelectionChangesAndCatalogIndexShifts() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto path=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(path,3));
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        c.setExposure(.25);c.finishInteraction();const auto original=c.gpuPlan(true).state;
+        for(int i=1;i<=3;++i){QVERIFY(c.createVirtualCopy(QString("Copy%1").arg(i)));c.setExposure(-.25*i);c.finishInteraction();}
+        const auto last=c.gpuPlan(true).state;
+        QVERIFY(c.setPhotoSelection({3,0}));const auto captured=c.selectedVersionKeys();QCOMPARE(captured.size(),2);
+        const auto preview=c.exportVersionNamePreview(captured,"{version}_{seq:2}",11,"png");QVERIFY(preview["valid"].toBool());
+        // This is the native-folder-dialog boundary: selection can change and
+        // an earlier row can disappear before its captured keys are accepted.
+        c.selectPhoto(1);QVERIFY(c.removeCurrentVirtualCopy());QCOMPARE(c.library().size(),3);
+        c.selectPhoto(1);c.setExposure(2);c.finishInteraction();
+        QVERIFY(c.setPhotoSelection({1}));QVERIFY(c.selectedVersionKeys()!=captured);
+        QCOMPARE(c.library()[2].toMap()["id"].toString(),captured[1]);
+        QCOMPARE(c.exportVersionNamePreview(captured,"{version}_{seq:2}",11,"png")["names"],preview["names"]);
+        QSignalSpy finished(&c,&PhotoController::exportFinished);
+        QVERIFY(c.exportVersions(captured,QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{version}_{seq:2}",11));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),2);QCOMPARE(finished[0][1].toInt(),0);
+        SourceCache cache(4*1024*1024,dir.filePath("decode-cache"));
+        const auto names=preview["names"].toStringList();QCOMPARE(names,QStringList({"Original_11.png","Copy3_12.png"}));
+        QCOMPARE(QImage(dir.filePath("out/"+names[0])).convertToFormat(QImage::Format_RGBA64),selectedExportCpuReference(cache,path,original));
+        QCOMPARE(QImage(dir.filePath("out/"+names[1])).convertToFormat(QImage::Format_RGBA64),selectedExportCpuReference(cache,path,last));
+        QVERIFY(c.setPhotoSelection({}));QVERIFY(c.selectedVersionKeys().isEmpty());
+        QCOMPARE(c.exportVersionNamePreview(captured,"{version}_{seq:2}",11,"png")["names"],preview["names"]);
+    }
+
+    void selectedVersionExportRejectsEmptyDuplicateUnknownAndRemovedKeysAtomically() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto path=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(path,5));const auto bytes=fixtureBytes(path);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        const auto original=c.library()[0].toMap()["id"].toString();
+        QVERIFY(c.createVirtualCopy("Removed"));const auto removed=c.library()[1].toMap()["id"].toString();
+        QVERIFY(c.setPhotoSelection({0,1}));const auto captured=c.selectedVersionKeys();
+        QVERIFY(c.removeCurrentVirtualCopy());QCOMPARE(c.library().size(),1);
+        QVERIFY(c.setPhotoSelection({}));QVERIFY(c.selectedVersionKeys().isEmpty());
+        QSignalSpy finished(&c,&PhotoController::exportFinished),changed(&c,&PhotoController::exportChanged);
+        const auto progress=c.exportProgress();
+        for(const auto &keys:QList<QStringList>{{},{original,original},{original,"unknown-version"},{removed},captured,{""}}) {
+            const auto preview=c.exportVersionNamePreview(keys,"{seq:3}",1,"png");
+            QVERIFY(!preview["valid"].toBool());QCOMPARE(preview["count"].toInt(),0);QVERIFY(preview["names"].toStringList().isEmpty());
+            QVERIFY(!preview["error"].toString().isEmpty());
+            QVERIFY(!c.exportVersions(keys,QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{seq:3}",1));
+            QVERIFY(!c.statusMessage().isEmpty());QVERIFY(!c.exportBusy());QCOMPARE(c.exportProgress(),progress);
+            QCOMPARE(finished.size(),0);QCOMPARE(changed.size(),0);QVERIFY(QDir(dir.filePath("out")).isEmpty());
+        }
+        QCOMPARE(fixtureBytes(path),bytes);
+        // An invalid selection must neither poison the queue nor fall back to all.
+        QVERIFY(c.exportVersions({original},QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{seq:3}",1));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),1);QCOMPARE(finished[0][1].toInt(),0);
+        QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::Files),QStringList{"001.png"});
+    }
+
+    void selectedVersionNamingIgnoresUnselectedMissingDatesAndNameCollisions() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        for(const auto &folder:QStringList{"a","b","out"})QVERIFY(QDir(dir.path()).mkdir(folder));
+        const auto a=dir.filePath("a/same.png"),b=dir.filePath("b/same.png"),undated=dir.filePath("undated.png");
+        QVERIFY(selectedExportPngFixture(a,1));QVERIFY(selectedExportPngFixture(b,2));QVERIFY(selectedExportPngFixture(undated,3));
+        QVERIFY(fixtureCaptureTime(a,"2025:01:02 03:04:05"));QVERIFY(fixtureCaptureTime(b,"2025:01:03 04:05:06"));
+        PhotoController c(nullptr);c.setGpuEnabled(false);
+        for(const auto &path:QStringList{a,b,undated})QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.library()[0].toMap()["captureChecked"].toBool()&&c.library()[1].toMap()["captureChecked"].toBool()&&c.library()[2].toMap()["captureChecked"].toBool(),10000);
+        QVERIFY(!c.exportNamePreview("{name}",1,"png")["valid"].toBool());
+        QVERIFY(!c.exportNamePreview("{capture_date}_{seq}",1,"png")["valid"].toBool());
+        QVERIFY(c.setPhotoSelection({0}));const auto captured=c.selectedVersionKeys();
+        QVERIFY(c.exportVersionNamePreview(captured,"{name}",1,"png")["valid"].toBool());
+        const auto preview=c.exportVersionNamePreview(captured,"{capture_date}_{name}_{seq:2}",7,"png");
+        QVERIFY2(preview["valid"].toBool(),qPrintable(preview["error"].toString()));
+        QCOMPARE(preview["names"].toStringList(),QStringList{"20250102_same_07.png"});
+        QSignalSpy finished(&c,&PhotoController::exportFinished);
+        QVERIFY(c.exportVersions(captured,QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{capture_date}_{name}_{seq:2}",7));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),1);QCOMPARE(finished[0][1].toInt(),0);
+        QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::Files),preview["names"].toStringList());
+    }
+
+    void selectedVersionExportPreservesAllOriginalsAndRejectsWholeBatchCollisions() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        for(const auto &folder:QStringList{"a","b","out"})QVERIFY(QDir(dir.path()).mkdir(folder));
+        const auto a=dir.filePath("a/same.png"),b=dir.filePath("b/same.png"),protectedOriginal=dir.filePath("out/protected.png");
+        QVERIFY(selectedExportPngFixture(a,1));QVERIFY(selectedExportPngFixture(b,2));QVERIFY(selectedExportPngFixture(protectedOriginal,3));
+        PhotoController c(nullptr);c.setGpuEnabled(false);
+        for(const auto &path:QStringList{a,b,protectedOriginal})QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        const auto ka=c.library()[0].toMap()["id"].toString(),kb=c.library()[1].toMap()["id"].toString();
+        const auto aBytes=fixtureBytes(a),bBytes=fixtureBytes(b),protectedBytes=fixtureBytes(protectedOriginal);
+        QSignalSpy finished(&c,&PhotoController::exportFinished),changed(&c,&PhotoController::exportChanged);
+        QVERIFY(c.exportVersionNamePreview({ka},"protected",1,"png")["valid"].toBool());
+        QVERIFY(!c.exportVersions({ka},QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","protected",1));
+        QVERIFY(!c.exportBusy());QCOMPARE(fixtureBytes(protectedOriginal),protectedBytes);
+        QVERIFY(!c.exportVersionNamePreview({ka,kb},"{name}",1,"png")["valid"].toBool());
+        QVERIFY(!c.exportVersions({ka,kb},QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{name}",1));
+        QVERIFY(!QFileInfo::exists(dir.filePath("out/same.png")));
+        const auto occupied=dir.filePath("out/001.png");QFile file(occupied);QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("existing destination"),qint64(20));file.close();const auto occupiedBytes=fixtureBytes(occupied);
+        QVERIFY(!c.exportVersions({kb,ka},QUrl::fromLocalFile(dir.filePath("out")),"srgb",100,"png","{seq:3}",1));
+        QVERIFY(!QFileInfo::exists(dir.filePath("out/002.png")));QCOMPARE(fixtureBytes(occupied),occupiedBytes);
+        QVERIFY(!c.exportBusy());QCOMPARE(finished.size(),0);QCOMPARE(changed.size(),0);
+        QCOMPARE(fixtureBytes(a),aBytes);QCOMPARE(fixtureBytes(b),bBytes);QCOMPARE(fixtureBytes(protectedOriginal),protectedBytes);
+        QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),QStringList({"001.png","protected.png"}));
+    }
+
+    void selectedVersionExportFreezesPathsNamesGeometryAndPixelsBeforeQueueRuns() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto a=dir.filePath("first.png"),b=dir.filePath("second.png");
+        QVERIFY(selectedExportPngFixture(a,4));QVERIFY(selectedExportPngFixture(b,7));
+        const auto aBytes=fixtureBytes(a),bBytes=fixtureBytes(b);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(a)));
+        c.setExposure(.25);c.setCrop(.1,.1,.8,.8);c.finishInteraction();const auto aState=c.gpuPlan(true).state;
+        QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.selectPhoto(1);QVERIFY(c.createVirtualCopy("Frozen"));
+        c.setExposure(-.5);c.rotatePhoto(1);c.finishInteraction();const auto bState=c.gpuPlan(true).state;
+        QVERIFY(c.setPhotoSelection({2,0}));const auto captured=c.selectedVersionKeys();
+        const auto preview=c.exportVersionNamePreview(captured,"{name}_{version}_{seq:2}",41,"png");QVERIFY(preview["valid"].toBool());
+        SourceCache cache(4*1024*1024,dir.filePath("decode-cache"));
+        const auto expectedA=selectedExportCpuReference(cache,a,aState,ColorManagement::OutputSpace::DisplayP3);
+        const auto expectedB=selectedExportCpuReference(cache,b,bState,ColorManagement::OutputSpace::DisplayP3);
+        QVERIFY(!expectedA.isNull());QVERIFY(!expectedB.isNull());
+        QSignalSpy finished(&c,&PhotoController::exportFinished);
+        QVERIFY(c.exportVersions(captured,QUrl::fromLocalFile(dir.filePath("out")),"display-p3",100,"png","{name}_{version}_{seq:2}",41));
+        QVERIFY(c.exportBusy());
+        // Do not pump events until both source states, selection and the copied
+        // version's name have changed; the accepted request already owns them.
+        c.selectPhoto(0);c.setExposure(2);c.setCrop(0,0,.5,1);c.finishInteraction();
+        c.selectPhoto(2);QVERIFY(c.renameCurrentVirtualCopy("Changed"));c.setExposure(-2);c.rotatePhoto(1);c.finishInteraction();
+        QVERIFY(c.setPhotoSelection({1}));QVERIFY(c.selectedVersionKeys()!=captured);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),2);QCOMPARE(finished[0][1].toInt(),0);QVERIFY(!finished[0][2].toBool());
+        const auto names=preview["names"].toStringList();QCOMPARE(names,QStringList({"first_Original_41.png","second_Frozen_42.png"}));
+        const auto actualA=QImage(dir.filePath("out/"+names[0])),actualB=QImage(dir.filePath("out/"+names[1]));
+        QCOMPARE(actualA.convertToFormat(QImage::Format_RGBA64),expectedA);QCOMPARE(actualB.convertToFormat(QImage::Format_RGBA64),expectedB);
+        QCOMPARE(actualA.colorSpace().iccProfile(),ColorManagement::iccProfile(ColorManagement::OutputSpace::DisplayP3));
+        QCOMPARE(actualB.colorSpace().iccProfile(),ColorManagement::iccProfile(ColorManagement::OutputSpace::DisplayP3));
+        QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::Files),names);
+        QVERIFY(QDir(dir.filePath("out")).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+        QCOMPARE(fixtureBytes(a),aBytes);QCOMPARE(fixtureBytes(b),bBytes);
+    }
+
     void newFileExportQueuePreservesExistingTargetsAndCleansStaging() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const auto existing=dir.filePath("existing.png"),fresh=dir.filePath("fresh.png");

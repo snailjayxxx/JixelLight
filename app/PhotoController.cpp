@@ -2,6 +2,7 @@
 #include "core/color/ColorManagement.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/export/ExportNaming.h"
+#include "core/library/CatalogSelection.h"
 #include "core/files/FileNames.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
@@ -36,6 +37,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include "diagnostics/PerformanceRecorder.h"
 #include "core/look/LookProfiles.h"
 
@@ -1319,6 +1321,97 @@ QVariantMap PhotoController::exportNamePreview(const QString &pattern, int seque
     const auto plan=planExportNames(sources,{pattern,sequenceStart},format);
     return {{"valid",plan.error.isEmpty()},{"names",plan.names.mid(0,3)},{"count",m_photos.size()},
             {"error",uiText(plan.errorZh,plan.error)}};
+}
+
+QStringList PhotoController::selectedVersionKeys() const {
+    QStringList keys;
+    for (qsizetype i=0;i<m_photos.size();++i)
+        if (m_selectedPhotos.contains(int(i))) keys.append(m_photos[i].storageKey());
+    return keys;
+}
+
+QVector<PhotoController::PhotoEntry> PhotoController::resolveExportVersions(const QStringList &keys, QString *error) const {
+    if (error) error->clear();
+    // The shared catalog resolver treats an empty request as all versions.
+    // This explicit-selection API must reject it instead of widening scope.
+    if (keys.isEmpty()) {
+        if (error) *error=uiText("请选择至少一个照片或版本。", "Choose at least one photo or version.");
+        return {};
+    }
+    if (keys.size()>1000) {
+        if (error) *error=uiText("每次最多导出 1000 个所选照片或版本。", "Choose at most 1000 photos or versions for one export.");
+        return {};
+    }
+    QStringList catalogKeys; catalogKeys.reserve(m_photos.size());
+    for (const auto &photo:m_photos) catalogKeys.append(photo.storageKey());
+    const auto selection=selectCatalogVersions(catalogKeys,keys);
+    if (!selection.error.isEmpty()) {
+        if (error) *error=uiText("导出选择无效或版本已移除。请重新选择并打开导出。",
+                                "Export selection is invalid or a version was removed. Select versions and reopen export.");
+        return {};
+    }
+    QVector<PhotoEntry> resolved; resolved.reserve(selection.indices.size());
+    for (const auto index:selection.indices) resolved.append(m_photos[index]);
+    return resolved;
+}
+
+QVariantMap PhotoController::exportVersionNamePreview(const QStringList &keys, const QString &pattern,
+                                                      int sequenceStart, const QString &format) const {
+    QString error;
+    const auto resolved=resolveExportVersions(keys,&error);
+    if (!error.isEmpty()) return {{"valid",false},{"names",QStringList{}},{"count",0},{"error",error}};
+    QVector<ExportNameSource> sources; sources.reserve(resolved.size());
+    for (const auto &photo:resolved) sources.append({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto plan=planExportNames(sources,{pattern,sequenceStart},format);
+    return {{"valid",plan.error.isEmpty()},{"names",plan.names.mid(0,3)},{"count",resolved.size()},
+            {"error",uiText(plan.errorZh,plan.error)}};
+}
+
+bool PhotoController::exportVersions(const QStringList &keys, const QUrl &folder, const QString &colorSpaceKey,
+                                     int quality, const QString &format, const QString &pattern, int sequenceStart) {
+    if (exportBusy() || !folder.isLocalFile()) return false;
+    QString error;
+    const auto resolved=resolveExportVersions(keys,&error);
+    if (!error.isEmpty()) { setStatus(error); return false; }
+    QDir directory(folder.toLocalFile());
+    if (!directory.exists()) return false;
+    // One resolved catalog-order snapshot drives both names and requests.
+    // Neither a later selection nor an index shift can redirect the batch.
+    QVector<ExportNameSource> sources; sources.reserve(resolved.size());
+    for (const auto &photo:resolved) sources.append({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto names=planExportNames(sources,{pattern,sequenceStart},format,
+        directory.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
+    if (!names.error.isEmpty()) { setStatus(uiText(names.errorZh,names.error)); return false; }
+    for (const auto &name:names.names) {
+        const auto path=directory.filePath(name);
+        if (isProtectedPhoto(path)) {
+            setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph."));
+            return false;
+        }
+        const QFileInfo target(path);
+        if (target.exists() || target.isSymLink()) {
+            setStatus(uiText("目标文件已存在，请选择新的文件名。", "Destination already exists. Choose a new filename."));
+            return false;
+        }
+    }
+    if (!flushEdits()) return false;
+    QVector<ExportRequest> requests; requests.reserve(resolved.size());
+    QStringList exportKeys; exportKeys.reserve(resolved.size());
+    const auto target=ColorManagement::fromKey(colorSpaceKey);
+    quality=std::clamp(quality,1,100);
+    for (qsizetype i=0;i<resolved.size();++i) {
+        const auto &photo=resolved[i];
+        requests.append({photo.path,directory.filePath(names.names[i]),{},photo.state,target,quality,true});
+        exportKeys.append(photo.storageKey());
+    }
+    const bool queued=m_exportQueue->start(std::move(requests));
+    if (queued) {
+        m_exportProgress=0;
+        ActionTrace::instance().record("selected_export_queued",{{"count",resolved.size()},{"version_keys",QJsonArray::fromStringList(exportKeys)}});
+        setStatus(uiText("所选版本导出已开始，可继续编辑。", "Selected-version export started; editing remains available."));
+        emit exportChanged();
+    }
+    return queued;
 }
 
 bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format,
