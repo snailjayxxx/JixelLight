@@ -191,6 +191,27 @@ bool GpuEngine::initialize(QSize size) {
 
 bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingPlan plan,
                         quint64 revision, const HistogramReady &histogramReady, bool forceHistogram) {
+    return processImpl(cb,source,std::move(plan),revision,histogramReady,forceHistogram,nullptr);
+}
+bool GpuEngine::processAdmittedBrush(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,
+    quint64 revision,const HistogramReady &histogramReady,bool forceHistogram,QString *error,
+    std::shared_ptr<BrushRenderBudget> budget) {
+    if(error)error->clear();
+    const auto refuse=[&](const QString &message){if(error)*error=message;return false;};
+    if(!m_error.isEmpty())return refuse(m_error);
+    if(!cb||source.isNull()||source.format()!=QImage::Format_RGBA32FPx4)
+        return refuse("Admitted GPU brush requires a command buffer and prepared FP32 source");
+    if(source.width()>4096||source.height()>4096
+        ||std::max(source.width(),source.height())>m_rhi->resourceLimit(QRhi::TextureSizeMax))
+        return refuse("Prepared brush preview exceeds GPU texture budget");
+    auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,{},error,std::move(budget));
+    if(!request)return false;
+    if(!processImpl(cb,source,std::move(plan),revision,histogramReady,forceHistogram,request.get()))
+        return refuse(m_error);
+    return true;
+}
+bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,
+    quint64 revision,const HistogramReady &histogramReady,bool forceHistogram,BrushRenderRequest *admitted) {
     if (!m_error.isEmpty()) return false;
     if (source.isNull() || source.format() != QImage::Format_RGBA32FPx4) return fail(QStringLiteral("GPU source must be linear RGBA32FPx4"));
     if (!BrushMaskDocument::validDocument(plan.state.brushMasks))
@@ -231,20 +252,28 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
         if (m_lastCpuFallback) {
             // Render from the exact GPU upload source. An RGBA64 conversion
             // would truncate HDR scene channels (>1) before the safety fallback.
-            const QImage cpuResult = ImagePipeline::processWithPlan(source, plan);
+            BrushImageLease admittedPixels;
+            if(admitted)admittedPixels=admitted->render();
+            const QImage cpuResult = admitted ? admittedPixels.image() : ImagePipeline::processWithPlan(source, plan);
             if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
-            m_cpuFallbackFrame = ImagePipeline::floatSource(cpuResult);
+            auto uploadFrame=ImagePipeline::floatSource(cpuResult);
+            if(uploadFrame.isNull()){updates->release();return fail("CPU fallback upload allocation failed");}
+            m_cpuFallbackFrame=std::move(uploadFrame);
+            m_cpuFallbackLease=std::move(admittedPixels);
             QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));
             upload.setSourceSize(m_cpuFallbackFrame.size());
             upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));
             updates->uploadTexture(m_output.get(), {{0, 0, upload}});
             cb->resourceUpdate(updates);
+            if(admitted)PerformanceRecorder::count("brush_admitted_gpu_uploads");
             PerformanceRecorder::count("gpu_numeric_cpu_fallbacks");
             PerformanceRecorder::value("gpu_last_execution",
+                admitted?QStringLiteral("M4.5B admitted brush CPU numeric -> GPU display/scopes"):
                 BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)
                     ? QStringLiteral("M4.4A research brush CPU numeric -> GPU display/scopes")
                     : QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
         } else {
+            m_cpuFallbackFrame={};m_cpuFallbackLease={};
             cb->beginComputePass(updates);
             cb->setComputePipeline(m_pipeline.get());
             cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());

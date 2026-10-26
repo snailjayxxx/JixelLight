@@ -45,6 +45,46 @@ QByteArray fileBytes(const QString &path){QFile file(path);return file.open(QIOD
 class BrushAdmissionTests final:public QObject {
     Q_OBJECT
 private slots:
+    void preparedPlanPreservesOriginalLookAndAppliesGeometryOnce() {
+        const auto source=scene(317,239);auto state=edits();state.geometry.straighten=1.2;
+        state.geometry.crop={.03,.02,.92,.95};state.geometry.quarterTurns=1;
+        state.look.mode="manual";state.look.code="FL";state.look.parameters={{"clarity",3},{"contrast",2}};
+        const auto prepared=state.geometry.apply(source);QVERIFY(!prepared.isNull());
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,true,.35f);
+        plan.setFrameRect({.13,.21,.71,.63});const auto expected=ImagePipeline::processWithPlan(prepared,plan);
+        auto twice=ProcessingPlan::compile(plan.state,plan.encoding,plan.output,plan.rawSource,plan.baseExposureStops);
+        twice.setFrameRect({.13,.21,.71,.63});QVERIFY(ImagePipeline::processWithPlan(prepared,twice)!=expected);
+        state.exposure=4;state.geometry={};state.brushMasks.layers.clear();
+        QString error;auto request=BrushRenderRequest::createPrepared(prepared,plan,BrushRenderRequest::Layout::Whole,{},&error);
+        QVERIFY2(request,qPrintable(error));const auto actual=request->render({},&error);QVERIFY2(actual,qPrintable(error));QCOMPARE(actual.image(),expected);
+        auto stream=BrushRenderRequest::createPrepared(prepared,plan,BrushRenderRequest::Layout::Stripes128,{},&error);QVERIFY2(stream,qPrintable(error));
+        int rows=0;QVERIFY(stream->visitStrips([&](const auto &lease,int y){
+            if(y!=rows||lease.image()!=expected.copy(0,y,expected.width(),lease.image().height()))return false;
+            rows+=lease.image().height();return true;
+        },{},&error));QCOMPARE(rows,expected.height());
+    }
+    void changedOrManuallyAssembledPreparedPlansRefuseAndRecover() {
+        const auto source=scene(79,53);auto state=edits();state.look.mode="manual";state.look.code="FL";
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,.2f);
+        auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        for(int changed=0;changed<9;++changed) {
+            auto bad=plan;
+            if(changed==0)bad.data[ProcessingPlan::Tonal].x+=.1f;
+            if(changed==1)bad.state.hue+=1e-12;
+            if(changed==2)bad.state.masterCurve[2]+=.01;
+            if(changed==3)bad.state.brushMasks.layers[0].exposureEv+=.01;
+            if(changed==4)bad.state.look.lut=LookLut::identity(2);
+            if(changed==5)bad.state.geometry.quarterTurns=1;
+            if(changed==6)bad.state.look.error="invalid";
+            if(changed==7)bad.state.look.parameters["clarity"]=1;
+            if(changed==8){ProcessingPlan manual;manual.data=plan.data;manual.state=plan.state;manual.encoding=plan.encoding;manual.rawSource=plan.rawSource;manual.baseExposureStops=plan.baseExposureStops;bad=manual;}
+            QVERIFY(!BrushRenderRequest::createPrepared(source,bad,BrushRenderRequest::Layout::Whole,{},&error,budget));
+            QVERIFY(!error.isEmpty());QCOMPARE(budget->snapshot().charged,0);
+        }
+        auto runtime=plan;runtime.data[ProcessingPlan::Dimensions]={79,53,1,0};runtime.data[ProcessingPlan::PixelMap]=runtime.pixelMap(source.size());
+        auto request=BrushRenderRequest::createPrepared(source,runtime,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(request,qPrintable(error));
+        QCOMPARE(request->render({},&error).image(),ImagePipeline::processWithPlan(source,plan));request.reset();QCOMPARE(budget->snapshot().charged,0);
+    }
     void frozenSourceStateGeometryAndViewportMatchExistingOracle() {
         auto source=scene();auto state=edits();state.geometry.straighten=.8;state.geometry.crop={.02,.03,.95,.91};state.geometry.quarterTurns=1;
         state.geometry.distortion=.03;state.geometry.perspectiveHorizontal=.04;state.geometry.redCa=.2;state.geometry.blueCa=-.1;

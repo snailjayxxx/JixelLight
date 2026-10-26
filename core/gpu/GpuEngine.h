@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include <rhi/qrhi.h>
 #include <QElapsedTimer>
 #include <QImage>
@@ -17,6 +18,12 @@ public:
     ~GpuEngine();
     bool process(QRhiCommandBuffer *cb, const QImage &linearFloatSource, ProcessingPlan plan,
                  quint64 revision, const HistogramReady &histogramReady, bool forceHistogram = false);
+    // Explicit large prepared/viewport brush route. CPU-reference pixels are
+    // uploaded for GPU display/scopes; this does not enable native GPU brushes.
+    // Admission refusal leaves the engine usable and reports through error.
+    bool processAdmittedBrush(QRhiCommandBuffer *cb,const QImage &linearFloatSource,ProcessingPlan plan,
+        quint64 revision,const HistogramReady &histogramReady,bool forceHistogram=false,
+        QString *error=nullptr,std::shared_ptr<BrushRenderBudget> budget={});
     bool draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
     bool captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
                              QString *error = nullptr, qint64 budget = 64 * 1024 * 1024);
@@ -32,6 +39,8 @@ public:
     quint64 renderedRevision() const { return m_revision; }
     bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }
 private:
+    bool processImpl(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,quint64 revision,
+        const HistogramReady &histogramReady,bool forceHistogram,BrushRenderRequest *admitted);
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
     bool ensureDetail();
@@ -66,5 +75,7 @@ private:
     QString m_uploadedDisplayColorLutKey;
     QString m_displayColorProfileName;
     // Keeps CPU safety-fallback upload bytes alive until the following frame.
+    // Declare the lease first so its charge outlives the float upload image.
+    BrushImageLease m_cpuFallbackLease;
     QImage m_cpuFallbackFrame;
 };

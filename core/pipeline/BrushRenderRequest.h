@@ -54,6 +54,12 @@ public:
     static std::unique_ptr<BrushRenderRequest> create(const QImage &source,const AdjustmentState &state,
         const Spec &spec,const CancelToken &cancel={},QString *error=nullptr,
         std::shared_ptr<BrushRenderBudget> budget={});
+    // Explicit bridge for prepared previews/viewport sources. Rejects manually
+    // assembled or changed plans; preserves the original Look intent and skips
+    // geometry that has already been applied by preview preparation.
+    static std::unique_ptr<BrushRenderRequest> createPrepared(const QImage &source,const ProcessingPlan &plan,
+        Layout layout=Layout::Whole,const CancelToken &cancel={},QString *error=nullptr,
+        std::shared_ptr<BrushRenderBudget> budget={});
     BrushRenderRequest(const BrushRenderRequest &)=delete;
     BrushRenderRequest &operator=(const BrushRenderRequest &)=delete;
     QSize size() const { return m_region.size(); }
@@ -70,6 +76,9 @@ public:
     bool visitStrips(const StripConsumer &consumer,const CancelToken &cancel={},QString *error=nullptr);
 private:
     BrushRenderRequest()=default;
+    static std::unique_ptr<BrushRenderRequest> createImpl(const QImage &source,const AdjustmentState &state,
+        const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
+        const ProcessingPlan *expectedPlan);
     QImage prepare(const CancelToken &cancel,QString *error) const;
     bool begin(Layout expected,const CancelToken &cancel,QString *error);
     // Reservation outlives all request-owned image/plan payloads.

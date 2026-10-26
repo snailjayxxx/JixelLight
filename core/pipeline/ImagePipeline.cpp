@@ -570,6 +570,8 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
                                        float baseExposureStops) {
     const AdjustmentState state=LookProfiles::effective(original);
     ProcessingPlan plan;
+    if(BrushMaskTileRaster::anyEnabled(original.brushMasks))
+        plan.m_brushIntent=std::make_shared<const AdjustmentState>(original);
     const auto finite=[](double value,double fallback,double lo,double hi) { return float(std::clamp(std::isfinite(value)?value:fallback,lo,hi)); };
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[FrameRect]={0,0,1,1};

@@ -72,6 +72,23 @@ bool validState(const AdjustmentState &state) {
         &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
         &&AdjustmentState::validColorGradingJson(json);
 }
+bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provided) {
+    if(expected.encoding!=provided.encoding||expected.output!=provided.output
+        ||expected.rawSource!=provided.rawSource||expected.baseExposureStops!=provided.baseExposureStops
+        ||!BrushMaskDocument::validDocument(provided.state.brushMasks)
+        ||expected.state.look.lut!=provided.state.look.lut||expected.state.look.error!=provided.state.look.error)return false;
+    for(int i=0;i<ProcessingPlan::SlotCount;++i) {
+        // These two slots are filled from the actual GPU resource dimensions;
+        // neither controls the admitted CPU kernel, which derives its own map.
+        if(i==ProcessingPlan::Dimensions||i==ProcessingPlan::PixelMap)continue;
+        const auto a=expected.data[std::size_t(i)],b=provided.data[std::size_t(i)];
+        if(a.x!=b.x||a.y!=b.y||a.z!=b.z||a.w!=b.w)return false;
+    }
+    // Also compare the double-valued CPU state and document, not just uniforms.
+    // LUT identity was checked above; do not serialize its binary payload.
+    auto a=expected.state,b=provided.state;a.look.lut.reset();b.look.lut.reset();
+    return a.toJson()==b.toJson();
+}
 qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frameSize,
                      const ProcessingPlan &plan,BrushRenderRequest::Layout layout) {
     // All dimensions are bounded before this arithmetic: <=32 Mi pixels and
@@ -103,6 +120,20 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
 
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget) {
+    return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
+    Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget) {
+    if(error)error->clear();
+    if(!plan.m_brushIntent){fail(error,"Prepared brush plan has no original intent");return {};}
+    Spec spec;spec.sourceStage=SourceStage::Prepared;spec.layout=layout;
+    spec.encoding=plan.encoding;spec.output=plan.output;spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
+    const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
+    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage &source,const AdjustmentState &state,
+    const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
+    const ProcessingPlan *expectedPlan) {
     if(error)error->clear();
     const auto refuse=[&](const QString &message)->std::unique_ptr<BrushRenderRequest>{fail(error,message);return {};};
     try {
@@ -134,6 +165,7 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &sou
         auto reservation=budget->reserve(bytes);
         if(!reservation)return refuse("Admitted brush memory budget is exhausted");
         if(!validState(state))return refuse("Invalid active brush or adjustment state");
+        if(expectedPlan&&!samePreparedPlan(plan,*expectedPlan))return refuse("Prepared brush plan differs from its original intent");
         if(!ImagePipeline::preflightAdmittedBrush(size,plan,region,spec.layout==Layout::Whole?region.height():128,cancel,error))return {};
         // QImage can wrap caller-owned memory. A deep pixel snapshot prevents
         // later writes through an external buffer from changing this request.

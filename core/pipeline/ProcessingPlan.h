@@ -3,6 +3,7 @@
 #include <array>
 #include <algorithm>
 #include <QRectF>
+#include <memory>
 
 struct alignas(16) Float4 { float x = 0, y = 0, z = 0, w = 0; };
 // Exactly the std140 layout in the compute shaders. Matrix ROWS.
@@ -59,6 +60,11 @@ struct ProcessingPlan {
                                   ColorManagement::OutputSpace output,
                                   bool rawSource,
                                   float baseExposureStops);
+private:
+    // state above is LookProfiles::effective(intent), so recompiling it would
+    // apply the Look twice. Only explicit brush admission may use this snapshot.
+    std::shared_ptr<const AdjustmentState> m_brushIntent;
+    friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
 static_assert(sizeof(ProcessingPlan::data) == 816);
