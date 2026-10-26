@@ -1,6 +1,6 @@
 # F4 M4.5A — owned large-image brush requests
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This stage is a separate explicit CPU rendering admission boundary. Its own three-platform CI and deployed-package acceptance are pending.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This stage is a separate explicit CPU rendering admission boundary, accepted at exact HEAD `ea31a48b7f37509547bc2e6cc3524842e1b0580f` by [CI #40349654637](https://github.com/snailjayxxx/JixelLight/actions/runs/40349654637).
 
 ## Behavior and ownership
 
@@ -66,6 +66,30 @@ Local raw evidence: physical build `local-brush-admitted-final-tests.xml`, `brus
 The final native GUI runs passed CPU **14,472 ms** and Metal/M2 **15,301 ms**, each with23/23 successful screenshots,10,340,960 full scopes pixels, selected-export checks and zero QML errors, under the unchanged60,000ms limit. These runs verify the existing application while the new brush route remains explicit. Reports are in the physical build `local-brush-large-gui/`.
 
 Independent native pointer checks also passed: existing radial/linear mask interactions **1,192ms**, missing-source recovery **473ms**, all required flags/screenshots and zero QML errors. Recovery still reports `file_picker_automated:false`. The compact selected-export screenshot was visually inspected for readable controls and naming preview.
+
+## Exact-HEAD CI acceptance
+
+[CI #40349654637](https://github.com/snailjayxxx/JixelLight/actions/runs/40349654637) completed **Success** for HEAD `ea31a48b7f37509547bc2e6cc3524842e1b0580f` on Windows x64, macOS ARM64 and Linux GPU. Tested merge `b2efc095cf8bec1d0cfea8d7f1451abf019474d0` has tree `3fb9872c0cc5381b8681ea390210138ae5723cc2`, identical to that HEAD. All three passed **22/22 CTest**,212 Core/36 mandatory GPU/39 performance/21 Sony Look/9 DB relink/9 missing-source/14 admission results and all nine large shards, zero failures/skips. Complete CTest elapsed737.24s Windows,741.92s macOS,280.92s Linux; each large shard retained its120-second limit.
+
+Every platform verified the full32,947,264 native pixels and24MP synthetic input, independent bounded-strip oracle, exact lossless pixels/ICC and all1024 histogram bins/three plots, unchanged source hashes, zero final operation charge and deep source snapshots. All three JPEG100 natural-photo comparisons observed5/255 within the new5/255 codec gate; cancellation after an actual strip preserved the old target and a subsequent request recovered. Existing FP32 JPEG/GPU limits remain unchanged. All nine large cases remain CPU-reference with no GPU upload and no native FP32 RAW claim.
+
+Elapsed operation milliseconds below are measurements, not a cross-platform speed guarantee:
+
+| Case | Windows | macOS | Linux |
+| --- | ---: | ---: | ---: |
+| FP32 24 MP | 43,161 | 38,104 | 14,006 |
+| Sony sRGB | 47,963 | 45,445 | 16,338 |
+| Sony Display P3 | 47,940 | 50,367 | 16,249 |
+| Sony ProPhoto RGB | 47,540 | 43,069 | 16,364 |
+| Full histogram + plots | 60,721 | 58,578 | 19,952 |
+| PNG16 ProPhoto RGB | 95,619 | 105,016 | 48,034 |
+| TIFF16 Display P3 | 49,363 | 54,605 | 19,021 |
+| WebP100 lossless | 63,332 | 100,142 | 25,987 |
+| JPEG100 + cancel/retry | 49,466 | 50,658 | 18,055 |
+
+Both actual deployed packages passed all **seven modes with SDK paths removed**. Packaged real-DNG CPU GUI was **54,641ms Windows /40,900ms macOS**, GPU37,617/35,263ms. Every run retained23/23 successful screenshots,10,340,960 full scopes pixels, selected-export checks, active FL/reference recovery and zero QML runtime errors under the unchanged60,000ms gate. Native package source recovery passed3,137/1,524ms with all flags/three screenshots and `file_picker_automated:false`.
+
+All five validation/package-validation ZIPs were checked against GitHub SHA-256 digests and ZIP CRCs. Numeric summary and extracted evidence are under `/tmp/jixellight-40349654637-*`; the immutable run artifacts contain the original reports. Acceptance applies only to the exact HEAD/tree above. The later prepared GPU handoff and production editing routes require their own CI.
 
 ## Remaining production work
 
