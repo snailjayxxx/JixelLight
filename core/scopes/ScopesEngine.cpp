@@ -59,7 +59,8 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins, const CancelTo
     for (const auto &part:partials) total.add(part);
     return result(total,bins);
 }
-ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
+ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token,
+                                     const RenderedStripObserver &completedStrip) {
     if (source.isNull()) return {};
     if (!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,token)) return {};
     PerformanceSpan timing("full_resolution_scopes",{{"pixels",qint64(source.width())*source.height()}});
@@ -71,10 +72,19 @@ ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPla
         ? source : source.convertToFormat(QImage::Format_RGBA64);
     if (input.isNull()) return {};
     HistogramCounts total;
+    bool collecting=bool(completedStrip);
     for (int y=0; y<input.height() && !cancelled(token); y+=128) {
         const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull()) return {};
         countRows(rendered,0,rendered.height(),total,token);
+        if (collecting && !cancelled(token)) {
+            try { completedStrip(rendered,y); }
+            catch (...) {
+                // Optional collection must not fail a valid streamed histogram.
+                collecting=false;
+                PerformanceRecorder::count("full_scopes_collector_failures");
+            }
+        }
     }
     return cancelled(token) ? ScopesResult{} : result(total);
 }

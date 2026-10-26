@@ -69,6 +69,42 @@ QImage ScopePlotCounts::image() const {
     // Plot colors are UI ink, not image pixels requiring monitor conversion.
     return ink;
 }
+ScopePlotResult renderEncodedScopePlot(const QImage &encoded,const QString &mode,const CancelToken &cancel) {
+    ScopePlotResult result;
+    try {
+        if (encoded.isNull() || encoded.format()!=QImage::Format_RGBA64 || cancelled(cancel)) return {};
+        PerformanceSpan timing("cpu_scope_plot_encoded",{{"mode",mode},{"pixels",qint64(encoded.width())*encoded.height()}});
+        ScopePlotCounts counts(mode);
+        if (!counts.add(encoded,cancel)) return {};
+        if (cancelled(cancel)) return {};
+        result={counts.image(),counts.pixels,{}};
+        if (result.image.isNull()) result.error="Scope plot image allocation failed";
+    } catch (const std::exception &e) { result.error=QString::fromUtf8(e.what()); }
+      catch (...) { result.error="Scope plot allocation or counting failed"; }
+    return cancelled(cancel) ? ScopePlotResult{} : result;
+}
+std::array<ScopePlotResult,3> renderEncodedScopePlots(const QImage &encoded,const CancelToken &cancel) {
+    std::array<ScopePlotResult,3> results;
+    auto fail=[&](const QString &error) {
+        for (auto &result:results) {result={};result.error=error;}
+        return results;
+    };
+    try {
+        if (encoded.isNull() || encoded.format()!=QImage::Format_RGBA64 || cancelled(cancel)) return {};
+        PerformanceSpan timing("cpu_scope_plots_encoded",{{"pixels",qint64(encoded.width())*encoded.height()},{"modes",3}});
+        std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
+        for (int i=0;i<3;++i) {
+            if (!counts[i].add(encoded,cancel) || cancelled(cancel)) return {};
+            results[i]={counts[i].image(),counts[i].pixels,{}};
+            if (results[i].image.isNull()) return fail("Scope plot image allocation failed");
+        }
+        if (cancelled(cancel)) return {};
+        PerformanceRecorder::count("scope_plot_encoded_passes");
+        PerformanceRecorder::count("scope_plot_encoded_pixels",qint64(encoded.width())*encoded.height());
+    } catch (const std::exception &e) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(QString::fromUtf8(e.what())); }
+      catch (...) { return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail("Scope plot allocation or counting failed"); }
+    return results;
+}
 ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelToken &cancel) {
     ScopePlotResult result;
     try {

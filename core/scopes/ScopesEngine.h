@@ -4,6 +4,7 @@
 #include <QVariantList>
 #include <QByteArray>
 #include <array>
+#include <functional>
 
 struct ScopesResult {
     QVariantList red, green, blue, luma;
@@ -20,7 +21,11 @@ struct HistogramCounts {
 class ScopesEngine {
 public:
     static ScopesResult analyze(const QImage &image, int bins = 1024, const CancelToken &cancel = {});
-    static ScopesResult analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &cancel = {});
+    // An optional collector sees completed center strips after detail halos
+    // have been removed. It must not alter the pixels or histogram result.
+    using RenderedStripObserver = std::function<void(const QImage &, int)>;
+    static ScopesResult analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &cancel = {},
+                                   const RenderedStripObserver &completedStrip = {});
     static ScopesResult fromGpu(const QByteArray &bytes, quint64 expectedPixels);
     static ScopesResult result(const HistogramCounts &counts, int bins = 1024);
 };

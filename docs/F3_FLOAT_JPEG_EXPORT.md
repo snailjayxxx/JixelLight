@@ -1,6 +1,6 @@
 # F3 — retain linear FP32 inputs through streamed JPEG development
 
-Branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This candidate requires its own final-tree three-platform acceptance.
+Branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Accepted at HEAD `96e487a13dd89e1e26d18f9b70e41831e02f58a5` by [CI #40280382817](https://github.com/snailjayxxx/JixelLight/actions/runs/40280382817), which includes the JPEG commit `855e09d`.
 
 ## Problem and change
 
@@ -20,4 +20,4 @@ The old implementation was run against the new tests before the fix: a uniform H
 - A legal preflight followed by an over-8-EV research brush render refusal returns `Image rendering failed`, leaves progress at zero and publishes no partial file.
 - RGBA64 and its lossless float adapter produce byte-identical JPEG files, protecting the ordinary integer path.
 
-Local Qt 6.8.3 Release compilation and all five targeted regressions passed. Complete local CTest passed **10/10 in 82.48 s**: **187 Core / 35 mandatory Metal GPU / 36 performance** checks, checksum-pinned public Sony RAW/JPEG and zero skips. Final-tree three-platform and deployed-package CI remains pending before acceptance. Existing public Sony RAW/JPEG, mandatory GPU 40/65535 precision, 1024-bin Scopes, original 60,000ms RAW CPU GUI and Windows/macOS deployed-package gates remain unchanged.
+Local Qt 6.8.3 Release compilation and all five targeted regressions passed. Complete local CTest passed **10/10 in 82.48 s**: **187 Core / 35 mandatory Metal GPU / 36 performance** checks, checksum-pinned public Sony RAW/JPEG and zero skips. Final-tree CI passed Windows x64/macOS ARM64/Linux GPU, **10/10 CTest, 189 Core / 35 GPU / 36 performance per platform, zero failed or skipped**, including all five JPEG regressions. Tested merge `0b82829f7af4db159d3baec5d8211c46d271c6cb` shares tree `2a9b6d93edc017333a3f5b342167a31a54ff22c2` with HEAD. Both actual packages passed all six validation modes with SDK paths removed and no QML errors; CPU RAW GUI 59,890ms Windows / 43,201ms macOS and complete 10,340,960-pixel scopes passed the unchanged gates. Existing public Sony RAW/JPEG, mandatory GPU 40/65535 precision, 1024-bin Scopes, original 60,000ms RAW CPU GUI and Windows/macOS deployed-package gates remain unchanged.

@@ -29,3 +29,7 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
 // Fixed order: waveform, parade, vectorscope. Shares one bounded tile render;
 // counts and display ink keep exactly the individual-mode algorithms above.
 std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request, const CancelToken &cancel);
+// Consume a completed pre-monitor RGBA64 frame. The caller keeps its immutable
+// frame lease alive through this call; no geometry or color rendering occurs.
+ScopePlotResult renderEncodedScopePlot(const QImage &encoded,const QString &mode,const CancelToken &cancel = {});
+std::array<ScopePlotResult,3> renderEncodedScopePlots(const QImage &encoded,const CancelToken &cancel = {});

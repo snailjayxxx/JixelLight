@@ -6,6 +6,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QFile>
 #include <atomic>
 #include <QSignalSpy>
@@ -25,6 +26,7 @@
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
+#include "core/cache/AnalysisFrameCache.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include "core/preview/PreviewTasks.h"
 #include "core/pipeline/FloatSceneResampler.h"
@@ -298,6 +300,138 @@ private slots:
                <<"median_serial_cpu_frame_ms"<<cpuMs[1]<<"median_parallel_cpu_frame_ms"<<parallelMs[1];
         auto token=std::make_shared<std::atomic_bool>(true);
         QVERIFY(ImagePipeline::processWithPlan(source,plan,token,false).isNull());
+    }
+
+    void analysisFrameReuseMeasuresColdHistogramAndThreePlotRequests() {
+        // Explicit FP32 scene: retain signed/HDR RGB and mixed unassociated
+        // alpha through a real geometry + detail request at roughly 3 MP.
+        QImage source(2048,1536,QImage::Format_RGBA32FPx4);
+        QVERIFY(!source.isNull());
+        source.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        source.setText("analysis-perf-fixture","FP32 signed HDR and mixed alpha");
+        for(int y=0;y<source.height();++y) {
+            auto *row=reinterpret_cast<float *>(source.scanLine(y));
+            for(int x=0;x<source.width();++x) {
+                row[4*x]=float((x*19+y*7)%137)/43.f-.25f;
+                row[4*x+1]=float((x*3+y*13)%113)/67.f-.12f;
+                row[4*x+2]=float((x*23+y*5)%127)/51.f-.2f;
+                row[4*x+3]=std::array<float,4>{0.f,1.f/65535,.375f,1.f}[(x+y)%4];
+            }
+        }
+        GeometryState geometry; geometry.straighten=.75; geometry.crop={.01,.01,.98,.98};
+        AdjustmentState state; state.geometry=geometry; state.exposure=-.6; state.saturation=7;
+        state.look.mode="manual"; state.look.code="ST";
+        state.look.parameters={{"sharpness",1},{"clarity",1}};
+        const auto plan=nonRawLinearPlan(state);
+        QVERIFY(plan.state.brushMasks.layers.empty());
+        QVERIFY(plan.data[ProcessingPlan::LookDetail].x>0);
+        QVERIFY(plan.data[ProcessingPlan::LookDetail].y>0);
+        constexpr qint64 frameBudget=32*1024*1024;
+        const QStringList modes{"waveform","parade","vectorscope"};
+        struct Sample {
+            double elapsedMs=0;
+            ScopesResult histogram;
+            std::array<ScopePlotResult,3> plots;
+            QJsonObject histogramCache,plotCache,frameCache;
+            qint64 sharedPasses=0,encodedPasses=0,sharedTiles=0,encodedPixels=0;
+        };
+        const auto run=[&](bool reuse) {
+            // Every sample owns fresh result caches and, when enabled, a fresh
+            // analysis cache. Fixture/cache construction and assertions are
+            // outside elapsed time; frame admission/copy and all four actual
+            // requests are inside it. No previously completed frame is warm.
+            const auto frames=reuse ? std::make_shared<AnalysisFrameCache>(frameBudget)
+                                    : std::shared_ptr<AnalysisFrameCache>{};
+            FullScopesCache histogram(4*1024*1024,frames);
+            ScopePlotCache plots(16*1024*1024,frames);
+            const ScopeRequest histogramRequest{source,plan,1,true,geometry};
+            ScopePlotRequest plotRequest{source,plan,geometry,modes[0],1,true};
+            const auto before=PerformanceRecorder::snapshot()["counters"].toObject();
+            Sample sample; QElapsedTimer timer; timer.start();
+            sample.histogram=histogram.analyze(histogramRequest);
+            for(int i=0;i<3;++i) {
+                plotRequest.mode=modes[i];
+                sample.plots[i]=plots.render(plotRequest);
+            }
+            sample.elapsedMs=timer.nsecsElapsed()/1e6;
+            const auto after=PerformanceRecorder::snapshot()["counters"].toObject();
+            const auto delta=[&](const char *name) {return after[name].toInteger()-before[name].toInteger();};
+            sample.sharedPasses=delta("scope_plot_shared_passes");
+            sample.encodedPasses=delta("scope_plot_encoded_passes");
+            sample.sharedTiles=delta("scope_plot_shared_tiles");
+            sample.encodedPixels=delta("scope_plot_encoded_pixels");
+            sample.histogramCache=histogram.snapshot(); sample.plotCache=plots.snapshot();
+            if(frames)sample.frameCache=frames->snapshot();
+            return sample;
+        };
+        std::array<double,3> baselineMs{},reuseMs{};
+        QJsonArray baselineSamples,reuseSamples;
+        ScopesResult truthHistogram;
+        std::array<ScopePlotResult,3> truthPlots;
+        qint64 peakBytes=0,baselineSharedPasses=0,reuseEncodedPasses=0,totalPublications=0;
+        for(int repeat=0;repeat<3;++repeat) {
+            // AB, AB, AB pairs avoid measuring all baseline work before all
+            // reuse work. No cross-machine timing/speedup assertion is made.
+            const auto baseline=run(false);
+            const auto reused=run(true);
+            baselineMs[repeat]=baseline.elapsedMs; reuseMs[repeat]=reused.elapsedMs;
+            baselineSamples.append(baseline.elapsedMs); reuseSamples.append(reused.elapsedMs);
+            if(repeat==0) {truthHistogram=baseline.histogram; truthPlots=baseline.plots;}
+            for(const auto *sample:{&baseline,&reused}) {
+                QCOMPARE(sample->histogram.red.size(),1024); QCOMPARE(sample->histogram.green.size(),1024);
+                QCOMPARE(sample->histogram.blue.size(),1024); QCOMPARE(sample->histogram.luma.size(),1024);
+                QCOMPARE(sample->histogram.red,truthHistogram.red); QCOMPARE(sample->histogram.green,truthHistogram.green);
+                QCOMPARE(sample->histogram.blue,truthHistogram.blue); QCOMPARE(sample->histogram.luma,truthHistogram.luma);
+                QCOMPARE(sample->histogram.pixelCount,truthHistogram.pixelCount);
+                QCOMPARE(sample->histogram.shadowClipPercent,truthHistogram.shadowClipPercent);
+                QCOMPARE(sample->histogram.highlightClipPercent,truthHistogram.highlightClipPercent);
+                // Mild straighten/crop preserve the intended multi-strip,
+                // approximately three-megapixel workload.
+                QVERIFY(sample->histogram.pixelCount>quint64(2*1024*1024));
+                QVERIFY(sample->histogram.pixelCount<=quint64(source.width())*source.height());
+                for(int i=0;i<3;++i) {
+                    QVERIFY2(sample->plots[i].error.isEmpty(),qPrintable(sample->plots[i].error));
+                    QVERIFY(!sample->plots[i].image.isNull());
+                    QCOMPARE(sample->plots[i].image,truthPlots[i].image);
+                    QCOMPARE(sample->plots[i].pixels,sample->histogram.pixelCount);
+                }
+                QCOMPARE(sample->histogramCache["misses"].toInteger(),qint64(1));
+                QCOMPARE(sample->histogramCache["hits"].toInteger(),qint64(0));
+                QCOMPARE(sample->histogramCache["entries"].toInteger(),qint64(1));
+                QCOMPARE(sample->plotCache["misses"].toInteger(),qint64(1));
+                QCOMPARE(sample->plotCache["hits"].toInteger(),qint64(2));
+                QCOMPARE(sample->plotCache["entries"].toInteger(),qint64(1));
+            }
+            // Baseline already renders the three plots together, once. The
+            // comparison is one shared color pass versus one encoded batch,
+            // never three color renders versus zero.
+            QCOMPARE(baseline.sharedPasses,qint64(1)); QCOMPARE(baseline.encodedPasses,qint64(0));
+            QVERIFY(baseline.sharedTiles>1); QCOMPARE(baseline.encodedPixels,qint64(0));
+            QCOMPARE(reused.sharedPasses,qint64(0)); QCOMPARE(reused.encodedPasses,qint64(1));
+            QCOMPARE(reused.sharedTiles,qint64(0));
+            QCOMPARE(reused.encodedPixels,qint64(reused.histogram.pixelCount));
+            QCOMPARE(reused.frameCache["publications"].toInteger(),qint64(1));
+            QCOMPARE(reused.frameCache["budget_bytes"].toInteger(),frameBudget);
+            QVERIFY(reused.frameCache["peak_charged_bytes"].toInteger()<=frameBudget);
+            QVERIFY(reused.frameCache["charged_bytes"].toInteger()<=frameBudget);
+            QVERIFY(reused.frameCache["charged_bytes"].toInteger()>=qint64(reused.histogram.pixelCount)*8);
+            QCOMPARE(reused.frameCache["building_bytes"].toInteger(),qint64(0));
+            baselineSharedPasses+=baseline.sharedPasses; reuseEncodedPasses+=reused.encodedPasses;
+            totalPublications+=reused.frameCache["publications"].toInteger();
+            peakBytes=std::max(peakBytes,reused.frameCache["peak_charged_bytes"].toInteger());
+        }
+        std::sort(baselineMs.begin(),baselineMs.end()); std::sort(reuseMs.begin(),reuseMs.end());
+        const QJsonObject report{{"workload","cold full histogram + waveform/parade/vectorscope"},
+            {"source_width",source.width()},{"source_height",source.height()},
+            {"thread_budget",ParallelRows::threadBudget()},{"source_storage","RGBA32FPx4"},
+            {"actual_pixels",qint64(truthHistogram.pixelCount)},{"samples_per_path",3},
+            {"baseline_end_to_end_ms",baselineSamples},{"reuse_end_to_end_ms",reuseSamples},
+            {"median_baseline_end_to_end_ms",baselineMs[1]},{"median_reuse_end_to_end_ms",reuseMs[1]},
+            {"analysis_budget_bytes",frameBudget},{"analysis_peak_charged_bytes",peakBytes},
+            {"baseline_plot_shared_passes",baselineSharedPasses},{"reuse_plot_encoded_passes",reuseEncodedPasses},
+            {"reuse_publications",totalPublications},{"timing_gate",false}};
+        qInfo().noquote()<<"analysis-frame-paired"<<QJsonDocument(report).toJson(QJsonDocument::Compact);
     }
 
     void scopePlotCacheHonorsLruOversizeAndRetainedLutCosts() {

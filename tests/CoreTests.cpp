@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 #include <QStandardPaths>
 #include <QScopeGuard>
+#include <QSemaphore>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QUuid>
 #include <QUrl>
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <vector>
 
 #include "app/PhotoController.h"
@@ -29,6 +31,7 @@
 #include "core/async/ParallelRows.h"
 #include "core/look/LookDetail.h"
 #include "core/color/ColorManagement.h"
+#include "core/color/MonitorColorTransform.h"
 #include "core/metadata/MetadataReader.h"
 #include "core/metadata/XmpSidecar.h"
 #include "core/library/CatalogSelection.h"
@@ -44,6 +47,7 @@
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
+#include "core/cache/AnalysisFrameCache.h"
 #include "core/export/PngExporter.h"
 #include "core/export/JpegExporter.h"
 #include "core/export/RasterExporter.h"
@@ -117,6 +121,70 @@ QByteArray storedZipEntry(const QString &path, const QByteArray &entry) {
     }
     return {};
 }
+struct AnalysisIntegrationFixture {
+    QImage source, encoded;
+    ProcessingPlan plan;
+    GeometryState geometry;
+    ScopesResult histogram;
+    std::array<ScopePlotResult,3> plots;
+};
+AnalysisIntegrationFixture analysisIntegrationFixture() {
+    AnalysisIntegrationFixture f;
+    f.source=QImage(173,301,QImage::Format_RGBA32FPx4);
+    f.source.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+        .withTransferFunction(QColorSpace::TransferFunction::Linear));
+    f.source.setText("analysis-test","signed HDR with unassociated alpha");
+    for(int y=0;y<f.source.height();++y) {
+        auto *row=reinterpret_cast<float *>(f.source.scanLine(y));
+        for(int x=0;x<f.source.width();++x) {
+            row[4*x]=float((x*19+y*7)%137)/43.f-.25f;
+            row[4*x+1]=float((x*3+y*13)%113)/67.f-.12f;
+            row[4*x+2]=float((x*23+y*5)%127)/51.f-.2f;
+            row[4*x+3]=std::array<float,4>{0.f,1.f/65535,.375f,1.f}[(x+y)%4];
+        }
+    }
+    f.geometry.straighten=4;
+    f.geometry.crop={.07,.05,.86,.9};
+    f.geometry.flipHorizontal=true;
+    AdjustmentState state;state.geometry=f.geometry;state.exposure=-.6;
+    state.saturation=7;state.hue=-3;
+    state.look.mode="manual";state.look.code="ST";
+    state.look.parameters={{"sharpness",2},{"clarity",1}};
+    BrushMaskGeometry::Stroke stroke;stroke.style={.16,.6,.8};
+    stroke.dabs={{{.25,.42},1},{{.58,.64},.7}};
+    state.brushMasks.layers.push_back({"analysis-fixture",true,.4,{stroke}});
+    f.plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                   ColorManagement::OutputSpace::SRgb,false,0);
+    f.encoded=ImagePipeline::processWithPlan(f.geometry.apply(f.source),f.plan,{},false);
+    f.histogram=ScopesEngine::analyze(f.encoded,1024);
+    f.plots=renderScopePlots({f.source,f.plan,f.geometry,"waveform",1,true},{});
+    return f;
+}
+bool analysisIntegrationSameHistogram(const ScopesResult &a,const ScopesResult &b) {
+    return a.pixelCount==b.pixelCount && a.red==b.red && a.green==b.green
+        && a.blue==b.blue && a.luma==b.luma
+        && a.shadowClipPercent==b.shadowClipPercent
+        && a.highlightClipPercent==b.highlightClipPercent;
+}
+QString analysisIntegrationBoundary() {
+    const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    PerformanceRecorder::sample("analysis-integration-boundary",0,{{"marker",marker}});
+    return marker;
+}
+qint64 analysisIntegrationStagesSince(const QString &marker,const QString &stage) {
+    const auto samples=PerformanceRecorder::snapshot().value("timings").toArray();
+    bool seen=false;qint64 count=0;
+    for(const auto &value:samples) {
+        const auto sample=value.toObject();
+        if(sample.value("stage").toString()=="analysis-integration-boundary"
+            && sample.value("marker").toString()==marker) {seen=true;count=0;continue;}
+        if(seen && sample.value("stage").toString()==stage)++count;
+    }
+    // Failing on a missing marker avoids false negatives once the recorder's
+    // bounded timing deque was already full before this test started.
+    return seen?count:-1;
+}
+
 }
 
 class CoreTests : public QObject {
@@ -5469,6 +5537,484 @@ private slots:
         QCOMPARE(provider.requestImage("current",&size,{}),baseline);
     }
 
+    void analysisFrameCachePublishesOnlyCompleteIndependentPixelsAndMetadata() {
+        AnalysisFrameCache cache(1024*1024);
+        QImage image(11,9,QImage::Format_RGBA64);
+        image.setColorSpace(QColorSpace(QColorSpace::DisplayP3));
+        image.setDevicePixelRatio(2); image.setDotsPerMeterX(2900); image.setDotsPerMeterY(3100);
+        image.setText("analysis-fixture","pre-monitor-p3");
+        for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
+            reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(
+                x*5143+y*37,y*7103+x*13,(x+y)*2901,(x*9281+y*3137)%65536);
+        auto writer=cache.begin("complete",image.size()); QVERIFY(writer);
+        QVERIFY(!cache.find("complete"));
+        auto first=image.copy(0,0,image.width(),4);
+        QVERIFY(writer.append(first,0));
+        first.fill(Qt::black); // The writer owns its pixels, independent of strip storage.
+        QVERIFY(!cache.find("complete"));
+        QVERIFY(writer.append(image.copy(0,4,image.width(),5),4));
+        QVERIFY(writer.publish()); QVERIFY(!writer);
+        const auto lease=cache.find("complete"); QVERIFY(lease);
+        QCOMPARE(lease.image(),image);
+        QCOMPARE(lease.image().colorSpace(),image.colorSpace());
+        QCOMPARE(lease.image().devicePixelRatio(),image.devicePixelRatio());
+        QCOMPARE(lease.image().dotsPerMeterX(),image.dotsPerMeterX());
+        QCOMPARE(lease.image().dotsPerMeterY(),image.dotsPerMeterY());
+        QCOMPARE(lease.image().text("analysis-fixture"),image.text("analysis-fixture"));
+        const auto copy=lease; QCOMPARE(copy.image().constBits(),lease.image().constBits());
+        const auto state=cache.snapshot();
+        QCOMPARE(state["entries"].toInt(),1); QCOMPARE(state["publications"].toInteger(),qint64(1));
+        QCOMPARE(state["building_bytes"].toInteger(),qint64(0));
+        QCOMPARE(state["cached_bytes"].toInteger(),state["charged_bytes"].toInteger());
+        QCOMPARE(state["leased_estimate_bytes"].toInteger(),state["charged_bytes"].toInteger());
+        QVERIFY(state["charged_bytes"].toInteger()>=qint64(image.sizeInBytes()));
+        QVERIFY(state["charged_bytes"].toInteger()<=state["budget_bytes"].toInteger());
+        QVERIFY(!AnalysisFrameCache::Lease{}); QVERIFY(AnalysisFrameCache::Lease{}.image().isNull());
+    }
+
+    void analysisFrameCacheMalformedCancelledAndAbandonedWritersAreAtomic() {
+        AnalysisFrameCache cache(1024*1024);
+        QImage tile(8,3,QImage::Format_RGBA64); tile.fill(QColor(63,127,201,93));
+        tile.setColorSpace(QColorSpace(QColorSpace::SRgb));
+        for(int scenario=0;scenario<7;++scenario) {
+            const auto key=QString("malformed-%1").arg(scenario);
+            auto writer=cache.begin(key,QSize(8,6)); QVERIFY(writer);
+            QVERIFY(writer.append(tile,0));
+            bool accepted=false;
+            if(scenario==0) accepted=writer.append(tile,2); // Overlapping/out-of-order y.
+            if(scenario==1) accepted=writer.append(tile.convertToFormat(QImage::Format_RGB32),3);
+            if(scenario==2) accepted=writer.append(tile.copy(0,0,7,3),3);
+            if(scenario==3) accepted=writer.append(QImage(8,4,QImage::Format_RGBA64),3);
+            if(scenario==4) { auto tagged=tile; tagged.setColorSpace(QColorSpace(QColorSpace::DisplayP3)); accepted=writer.append(tagged,3); }
+            if(scenario==5) accepted=writer.append({},3);
+            if(scenario==6) accepted=writer.publish(); // Incomplete frame.
+            QVERIFY(!accepted); QVERIFY(!writer); QVERIFY(!cache.find(key));
+            QCOMPARE(cache.snapshot()["charged_bytes"].toInteger(),qint64(0));
+            QCOMPARE(cache.snapshot()["inflight_entries"].toInteger(),qint64(0));
+        }
+        const auto cancel=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!cache.begin("cancel-before",QSize(8,6),{},cancel));
+        auto appending=cache.begin("cancel-append",QSize(8,6)); QVERIFY(appending);
+        QVERIFY(appending.append(tile,0)); QVERIFY(!appending.append(tile,3,cancel));
+        QVERIFY(!appending); QVERIFY(!cache.find("cancel-append"));
+        auto publishing=cache.begin("cancel-publish",tile.size()); QVERIFY(publishing);
+        QVERIFY(publishing.append(tile,0)); QVERIFY(!publishing.publish(cancel));
+        QVERIFY(!cache.find("cancel-publish"));
+        QVERIFY(!cache.find("anything",cancel));
+        {
+            auto abandoned=cache.begin("abandoned",tile.size()); QVERIFY(abandoned);
+            QVERIFY(abandoned.append(tile,0));
+            auto moved=std::move(abandoned); QVERIFY(!abandoned); QVERIFY(moved);
+        }
+        {
+            auto abandoned=cache.begin("assigned-away",tile.size()); QVERIFY(abandoned);
+            abandoned={}; QVERIFY(!abandoned);
+        }
+        const auto state=cache.snapshot();
+        QCOMPARE(state["entries"].toInt(),0); QCOMPARE(state["publications"].toInteger(),qint64(0));
+        QCOMPARE(state["charged_bytes"].toInteger(),qint64(0));
+        QCOMPARE(state["building_bytes"].toInteger(),qint64(0));
+        QCOMPARE(state["inflight_entries"].toInteger(),qint64(0));
+        QCOMPARE(state["invalid_requests"].toInteger(),qint64(7));
+        QCOMPARE(state["cancelled_requests"].toInteger(),qint64(4));
+    }
+
+    void analysisFrameCacheLeasesRetainBudgetAndProducersNeverWaitOrPublishStale() {
+        QImage tile(16,7,QImage::Format_RGBA64); tile.fill(QColor(21,77,153,31));
+        AnalysisFrameCache sizing(1024*1024);
+        auto sized=sizing.begin("size",tile.size()); QVERIFY(sized);
+        const auto cost=sizing.snapshot()["charged_bytes"].toInteger(); QVERIFY(cost>tile.sizeInBytes());
+        sized={};
+        AnalysisFrameCache cache(cost);
+        auto first=cache.begin("first",tile.size()); QVERIFY(first);
+        QVERIFY(first.append(tile,0)); QVERIFY(first.publish());
+        auto lease=cache.find("first"); QVERIFY(lease);
+        auto copied=lease;
+        QVERIFY(!cache.begin("second",tile.size())); // Eviction cannot free a leased frame.
+        auto state=cache.snapshot();
+        QCOMPARE(state["entries"].toInt(),0); QCOMPARE(state["charged_bytes"].toInteger(),cost);
+        QCOMPARE(state["leased_estimate_bytes"].toInteger(),cost);
+        QCOMPARE(state["budget_bypasses"].toInteger(),qint64(1));
+        QCOMPARE(lease.image(),tile);
+        lease={}; QCOMPARE(cache.snapshot()["charged_bytes"].toInteger(),cost);
+        copied={}; QCOMPARE(cache.snapshot()["charged_bytes"].toInteger(),qint64(0));
+        auto second=cache.begin("second",tile.size()); QVERIFY(second);
+        QVERIFY(!cache.begin("second",tile.size())); // Returns while original producer is still alive.
+        QCOMPARE(cache.snapshot()["inflight_bypasses"].toInteger(),qint64(1));
+        QVERIFY(second.append(tile,0)); QVERIFY(second.publish());
+        QVERIFY(cache.find("second")); // Duplicate admission did not supersede the producer.
+        QVERIFY(!cache.begin("second",tile.size())); // A find/begin race retains the complete entry.
+        QCOMPARE(cache.snapshot()["completed_bypasses"].toInteger(),qint64(1));
+        QVERIFY(cache.find("second"));
+
+        AnalysisFrameCache parallel(3*cost);
+        auto older=parallel.begin("older",tile.size()); QVERIFY(older);
+        auto newer=parallel.begin("newer",tile.size()); QVERIFY(newer);
+        QCOMPARE(parallel.snapshot()["building_bytes"].toInteger(),2*cost);
+        QVERIFY(older.append(tile,0)); QVERIFY(newer.append(tile,0));
+        QVERIFY(newer.publish()); QVERIFY(!older.publish());
+        QVERIFY(!parallel.find("older")); QVERIFY(parallel.find("newer"));
+        QCOMPARE(parallel.snapshot()["stale_publications"].toInteger(),qint64(1));
+        QCOMPARE(parallel.snapshot()["charged_bytes"].toInteger(),cost);
+        QCOMPARE(parallel.snapshot()["inflight_entries"].toInteger(),qint64(0));
+
+        AnalysisFrameCache declined(cost);
+        auto outdated=declined.begin("outdated",tile.size()); QVERIFY(outdated);
+        QVERIFY(!declined.begin("latest-attempt",tile.size())); // Budget refusal still supersedes older requests.
+        QVERIFY(outdated.append(tile,0)); QVERIFY(!outdated.publish());
+        QCOMPARE(declined.snapshot()["charged_bytes"].toInteger(),qint64(0));
+    }
+
+    void analysisFrameCacheChargesLutAndGuardsDisabledOversizedAndOwnerLifetime() {
+        QImage tile(9,5,QImage::Format_RGBA64); tile.fill(QColor(7,61,149,219));
+        AnalysisFrameCache probe(1024*1024);
+        auto plain=probe.begin("plain",tile.size()); QVERIFY(plain);
+        const auto plainCost=probe.snapshot()["charged_bytes"].toInteger(); plain={};
+        auto lut=LookLut::identity(3); QVERIFY(lut);
+        std::weak_ptr<const LookLut> retained=lut;
+        const auto lutPayload=qint64(sizeof(LookLut))+qint64(lut->rgb.capacity())*qint64(sizeof(float));
+        auto tagged=probe.begin("lut",tile.size(),lut); QVERIFY(tagged);
+        QCOMPARE(probe.snapshot()["charged_bytes"].toInteger(),plainCost+lutPayload);
+        QVERIFY(tagged.append(tile,0)); QVERIFY(tagged.publish());
+        auto lease=probe.find("lut"); QVERIFY(lease);
+        lut.reset(); QVERIFY(!retained.expired());
+        auto replacement=probe.begin("replacement",tile.size()); QVERIFY(replacement);
+        QVERIFY(!retained.expired());
+        lease={}; QVERIFY(retained.expired());
+        replacement={}; QCOMPARE(probe.snapshot()["charged_bytes"].toInteger(),qint64(0));
+        AnalysisFrameCache tooSmall(plainCost+lutPayload-1);
+        QVERIFY(!tooSmall.begin("lut-too-large",tile.size(),LookLut::identity(3)));
+        QCOMPARE(tooSmall.snapshot()["oversize_bypasses"].toInteger(),qint64(1));
+        auto spareCapacity=std::make_shared<LookLut>(*LookLut::identity(3));
+        spareCapacity->rgb.reserve(spareCapacity->rgb.size()+4096);
+        QVERIFY(spareCapacity->rgb.capacity()>spareCapacity->rgb.size());
+        auto capacityWriter=probe.begin("reserved-lut",tile.size(),spareCapacity); QVERIFY(capacityWriter);
+        QCOMPARE(probe.snapshot()["charged_bytes"].toInteger(),plainCost+qint64(sizeof(LookLut))+
+                 qint64(spareCapacity->rgb.capacity())*qint64(sizeof(float)));
+        capacityWriter={}; QCOMPARE(probe.snapshot()["charged_bytes"].toInteger(),qint64(0));
+        AnalysisFrameCache disabled(0), negative(-1);
+        QVERIFY(!disabled.begin("disabled",tile.size())); QVERIFY(!negative.begin("negative",tile.size()));
+        QCOMPARE(disabled.snapshot()["disabled_bypasses"].toInteger(),qint64(1));
+        QCOMPARE(negative.snapshot()["budget_bytes"].toInteger(),qint64(0));
+        AnalysisFrameCache guarded(1024);
+        QVERIFY(!guarded.begin("overflow",QSize(std::numeric_limits<int>::max(),std::numeric_limits<int>::max())));
+        QVERIFY(!guarded.begin("oversize",QSize(1024,1024)));
+        QVERIFY(!guarded.begin("zero",QSize(0,9))); QVERIFY(!guarded.begin("",tile.size()));
+        QCOMPARE(guarded.snapshot()["charged_bytes"].toInteger(),qint64(0));
+        QCOMPARE(guarded.snapshot()["allocation_failures"].toInteger(),qint64(0));
+        QCOMPARE(guarded.snapshot()["oversize_bypasses"].toInteger(),qint64(2));
+        AnalysisFrameCache::Lease survivingLease;
+        AnalysisFrameCache::Writer survivingWriter;
+        {
+            AnalysisFrameCache temporary(1024*1024);
+            auto writer=temporary.begin("survive",tile.size()); QVERIFY(writer);
+            QVERIFY(writer.append(tile,0)); QVERIFY(writer.publish());
+            survivingLease=temporary.find("survive"); QVERIFY(survivingLease);
+            survivingWriter=temporary.begin("closed-producer",tile.size()); QVERIFY(survivingWriter);
+            QVERIFY(survivingWriter.append(tile,0));
+        }
+        QCOMPARE(survivingLease.image(),tile);
+        QVERIFY(!survivingWriter.publish()); // Owner destruction invalidates later publication.
+    }
+
+    void analysisFrameCacheConcurrentReservationsStayBoundedAndCancelIndependently() {
+        QImage tile(16,7,QImage::Format_RGBA64); tile.fill(QColor(47,113,239,91));
+        AnalysisFrameCache sizing(1024*1024);
+        auto measuring=sizing.begin("measure",tile.size()); QVERIFY(measuring);
+        const auto cost=sizing.snapshot()["charged_bytes"].toInteger(); measuring={};
+        AnalysisFrameCache cache(3*cost);
+        auto initial=cache.begin("held-old",tile.size()); QVERIFY(initial);
+        QVERIFY(initial.append(tile,0)); QVERIFY(initial.publish());
+        auto oldLease=cache.find("held-old"); QVERIFY(oldLease);
+
+        QThreadPool pool; pool.setMaxThreadCount(8);
+        QSemaphore started, resume;
+        std::array<CancelToken,8> tokens;
+        std::array<std::atomic_bool,8> admitted{};
+        struct Outcome { bool admitted=false, appended=false, published=false; };
+        std::array<QFuture<Outcome>,8> futures;
+        // Every early test return first unblocks and joins all workers. Never
+        // leave a failed five-second admission barrier holding this test open.
+        auto join=qScopeGuard([&] { resume.release(8); pool.waitForDone(); });
+        for(int i=0;i<8;++i) {
+            tokens[i]=std::make_shared<std::atomic_bool>(false);
+            futures[i]=QtConcurrent::run(&pool,[&,i] {
+                auto writer=cache.begin(QString("overlapping-%1").arg(i),tile.size(),{},tokens[i]);
+                const bool accepted=bool(writer);
+                admitted[i].store(accepted,std::memory_order_relaxed);
+                started.release();
+                resume.acquire();
+                Outcome result; result.admitted=accepted;
+                if(writer) {
+                    result.appended=writer.append(tile,0,tokens[i]);
+                    if(writer) result.published=writer.publish(tokens[i]);
+                }
+                return result;
+            });
+        }
+        const bool allStarted=started.tryAcquire(8,5000);
+        const auto overlapping=allStarted ? cache.snapshot():QJsonObject{};
+        int cancelledProducer=-1;
+        if(allStarted)for(int i=0;i<8;++i)if(admitted[i].load(std::memory_order_relaxed)) {
+            cancelledProducer=i; tokens[i]->store(true,std::memory_order_relaxed); break;
+        }
+        resume.release(8); pool.waitForDone(); join.dismiss();
+        // Assertions happen after release/join, including the timeout case.
+        QVERIFY(allStarted); QVERIFY(cancelledProducer>=0);
+        QCOMPARE(overlapping["charged_bytes"].toInteger(),3*cost);
+        QCOMPARE(overlapping["building_bytes"].toInteger(),2*cost);
+        QCOMPARE(overlapping["leased_estimate_bytes"].toInteger(),cost);
+        QVERIFY(overlapping["peak_charged_bytes"].toInteger()<=overlapping["budget_bytes"].toInteger());
+        int acceptedCount=0, independentAppends=0;
+        for(int i=0;i<8;++i) {
+            const auto result=futures[i].result();
+            if(result.admitted)++acceptedCount;
+            if(i==cancelledProducer) { QVERIFY(result.admitted); QVERIFY(!result.appended); QVERIFY(!result.published); }
+            else {
+                QVERIFY(!cancelled(tokens[i]));
+                if(result.admitted) { QVERIFY(result.appended); ++independentAppends; }
+            }
+        }
+        QCOMPARE(acceptedCount,2); QCOMPARE(independentAppends,1);
+        QCOMPARE(cache.snapshot()["inflight_entries"].toInteger(),qint64(0));
+        QCOMPARE(cache.snapshot()["building_bytes"].toInteger(),qint64(0));
+        QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=3*cost);
+        QVERIFY(cache.snapshot()["peak_charged_bytes"].toInteger()<=3*cost);
+        QCOMPARE(cache.snapshot()["cancelled_requests"].toInteger(),qint64(1));
+        QCOMPARE(oldLease.image(),tile);
+        oldLease={};
+        auto releaseLatest=cache.begin("release-latest",tile.size()); QVERIFY(releaseLatest);
+        releaseLatest={}; QCOMPARE(cache.snapshot()["charged_bytes"].toInteger(),qint64(0));
+        auto recovery=cache.begin("independent-recovery",tile.size()); QVERIFY(recovery);
+        QVERIFY(recovery.append(tile,0)); QVERIFY(recovery.publish());
+        const auto recovered=cache.find("independent-recovery"); QVERIFY(recovered);
+        QCOMPARE(recovered.image(),tile);
+    }
+
+    void analysisFrameHistogramCollectsStripsAndFullPlotsReuseExactPixels() {
+        const auto f=analysisIntegrationFixture();
+        QVERIFY(!f.encoded.isNull());QVERIFY(f.encoded.height()>128);
+        QCOMPARE(f.encoded.format(),QImage::Format_RGBA64);
+        const auto fingerprint=StageGraph::outputFingerprint(f.source);
+        auto frames=std::make_shared<AnalysisFrameCache>(8*1024*1024);
+        FullScopesCache hist(4*1024*1024,frames);
+        const auto histogramBoundary=analysisIntegrationBoundary();
+        const auto actual=hist.analyze({f.source,f.plan,1,true,f.geometry});
+        QVERIFY(analysisIntegrationSameHistogram(actual,f.histogram));
+        QCOMPARE(actual.red.size(),1024);QCOMPARE(actual.green.size(),1024);
+        QCOMPARE(actual.blue.size(),1024);QCOMPARE(actual.luma.size(),1024);
+        QVERIFY(analysisIntegrationStagesSince(histogramBoundary,"cpu_pipeline")>1);
+        QCOMPARE(analysisIntegrationStagesSince(histogramBoundary,"geometry_straighten"),qint64(1));
+        const auto lease=frames->find(StageGraph::analysisFrameKey(f.source,f.plan,f.geometry));
+        QVERIFY(bool(lease));QCOMPARE(lease.image(),f.encoded);
+        QCOMPARE(lease.image().colorSpace().iccProfile(),f.encoded.colorSpace().iccProfile());
+        QCOMPARE(lease.image().text("analysis-test"),f.encoded.text("analysis-test"));
+        QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(1));
+        QCOMPARE(frames->snapshot()["inflight_entries"].toInteger(),qint64(0));
+        ScopePlotCache plots(16*1024*1024,frames);
+        const auto plotBoundary=analysisIntegrationBoundary();
+        const QStringList modes{"waveform","parade","vectorscope"};
+        for(int i=0;i<3;++i) {
+            const auto plot=plots.render({f.source,f.plan,f.geometry,modes[i],quint64(i+20),true});
+            QVERIFY2(plot.error.isEmpty(),qPrintable(plot.error));
+            QCOMPARE(plot.image,f.plots[i].image);QCOMPARE(plot.pixels,f.histogram.pixelCount);
+            ScopePlotCounts fullTruth(modes[i]);QVERIFY(fullTruth.add(f.encoded));
+            QCOMPARE(plot.image,fullTruth.image());
+        }
+        QCOMPARE(analysisIntegrationStagesSince(plotBoundary,"cpu_pipeline"),qint64(0));
+        QCOMPARE(analysisIntegrationStagesSince(plotBoundary,"geometry_straighten"),qint64(0));
+        QCOMPARE(analysisIntegrationStagesSince(plotBoundary,"geometry_corrections"),qint64(0));
+        QCOMPARE(plots.snapshot()["misses"].toInteger(),qint64(1));
+        QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(2));
+        QCOMPARE(StageGraph::outputFingerprint(f.source),fingerprint);
+    }
+
+    void analysisFrameCompletedPixelsRebuildHistogramWithoutGeometryOrColor() {
+        const auto f=analysisIntegrationFixture();QVERIFY(!f.encoded.isNull());
+        auto frames=std::make_shared<AnalysisFrameCache>(8*1024*1024);
+        FullScopesCache producer(0,frames); // no histogram entry can supply the second result
+        QVERIFY(analysisIntegrationSameHistogram(producer.analyze({f.source,f.plan,1,true,f.geometry}),f.histogram));
+        FullScopesCache consumer(4*1024*1024,frames);
+        const auto before=PerformanceRecorder::snapshot()["counters"].toObject()["full_scopes_encoded_frame_hits"].toInteger();
+        const auto boundary=analysisIntegrationBoundary();
+        QVERIFY(analysisIntegrationSameHistogram(consumer.analyze({f.source,f.plan,99,true,f.geometry}),f.histogram));
+        QCOMPARE(analysisIntegrationStagesSince(boundary,"cpu_pipeline"),qint64(0));
+        QCOMPARE(analysisIntegrationStagesSince(boundary,"geometry_straighten"),qint64(0));
+        QCOMPARE(consumer.snapshot()["misses"].toInteger(),qint64(1));
+        QCOMPARE(consumer.snapshot()["entries"].toInteger(),qint64(1));
+        QCOMPARE(PerformanceRecorder::snapshot()["counters"].toObject()["full_scopes_encoded_frame_hits"].toInteger(),before+1);
+        QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(1));
+    }
+
+    void analysisFrameKeysTrackSourcePlanGeometryIccAndRemainPreMonitor() {
+        const auto f=analysisIntegrationFixture();QVERIFY(!f.encoded.isNull());
+        const auto key=StageGraph::analysisFrameKey(f.source,f.plan,f.geometry);QVERIFY(!key.isEmpty());
+        auto changedSource=f.source;
+        for(int y=140;y<156;++y) {
+            auto *row=reinterpret_cast<float *>(changedSource.scanLine(y));
+            for(int x=80;x<96;++x) {row[4*x]=2.75f;row[4*x+1]=.02f;row[4*x+2]=.8f;row[4*x+3]=1;}
+        }
+        QVERIFY(StageGraph::analysisFrameKey(changedSource,f.plan,f.geometry)!=key);
+        auto changedPlan=f.plan;changedPlan.data[ProcessingPlan::Tonal].x+=.125f;
+        QVERIFY(StageGraph::analysisFrameKey(f.source,changedPlan,f.geometry)!=key);
+        changedPlan=f.plan;changedPlan.state.hue+=1e-12;
+        QVERIFY(StageGraph::analysisFrameKey(f.source,changedPlan,f.geometry)!=key);
+        auto changedGeometry=f.geometry;changedGeometry.crop={.08,.05,.85,.9};
+        QVERIFY(StageGraph::analysisFrameKey(f.source,f.plan,changedGeometry)!=key);
+        auto tagged=f.source;tagged.setColorSpace(QColorSpace::SRgb);
+        QVERIFY(StageGraph::analysisFrameKey(tagged,f.plan,f.geometry)!=key);
+        changedPlan=f.plan;changedPlan.output=ColorManagement::OutputSpace::DisplayP3;
+        QVERIFY(StageGraph::analysisFrameKey(f.source,changedPlan,f.geometry)!=key);
+        changedPlan=f.plan;changedPlan.data[ProcessingPlan::FrameRect]={.1f,.2f,.7f,.6f};
+        QVERIFY(StageGraph::analysisFrameKey(f.source,changedPlan,f.geometry).isEmpty());
+        changedPlan=f.plan;changedPlan.state.brushMasks.layers.front().exposureEv+=.1;
+        QVERIFY(StageGraph::analysisFrameKey(f.source,changedPlan,f.geometry)!=key);
+        auto lutA=std::make_shared<LookLut>(*LookLut::identity(3));lutA->digest.clear();
+        auto lutB=std::make_shared<LookLut>(*lutA);for(auto &v:lutB->rgb)v=1.f-v;
+        auto lutState=f.plan.state;lutState.look.mode="calibrated";lutState.look.lut=lutA;
+        const auto planA=ProcessingPlan::compile(lutState,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        lutState.look.lut=lutB;
+        const auto planB=ProcessingPlan::compile(lutState,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(StageGraph::analysisFrameKey(f.source,planA,f.geometry)!=StageGraph::analysisFrameKey(f.source,planB,f.geometry));
+        auto frames=std::make_shared<AnalysisFrameCache>(8*1024*1024);
+        FullScopesCache hist(0,frames);
+        QVERIFY(analysisIntegrationSameHistogram(hist.analyze({f.source,f.plan,1,true,f.geometry}),f.histogram));
+        auto monitor=MonitorColorTransform::identityLut(33);monitor.fill(Qt::black);
+        QVERIFY(MonitorColorTransform::applyLut(f.encoded,monitor,33)!=f.encoded);
+        QCOMPARE(StageGraph::analysisFrameKey(f.source,f.plan,f.geometry),key);
+        ScopePlotCache plots(16*1024*1024,frames);
+        const auto boundary=analysisIntegrationBoundary();
+        QCOMPARE(plots.render({f.source,f.plan,f.geometry,"waveform",999,true}).image,f.plots[0].image);
+        QCOMPARE(analysisIntegrationStagesSince(boundary,"cpu_pipeline"),qint64(0));
+        // Reusing the same caches for a changed source must compute and publish
+        // the new full frame rather than leak the old key's histogram/plots.
+        const auto newEncoded=ImagePipeline::processWithPlan(f.geometry.apply(changedSource),f.plan,{},false);
+        QVERIFY(newEncoded!=f.encoded);
+        const auto newHistogram=ScopesEngine::analyze(newEncoded);
+        QVERIFY(analysisIntegrationSameHistogram(hist.analyze({changedSource,f.plan,2,true,f.geometry}),newHistogram));
+        const auto newLease=frames->find(StageGraph::analysisFrameKey(changedSource,f.plan,f.geometry));
+        QVERIFY(bool(newLease));QCOMPARE(newLease.image(),newEncoded);
+        ScopePlotCounts truth("waveform");QVERIFY(truth.add(newEncoded));
+        QCOMPARE(plots.render({changedSource,f.plan,f.geometry,"waveform",2,true}).image,truth.image());
+    }
+
+    void analysisFrameDisabledOversizePinnedBudgetAndPreviewUseStreamFallback() {
+        const auto f=analysisIntegrationFixture();QVERIFY(!f.encoded.isNull());
+        for(qint64 budget:{qint64(0),qint64(1)}) {
+            auto frames=std::make_shared<AnalysisFrameCache>(budget);
+            FullScopesCache hist(0,frames);ScopePlotCache plots(16*1024*1024,frames);
+            auto boundary=analysisIntegrationBoundary();
+            QVERIFY(analysisIntegrationSameHistogram(hist.analyze({f.source,f.plan,1,true,f.geometry}),f.histogram));
+            QVERIFY(analysisIntegrationStagesSince(boundary,"cpu_pipeline")>0);
+            boundary=analysisIntegrationBoundary();
+            QCOMPARE(plots.render({f.source,f.plan,f.geometry,"waveform",1,true}).image,f.plots[0].image);
+            QVERIFY(analysisIntegrationStagesSince(boundary,"cpu_pipeline")>0);
+            QCOMPARE(frames->snapshot()["entries"].toInteger(),qint64(0));
+            QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(0));
+            QVERIFY(frames->snapshot()[budget?"oversize_bypasses":"disabled_bypasses"].toInteger()>0);
+        }
+        // The previous immutable frame remains charged while a consumer holds
+        // its lease, so a second fitting frame can hit the remaining budget.
+        auto frames=std::make_shared<AnalysisFrameCache>(f.encoded.sizeInBytes()+4096);
+        FullScopesCache hist(0,frames);
+        QVERIFY(analysisIntegrationSameHistogram(hist.analyze({f.source,f.plan,1,true,f.geometry}),f.histogram));
+        const auto held=frames->find(StageGraph::analysisFrameKey(f.source,f.plan,f.geometry));QVERIFY(bool(held));
+        auto changed=f.source;reinterpret_cast<float *>(changed.scanLine(0))[0]+=.25f;
+        const auto expected=ImagePipeline::processWithPlan(f.geometry.apply(changed),f.plan,{},false);
+        QVERIFY(analysisIntegrationSameHistogram(hist.analyze({changed,f.plan,2,true,f.geometry}),ScopesEngine::analyze(expected)));
+        QVERIFY(frames->snapshot()["budget_bypasses"].toInteger()>0);
+        QCOMPARE(held.image(),f.encoded);
+        QVERIFY(!frames->find(StageGraph::analysisFrameKey(changed,f.plan,f.geometry)));
+        // Preview counts deliberately ignore the complete full-resolution
+        // frame even when the source dimensions happen to be identical.
+        auto fullFrames=std::make_shared<AnalysisFrameCache>(8*1024*1024);
+        FullScopesCache fullHist(0,fullFrames);
+        QVERIFY(analysisIntegrationSameHistogram(fullHist.analyze({f.source,f.plan,1,true,f.geometry}),f.histogram));
+        ScopePlotCache previewPlots(16*1024*1024,fullFrames);
+        const auto originalPreview=renderScopePlot({f.source,f.plan,f.geometry,"waveform",1,false},{});
+        const auto boundary=analysisIntegrationBoundary();
+        const auto preview=previewPlots.render({f.source,f.plan,f.geometry,"waveform",1,false});
+        QCOMPARE(preview.image,originalPreview.image);QCOMPARE(preview.pixels,originalPreview.pixels);
+        QVERIFY(analysisIntegrationStagesSince(boundary,"cpu_pipeline")>0);
+    }
+
+    void analysisFrameInFlightProducerNeverBlocksHistogramOrPlotFallback() {
+        const auto f=analysisIntegrationFixture();QVERIFY(!f.encoded.isNull());
+        auto frames=std::make_shared<AnalysisFrameCache>(8*1024*1024);
+        const auto key=StageGraph::analysisFrameKey(f.source,f.plan,f.geometry);
+        auto held=frames->begin(key,f.encoded.size());QVERIFY(bool(held));
+        QVERIFY(held.append(f.encoded.copy(0,0,f.encoded.width(),128),0));
+        QVERIFY(!frames->find(key)); // an unfinished first strip is never visible
+        FullScopesCache hist(4*1024*1024,frames);ScopePlotCache plots(16*1024*1024,frames);
+        const auto boundary=analysisIntegrationBoundary();
+        auto histogramFuture=QtConcurrent::run([&]{return hist.analyze({f.source,f.plan,1,true,f.geometry});});
+        auto plotFuture=QtConcurrent::run([&]{return plots.render({f.source,f.plan,f.geometry,"waveform",1,true});});
+        auto cleanup=qScopeGuard([&]{held={};histogramFuture.waitForFinished();plotFuture.waitForFinished();});
+        QElapsedTimer timer;timer.start();
+        while((!histogramFuture.isFinished()||!plotFuture.isFinished())&&timer.elapsed()<10000)QTest::qWait(1);
+        const bool completedWhileProducerHeld=histogramFuture.isFinished()&&plotFuture.isFinished();
+        const auto during=frames->snapshot();
+        held={}; // release before asserting/joining so any regression can unwind
+        histogramFuture.waitForFinished();plotFuture.waitForFinished();
+        QVERIFY(completedWhileProducerHeld);
+        QVERIFY(analysisIntegrationSameHistogram(histogramFuture.result(),f.histogram));
+        QCOMPARE(plotFuture.result().image,f.plots[0].image);
+        QVERIFY(analysisIntegrationStagesSince(boundary,"cpu_pipeline")>0);
+        QCOMPARE(during["entries"].toInteger(),qint64(0));
+        QCOMPARE(during["inflight_entries"].toInteger(),qint64(1));
+        QCOMPARE(during["publications"].toInteger(),qint64(0));
+        QVERIFY(during["inflight_bypasses"].toInteger()>0);
+        QCOMPARE(frames->snapshot()["charged_bytes"].toInteger(),qint64(0));
+        FullScopesCache recovered(0,frames);
+        QVERIFY(analysisIntegrationSameHistogram(recovered.analyze({f.source,f.plan,2,true,f.geometry}),f.histogram));
+        QVERIFY(bool(frames->find(key)));
+    }
+
+    void analysisFrameCancellationDoesNotPublishAndCollectorFailureKeepsHistogram() {
+        const auto f=analysisIntegrationFixture();QVERIFY(!f.encoded.isNull());
+        int observerCalls=0;
+        const auto collectorFailures=PerformanceRecorder::snapshot()["counters"].toObject()["full_scopes_collector_failures"].toInteger();
+        const auto observerResult=ScopesEngine::analyzeFull(f.geometry.apply(f.source),f.plan,{},
+            [&](const QImage &,int){++observerCalls;throw std::bad_alloc();});
+        QCOMPARE(observerCalls,1); // optional collector is disabled after failure
+        QVERIFY(analysisIntegrationSameHistogram(observerResult,f.histogram));
+        QCOMPARE(PerformanceRecorder::snapshot()["counters"].toObject()["full_scopes_collector_failures"].toInteger(),collectorFailures+1);
+        QImage source(1024,1024,QImage::Format_RGBA64);source.fill(QColor(70,110,150,180));
+        const auto fingerprint=StageGraph::outputFingerprint(source);
+        AdjustmentState state;BrushMaskGeometry::Stroke stroke;stroke.style={.25,.7,1};
+        stroke.dabs.assign(128,{{.5,.5},1});
+        state.brushMasks.layers.push_back({"cancel-analysis",true,.1,{stroke}});
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128));
+        auto frames=std::make_shared<AnalysisFrameCache>(16*1024*1024);
+        FullScopesCache hist(4*1024*1024,frames);
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QCOMPARE(hist.analyze({source,plan,1,true,{}},token).pixelCount,quint64(0));
+        QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(0));
+        token->store(false);
+        auto future=QtConcurrent::run([&]{return hist.analyze({source,plan,2,true,{}},token);});
+        auto cleanup=qScopeGuard([&]{token->store(true);future.waitForFinished();});
+        bool observedBuilding=false;QElapsedTimer timer;timer.start();
+        while(!future.isFinished()&&timer.elapsed()<10000) {
+            if(frames->snapshot()["inflight_entries"].toInteger()>0){observedBuilding=true;break;}
+            QTest::qWait(1);
+        }
+        const bool pending=!future.isFinished();token->store(true);future.waitForFinished();
+        QVERIFY(observedBuilding);QVERIFY(pending);
+        QCOMPARE(future.result().pixelCount,quint64(0));
+        QCOMPARE(hist.snapshot()["entries"].toInteger(),qint64(0));
+        QCOMPARE(frames->snapshot()["entries"].toInteger(),qint64(0));
+        QCOMPARE(frames->snapshot()["inflight_entries"].toInteger(),qint64(0));
+        QCOMPARE(frames->snapshot()["charged_bytes"].toInteger(),qint64(0));
+        QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(0));
+        QVERIFY(!frames->find(StageGraph::analysisFrameKey(source,plan,{})));
+        const auto recoveryPlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        const auto recovered=hist.analyze({source,recoveryPlan,3,true,{}});
+        QCOMPARE(recovered.pixelCount,quint64(source.width())*source.height());
+        QCOMPARE(frames->snapshot()["publications"].toInteger(),qint64(1));
+        QCOMPARE(StageGraph::outputFingerprint(source),fingerprint);
+    }
+
     void fullScopesCacheMatchesFreshCountsAcrossPlansAndGeometry() {
         FullScopesCache cache;
         QImage source(23,17,QImage::Format_RGBA64);
@@ -5864,6 +6410,11 @@ private slots:
         QCOMPARE(scopesCache.value("budget_bytes").toInteger(),qint64(4*1024*1024));
         const auto plotCache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()["values"].toObject()["scope_plot_cache"].toObject();
         QCOMPARE(plotCache["backend"].toString(),QString("cpu-scope-plots")); QCOMPARE(plotCache["budget_bytes"].toInteger(),qint64(16*1024*1024));
+        const auto analysisCache=QJsonDocument::fromJson(storedZipEntry(baseline,"performance.json")).object()
+            .value("values").toObject().value("analysis_frame_cache").toObject();
+        QVERIFY(!analysisCache.isEmpty());
+        QCOMPARE(analysisCache.value("budget_bytes").toInteger(),qint64(320*1024*1024));
+        QVERIFY(analysisCache.value("charged_bytes").toInteger()<=analysisCache.value("budget_bytes").toInteger());
         QVERIFY(before.value("source").toObject().value("available").toBool());
         QCOMPARE(before.value("prepared_preview").toObject().value("width").toInt(),4);
         QVERIFY(before.value("color_stages").toObject().value("available").toBool());

@@ -150,6 +150,21 @@ struct StageGraph {
                     {"lens_profile",false},{"monitor_icc",false}}},
                 {"monitor_icc", "presentation-only; excluded from render/scopes keys"}};
     }
+    // Only completed full post-geometry analysis frames are reusable. The
+    // source identity is taken before geometry allocates a different QImage.
+    // Monitor ICC/display LUT and delivery revision are intentionally absent.
+    static QString analysisFrameKey(const QImage &source,const ProcessingPlan &plan,const GeometryState &geometry) {
+        const auto frame=plan.data[ProcessingPlan::FrameRect];
+        if (source.isNull() || frame.x!=0 || frame.y!=0 || frame.z!=1 || frame.w!=1) return {};
+        const auto rendered=renderKey(source,plan);
+        if (rendered.isEmpty()) return {};
+        QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_6_8);
+        stream << QStringLiteral("analysis-frame-v1:RGBA64:stream128:post-detail-centers:pre-monitor")
+               << rendered << QJsonDocument(geometry.toJson()).toJson(QJsonDocument::Compact)
+               << digest(source.colorSpace().iccProfile()) << digest(ColorManagement::iccProfile(plan.output));
+        return digest(bytes);
+    }
     static QString fullScopesKey(const ScopeRequest &request) {
         QByteArray bytes;
         QDataStream stream(&bytes,QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);

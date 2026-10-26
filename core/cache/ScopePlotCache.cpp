@@ -1,21 +1,30 @@
 #include "ScopePlotCache.h"
+#include "core/cache/AnalysisFrameCache.h"
 #include "core/pipeline/StageGraph.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QMutexLocker>
+#include <QScopeGuard>
 #include <algorithm>
 #include <limits>
 
-ScopePlotCache::ScopePlotCache(qint64 bytes)
-    : m_entries(int(std::clamp(bytes/1024,qint64(0),qint64(std::numeric_limits<int>::max())))) {}
+ScopePlotCache::ScopePlotCache(qint64 bytes,std::shared_ptr<AnalysisFrameCache> analysisFrames)
+    : m_entries(int(std::clamp(bytes/1024,qint64(0),qint64(std::numeric_limits<int>::max())))),
+      m_analysisFrames(std::move(analysisFrames)) {}
 QJsonObject ScopePlotCache::snapshotLocked() const {
     return {{"schema",1},{"backend","cpu-scope-plots"},{"key_version","scope-plots-v1"},
         {"budget_bytes",qint64(m_entries.maxCost())*1024},{"charged_bytes",qint64(m_entries.totalCost())*1024},{"entries",m_entries.size()},
         {"hits",m_hits},{"misses",m_misses},{"bypasses",m_bypasses},{"evictions",m_evictions},{"cancelled_requests",m_cancelled},
-        {"accounting","three ARGB32 ink images, entry and retained LUT payload, rounded to KiB; allocator/key overhead excluded; no source or rendered frames retained"}};
+        {"accounting","three ARGB32 ink images, entry and retained LUT payload, rounded to KiB; allocator/key overhead excluded; optional analysis frames use a separate budget"}};
 }
 QJsonObject ScopePlotCache::snapshot() const { QMutexLocker lock(&m_mutex); return snapshotLocked(); }
 void ScopePlotCache::recordLocked() { PerformanceRecorder::value("scope_plot_cache",snapshotLocked()); }
 ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const CancelToken &cancel) {
+    const auto recordAnalysis=qScopeGuard([&] {
+        if (m_analysisFrames) {
+            try { PerformanceRecorder::value("analysis_frame_cache",m_analysisFrames->snapshot()); }
+            catch (...) {} // Optional diagnostics must not fail plot work.
+        }
+    });
     PerformanceSpan timing("scope_plot_cached");
     const int index=request.mode=="waveform" ? 0 : request.mode=="parade" ? 1 : request.mode=="vectorscope" ? 2 : -1;
     if (index<0 || request.source.isNull()) return {};
@@ -37,14 +46,22 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
         } else { ++m_bypasses; PerformanceRecorder::count("scope_plot_cache_bypass"); }
         recordLocked();
     }
+    const auto analysisKey=m_analysisFrames && request.fullResolution
+        ? StageGraph::analysisFrameKey(request.source,request.plan,request.geometry):QString{};
+    // Look up completed frames only. A producer still filling its strips does
+    // not delay this independent plot request or share its cancellation token.
+    const auto completed=m_analysisFrames && !analysisKey.isEmpty()
+        ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
     // A disabled/oversize cache renders only the requested plot, retaining
     // bounded tiles and avoiding speculative work that cannot be reused.
     if (!cacheable) {
-        auto result=renderScopePlot(request,cancel);
+        auto result=completed ? renderEncodedScopePlot(completed.image(),request.mode,cancel)
+                              : renderScopePlot(request,cancel);
         if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
         return result;
     }
-    auto results=renderScopePlots(request,cancel);
+    auto results=completed ? renderEncodedScopePlots(completed.image(),cancel)
+                           : renderScopePlots(request,cancel);
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     for (const auto &result : results) if (result.image.isNull() || !result.pixels || !result.error.isEmpty()) return results[index];

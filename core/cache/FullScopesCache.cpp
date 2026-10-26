@@ -1,22 +1,32 @@
 #include "core/cache/FullScopesCache.h"
+#include "core/cache/AnalysisFrameCache.h"
 #include "core/preview/PreviewTasks.h"
 #include "core/pipeline/StageGraph.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QMutexLocker>
+#include <QScopeGuard>
 #include <algorithm>
 #include <limits>
 
-FullScopesCache::FullScopesCache(qint64 bytes)
-    : m_entries(int(std::clamp(bytes/1024,qint64(0),qint64(std::numeric_limits<int>::max())))) {}
+FullScopesCache::FullScopesCache(qint64 bytes,std::shared_ptr<AnalysisFrameCache> analysisFrames)
+    : m_entries(int(std::clamp(bytes/1024,qint64(0),qint64(std::numeric_limits<int>::max())))),
+      m_analysisFrames(std::move(analysisFrames)) {}
 QJsonObject FullScopesCache::snapshotLocked() const {
     return {{"schema",1},{"backend","cpu-full-scopes"},{"key_version","full-scopes-v1"},{"budget_bytes",qint64(m_entries.maxCost())*1024},
         {"charged_bytes",qint64(m_entries.totalCost())*1024},{"entries",m_entries.size()},
         {"hits",m_hits},{"misses",m_misses},{"bypasses",m_bypasses},{"evictions",m_evictions},{"cancelled_requests",m_cancelled},
-        {"accounting","entry, 4096 QVariant bins and retained LUT payload, rounded to KiB; allocator/key overhead excluded; no frames retained"}};
+        {"accounting","histogram entry, 4096 QVariant bins and retained LUT payload, rounded to KiB; allocator/key overhead excluded; optional analysis frames use a separate budget"}};
 }
 QJsonObject FullScopesCache::snapshot() const { QMutexLocker lock(&m_mutex); return snapshotLocked(); }
 void FullScopesCache::recordLocked() { PerformanceRecorder::value("full_scopes_cache",snapshotLocked()); }
 ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelToken &cancel) {
+    const auto recordAnalysis=qScopeGuard([&] {
+        // Snapshot after this call's frame lease/writer has been released.
+        if (m_analysisFrames) {
+            try { PerformanceRecorder::value("analysis_frame_cache",m_analysisFrames->snapshot()); }
+            catch (...) {} // Optional diagnostics must not fail histogram work.
+        }
+    });
     PerformanceSpan timing("full_scopes_cached");
     if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
     if (request.image.isNull()) return {};
@@ -37,8 +47,27 @@ ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelT
         } else { ++m_bypasses; PerformanceRecorder::count("full_scopes_cache_bypass"); }
         recordLocked();
     }
-    const auto image=request.geometry.apply(request.image,cancel);
-    auto result=ScopesEngine::analyzeFull(image,request.plan,cancel);
+    const auto analysisKey=m_analysisFrames
+        ? StageGraph::analysisFrameKey(request.image,request.plan,request.geometry):QString{};
+    const auto completed=m_analysisFrames && !analysisKey.isEmpty()
+        ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
+    ScopesResult result;
+    if (completed) {
+        result=ScopesEngine::analyze(completed.image(),1024,cancel);
+        PerformanceRecorder::count("full_scopes_encoded_frame_hits");
+    } else {
+        const auto image=request.geometry.apply(request.image,cancel);
+        // A collector is optional. Admission happens after the same B5 guard
+        // and cannot turn a legal streamed request into a cache refusal.
+        if (!ImagePipeline::preflightTiledResearchRequest(image.size(),request.plan,128,cancel)) return {};
+        auto writer=m_analysisFrames && !analysisKey.isEmpty()
+            ? m_analysisFrames->begin(analysisKey,image.size(),lut,cancel):AnalysisFrameCache::Writer{};
+        result=ScopesEngine::analyzeFull(image,request.plan,cancel,
+            [&](const QImage &strip,int y) {
+                if (writer && !writer.append(strip,y,cancel)) writer={};
+            });
+        if (result.pixelCount && !cancelled(cancel) && writer) writer.publish(cancel);
+    }
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     if (!result.pixelCount || !cacheable) return result;

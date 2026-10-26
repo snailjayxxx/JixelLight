@@ -11,6 +11,7 @@
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
+#include "core/cache/AnalysisFrameCache.h"
 #include "core/cache/ScopePlotCache.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/AdjustmentTransfer.h"
@@ -1362,6 +1363,7 @@ PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
     values["stage_dependencies"] = StageGraph::describe(m_loadedKey, snapshot.prepare, snapshot.state, currentIsRaw(), rawBaseExposureStops());
     if (m_renderCache) values["render_cache"] = m_renderCache->snapshot();
     if (m_fullScopesCache) values["full_scopes_cache"] = m_fullScopesCache->snapshot();
+    if (m_analysisFrameCache) values["analysis_frame_cache"] = m_analysisFrameCache->snapshot();
     if (m_scopePlotCache) values["scope_plot_cache"] = m_scopePlotCache->snapshot();
     values["controller_state"] = QJsonObject{{"requested_revision", qint64(snapshot.revision)},
         {"scopes_revision", qint64(m_scopesRevision)}, {"scopes_mode", scopesStatus()},
@@ -1549,7 +1551,8 @@ void PhotoController::initializeJobs() {
     });
     m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
     connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
-    m_scopePlotCache=std::make_shared<ScopePlotCache>();
+    m_analysisFrameCache=std::make_shared<AnalysisFrameCache>();
+    m_scopePlotCache=std::make_shared<ScopePlotCache>(16*1024*1024,m_analysisFrameCache);
     const auto plotCache=m_scopePlotCache;
     m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(
         [plotCache](const ScopePlotRequest &request,const CancelToken &cancel) { return plotCache->render(request,cancel); },
@@ -1587,7 +1590,7 @@ void PhotoController::initializeJobs() {
     });
     m_sourceCache = std::make_shared<SourceCache>();
     m_renderCache = std::make_shared<RenderedPreviewCache>();
-    m_fullScopesCache = std::make_shared<FullScopesCache>();
+    m_fullScopesCache = std::make_shared<FullScopesCache>(4*1024*1024,m_analysisFrameCache);
     m_exportQueue = std::make_unique<ExportQueue>(m_sourceCache);
     const auto cache = m_sourceCache;
     m_loader = std::make_unique<LatestJob<LoadRequest, SourceData>>(

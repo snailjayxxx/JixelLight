@@ -2,12 +2,15 @@
 #include "core/scopes/ScopePlot.h"
 #include <QCache>
 #include <QMutex>
+class AnalysisFrameCache;
 
-// Retains only the three completed UI-ink plots and active LUT, never source,
-// rendered tiles or full encoded frames. A miss shares one color-render pass.
+// Plot entries retain only completed UI ink and active LUT. An optional shared
+// analysis cache supplies completed color under its own frame/lease budget.
+// Otherwise a miss shares one bounded color-render pass across three plots.
 class ScopePlotCache final {
 public:
-    explicit ScopePlotCache(qint64 budgetBytes=16*1024*1024);
+    explicit ScopePlotCache(qint64 budgetBytes=16*1024*1024,
+                            std::shared_ptr<AnalysisFrameCache> analysisFrames = {});
     ScopePlotResult render(const ScopePlotRequest &request,const CancelToken &cancel={});
     QJsonObject snapshot() const;
 private:
@@ -16,5 +19,6 @@ private:
     void recordLocked();
     mutable QMutex m_mutex;
     QCache<QString,Entry> m_entries;
+    std::shared_ptr<AnalysisFrameCache> m_analysisFrames;
     qint64 m_hits=0,m_misses=0,m_bypasses=0,m_evictions=0,m_cancelled=0;
 };
