@@ -718,8 +718,14 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     const bool brushResearch=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
     // In-memory research only. Large real RAW brush rendering needs a separate
     // performance/tiling acceptance gate before any persisted layer is enabled.
-    constexpr qint64 MaxBrushResearchPixels=2'097'152;
-    if (brushResearch && qint64(source.width())*source.height()>MaxBrushResearchPixels) return {};
+    BrushMaskTileRaster::FramePlan brushFrame;
+    const auto rect=plan.data[ProcessingPlan::FrameRect];
+    const BrushMaskTileRaster::NormalizedFrame frame{rect.x,rect.y,rect.z,rect.w};
+    if (brushResearch) {
+        PerformanceSpan planning(QStringLiteral("brush_frame_plan"));
+        if (!BrushMaskTileRaster::planFrame(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
+                {origin.x(),origin.y(),source.width(),source.height()},&brushFrame,token.get(),frame)) return {};
+    }
     const bool floating=source.format()==QImage::Format_RGBA32FPx4;
     PerformanceSpan timing(QStringLiteral("cpu_pipeline"), {{"pixels", qint64(source.width())*source.height()},
                            {"parallel",parallel},{"input_fp32",floating}});
@@ -735,24 +741,16 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
     const ColorKernel kernel(plan,sourceSize);
     if (brushResearch) {
-        constexpr int Edge=BrushMaskTileRaster::MaxTileEdge;
-        constexpr std::size_t MaxFrameVisits=96*1024*1024;
-        // The mask-only API allocates exactly the exposure weights needed for
-        // a tile, not a dummy RGBA32F source and duplicate color output.
+        // The immutable request was budgeted before staging the image.
         std::size_t totalVisits=0;
-        const auto rect=plan.data[ProcessingPlan::FrameRect];
-        const BrushMaskTileRaster::NormalizedFrame frame{rect.x,rect.y,rect.z,rect.w};
-        if (!BrushMaskTileRaster::validNormalizedFrame(frame)) return {};
-        for(int tileY=0;tileY<out.height();tileY+=Edge) {
-            if(cancelled(token))return {};
-            for(int tileX=0;tileX<out.width();tileX+=Edge) {
+        for(const auto &tile:brushFrame.tiles) {
                 if(cancelled(token))return {};
-                const int w=std::min(Edge,out.width()-tileX);
-                const int h=std::min(Edge,out.height()-tileY);
+                const int tileX=tile.rect.x-origin.x(),tileY=tile.rect.y-origin.y();
+                const int w=tile.rect.width,h=tile.rect.height;
                 BrushMaskTileRaster::ExposureOutput mask;
                 if (!BrushMaskTileRaster::exposureOnly(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
-                        {tileX+origin.x(),tileY+origin.y(),w,h},&mask,token.get(),frame)
-                    || mask.visitedDabPixels>MaxFrameVisits-totalVisits) return {};
+                        tile.rect,&mask,token.get(),frame)
+                    || mask.visitedDabPixels!=tile.candidateVisits) return {};
                 totalVisits+=mask.visitedDabPixels;
                 for(int yy=0;yy<h;++yy) {
                     if(cancelled(token))return {};
@@ -769,9 +767,9 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                             : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
                     }
                 }
-            }
         }
-        PerformanceRecorder::count("brush_research_cpu_tiles",(out.width()+Edge-1)/Edge*((out.height()+Edge-1)/Edge));
+        if (totalVisits!=brushFrame.candidateVisits) return {};
+        PerformanceRecorder::count("brush_research_cpu_tiles",qint64(brushFrame.tiles.size()));
         PerformanceRecorder::count("brush_research_dab_pixel_visits",qint64(totalVisits));
         return finishColor(std::move(out),plan,token);
     }

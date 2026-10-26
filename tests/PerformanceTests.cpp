@@ -17,6 +17,7 @@
 #include "diagnostics/LoggingEngine.h"
 #include <random>
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/LatestJob.h"
 #include "core/cache/SourceCache.h"
 #include "core/cache/RenderedPreviewCache.h"
@@ -47,6 +48,96 @@ ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement:
 class PerformanceTests:public QObject {
     Q_OBJECT
 private slots:
+    void brushFrameRequestCancelsWithoutPublishingPartialImage() {
+        namespace BM=BrushMaskGeometry; namespace BD=BrushMaskDocument;
+        BM::Stroke stroke{BM::Style{.25,.4,.7},{}};
+        stroke.dabs.assign(128,{{.5,.5},1});
+        BD::Layer layer;layer.id="cancel_load";layer.enabled=true;
+        layer.exposureEv=1;layer.strokes={stroke};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        const auto source=fixture(1024,1024);
+        const auto plan=nonRawLinearPlan(state);
+        auto token=std::make_shared<std::atomic_bool>(false);
+        std::atomic_bool entered{false};
+        auto future=QtConcurrent::run([&] {
+            entered.store(true);
+            return ImagePipeline::processWithPlan(source,plan,token,false);
+        });
+        QElapsedTimer wait;wait.start();
+        while(!entered.load() && wait.elapsed()<5000) QTest::qWait(1);
+        QTest::qWait(10);
+        const bool pending=!future.isFinished();
+        token->store(true);future.waitForFinished();
+        QVERIFY(entered.load());QVERIFY(pending);
+        QVERIFY(future.result().isNull());
+        // A subsequent independent request is unaffected by the old token.
+        QVERIFY(!ImagePipeline::processWithPlan(fixture(32,24),nonRawLinearPlan(),{},false).isNull());
+    }
+
+    void brushRepresentativeWorkloads_data() {
+        QTest::addColumn<int>("width"); QTest::addColumn<int>("height");
+        QTest::addColumn<int>("dabs"); QTest::addColumn<double>("radius");
+        QTest::addColumn<bool>("viewport");
+        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false;
+        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false;
+        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true;
+    }
+    void brushRepresentativeWorkloads() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        QFETCH(int,width); QFETCH(int,height); QFETCH(int,dabs);
+        QFETCH(double,radius); QFETCH(bool,viewport);
+        BD::Document doc;
+        for(int layerIndex=0;layerIndex<2;++layerIndex) {
+            BM::Stroke stroke{BM::Style{radius,.4,.7},{}};
+            for(int i=0;i<dabs;++i)
+                stroke.dabs.push_back({{.25+.5*(i%8)/7.,.25+.5*((i/8)%8)/7.},.5+.5*(i%3)/2.});
+            BD::Layer layer;layer.id=QStringLiteral("perf_%1").arg(layerIndex);
+            layer.enabled=true;layer.exposureEv=layerIndex?-.7:1.2;layer.strokes={stroke};
+            doc.layers.push_back(layer);
+        }
+        const BT::NormalizedFrame frame=viewport?BT::NormalizedFrame{.2,.15,.6,.7}:BT::NormalizedFrame{};
+        std::vector<double> planningMs,rasterMs,oracleMs;
+        std::size_t visits=0,tileCount=0;
+        for(int repeat=0;repeat<3;++repeat) {
+            BT::FramePlan plan;QElapsedTimer timer;timer.start();
+            QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&plan,nullptr,frame));
+            planningMs.push_back(timer.nsecsElapsed()/1e6);
+            visits=0;tileCount=plan.tiles.size();double raster=0,oracle=0;
+            for(const auto &tile:plan.tiles) {
+                BT::ExposureOutput actual;timer.restart();
+                QVERIFY(BT::exposureOnly(doc,width,height,tile.rect,&actual,nullptr,frame));
+                raster+=timer.nsecsElapsed()/1e6;
+                QCOMPARE(actual.visitedDabPixels,tile.candidateVisits);
+                visits+=actual.visitedDabPixels;
+                std::vector<float> rgba(actual.weightedExposureEv.size()*4,.25f);
+                BT::Output reference;timer.restart();
+                QVERIFY(BT::render(doc,width,height,tile.rect,rgba,&reference,nullptr,frame));
+                oracle+=timer.nsecsElapsed()/1e6;
+                QVERIFY(actual.weightedExposureEv==reference.weightedExposureEv);
+            }
+            QCOMPARE(visits,plan.candidateVisits);
+            rasterMs.push_back(raster);oracleMs.push_back(oracle);
+        }
+        for(auto *times:{&planningMs,&rasterMs,&oracleMs}) std::sort(times->begin(),times->end());
+        qInfo()<<"brush-workload"<<QTest::currentDataTag()<<"pixels"<<width*height
+               <<"tiles"<<tileCount<<"candidate_visits"<<visits
+               <<"median_plan_ms"<<planningMs[1]<<"median_exposure_ms"<<rasterMs[1]
+               <<"median_rgba_oracle_ms"<<oracleMs[1];
+        // Timings are evidence, not a portable GPU/interactive latency claim.
+        std::atomic_bool cancel{true};BT::FramePlan sentinel;
+        sentinel.candidateVisits=42;
+        QVERIFY(!BT::planFrame(doc,width,height,{0,0,width,height},&sentinel,&cancel,frame));
+        QCOMPARE(sentinel.candidateVisits,std::size_t(42));
+        const auto source=fixture(width,height);auto state=AdjustmentState{};state.brushMasks=doc;
+        const auto plan=nonRawLinearPlan(state);
+        const auto processed=ImagePipeline::processWithPlan(source,plan,{},false);
+        QVERIFY(!processed.isNull());
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(ImagePipeline::processWithPlan(source,plan,token,false).isNull());
+    }
+
     void scopePlotCacheHonorsLruOversizeAndRetainedLutCosts() {
         const auto source=fixture(16,9); ScopePlotRequest a{source,nonRawLinearPlan(),{},"waveform",1,true};
         ScopePlotCache probe; const auto original=probe.render(a); QVERIFY(!original.image.isNull());

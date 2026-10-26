@@ -1827,6 +1827,57 @@ private slots:
 
     // F4 M4.4B.1: mask-only weights and the earlier RGBA oracle must share
     // exactly one bounded raster, including tile offsets and zoom ROI.
+    void brushFramePlanMatchesRasterAndRefusesWholeRequestAtomically() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        BM::Stroke stroke{BM::Style{.17,.4,.8},
+            {{{.1,.2},1},{{.5,.5},.7},{{.9,.8},0},{{1,1},1}}};
+        BD::Layer layer;layer.id="planning";layer.enabled=true;layer.exposureEv=1;
+        layer.strokes={stroke};
+        BD::Document doc{{layer}};
+        const BT::NormalizedFrame frames[]{{},{.2,.1,.5,.6},{.9,.9,.000001,.000001}};
+        for(const auto frame:frames) {
+            BT::FramePlan plan;
+            QVERIFY(BT::planFrame(doc,401,303,{17,11,371,281},&plan,nullptr,frame));
+            QCOMPARE(plan.tiles.size(),std::size_t(9));
+            std::size_t visits=0,pixels=0;
+            for(const auto &tile:plan.tiles) {
+                QVERIFY(BT::validRect(tile.rect,401,303));
+                BT::ExposureOutput actual;
+                QVERIFY(BT::exposureOnly(doc,401,303,tile.rect,&actual,nullptr,frame));
+                QCOMPARE(actual.visitedDabPixels,tile.candidateVisits);
+                visits+=actual.visitedDabPixels;
+                pixels+=actual.weightedExposureEv.size();
+            }
+            QCOMPARE(visits,plan.candidateVisits);
+            QCOMPARE(pixels,std::size_t(371*281));
+        }
+        BT::FramePlan sentinel{{{{3,4,5,6},7}},123};
+        const auto untouched=[&] {
+            QCOMPARE(sentinel.tiles.size(),std::size_t(1));
+            QCOMPARE(sentinel.tiles[0].rect.x,3);
+            QCOMPARE(sentinel.tiles[0].candidateVisits,std::size_t(7));
+            QCOMPARE(sentinel.candidateVisits,std::size_t(123));
+        };
+        std::atomic_bool cancel{true};
+        QVERIFY(!BT::planFrame(doc,401,303,{0,0,401,303},&sentinel,&cancel)); untouched();
+        QVERIFY(!BT::planFrame(doc,401,303,{400,0,2,3},&sentinel)); untouched();
+        QVERIFY(!BT::planFrame(doc,2048,2048,{0,0,2048,2048},&sentinel)); untouched();
+        auto invalid=doc;invalid.layers.push_back(layer);
+        QVERIFY(!BT::planFrame(invalid,401,303,{0,0,401,303},&sentinel)); untouched();
+        // Every tile is below 8 Mi visits, but the entire frame exceeds 96 Mi.
+        // Reject before spending those visits rasterizing the first tiles.
+        stroke.style={.5,1,1};stroke.dabs.assign(512,{{.5,.5},1});
+        doc.layers[0].strokes={stroke};
+        QVERIFY(!BT::planFrame(doc,1024,1024,{0,0,1024,1024},&sentinel)); untouched();
+        stroke.dabs.assign(1024,{{.5,.5},1});doc.layers[0].strokes={stroke};
+        QVERIFY(!BT::planFrame(doc,128,128,{0,0,128,128},&sentinel)); untouched();
+        doc.layers[0].enabled=false;
+        QVERIFY(BT::planFrame(doc,401,303,{0,0,401,303},&sentinel));
+        QCOMPARE(sentinel.candidateVisits,std::size_t(0));
+    }
+
     void brushExposureOnlyMatchesRgbaOracleWithoutScratchColor() {
         namespace BM=BrushMaskGeometry;
         namespace BD=BrushMaskDocument;
