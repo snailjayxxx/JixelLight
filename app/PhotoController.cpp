@@ -1889,6 +1889,13 @@ void PhotoController::setExactScopes(bool enabled) {
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
+    // Preparation publishes a new revision and restarts the exact timer.
+    // Starting now would compute geometry/statistics for an obsolete revision,
+    // then cancel and repeat them as soon as the prepared preview arrives.
+    if (m_preparing) {
+        PerformanceRecorder::count("full_scopes_deferred_while_preparing");
+        return;
+    }
     m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry()});
 }
 QString PhotoController::scopePlotUrl() const {

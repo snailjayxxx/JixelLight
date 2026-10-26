@@ -5220,6 +5220,125 @@ private slots:
         QCOMPARE(cache.analyze(request).red,ScopesEngine::analyzeFull(request.image,request.plan).red);
     }
 
+    void controllerFullScopesDefersUntilStraightenAndCropPreparationComplete() {
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        QImage source(96,80,QImage::Format_RGB32);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            source.setPixel(x,y,qRgb(40+(x*3+y)%170,30+(x+y*2)%180,60+(x*2+y*3)%160));
+        const auto path=directory.filePath("prepare-scopes.png");QVERIFY(source.save(path));
+        const auto original=fixtureBytes(path);
+        SourceCache oracleCache(4*1024*1024,directory.filePath("oracle-cache"));
+        const auto decoded=loadSource(oracleCache,path,{});
+        QVERIFY2(!decoded.image.isNull(),qPrintable(decoded.error));
+        ProcessedImageProvider provider;PhotoController controller(&provider);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.loading()
+                                && !controller.rendering() && !controller.gpuSource().isNull(),10000);
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto fullCurrent=[&] {
+            const auto status=controller.scopesStatus();
+            return status==QString("全分辨率统计") || status==QString("Full-resolution statistics");
+        };
+        for(int change=0;change<2;++change) {
+            controller.setExactScopes(false);
+            const auto deferred=counter("full_scopes_deferred_while_preparing");
+            const auto misses=counter("full_scopes_cache_miss");
+            if(change==0)controller.setStraighten(8);
+            else controller.setCrop(.1,.125,.7,.75);
+            // Do not pump events between the geometry action and the toggle.
+            // Finish the gesture so the older m_interacting guard cannot
+            // conceal submission while the prepare delivery is still queued.
+            controller.finishInteraction();
+            QVERIFY(controller.gpuSource().isNull());
+            const auto revision=controller.renderRevision();
+            controller.setExactScopes(true);
+            QVERIFY(controller.exactScopes());
+            QVERIFY(controller.gpuSource().isNull());
+            QCOMPARE(controller.renderRevision(),revision);
+            QCOMPARE(counter("full_scopes_deferred_while_preparing")-deferred,qint64(1));
+
+            const auto geometry=GeometryState::fromJson(QJsonObject::fromVariantMap(controller.geometry()));
+            const auto corrected=geometry.apply(decoded.image);
+            QVERIFY(!corrected.isNull());
+            const auto expected=ScopesEngine::analyzeFull(corrected,controller.gpuPlan(true));
+            QCOMPARE(expected.pixelCount,quint64(corrected.width())*corrected.height());
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering() && !controller.gpuSource().isNull() && fullCurrent(),10000);
+            QCOMPARE(controller.scopesPixelCount(),qulonglong(expected.pixelCount));
+            QCOMPARE(controller.redHistogram(),expected.red);QCOMPARE(controller.greenHistogram(),expected.green);
+            QCOMPARE(controller.blueHistogram(),expected.blue);QCOMPARE(controller.lumaHistogram(),expected.luma);
+            QCOMPARE(controller.shadowClipPercent(),expected.shadowClipPercent);
+            QCOMPARE(controller.highlightClipPercent(),expected.highlightClipPercent);
+            QVERIFY(counter("full_scopes_cache_miss")>misses);
+        }
+        QCOMPARE(fixtureBytes(path),original);
+    }
+
+    void controllerDisablingExactScopesDuringPreparationLeavesNoFullJob() {
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        QImage source(96,80,QImage::Format_RGB32);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            source.setPixel(x,y,qRgb(20+(x*2+y)%210,35+(x+y*3)%190,50+(x*3+y*2)%170));
+        const auto path=directory.filePath("disable-preparing-scopes.png");QVERIFY(source.save(path));
+        const auto original=fixtureBytes(path);
+        SourceCache oracleCache(4*1024*1024,directory.filePath("oracle-cache"));
+        const auto decoded=loadSource(oracleCache,path,{});
+        QVERIFY2(!decoded.image.isNull(),qPrintable(decoded.error));
+        ProcessedImageProvider provider;PhotoController controller(&provider);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady() && !controller.loading()
+                                && !controller.rendering() && !controller.gpuSource().isNull(),10000);
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto deferred=counter("full_scopes_deferred_while_preparing");
+        const auto misses=counter("full_scopes_cache_miss"),hits=counter("full_scopes_cache_hit");
+        const auto bypasses=counter("full_scopes_cache_bypass");
+        controller.setExactScopes(false);
+        controller.setCrop(.125,.1,.625,.75);
+        controller.finishInteraction();
+        QVERIFY(controller.gpuSource().isNull());
+        controller.setExactScopes(true);
+        QCOMPARE(counter("full_scopes_deferred_while_preparing")-deferred,qint64(1));
+        controller.setExactScopes(false);
+        QVERIFY(!controller.exactScopes());QVERIFY(controller.gpuSource().isNull());
+        const auto previewCurrent=[&] {
+            const auto status=controller.scopesStatus();
+            return status==QString("预览统计") || status==QString("Preview statistics");
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.rendering() && !controller.gpuSource().isNull() && previewCurrent(),10000);
+        // Pump events beyond the existing 600ms exact timer. No worker is
+        // blocked or artificially slowed to establish the prepare state.
+        QTest::qWait(650);
+        QVERIFY(!controller.exactScopes());
+        QCOMPARE(counter("full_scopes_cache_miss"),misses);
+        QCOMPARE(counter("full_scopes_cache_hit"),hits);
+        QCOMPARE(counter("full_scopes_cache_bypass"),bypasses);
+        QCOMPARE(counter("full_scopes_deferred_while_preparing")-deferred,qint64(1));
+
+        // A deliberate later toggle operates on the completed geometry and
+        // still starts a fresh, correct full-resolution histogram.
+        const auto geometry=GeometryState::fromJson(QJsonObject::fromVariantMap(controller.geometry()));
+        const auto corrected=geometry.apply(decoded.image);
+        QVERIFY(!corrected.isNull());
+        const auto expected=ScopesEngine::analyzeFull(corrected,controller.gpuPlan(true));
+        controller.setExactScopes(true);
+        QCOMPARE(counter("full_scopes_deferred_while_preparing")-deferred,qint64(1));
+        const auto fullCurrent=[&] {
+            const auto status=controller.scopesStatus();
+            return status==QString("全分辨率统计") || status==QString("Full-resolution statistics");
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(fullCurrent(),10000);
+        QCOMPARE(controller.scopesPixelCount(),qulonglong(expected.pixelCount));
+        QCOMPARE(controller.redHistogram(),expected.red);QCOMPARE(controller.greenHistogram(),expected.green);
+        QCOMPARE(controller.blueHistogram(),expected.blue);QCOMPARE(controller.lumaHistogram(),expected.luma);
+        QCOMPARE(controller.shadowClipPercent(),expected.shadowClipPercent);
+        QCOMPARE(controller.highlightClipPercent(),expected.highlightClipPercent);
+        QCOMPARE(counter("full_scopes_cache_miss"),misses+1);
+        QCOMPARE(fixtureBytes(path),original);
+    }
+
     void controllerFullScopesReusesCompletedSourceAfterVersionSwitch() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         QImage source(96,80,QImage::Format_RGB32); source.fill(QColor(80,110,160));

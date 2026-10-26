@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QCryptographicHash>
 #include <exiv2/exiv2.hpp>
 #include <memory>
@@ -433,8 +434,23 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
     auto state=std::make_shared<State>();state->elapsed.start();
+    const auto saveScreenshot=[window,state](const QString &path) {
+        QElapsedTimer grabTimer;grabTimer.start();
+        const QImage image=window->grabWindow();
+        const double grabMs=grabTimer.nsecsElapsed()/1e6;
+        QElapsedTimer saveTimer;saveTimer.start();
+        const bool success=image.save(path);
+        const double saveMs=saveTimer.nsecsElapsed()/1e6;
+        // Save time includes image encoding and file I/O with the original
+        // QImage::save parameters; this does not measure encoding alone.
+        state->screenshotTimings.append(QJsonObject{
+            {"basename",QFileInfo(path).fileName()},{"phase",state->phase},
+            {"grab_ms",grabMs},{"save_ms",saveMs},{"success",success},
+            {"size",QJsonObject{{"width",image.width()},{"height",image.height()}}}});
+        return success;
+    };
     // Measured on *each* native desktop run: distinguish stalled UI phases
     // from legitimate slow RAW development without altering the 60 s deadline.
     auto observedPhase=std::make_shared<int>(-1);
@@ -524,7 +540,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && grid->property("count").toInt() == 1 && grid->height() > 100;
             const auto albumFilter = window->findChild<QQuickItem *>(QStringLiteral("catalogAlbumFilter"));
             state->catalogPassed = state->catalogPassed && albumFilter && albumFilter->property("count").toInt() == 3;
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".library.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath + ".library.png");
             if (workspace) workspace->setProperty("searchText", "no-matching-photo-xyz");
             state->phase=202;
         } else if(state->phase==202) {
@@ -565,7 +581,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             for (const auto &row : controller->library()) state->catalogDatesPassed = state->catalogDatesPassed && row.toMap().value("captureChecked").toBool();
             const auto sort = window->findChild<QQuickItem *>(QStringLiteral("catalogSortMode"));
             state->catalogDatesPassed = state->catalogDatesPassed && sort && sort->property("count").toInt() == 6;
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".versions.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath + ".versions.png");
             resizeForSmoke(window,1540,920);
             window->setProperty("workspaceIndex", 1);
             state->phase=21;
@@ -580,7 +596,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if(state->phase==211) {
             const auto menu=window->findChild<QObject *>(QStringLiteral("namedPresetMenu"));
             state->presetActionsPresent=menu && menu->property("visible").toBool();
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath + ".presets.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath + ".presets.png");
             if (menu) QMetaObject::invokeMethod(menu,"close",Qt::DirectConnection);
             state->phase=22;
         } else if(state->phase==22 && ready) {
@@ -629,7 +645,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             cropTrace->insert("width",selection.width()); cropTrace->insert("height",selection.height());
             state->interactiveCropPassed=state->interactiveCropPassed && selection.width()>.5 && selection.width()<.99
                 && selection.height()>.5 && selection.height()<.99;
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".crop.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".crop.png");
             const auto apply=window->findChild<QQuickItem *>(QStringLiteral("applyInteractiveCrop"));
             if (apply) QMetaObject::invokeMethod(apply,"clicked",Qt::DirectConnection);
             state->interactiveCropPassed=state->interactiveCropPassed && !controller->cropEditing();
@@ -674,7 +690,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto size=g.straightenedSize({meta.value("pixelWidth").toInt(),meta.value("pixelHeight").toInt()});
             if (controller->scopesPixelCount()==quint64(size.width())*size.height()) {
                 state->straightenedScopePixels=controller->scopesPixelCount();
-                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".straighten.png");
+                if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".straighten.png");
                 controller->undo(); state->straightenPassed=state->straightenPassed && !controller->geometry().contains("straighten");
                 state->phase=3;
             }
@@ -690,7 +706,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto view=window->findChild<QQuickItem *>(QStringLiteral("scopePlotView"));
             const auto mode=controller->scopeMode();
             scopePlots->insert(mode,view && view->isVisible() && !controller->scopePlotUrl().isEmpty() && controller->scopePlotPixels()==expected);
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+"."+mode+".png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+"."+mode+".png");
             if (state->phase==41) controller->setScopeMode("parade");
             else if (state->phase==42) controller->setScopeMode("vectorscope");
             else controller->setScopeMode("histogram");
@@ -703,7 +719,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             auto *menu=window->findChild<QObject *>(QStringLiteral("importActionsMenu"));
             auto *item=window->findChild<QQuickItem *>(QStringLiteral("copyImportAction"));
             copyTrace->insert("menu_visible",menu && menu->property("visible").toBool() && item && item->isVisible() && item->isEnabled());
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-menu.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".import-menu.png");
             if (menu) QMetaObject::invokeMethod(menu,"close");
             QImage fixture(64,48,QImage::Format_RGB32); fixture.fill(QColor("#658797"));
             const bool prepared=importFixture->isValid() && QDir(importFixture->path()).mkdir("copies") && fixture.save(importFixture->filePath("copy-test.png"));
@@ -747,7 +763,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto rows=preview["rows"].toList();
             copyTrace->insert("capture_preview",preview["valid"].toBool() && rows.size()==1
                 && rows[0].toMap()["destination"].toString()=="20250102_030405_0007_dated-test.jpg");
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".import-dialog.png");
             copyTrace->insert("language",controller->language()); controller->setLanguage("en_US");
             resizeForSmoke(window,1180,720);
             state->phase=453;
@@ -766,7 +782,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 copyTrace->insert("dialog_centered",std::abs(dialog->property("x").toDouble()-(window->width()-dialog->property("width").toDouble())/2)<=1
                     && std::abs(dialog->property("y").toDouble()-(window->height()-dialog->property("height").toDouble())/2)<=1);
             }
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog-en.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".import-dialog-en.png");
             if (auto *dialog=window->findChild<QObject *>(QStringLiteral("copyImportDialog")))
                 dialog->setProperty("sources",QVariantList{QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
             state->phase=4531;
@@ -777,7 +793,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             auto *apply=visualChild(window->contentItem(),"copyImportApply");
             copyTrace->insert("missing_capture_blocked",!preview["valid"].toBool() && !preview["error"].toString().isEmpty()
                 && apply && !apply->isEnabled() && !controller->copyImportBusy());
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".import-dialog-missing-date.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".import-dialog-missing-date.png");
             if (dialog) dialog->setProperty("sources",QVariantList{QUrl::fromLocalFile(importFixture->filePath("dated-test.jpg"))});
             state->phase=4532;
         } else if (state->phase==4532 && ready) {
@@ -803,11 +819,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             transferTrace->insert("exposure_clicked",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferGroup_exposure"))));
             state->phase=48;
         } else if (state->phase==48 && ready) {
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".sync-dialog.png");
             transferTrace->insert("language",controller->language());
             controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=481;
         } else if (state->phase==481 && ready) {
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".sync-dialog-en.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".sync-dialog-en.png");
             transferTrace->insert("applied",clickItem(window,visualChild(window->contentItem(),QStringLiteral("transferApplyButton"))));
             controller->setLanguage(transferTrace->value("language").toString()); resizeForSmoke(window,1540,920);
             state->phase=49;
@@ -859,11 +875,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && (controller->scopesStatus().contains("Full-resolution statistics") || controller->scopesStatus().contains(QStringLiteral("全分辨率统计")))) {
                 correctionTrace->insert("full_scopes",true); correctionTrace->insert("scope_pixels",qint64(controller->scopesPixelCount()));
                 correctionTrace->insert("settings",g.toJson());
-                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".corrections.png");
+                if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".corrections.png");
                 correctionTrace->insert("language",controller->language()); controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=277;
             }
         } else if (state->phase==277 && ready) {
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".corrections-en.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".corrections-en.png");
             controller->setLanguage(correctionTrace->value("language").toString()); resizeForSmoke(window,1540,920);
             const int edits=controller->editHistory().size()-correctionTrace->value("history_size").toInt();
             for (int i=0;i<edits;++i) controller->undo();
@@ -907,11 +923,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && (controller->scopesStatus().contains("Full-resolution statistics") || controller->scopesStatus().contains(QStringLiteral("全分辨率统计")))) {
                 vignetteTrace->insert("full_scopes",true); vignetteTrace->insert("scope_pixels",qint64(expected));
                 vignetteTrace->insert("active",controller->gpuPlan(true).state.toJson());
-                if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".vignette.png");
+                if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".vignette.png");
                 vignetteTrace->insert("language",controller->language()); controller->setLanguage("en_US"); resizeForSmoke(window,1180,720); state->phase=287;
             }
         } else if (state->phase==287 && ready) {
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".vignette-en.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".vignette-en.png");
             vignetteTrace->insert("reset_revealed",revealItem(window->findChild<QQuickItem *>("vignetteReset"))); state->phase=288;
         } else if (state->phase==288 && ready) {
             const auto before=vignetteTrace->value("before").toObject(); const auto active=vignetteTrace->value("active").toObject();
@@ -982,12 +998,12 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             }
             state->phase=292;
         } else if (state->phase==292 && exportUiReady) {
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".export-naming.png");
             controller->setLanguage("en_US"); resizeForSmoke(window,1180,720);
             state->phase=293;
         } else if (state->phase==293 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-en.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".export-naming-en.png");
             if (dialog) {
                 const auto x=dialog->property("x").toDouble(),y=dialog->property("y").toDouble();
                 const auto w=dialog->property("width").toDouble(),h=dialog->property("height").toDouble();
@@ -1003,7 +1019,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->phase=294;
         } else if (state->phase==294 && exportUiReady) {
             auto *dialog=window->findChild<QObject *>("exportSettingsDialog");
-            if (!screenshotPath.isEmpty()) window->grabWindow().save(screenshotPath+".export-naming-invalid.png");
+            if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+".export-naming-invalid.png");
             if (dialog) {
                 dialog->setProperty("nameTemplate",exportNamesTrace->value("saved_pattern").toString());
                 dialog->setProperty("sequenceStart",exportNamesTrace->value("saved_sequence").toInt(1));
@@ -1105,7 +1121,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["preview_ready"]=controller->previewReady();report["scopes_mode"]=controller->scopesStatus();
         report["scope_pixels"]=qint64(controller->scopesPixelCount());report["render_revision"]=qint64(controller->renderRevision());
         report["elapsed_ms"]=state->elapsed.elapsed();
-        if(!screenshotPath.isEmpty()) report["screenshot_saved"]=window->grabWindow().save(screenshotPath);
+        if(!screenshotPath.isEmpty()) report["screenshot_saved"]=saveScreenshot(screenshotPath);
+        report["screenshot_timings"]=state->screenshotTimings;
         QSaveFile output(reportPath);
         if(!output.open(QIODevice::WriteOnly) || output.write(QJsonDocument(report).toJson())<0 || !output.commit()) ok=false;
         LoggingEngine::flush();
