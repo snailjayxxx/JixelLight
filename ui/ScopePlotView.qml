@@ -12,6 +12,7 @@ Item {
         width: root.mode==="vectorscope" ? Math.min(parent.width-24,parent.height-20) : parent.width-40
         height: root.mode==="vectorscope" ? width : parent.height-20
         Image {
+            objectName: "scopePlotImage"
             anchors.fill: parent; source: root.imageUrl
             cache: false; asynchronous: true; smooth: true
             opacity: root.current ? 1 : .3

@@ -314,6 +314,7 @@ public:
     Q_INVOKABLE bool setBrushLayerExposure(const QString &id,double exposure);
     Q_INVOKABLE bool setBrushLayerEnabled(const QString &id,bool enabled);
     Q_INVOKABLE bool removeBrushLayer(const QString &id);
+    Q_INVOKABLE bool removeLastBrushStroke(const QString &id);
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();

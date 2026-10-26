@@ -8,6 +8,8 @@ Item {
     clip: true
     property var controller
     property var brushEditor: null
+    readonly property bool brushDisplayReady: controller && (controller.gpuActive ||
+        (processedImage.status === Image.Ready && String(processedImage.source) === String(controller.previewUrl)))
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
@@ -84,6 +86,8 @@ Item {
         width: controller.previewDisplaySize.width
         height: controller.previewDisplaySize.height
         Image {
+            id: processedImage
+            objectName: "processedPreviewImage"
             anchors.fill: parent
             source: controller.previewUrl
             cache: false; asynchronous: true; smooth: root.zoom === 0
@@ -116,7 +120,7 @@ Item {
             anchors.fill: parent; z: 5
             controller: root.controller; editor: root.brushEditor
             visible: root.maskTool === "brush" && !controller.cropEditing && controller.previewReady
-            enabled: visible && controller.brushReady
+            enabled: visible && controller.brushReady && root.brushDisplayReady
         }
         CropOverlay {
             id: cropOverlay
@@ -190,10 +194,12 @@ Item {
         }
     }
     Label {
+        objectName: "maskToolHint"
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "brush" ? root.controller.brushStatus : root.maskTool === "linear"
+        text: root.maskTool === "brush" ? (root.controller.brushReady && !root.brushDisplayReady
+              ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushStatus) : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
               : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",

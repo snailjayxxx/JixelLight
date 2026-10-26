@@ -14,7 +14,7 @@ Rectangle {
 
     function historyTitle(action) {
         var titles = {
-            brush_stroke: ["笔刷笔触", "Brush stroke"], brush_layer_exposure: ["笔刷曝光", "Brush exposure"], brush_layer_remove: ["删除笔刷图层", "Remove brush layer"],
+            brush_stroke: ["笔刷笔触", "Brush stroke"], brush_stroke_remove: ["删除笔刷末笔", "Remove last brush stroke"], brush_layer_exposure: ["笔刷曝光", "Brush exposure"], brush_layer_remove: ["删除笔刷图层", "Remove brush layer"],
             xmp_import: ["导入 XMP", "Import XMP"], geometry_crop: ["裁切", "Crop"], geometry_rotate: ["旋转", "Rotate"],
             geometry_flip: ["翻转", "Flip"], geometry_reset: ["重置几何", "Reset geometry"],
             geometry_straighten: ["拉直", "Straighten"],

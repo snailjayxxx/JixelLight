@@ -113,8 +113,13 @@ bool PhotoController::setBrushLayerExposure(const QString &id,double exposure) {
 }
 bool PhotoController::removeBrushLayer(const QString &id) {
     auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
-    const auto found=std::find_if(next.brushMasks.layers.begin(),next.brushMasks.layers.end(),[&](const auto &l){return l.id==id;});
-    if(found==next.brushMasks.layers.end())return false;
-    next.brushMasks.layers.erase(found);m_photos[m_currentIndex].history.finish();*state=std::move(next);
+    if(!CommandRegistry::execute(next,{{"command","mask.brush.remove"},{"layer",id}}))return false;
+    m_photos[m_currentIndex].history.finish();*state=std::move(next);
     persistAndApply("brush_layer_remove",{{"layer",id}});finishInteraction();return true;
+}
+bool PhotoController::removeLastBrushStroke(const QString &id) {
+    auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
+    if(!CommandRegistry::execute(next,{{"command","mask.brush.remove-last-stroke"},{"layer",id}}))return false;
+    m_photos[m_currentIndex].history.finish();*state=std::move(next);
+    persistAndApply("brush_stroke_remove",{{"layer",id}});finishInteraction();return true;
 }

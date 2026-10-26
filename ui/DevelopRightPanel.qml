@@ -668,6 +668,7 @@ Rectangle {
                         Layout.fillWidth: true
                         CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
                         Item { Layout.fillWidth: true }
+                        Button { objectName: "removeLastBrushStroke"; text: root.t("删除末笔","Remove last stroke"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeLastBrushStroke(root.currentBrush.id) }
                         Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
                     }
                     AdjustmentSlider {

@@ -226,6 +226,7 @@ jobs:
             display-color-gpu-validation.txt
             gui-*.json
             gui-*.png
+            gui-*.log
             diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
@@ -389,5 +390,6 @@ jobs:
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
+            gui-*.log
             diagnostic-validation/
             raw-render-matrix.log

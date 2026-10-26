@@ -72,6 +72,7 @@ void PhotoController::setLanguage(const QString &language) {
     m_language = normalized;
     QSettings().setValue(QStringLiteral("ui/language"), m_language);
     emit languageChanged();
+    emit activityChanged(); // The brush availability message is localized.
     setStatus(uiText(QStringLiteral("界面语言已切换为中文"), QStringLiteral("Interface language changed to English")));
     ActionTrace::instance().record("language_changed", {{"language", m_language}});
 }
@@ -1972,6 +1973,7 @@ void PhotoController::finishInteraction() {
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     emit libraryChanged();
     m_refineTimer.stop();
+    const bool wasInteracting=m_interacting;
     m_interacting = false;
     enqueueEdits();
     if (m_exportQueue) m_exportQueue->setInteractive(false);
@@ -1983,6 +1985,9 @@ void PhotoController::finishInteraction() {
         scheduleRender(false);
     }
     if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
+    // A GPU frame may already have finished before the refinement timer.
+    // Notify availability even when no new render changes the busy flag.
+    if(wasInteracting)emit activityChanged();
 }
 
 void PhotoController::completeFrame(quint64 revision) {

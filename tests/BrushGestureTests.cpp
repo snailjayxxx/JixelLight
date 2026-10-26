@@ -4,11 +4,14 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QRgba64>
 #include <cstring>
 #include "app/PhotoController.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/pipeline/BrushRenderRequest.h"
 #include "core/pipeline/StageGraph.h"
@@ -98,6 +101,50 @@ private slots:
         for(int i=0;i<40&&!refused;++i)refused=!c.appendBrushStroke(i%2?.1:.9,.1);
         QVERIFY(refused);QCOMPARE(state(c),initial);QCOMPARE(cursor(c),history);QVERIFY(c.endBrushStroke().isEmpty());
         QVERIFY(c.beginBrushStroke("",.4,.5,.04,.6,1,1));QVERIFY(c.appendBrushStroke(.6,.5));QVERIFY(!c.endBrushStroke().isEmpty());QCOMPARE(cursor(c),history+1);
+    }
+    void layerRemovalCommandsPreserveOtherLayersAndRoundTrip() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned.png");QVERIFY(scene().save(path));const auto hash=hashFile(path);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        c.setExposure(.2);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto paint=[&](const QString &id,double y,double exposure) {
+            if(!c.beginBrushStroke(id,.3,y,.03,.6,.7,exposure)||!c.appendBrushStroke(.6,y))return QString{};
+            return c.endBrushStroke();
+        };
+        const auto a=paint("",.3,.8);QVERIFY(!a.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QCOMPARE(paint(a,.5,.8),a);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto b=paint("",.7,-.4);QVERIFY(!b.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto before=c.gpuPlan(true).state;QCOMPARE(before.brushMasks.layers.size(),std::size_t(2));QCOMPARE(before.brushMasks.layers[0].strokes.size(),std::size_t(2));
+        for(const auto &name:{"mask.brush.remove","mask.brush.remove-last-stroke"}) {
+            const QList<QJsonObject> invalid{{{"command",name}},{{"command",name},{"layer",1}},{{"command",name},{"layer",QJsonValue{}}},
+                {{"command",name},{"layer",""}},{{"command",name},{"layer","missing"}},{{"command",name},{"layer",a},{"extra",true}}};
+            for(const auto &command:invalid){auto staged=before;QVERIFY(!CommandRegistry::execute(staged,command));QCOMPARE(staged.toJson(),before.toJson());}
+        }
+        auto staged=before;QVERIFY(!CommandRegistry::executeBatch(staged,{QJsonObject{{"command","mask.brush.remove-last-stroke"},{"layer",a}},QJsonObject{{"command","mask.brush.remove"},{"layer","missing"}}}));QCOMPARE(staged.toJson(),before.toJson());
+        auto malformed=before;malformed.brushMasks.layers[0].strokes.clear();QVERIFY(!CommandRegistry::execute(malformed,{{"command","mask.brush.remove"},{"layer",a}}));QCOMPARE(malformed.brushMasks.layers.size(),std::size_t(2));
+        const auto index=cursor(c);QVERIFY(!c.removeLastBrushStroke("missing"));QCOMPARE(cursor(c),index);QVERIFY(c.removeLastBrushStroke(a));QCOMPARE(cursor(c),index+1);
+        auto reduced=before;reduced.brushMasks.layers[0].strokes.pop_back();QCOMPARE(state(c),reduced.toJson());c.undo();QCOMPARE(state(c),before.toJson());c.redo();QCOMPARE(state(c),reduced.toJson());
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"BrushLayers"));QVERIFY(c.flushEdits());QVERIFY(c.removeLastBrushStroke(a));QVERIFY(c.flushEdits());
+        auto sole=before;sole.brushMasks.layers.erase(sole.brushMasks.layers.begin());QCOMPARE(state(c),sole.toJson());
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);
+        QCOMPARE(state(reopened),sole.toJson());reopened.undo();QCOMPARE(state(reopened),reduced.toJson());reopened.redo();QCOMPARE(state(reopened),sole.toJson());
+        QVERIFY(!reopened.removeLastBrushStroke(a));QVERIFY(reopened.removeLastBrushStroke(b));QVERIFY(!state(reopened).contains("brushMasks"));QCOMPARE(reopened.exposure(),.2);
+        reopened.undo();QCOMPARE(state(reopened),sole.toJson());QVERIFY(reopened.setBrushLayerEnabled(b,false));QVERIFY(reopened.removeLastBrushStroke(b));QVERIFY(!state(reopened).contains("brushMasks"));
+        auto remaining=reduced;remaining.brushMasks.layers.pop_back();
+        const QJsonArray commands{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",before.exposure}},
+            QJsonObject{{"command","mask.brush.replace"},{"document",before.toJson()["brushMasks"]}},
+            QJsonObject{{"command","mask.brush.remove-last-stroke"},{"layer",a}},QJsonObject{{"command","mask.brush.remove"},{"layer",b}}};
+        const auto commandFile=dir.filePath("remove.json");QFile f(commandFile);QVERIFY(f.open(QIODevice::WriteOnly));f.write(QJsonDocument(commands).toJson());f.close();
+        auto binary=QDir(QCoreApplication::applicationDirPath()).filePath("JixelLightCli");
+#ifdef Q_OS_WIN
+        binary+=".exe";
+#endif
+        const auto output=dir.filePath("remaining.png");QProcess process;process.start(binary,{"--commands",commandFile,path,output});QVERIFY(process.waitForStarted());QVERIFY(process.waitForFinished(30000));QVERIFY2(process.exitCode()==0,process.readAllStandardError().constData());
+        const auto source=loadSourceFresh(path,{});const auto expected=reference(source.image,ProcessingPlan::compile(remaining,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0));const QImage actual(output);
+        QVERIFY(!expected.isNull());QCOMPARE(actual.convertToFormat(QImage::Format_RGBA64),expected);QCOMPARE(actual.colorSpace(),expected.colorSpace());
+        auto bad=commands;bad.append(QJsonObject{{"command","mask.brush.remove-last-stroke"},{"layer","missing"}});QVERIFY(f.open(QIODevice::WriteOnly|QIODevice::Truncate));f.write(QJsonDocument(bad).toJson());f.close();
+        const auto rejected=dir.filePath("rejected.png");QProcess failure;failure.start(binary,{"--commands",commandFile,path,rejected});QVERIFY(failure.waitForStarted());QVERIFY(failure.waitForFinished(30000));QVERIFY(failure.exitCode()!=0);QVERIFY(!QFile::exists(rejected));QCOMPARE(hashFile(path),hash);
+        qInfo().noquote()<<"BRUSH_LAYER_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"source_pixels",2659021},
+            {"strict_commands",true},{"atomic_batch",true},{"one_undo",true},{"project_reopen",true},{"other_layers_preserved",true},{"exact_cli_png16_icc",true},{"source_unchanged",true}}).toJson(QJsonDocument::Compact);
     }
     void realSonyGestureProducesExactFullStatistics() {
         const auto fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
