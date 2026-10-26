@@ -4,6 +4,13 @@ Item {
     id: root
     required property var controller
     property var editor: null
+    readonly property bool layerPaintable: {
+        if (!controller || !editor) return false
+        if (editor.layerId === "") return true
+        for (const layer of controller.brushLayers)
+            if (layer.id === editor.layerId) return layer.enabled
+        return false
+    }
     property bool drawing: false
     property var points: []
     property point cursorPoint: Qt.point(-1000, -1000)
@@ -26,6 +33,7 @@ Item {
     }
     onVisibleChanged: if (!visible) cancel()
     onEnabledChanged: if (!enabled) cancel()
+    onLayerPaintableChanged: { if (!layerPaintable) cancel(); if (guide) guide.requestPaint() }
     onRadiusXChanged: if (guide) guide.requestPaint()
     onRadiusYChanged: if (guide) guide.requestPaint()
     Component.onDestruction: if (controller) controller.cancelBrushStroke()
@@ -59,12 +67,13 @@ Item {
     }
     MouseArea {
         id: pointer; objectName: "brushPointerArea"
-        anchors.fill: parent; hoverEnabled: true; preventStealing: true; acceptedButtons: Qt.LeftButton; cursorShape: Qt.CrossCursor
+        anchors.fill: parent; hoverEnabled: true; preventStealing: true; acceptedButtons: Qt.LeftButton
+        cursorShape: root.layerPaintable ? Qt.CrossCursor : Qt.ForbiddenCursor
         onContainsMouseChanged: guide.requestPaint()
         onPressed: function(mouse) {
             root.forceActiveFocus()
             const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
-            if (!root.editor || !root.controller.beginBrushStroke(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure)) return
+            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStroke(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure)) return
             root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
         }
         onPositionChanged: function(mouse) {

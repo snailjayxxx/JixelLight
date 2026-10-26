@@ -82,6 +82,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool settings=false,photoReady=false;double exposure=1;QJsonObject painted;QColor baseline,lastColor;QRectF frame;QByteArray sourceHash;
         bool selected=false,evDrag=false,toggle=false,lastStroke=false,prune=false,deleteUndo=false,english=false;
         bool pointerReady=false;QString actualHint,expectedHint;
+        bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -90,7 +91,8 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         if(s->finished)return;s->finished=true;timer->stop();const bool unchanged=fileHash(source)==s->sourceHash;
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
-            &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
+            &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
+            &&s->disabledZh&&s->disabledEn&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
@@ -103,6 +105,9 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"empty_layer_pruned_undo",s->prune},{"delete_layer_undo",s->deleteUndo},{"english_controls_visible",s->english},
             {"scope_display",s->scopeInk>=64},{"scope_display_ink_samples",s->scopeInk},
             {"brush_pointer_ready",s->pointerReady},{"brush_hint",s->actualHint},{"expected_brush_hint",s->expectedHint},
+            {"disabled_layer_guard",s->disabledZh&&s->disabledEn},{"disabled_layer_zh",s->disabledZh},{"disabled_layer_en",s->disabledEn},
+            {"disabled_layer_input_ignored",s->disabledInput},{"disabled_layer_hint",s->disabledHint},{"expected_disabled_layer_hint",s->expectedDisabledHint},
+            {"disabled_layer_cursor_shape",s->disabledCursor},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -115,6 +120,17 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         auto *canvas=child(window->contentItem(),"photoCanvas"),*overlay=child(window->contentItem(),"brushCanvasOverlay");
         if(!canvas||!overlay)return;
         const auto point=[&](double x,double y){return overlay->mapToScene({overlay->width()*x,overlay->height()*y});};
+        const auto disabledGuard=[&] {
+            auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");
+            s->disabledHint=hint?hint->property("text").toString():QString{};
+            s->expectedDisabledHint=c->language()=="zh_CN" ? QStringLiteral("请先启用所选笔刷图层。") : QStringLiteral("Enable the selected brush layer first.");
+            s->disabledCursor=pointer?pointer->property("cursorShape").toInt():-1;
+            const auto before=masks(c);const int history=cursor(c);const auto frame=c->previewFrameRect();
+            mouse(window,QEvent::MouseButtonPress,point(.3,.4),Qt::LeftButton,Qt::LeftButton);const bool transient=c->brushDrawing();
+            mouse(window,QEvent::MouseMove,point(.6,.4),Qt::NoButton,Qt::LeftButton);mouse(window,QEvent::MouseButtonRelease,point(.6,.4),Qt::LeftButton,Qt::NoButton);
+            s->disabledInput=!transient&&!c->brushDrawing()&&masks(c)==before&&cursor(c)==history&&c->previewFrameRect()==frame;
+            return s->disabledInput&&s->disabledHint==s->expectedDisabledHint&&s->disabledCursor==int(Qt::ForbiddenCursor);
+        };
         if(s->phase==0) {
             if(!click(window,child(window->contentItem(),"editBrushMaskCanvas")))return;
             s->phase=1;s->settle=0;
@@ -222,6 +238,8 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             if(!click(window,child(window->contentItem(),"brushLayerEnabled"))||masks(c)!=firstLayerProperty(s->edited,"enabled",false)) {finish("Native layer disable changed other intent");return;}
             s->phase=14;
         }else if(s->phase==14) {
+            s->disabledZh=c->language()=="zh_CN"&&disabledGuard();
+            if(!s->disabledZh){finish("Disabled brush layer still advertises paint input in Chinese");return;}
             s->toggle=click(window,child(window->contentItem(),"brushLayerEnabled"))&&masks(c)==s->edited;
             if(!s->toggle){finish("Native layer re-enable lost saved intent");return;}s->phase=15;
         }else if(s->phase==15) {
@@ -257,10 +275,25 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
             s->english=c->language()=="en_US"&&exposed(window,child(window->contentItem(),"removeLastBrushStroke"))
                 &&exposed(window,child(window->contentItem(),"removeBrushLayer"))&&exposed(window,child(window->contentItem(),"brushExposureSlider"));
-            if(!s->english||!image.save(reportPath+".layers.png")){finish("English layer controls are clipped or cannot be captured");return;}finish({});
+            if(!s->english){finish("English layer controls are clipped");return;}
+            if(!click(window,child(window->contentItem(),"brushLayerEnabled"))){finish("Cannot disable the English brush layer");return;}s->phase=20;
+        }else if(s->phase==20) {
+            s->disabledEn=c->language()=="en_US"&&disabledGuard();
+            if(!s->disabledEn){finish("Disabled brush layer still advertises paint input in English");return;}
+            if(!window->grabWindow().save(reportPath+".disabled.png")||!click(window,child(window->contentItem(),"brushLayerEnabled"))){finish("Cannot capture or re-enable the disabled English brush layer");return;}s->phase=21;s->settle=0;
+        }else if(s->phase==21) {
+            if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
+            auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");
+            if(masks(c)!=s->reduced||!overlay->isEnabled()||!pointer||pointer->property("cursorShape").toInt()!=int(Qt::CrossCursor)
+                ||!hint||hint->property("text").toString()!=c->brushStatus()){finish("Re-enabling the brush layer did not restore paint availability");return;}
+            auto *plot=child(window->contentItem(),"scopePlotImage");
+            if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
+            const auto image=window->grabWindow();s->scopeInk=scopeInkSamples(image,window,plot);
+            if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
+            if(!image.save(reportPath+".layers.png")){finish("Cannot retain re-enabled English layer controls");return;}finish({});
         }
     });
-    window->setProperty("workspaceIndex",1);window->resize(1180,800);window->requestActivate();
+    c->setLanguage("zh_CN");window->setProperty("workspaceIndex",1);window->resize(1180,800);window->requestActivate();
     QImage image(2203,1207,QImage::Format_RGBA64);image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
     for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)
         reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(12000+x*4,14000+y*5,18000+(x+y)*2,65535);

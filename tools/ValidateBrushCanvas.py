@@ -48,9 +48,9 @@ def validate_brush(binary: Path, environment: dict[str, str], home: Path,
     required = ("live_uncommitted", "escape_cancel", "one_undo", "display_changed",
                 "undo_redo", "project_reopen", "zoom_roi", "full_scopes", "source_unchanged", "settings_visible",
                 "layer_selection", "layer_ev_drag_one_undo", "layer_toggle", "remove_last_stroke",
-                "empty_layer_pruned_undo", "delete_layer_undo", "english_controls_visible", "scope_display", "photo_display_ready", "brush_pointer_ready")
+                "empty_layer_pruned_undo", "delete_layer_undo", "english_controls_visible", "scope_display", "photo_display_ready", "brush_pointer_ready", "disabled_layer_guard")
     screenshots = all(Path(str(report) + suffix).is_file()
-                      for suffix in (".before.png", ".painted.png", ".reopen.png", ".zoom.png", ".layers.png"))
+                      for suffix in (".before.png", ".painted.png", ".reopen.png", ".zoom.png", ".layers.png", ".disabled.png"))
     passed = (code == 0 and data.get("passed") is True and not errors and screenshots
               and all(data.get(key) is True for key in required)
               and data.get("synthetic_fixture") is True and data.get("scope_pixels") == 2659021

@@ -116,6 +116,7 @@ Item {
             enabled: visible
         }
         BrushCanvasOverlay {
+            id: brushOverlay
             objectName: "brushCanvasOverlay"
             anchors.fill: parent; z: 5
             controller: root.controller; editor: root.brushEditor
@@ -198,7 +199,8 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "brush" ? (root.controller.brushReady && !root.brushDisplayReady
+        text: root.maskTool === "brush" ? (!brushOverlay.layerPaintable
+              ? root.t("请先启用所选笔刷图层。", "Enable the selected brush layer first.") : root.controller.brushReady && !root.brushDisplayReady
               ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushStatus) : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
