@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QFileInfo>
+#include <QDir>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -8,6 +9,10 @@
 #include <QQuickGraphicsConfiguration>
 #include <QScreen>
 #include <QTimer>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <memory>
 #include "app/SmokeRun.h"
 
 #include "app/PhotoController.h"
@@ -41,10 +46,25 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"mask-canvas-smoke-report", "Validate local mask handles with an owned synthetic image", "file"});
     arguments.addOption({"relink-smoke-report", "Validate missing-source recovery with owned synthetic images", "file"});
     arguments.addOption({"brush-canvas-smoke-report", "Validate actual brush pointer gestures with owned images", "file"});
+    arguments.addOption({"sony-brush-canvas-smoke-report", "Validate real Sony large-image brush input; private report/captures, requires one pinned ARW", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
-    if (int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
-        +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))>1) return 2;
+    const int smokeModes=int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+        +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
+        +int(arguments.isSet("sony-brush-canvas-smoke-report"));
+    if(smokeModes>1)return 2;
+    std::unique_ptr<QTemporaryDir> smokeSettings;
+    if(smokeModes) {
+        // HOME/APPDATA overrides alone do not isolate native CFPreferences or
+        // the Windows registry. Keep QA settings in a process-owned INI store.
+        smokeSettings=std::make_unique<QTemporaryDir>(QDir::tempPath()+"/JixelLight-smoke-settings-XXXXXX");
+        if(!smokeSettings->isValid())return 1;
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,smokeSettings->path());
+        QSettings::setPath(QSettings::IniFormat,QSettings::SystemScope,smokeSettings->path());
+        QStandardPaths::setTestModeEnabled(true);
+        app.setProperty("jixellightSmokeSettingsIsolated",true);
+    }
 
     LoggingEngine::install();
     CrashReporter::install();
@@ -101,6 +121,11 @@ int main(int argc, char *argv[]) {
 
     QVariantList photos;
     for (const QString &path:arguments.positionalArguments()) photos.push_back(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+    if(arguments.isSet("sony-brush-canvas-smoke-report")) {
+        if(!window||photos.size()!=1)return 2;
+        startSonyBrushCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-canvas-smoke-report"));
+        return app.exec();
+    }
     if (!photos.isEmpty()) controller.importFiles(photos);
     if (arguments.isSet("smoke-report")) {
         if (!window || photos.isEmpty()) return 2;

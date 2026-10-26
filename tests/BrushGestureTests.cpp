@@ -11,6 +11,7 @@
 #include <QRgba64>
 #include <cstring>
 #include "app/PhotoController.h"
+#include "app/SmokeCaptureCoordinates.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/pipeline/BrushRenderRequest.h"
@@ -40,6 +41,23 @@ class BrushGestureTests final:public QObject {
     Q_OBJECT
 private slots:
     void initTestCase(){QStandardPaths::setTestModeEnabled(true);}
+    void clippedNativeCaptureSamplesTheVisibleStrokeAtDeviceScale() {
+        // macOS CI captured1180x720 from an1180x800 request. The old height
+        // ratio read y315 (unchanged), while the visible brush was at y350.
+        const QColor base(130,139,157),painted(179,200,220);
+        QImage clipped(1180,720,QImage::Format_RGB32);clipped.fill(base);
+        for(int y=338;y<=361;++y)for(int x=365;x<=645;++x)clipped.setPixelColor(x,y,painted);
+        QCOMPARE(SmokeCaptureCoordinates::sample(clipped,{508,350},1),painted);
+        QCOMPARE(SmokeCaptureCoordinates::sample(clipped,{508,315},1),base);
+        QVERIFY(!SmokeCaptureCoordinates::sample(clipped,{508,760},1).isValid());
+        QCOMPARE(SmokeCaptureCoordinates::region(clipped,{790,600,390,200},1),QRect(790,600,390,120));
+        QImage retina(2360,1440,QImage::Format_RGB32);retina.fill(base);retina.setPixelColor(1016,700,painted);
+        QCOMPARE(SmokeCaptureCoordinates::sample(retina,{508,350},2),painted);
+        QImage fractional(1475,900,QImage::Format_RGB32);fractional.fill(base);fractional.setPixelColor(635,437,painted);
+        QCOMPARE(SmokeCaptureCoordinates::sample(fractional,{508,350},1.25),painted);
+        QVERIFY(!SmokeCaptureCoordinates::sample(clipped,{508,350},0).isValid());
+        QVERIFY(SmokeCaptureCoordinates::region(clipped,{-100,-100,20,20},1).isEmpty());
+    }
     void completedStrokeIsOneUndoAndProducesAllExportsAfterReopen() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned.png");QVERIFY(scene().save(path));const auto hash=hashFile(path);
         PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);

@@ -111,6 +111,16 @@ jobs:
           python tools/ValidateRelink.py "$EXE" gui-source-relink.json
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-cpu.json cpu
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-gpu.json gpu
+      - name: Real Sony full-source brush pointer and exact waveform
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
+          python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -248,7 +258,7 @@ jobs:
           Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
-          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe --cli package/JixelLightCli.exe
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe --cli package/JixelLightCli.exe --sony-brush-raw "$env:JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
           if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
           Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
@@ -265,7 +275,7 @@ jobs:
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
           macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli"
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli"
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli" --sony-brush-raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload packaging validation
@@ -327,6 +337,13 @@ jobs:
           python tools/ValidateRelink.py ./build/bin/JixelLight gui-source-relink.json
           python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-cpu.json cpu
           xvfb-run -a python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-gpu.json gpu
+      - name: Real Sony full-source brush pointer and exact waveform
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
+          xvfb-run -a python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

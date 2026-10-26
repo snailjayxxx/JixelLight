@@ -109,7 +109,7 @@ Rectangle {
                 }
                 RowLayout {
                     Label { text: root.controller.scopeMode==="histogram" ? root.controller.scopesStatus : root.controller.scopePlotStatus; wrapMode: Text.WordWrap; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
-                    CheckBox { text: root.t("全分辨率", "Full resolution"); checked: root.controller.exactScopes; onToggled: root.controller.exactScopes=checked }
+                    CheckBox { objectName: "exactScopesCheck"; text: root.t("全分辨率", "Full resolution"); checked: root.controller.exactScopes; onToggled: root.controller.exactScopes=checked }
                 }
                 HistogramView {
                     visible: root.controller.scopeMode==="histogram"

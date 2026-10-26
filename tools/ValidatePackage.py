@@ -11,6 +11,7 @@ import tempfile
 from ValidateDiagnostic import validate_diagnostic
 from ValidateRelink import validate_relink
 from ValidateBrushCanvas import validate_brush
+from ValidateSonyBrushCanvas import validate_sony_brush
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -25,6 +26,7 @@ def main() -> int:
     parser.add_argument('raw', type=Path)
     parser.add_argument('--sony-probe', type=Path)
     parser.add_argument('--cli', type=Path)
+    parser.add_argument('--sony-brush-raw', type=Path)
     parser.add_argument('--reports', type=Path, default=Path('package-validation'))
     args = parser.parse_args()
     executable, raw = args.executable.resolve(), args.raw.resolve()
@@ -108,6 +110,11 @@ def main() -> int:
             brush_home.mkdir()
             results.append(validate_brush(executable, env, brush_home,
                                           reports / ("brush-" + mode + ".json"), mode))
+            if args.sony_brush_raw:
+                sony_home = Path(temp) / ("sony-brush-" + mode)
+                sony_home.mkdir()
+                results.append(validate_sony_brush(executable, args.sony_brush_raw.resolve(),
+                    environment, sony_home, reports / ("sony-brush-" + mode + ".json"), mode))
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))
