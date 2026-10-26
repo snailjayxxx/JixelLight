@@ -87,6 +87,15 @@ QImage sceneGrayImage(double value) {
     px[0] = QRgba64::fromRgba64(code, code, code, 65535);
     return image;
 }
+int rgb8MaximumErrorInRect(const QImage &actual,const QImage &reference,const QRect &region) {
+    int maximum=0;
+    for(int y=region.top();y<=region.bottom();++y) {
+        const auto *a=actual.constScanLine(y),*b=reference.constScanLine(y);
+        for(int x=region.left();x<=region.right();++x)for(int channel=0;channel<3;++channel)
+            maximum=std::max(maximum,std::abs(int(a[3*x+channel])-int(b[3*x+channel])));
+    }
+    return maximum;
+}
 QJsonObject colorStage(const QJsonObject &trace, const QString &id) {
     for (const auto &entry:trace.value("entries").toArray())
         if (entry.toObject().value("id").toString()==id) return entry.toObject();
@@ -1210,6 +1219,214 @@ private slots:
             }
         }
         QVERIFY2(maximum<=2,qPrintable(QStringLiteral("PNG 16-bit delta: %1").arg(maximum)));
+    }
+
+    void floatSceneJpegPreservesHdrExposureAcrossStripsAndOutputProfiles() {
+        QImage source(64,160,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=pixel[1]=pixel[2]=2.f;pixel[3]=1.f;
+        }
+        source.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+                                 .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        QVERIFY(fingerprint.value("available").toBool());
+        AdjustmentState state;state.exposure=-2;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        for(const auto space:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3}) {
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,false,0);
+            const auto rendered=ImagePipeline::processWithPlan(source,plan,{},false);
+            QVERIFY(!rendered.isNull());
+            const auto expected=rendered.convertToFormat(QImage::Format_RGB888);
+            const auto clipped=ImagePipeline::processWithPlan(source.convertToFormat(QImage::Format_RGBA64),plan,{},false)
+                                   .convertToFormat(QImage::Format_RGB888);
+            // This fixture must distinguish the real float exposure result
+            // from clipping 2.0 to 1.0 before applying the user's -2 EV.
+            QVERIFY(rgb8MaximumErrorInRect(expected,clipped,expected.rect())>20);
+            QString error;
+            const auto path=directory.filePath(ColorManagement::key(space)+"-hdr.jpg");
+            QVERIFY2(exportJpegTiled(source,state,path,space,100,{},&error),qPrintable(error));
+            QVERIFY(error.isEmpty());
+            QImageReader reader(path);const auto decoded=reader.read();
+            QVERIFY2(!decoded.isNull(),qPrintable(reader.errorString()));
+            QCOMPARE(decoded.size(),source.size());
+            QCOMPARE(decoded.colorSpace(),ColorManagement::colorSpace(space));
+            QVERIFY(!decoded.hasAlphaChannel());
+            const int maximum=rgb8MaximumErrorInRect(decoded.convertToFormat(QImage::Format_RGB888),expected,expected.rect());
+            QVERIFY2(maximum<=3,qPrintable(QStringLiteral("Uniform FP32 JPEG error: %1/255").arg(maximum)));
+            QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+        }
+    }
+
+    void floatSceneJpegKeepsSignedColorAndAlphaUntilFinalRgbEncoding() {
+        QImage source(128,256,QImage::Format_RGBA32FPx4);
+        const std::array<std::array<float,3>,4> colors{{
+            {{2.f,2.f,2.f}},{{4.f,1.f,.25f}},{{-.5f,2.f,.5f}},{{.2f,-.25f,1.5f}}}};
+        const std::array<float,4> alphas{0.f,1.f/65535.f,.375f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            for(int channel=0;channel<3;++channel)pixel[channel]=colors[y/64][channel];
+            pixel[3]=alphas[x/32];
+        }
+        QVERIFY(ImagePipeline::validFloatSource(source));
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        const auto original=source.copy();
+        AdjustmentState state;state.exposure=-2;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        for(const auto space:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3}) {
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,false,0);
+            const auto rendered=ImagePipeline::processWithPlan(source,plan,{},false);
+            QVERIFY(!rendered.isNull());
+            // JPEG intentionally drops alpha only after the shared float
+            // renderer. Use its existing RGB888 conversion as delivery truth.
+            const auto expected=rendered.convertToFormat(QImage::Format_RGB888);
+            QString error;
+            const auto path=directory.filePath(ColorManagement::key(space)+"-signed-alpha.jpg");
+            QVERIFY2(exportJpegTiled(source,state,path,space,100,{},&error),qPrintable(error));
+            QVERIFY(error.isEmpty());
+            QImageReader reader(path);const auto restored=reader.read();
+            QVERIFY2(!restored.isNull(),qPrintable(reader.errorString()));
+            QCOMPARE(restored.size(),source.size());
+            QCOMPARE(restored.colorSpace(),ColorManagement::colorSpace(space));
+            QVERIFY(!restored.hasAlphaChannel());
+            const auto actual=restored.convertToFormat(QImage::Format_RGB888);
+            int maximum=0;
+            // Flat patches and alpha boundaries align with 8x8 JPEG blocks;
+            // compare interiors so edge ringing cannot disguise source loss.
+            for(int band=0;band<4;++band)for(int alpha=0;alpha<4;++alpha)
+                maximum=std::max(maximum,rgb8MaximumErrorInRect(actual,expected,
+                    QRect(alpha*32+8,band*64+16,16,32)));
+            QVERIFY2(maximum<=3,qPrintable(QStringLiteral("Signed/alpha FP32 JPEG error: %1/255").arg(maximum)));
+            for(int y=0;y<source.height();++y)
+                QVERIFY(std::memcmp(source.constScanLine(y),original.constScanLine(y),std::size_t(source.width())*16)==0);
+            QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+        }
+    }
+
+    void floatSceneJpegRejectsInvalidSourcesBeforeGeometryOrPublication() {
+        QImage source(64,160,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=2.f;pixel[1]=.3f;pixel[2]=-.1f;pixel[3]=1.f;
+        }
+        AdjustmentState state;state.exposure=-2;state.geometry.crop={.25,.25,.5,.5};
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        const auto existing=directory.filePath("preserved-invalid.jpg");
+        const QByteArray preserved("valid existing destination bytes\n");
+        { QFile file(existing);QVERIFY(file.open(QIODevice::WriteOnly));
+          QCOMPARE(file.write(preserved),qint64(preserved.size())); }
+        for(int mode=0;mode<7;++mode) {
+            auto invalid=source.copy();auto *pixel=reinterpret_cast<float *>(invalid.scanLine(0));
+            if(mode==0)pixel[0]=std::numeric_limits<float>::quiet_NaN();
+            if(mode==1)pixel[1]=std::numeric_limits<float>::infinity();
+            if(mode==2)pixel[2]=ImagePipeline::MaxLinearInputMagnitude+1.f;
+            if(mode==3)pixel[0]=-ImagePipeline::MaxLinearInputMagnitude-1.f;
+            if(mode==4)pixel[3]=-.01f;
+            if(mode==5)pixel[3]=1.01f;
+            if(mode==6)pixel[3]=std::numeric_limits<float>::quiet_NaN();
+            const auto fingerprint=FloatFrameFingerprint::capture(invalid);
+            QVERIFY(!ImagePipeline::validFloatSource(invalid));
+            // Even an invalid pixel outside the crop fails the existing
+            // geometry contract; the exporter must not repair or hide it.
+            QVERIFY(state.geometry.apply(invalid).isNull());
+            const auto fresh=directory.filePath(QStringLiteral("invalid-%1.jpg").arg(mode));
+            for(const auto &path:{existing,fresh}) {
+                QString error;int progressCalls=0;
+                QVERIFY(!exportJpegTiled(invalid,state,path,ColorManagement::OutputSpace::SRgb,
+                                         100,{},&error,[&](int){++progressCalls;}));
+                QVERIFY(!error.isEmpty());QCOMPARE(progressCalls,0);
+                QCOMPARE(FloatFrameFingerprint::capture(invalid),fingerprint);
+            }
+            QCOMPARE(fixtureBytes(existing),preserved);QVERIFY(!QFile::exists(fresh));
+        }
+        QCOMPARE(QDir(directory.path()).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),
+                 QStringList{"preserved-invalid.jpg"});
+    }
+
+    void floatSceneJpegReportsRenderRefusalWithoutPublishingOutput() {
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        QImage source(64,160,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=2.f;pixel[1]=.3f;pixel[2]=-.1f;pixel[3]=(x+y)%2?.75f:0.f;
+        }
+        const auto original=source.copy();
+        const auto fingerprint=FloatFrameFingerprint::capture(source);
+        QVERIFY(ImagePipeline::validFloatSource(source));
+        AdjustmentState state;
+        for(int layerIndex=0;layerIndex<3;++layerIndex) {
+            BD::Layer layer;layer.id=QStringLiteral("jpeg_render_refusal_%1").arg(layerIndex);
+            layer.enabled=true;layer.exposureEv=3;
+            layer.strokes={BM::Stroke{BM::Style{.5,1,1},{{{.5,.5},1.}}}};
+            state.brushMasks.layers.push_back(std::move(layer));
+        }
+        QVERIFY(BD::validDocument(state.brushMasks));
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+        QString error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,{},&error));
+        QVERIFY(error.isEmpty());
+        // All geometry/document/work gates pass, but the first strip has
+        // center pixels at +9 EV, above the color kernel's research limit.
+        QVERIFY(ImagePipeline::processWithPlan(source,plan,{},false).isNull());
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        const auto existing=directory.filePath("preserved-render-refusal.jpg");
+        const auto fresh=directory.filePath("new-render-refusal.jpg");
+        const QByteArray preserved("existing image must survive render refusal\n");
+        { QFile file(existing);QVERIFY(file.open(QIODevice::WriteOnly));
+          QCOMPARE(file.write(preserved),qint64(preserved.size())); }
+        for(const auto &path:{existing,fresh}) {
+            int progressCalls=0;error="stale";
+            QVERIFY(!exportJpegTiled(source,state,path,ColorManagement::OutputSpace::SRgb,
+                                     100,{},&error,[&](int){++progressCalls;}));
+            QCOMPARE(error,QString("Image rendering failed"));
+            QCOMPARE(progressCalls,0);
+            QCOMPARE(fixtureBytes(existing),preserved);QVERIFY(!QFile::exists(fresh));
+            for(int y=0;y<source.height();++y)
+                QVERIFY(std::memcmp(source.constScanLine(y),original.constScanLine(y),std::size_t(source.width())*16)==0);
+            QCOMPARE(FloatFrameFingerprint::capture(source),fingerprint);
+        }
+        QCOMPARE(QDir(directory.path()).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),
+                 QStringList{"preserved-render-refusal.jpg"});
+    }
+
+    void rgba64JpegPixelsMatchTheirLosslessFloatAdapter() {
+        QImage source(64,160,QImage::Format_RGBA64);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            const int band=y/32;
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                7000+band*7000,39000-band*5000,15000+band*3000,65535);
+        }
+        const auto original=source.copy();
+        const auto floating=ImagePipeline::floatSource(source);
+        const auto fingerprint=FloatFrameFingerprint::capture(floating);
+        AdjustmentState state;state.exposure=-.4;state.temperature=20;state.highlightRecovery=35;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        for(const auto space:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3}) {
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,false,0);
+            const auto rendered=ImagePipeline::processWithPlan(source,plan,{},false);
+            QCOMPARE(ImagePipeline::processWithPlan(floating,plan,{},false),rendered);
+            const auto expected=rendered.convertToFormat(QImage::Format_RGB888);
+            const auto integerPath=directory.filePath(ColorManagement::key(space)+"-integer.jpg");
+            const auto floatPath=directory.filePath(ColorManagement::key(space)+"-integer-adapter.jpg");
+            QString error;
+            QVERIFY2(exportJpegTiled(source,state,integerPath,space,100,{},&error),qPrintable(error));
+            QVERIFY2(exportJpegTiled(floating,state,floatPath,space,100,{},&error),qPrintable(error));
+            // Equal original 16-bit samples must retain the same JPEG bytes,
+            // profile and decoded pixels through the compatible float adapter.
+            QCOMPARE(fixtureBytes(floatPath),fixtureBytes(integerPath));
+            QImageReader reader(integerPath);const auto decoded=reader.read();
+            QVERIFY2(!decoded.isNull(),qPrintable(reader.errorString()));
+            QCOMPARE(decoded.size(),source.size());
+            QCOMPARE(decoded.colorSpace(),ColorManagement::colorSpace(space));
+            const auto actual=decoded.convertToFormat(QImage::Format_RGB888);
+            int maximum=0;
+            for(int band=0;band<5;++band)
+                maximum=std::max(maximum,rgb8MaximumErrorInRect(actual,expected,QRect(8,band*32+8,48,16)));
+            QVERIFY2(maximum<=3,qPrintable(QStringLiteral("RGBA64 JPEG error: %1/255").arg(maximum)));
+        }
+        QCOMPARE(source,original);QCOMPARE(FloatFrameFingerprint::capture(floating),fingerprint);
     }
 
     void colorGradingIsOptInAndKeepsOldPixelsAlphaAndCacheSemantics() {

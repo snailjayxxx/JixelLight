@@ -106,14 +106,20 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
     if (transformed.isNull() || cancelled(token)) { if (error) *error="Cancelled or invalid geometry"; return false; }
     const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
     if (!ImagePipeline::preflightTiledResearchRequest(transformed.size(),plan,128,token,error)) return false;
+    // Explicit scene-linear floats must reach the color kernel before any
+    // integer conversion: exposure can recover HDR or signed source channels.
+    const bool floating=transformed.format()==QImage::Format_RGBA32FPx4;
+    const QImage input=floating || transformed.format()==QImage::Format_RGBA64
+        ? transformed : transformed.convertToFormat(QImage::Format_RGBA64);
+    if (input.isNull()) { if (error) *error="Image conversion failed"; return false; }
     Writer writer(path);
     if (!writer.begin(transformed.width(),transformed.height(),quality,ColorManagement::iccProfile(space))) { if (error) *error=writer.failure; return false; }
-    const QImage input=transformed.format()==QImage::Format_RGBA64 ? transformed : transformed.convertToFormat(QImage::Format_RGBA64);
     for (int y=0;y<input.height();y+=128) {
         while (interactive && interactive->load(std::memory_order_relaxed) && !cancelled(token)) QThread::msleep(10);
         if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
         const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
-        if (rendered.isNull() || !writer.rows(rendered)) { if (error) *error=cancelled(token) ? "Cancelled" : writer.failure; return false; }
+        if (rendered.isNull()) { if (error) *error=cancelled(token) ? "Cancelled" : "Image rendering failed"; return false; }
+        if (!writer.rows(rendered)) { if (error) *error=writer.failure.isEmpty() ? "JPEG encoding failed" : writer.failure; return false; }
         if (progress) progress(std::min(100,(y+rendered.height())*100/input.height()));
     }
     if (cancelled(token)) { if (error) *error="Cancelled"; return false; }
