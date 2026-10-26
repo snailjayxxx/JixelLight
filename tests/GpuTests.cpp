@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include "core/gpu/GpuEngine.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/FloatSceneResampler.h"
 #include "core/color/MonitorColorTransform.h"
@@ -414,6 +415,70 @@ private slots:
             // not misreport its CPU pixels as native GPU brush computation.
             QVERIFY(engine->lastProcessUsedCpuFallback());
         }
+    }
+
+    void researchBrushCandidateIndexLargeDocumentKeepsGpuFallbackAndScopes() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        QImage source(259,197,QImage::Format_RGBA32FPx4);
+        const std::array<float,4> alphas{0.f,1.f/65535.f,.375f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *pixel=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            pixel[0]=1.05f+.0008f*x; // modest scene-linear HDR and negative RGB
+            pixel[1]=-.035f+.001f*y;
+            pixel[2]=.22f+.0007f*(x+y);
+            pixel[3]=alphas[(x+y)%4];
+        }
+        const QImage original=source.copy();
+        AdjustmentState state;
+        std::size_t totalDabs=0;
+        for(int layerIndex=0;layerIndex<2;++layerIndex) {
+            BD::Layer layer;layer.id=QStringLiteral("indexed_gpu_%1").arg(layerIndex);
+            layer.enabled=true;layer.exposureEv=layerIndex?-.45:.8;
+            for(int strokeIndex=0;strokeIndex<64;++strokeIndex) {
+                BM::Stroke stroke{BM::Style{.012,.35,.7},{}};
+                for(int dabIndex=0;dabIndex<128;++dabIndex)
+                    stroke.dabs.push_back({{.05+.001*(dabIndex%17),
+                                             .05+.001*((dabIndex/17)%8)},1.});
+                // Eight visible dabs per layer; all other dabs lie far
+                // outside this panned viewport, in independent strokes.
+                if(strokeIndex<8)
+                    stroke.dabs[0].center={.65+.04*(strokeIndex%4),
+                                           .66+.12*(strokeIndex/4)};
+                totalDabs+=stroke.dabs.size();
+                layer.strokes.push_back(std::move(stroke));
+            }
+            QCOMPARE(layer.strokes.size(),std::size_t(64));
+            state.brushMasks.layers.push_back(std::move(layer));
+        }
+        QCOMPARE(totalDabs,BD::MaxTotalDabs);
+        QVERIFY(BD::validDocument(state.brushMasks));
+        QVERIFY(!AdjustmentState::validBrushMaskJson(state.toJson()));
+        const QRectF viewport(.6,.6,.3,.3);
+        BT::FramePlan candidates;
+        QVERIFY(BT::planFrame(state.brushMasks,source.width(),source.height(),
+                              {0,0,source.width(),source.height()},&candidates,nullptr,{.6,.6,.3,.3}));
+        QVERIFY(candidates.hasCandidateIndex());
+        // These sixteen small visible dabs each intersect exactly one tile.
+        QCOMPARE(candidates.candidateReferences(),std::size_t(16));
+        QVERIFY(candidates.candidateVisits>0);
+        for(const auto output:{ColorManagement::OutputSpace::SRgb,
+                               ColorManagement::OutputSpace::DisplayP3,
+                               ColorManagement::OutputSpace::ProPhotoRgb}) {
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,
+                         output,true,"M4.4B.4 16K-dab indexed viewport",viewport);
+            if(QTest::currentTestFailed())return;
+            QVERIFY(engine->lastProcessUsedCpuFallback());
+        }
+        const auto captured=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,
+                                   ColorManagement::OutputSpace::SRgb,viewport,true);
+        QVERIFY(!captured.image.isNull());
+        QVERIFY(captured.diagnostic.value("available").toBool());
+        QCOMPARE(captured.diagnostic.value("producer").toString(),QString("cpu-reference-upload"));
+        QCOMPARE(captured.histogram.pixelCount,quint64(source.width())*source.height());
+        QVERIFY(engine->lastProcessUsedCpuFallback());
+        QCOMPARE(source,original);
     }
 
     void researchBrushCpuGpuFallbackFullViewportAndHdrParity() {

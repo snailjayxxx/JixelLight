@@ -1904,6 +1904,136 @@ private slots:
         QVERIFY(!active.updateAdjustment("invalid.png",bad));
     }
 
+    // F4 M4.4B.4: request-owned candidates preserve the original arithmetic
+    // and layer/stroke order, including strokes omitted from individual tiles.
+    void brushCandidatePlanPreservesExactWeightsAndOwnsItsSnapshot() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        const BM::Stroke outside{BM::Style{.012,.2,.91},{{{.97,.97},1.}}};
+        const BM::Stroke zeroOpacity{BM::Style{.3,.1,0},{{{.5,.5},1.}}};
+        const BM::Stroke zeroPressure{BM::Style{.3,.9,.7},{{{.5,.5},0.}}};
+        BD::Layer light;light.id="indexed_light";light.enabled=true;light.exposureEv=1.35;
+        light.strokes={outside,
+            BM::Stroke{BM::Style{.15,.35,.83},
+                {{{.15,.18},1.},{{.5,.5},.7},{{.5,.5},.7},{{0,0},.6}}},
+            zeroOpacity,outside,
+            BM::Stroke{BM::Style{.07,.8,.4},{{{.52,.62},1.},{{.5,.5},1.}}},
+            zeroPressure,outside};
+        BD::Layer dark;dark.id="indexed_dark";dark.enabled=true;dark.exposureEv=-.8;
+        dark.strokes={outside,
+            BM::Stroke{BM::Style{.21,.55,.9},{{{.4,.55},.8},{{1,1},.4}}},
+            zeroPressure,
+            BM::Stroke{BM::Style{.06,1,.31},{{{.5,.5},1.}}},outside};
+        BD::Layer faint;faint.id="indexed_faint";faint.enabled=true;faint.exposureEv=.17;
+        faint.strokes={
+            BM::Stroke{BM::Style{.2,0,1e-12},{{{.5,.5},1.}}},outside,
+            BM::Stroke{BM::Style{.1,.4,.57},{{{.5,.5},.9}}},outside};
+        auto disabled=light;disabled.id="indexed_disabled";disabled.enabled=false;
+        auto zeroEv=dark;zeroEv.id="indexed_zero_ev";zeroEv.exposureEv=0;
+        const BD::Document document{{light,dark,faint,disabled,zeroEv}};
+        QVERIFY(BD::validDocument(document));
+        struct Request { int width,height;BT::Rect region;BT::NormalizedFrame frame; };
+        const Request requests[]{
+            {401,303,{17,11,371,281},{}},
+            {303,401,{11,17,281,371},{.2,.1,.5,.6}},
+            {257,129,{1,1,256,128},{}},
+            {401,303,{17,11,371,281},{.4999995,.4999995,.000001,.000001}},
+            {1,1,{0,0,1,1},{}}};
+        for(const auto request:requests) {
+            BT::FramePlan indexed;
+            QVERIFY(BT::planFrame(document,request.width,request.height,request.region,
+                                  &indexed,nullptr,request.frame));
+            QVERIFY(indexed.hasCandidateIndex());
+            QVERIFY(indexed.candidateReferences()>1);
+            QVERIFY(indexed.candidateIndexBytes()>0);
+            for(const std::size_t budget:{std::size_t(0),std::size_t(1),BT::MaxCandidateIndexReferences}) {
+                auto mutableDocument=document;
+                BT::FramePlan plan;
+                QVERIFY(BT::planFrame(mutableDocument,request.width,request.height,request.region,
+                                      &plan,nullptr,request.frame,budget));
+                QCOMPARE(plan.candidateVisits,indexed.candidateVisits);
+                QCOMPARE(plan.candidateReferences(),indexed.candidateReferences());
+                QCOMPARE(plan.hasCandidateIndex(),budget==BT::MaxCandidateIndexReferences);
+                if(!plan.hasCandidateIndex()) QCOMPARE(plan.candidateIndexBytes(),std::size_t(0));
+                // Destroy the caller's geometry before either indexed or
+                // fallback execution; both must use their owned snapshot.
+                mutableDocument={};
+                std::size_t visits=0;
+                for(std::size_t tileIndex=0;tileIndex<plan.tiles.size();++tileIndex) {
+                    BT::ExposureOutput planned,reference;
+                    QVERIFY(BT::exposureOnly(plan,tileIndex,&planned));
+                    QVERIFY(BT::exposureOnly(document,request.width,request.height,
+                                             plan.tiles[tileIndex].rect,&reference,nullptr,request.frame));
+                    QCOMPARE(planned.visitedDabPixels,reference.visitedDabPixels);
+                    QCOMPARE(planned.visitedDabPixels,plan.tiles[tileIndex].candidateVisits);
+                    QCOMPARE(planned.weightedExposureEv.size(),reference.weightedExposureEv.size());
+                    QVERIFY(std::memcmp(planned.weightedExposureEv.data(),reference.weightedExposureEv.data(),
+                                        planned.weightedExposureEv.size()*sizeof(float))==0);
+                    visits+=planned.visitedDabPixels;
+                }
+                QCOMPARE(visits,plan.candidateVisits);
+            }
+        }
+    }
+
+    void brushCandidatePlanRejectsTamperingAndFallsBackWithoutRefusingValidWork() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        BD::Layer layer;layer.id="indexed_safety";layer.enabled=true;layer.exposureEv=1;
+        layer.strokes={BM::Stroke{BM::Style{.05,.4,.8},
+            {{{.1,.1},1.},{{.5,.5},1.},{{.9,.9},1.}}}};
+        const BD::Document document{{layer}};
+        BT::FramePlan plan;
+        QVERIFY(BT::planFrame(document,256,256,{0,0,256,256},&plan));
+        QCOMPARE(plan.tiles.size(),std::size_t(4));
+        // Corner dabs touch one tile each; the central dab touches all four.
+        QCOMPARE(plan.candidateReferences(),std::size_t(6));
+        QVERIFY(plan.hasCandidateIndex());
+        QVERIFY(plan.candidateIndexBytes()>0);
+        for(const std::size_t budget:{std::size_t(0),std::size_t(1)}) {
+            BT::FramePlan fallback;
+            QVERIFY(BT::planFrame(document,256,256,{0,0,256,256},&fallback,nullptr,{},budget));
+            QVERIFY(!fallback.hasCandidateIndex());
+            QCOMPARE(fallback.candidateReferences(),std::size_t(6));
+            QCOMPARE(fallback.candidateIndexBytes(),std::size_t(0));
+            QCOMPARE(fallback.candidateVisits,plan.candidateVisits);
+            for(std::size_t tileIndex=0;tileIndex<plan.tiles.size();++tileIndex) {
+                BT::ExposureOutput indexed,unindexed;
+                QVERIFY(BT::exposureOnly(plan,tileIndex,&indexed));
+                QVERIFY(BT::exposureOnly(fallback,tileIndex,&unindexed));
+                QCOMPARE(indexed.visitedDabPixels,unindexed.visitedDabPixels);
+                QCOMPARE(indexed.weightedExposureEv.size(),unindexed.weightedExposureEv.size());
+                QVERIFY(std::memcmp(indexed.weightedExposureEv.data(),unindexed.weightedExposureEv.data(),
+                                    indexed.weightedExposureEv.size()*sizeof(float))==0);
+            }
+        }
+
+        BT::ExposureOutput sentinel{{42.f,-7.f},123};
+        const auto refuseAtomically=[&](const BT::FramePlan &candidate,std::size_t tileIndex,
+                                       const std::atomic_bool *cancel=nullptr) {
+            QVERIFY(!BT::exposureOnly(candidate,tileIndex,&sentinel,cancel));
+            QVERIFY(sentinel.weightedExposureEv==(std::vector<float>{42.f,-7.f}));
+            QCOMPARE(sentinel.visitedDabPixels,std::size_t(123));
+        };
+        refuseAtomically(BT::FramePlan{},0);
+        refuseAtomically(plan,plan.tiles.size());
+        std::atomic_bool cancel{true};
+        refuseAtomically(plan,0,&cancel);
+        QVERIFY(!BT::exposureOnly(plan,0,nullptr));
+        auto corrupt=plan;corrupt.tiles[0].rect.x+=1;
+        refuseAtomically(corrupt,0);
+        corrupt=plan;corrupt.tiles[0].candidateVisits+=1;
+        refuseAtomically(corrupt,0);
+        corrupt=plan;corrupt.candidateVisits+=1;
+        refuseAtomically(corrupt,0);
+        corrupt=plan;corrupt.tiles.pop_back();
+        refuseAtomically(corrupt,0);
+        corrupt=plan;corrupt.tiles.push_back(plan.tiles.front());
+        refuseAtomically(corrupt,0);
+    }
+
     // F4 M4.4B.1: mask-only weights and the earlier RGBA oracle must share
     // exactly one bounded raster, including tile offsets and zoom ROI.
     void brushFramePlanMatchesRasterAndRefusesWholeRequestAtomically() {
@@ -1932,7 +2062,9 @@ private slots:
             QCOMPARE(visits,plan.candidateVisits);
             QCOMPARE(pixels,std::size_t(371*281));
         }
-        BT::FramePlan sentinel{{{{3,4,5,6},7}},123};
+        BT::FramePlan sentinel;
+        sentinel.tiles={{{3,4,5,6},7}};
+        sentinel.candidateVisits=123;
         const auto untouched=[&] {
             QCOMPARE(sentinel.tiles.size(),std::size_t(1));
             QCOMPARE(sentinel.tiles[0].rect.x,3);

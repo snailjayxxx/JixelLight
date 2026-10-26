@@ -15,6 +15,7 @@
 #include "app/PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/LoggingEngine.h"
+#include <cstring>
 #include <random>
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
@@ -43,6 +44,10 @@ QImage fixture(int width=512,int height=341) {
 }
 ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) {
     return ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0.0f);
+}
+bool sameExposureBits(const std::vector<float> &a,const std::vector<float> &b) {
+    return a.size()==b.size()
+        && (a.empty() || std::memcmp(a.data(),b.data(),a.size()*sizeof(float))==0);
 }
 }
 class PerformanceTests:public QObject {
@@ -78,10 +83,17 @@ private slots:
         QTest::addColumn<int>("width"); QTest::addColumn<int>("height");
         QTest::addColumn<int>("dabs"); QTest::addColumn<double>("radius");
         QTest::addColumn<bool>("viewport"); QTest::addColumn<bool>("offscreen");
-        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false<<false;
-        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false<<false;
-        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true<<false;
-        QTest::newRow("empty-viewport")<<512<<384<<8<<.025<<true<<true;
+        QTest::addColumn<int>("distribution"); // 0: historical, 1: spread, 2: mostly offscreen
+        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false<<false<<0;
+        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false<<false<<0;
+        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true<<false<<0;
+        QTest::newRow("empty-viewport")<<512<<384<<8<<.025<<true<<true<<0;
+        // Dabs are per layer: these reach 4K/16K document dabs without
+        // exceeding 64 strokes per layer or the 16,384-dab document cap.
+        QTest::newRow("distributed-sparse-4k")<<512<<384<<2048<<.002<<false<<false<<1;
+        QTest::newRow("distributed-sparse-16k")<<512<<384<<8192<<.002<<false<<false<<1;
+        QTest::newRow("mostly-offscreen-4k")<<512<<384<<2048<<.002<<true<<false<<2;
+        QTest::newRow("mostly-offscreen-16k")<<512<<384<<8192<<.002<<true<<false<<2;
     }
     void brushRepresentativeWorkloads() {
         namespace BT=BrushMaskTileRaster;
@@ -89,44 +101,95 @@ private slots:
         namespace BM=BrushMaskGeometry;
         QFETCH(int,width); QFETCH(int,height); QFETCH(int,dabs);
         QFETCH(double,radius); QFETCH(bool,viewport); QFETCH(bool,offscreen);
+        QFETCH(int,distribution);
         BD::Document doc;
         for(int layerIndex=0;layerIndex<2;++layerIndex) {
-            BM::Stroke stroke{BM::Style{radius,.4,.7},{}};
-            for(int i=0;i<dabs;++i)
-                stroke.dabs.push_back({{.25+.5*(i%8)/7.,.25+.5*((i/8)%8)/7.},.5+.5*(i%3)/2.});
             BD::Layer layer;layer.id=QStringLiteral("perf_%1").arg(layerIndex);
-            layer.enabled=true;layer.exposureEv=layerIndex?-.7:1.2;layer.strokes={stroke};
+            layer.enabled=true;layer.exposureEv=layerIndex?-.7:1.2;
+            const int dabsPerStroke=distribution?128:dabs;
+            for(int start=0;start<dabs;start+=dabsPerStroke) {
+                BM::Stroke stroke{BM::Style{radius,.4,.7},{}};
+                for(int i=start;i<std::min(start+dabsPerStroke,dabs);++i) {
+                    BM::Point point{.25+.5*(i%8)/7.,.25+.5*((i/8)%8)/7.};
+                    if(distribution) {
+                        const int columns=dabs==2048?64:128;
+                        const int rows=dabs/columns;
+                        point={(i%columns+.5+.1*layerIndex)/columns,
+                               (i/columns+.5+.1*layerIndex)/rows};
+                        if(distribution==2) {
+                            // Only eight dabs/layer intersect the small panned
+                            // viewport. The remaining strokes are irrelevant.
+                            if(i<8)point={.84+.012*(i%4),.85+.018*(i/4)};
+                            else point={.1+.5*point.x,.1+.5*point.y};
+                        }
+                    }
+                    stroke.dabs.push_back({point,.5+.5*(i%3)/2.});
+                }
+                layer.strokes.push_back(std::move(stroke));
+            }
             doc.layers.push_back(layer);
         }
-        const BT::NormalizedFrame frame=offscreen?BT::NormalizedFrame{.8,.8,.2,.2}
+        QVERIFY(BD::validDocument(doc));
+        const BT::NormalizedFrame frame=(offscreen || distribution==2)?BT::NormalizedFrame{.8,.8,.2,.2}
             : viewport?BT::NormalizedFrame{.2,.15,.6,.7}:BT::NormalizedFrame{};
-        std::vector<double> planningMs,rasterMs,oracleMs;
-        std::size_t visits=0,tileCount=0;
+        std::vector<double> planningMs,rasterMs,indexedMs,oracleMs;
+        std::size_t visits=0,tileCount=0,candidateReferences=0,indexBytes=0;
         for(int repeat=0;repeat<3;++repeat) {
             BT::FramePlan plan;QElapsedTimer timer;timer.start();
             QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&plan,nullptr,frame));
             planningMs.push_back(timer.nsecsElapsed()/1e6);
-            visits=0;tileCount=plan.tiles.size();double raster=0,oracle=0;
-            for(const auto &tile:plan.tiles) {
+            QVERIFY(plan.hasCandidateIndex());
+            candidateReferences=plan.candidateReferences();indexBytes=plan.candidateIndexBytes();
+            if(distribution==2) {
+                QVERIFY(candidateReferences>0);
+                QVERIFY(candidateReferences<=64); // only the 16 visible dabs can intersect tiles
+            }
+            BT::FramePlan fallback;
+            if(repeat==0) {
+                QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&fallback,nullptr,frame,0));
+                QCOMPARE(fallback.candidateVisits,plan.candidateVisits);
+                QCOMPARE(fallback.candidateReferences(),candidateReferences);
+                QCOMPARE(fallback.candidateIndexBytes(),std::size_t(0));
+                if(candidateReferences)QVERIFY(!fallback.hasCandidateIndex());
+            }
+            visits=0;tileCount=plan.tiles.size();double raster=0,indexed=0,oracle=0;
+            for(std::size_t tileIndex=0;tileIndex<plan.tiles.size();++tileIndex) {
+                const auto &tile=plan.tiles[tileIndex];
+                BT::ExposureOutput indexedOutput;timer.restart();
+                QVERIFY(BT::exposureOnly(plan,tileIndex,&indexedOutput));
+                indexed+=timer.nsecsElapsed()/1e6;
                 BT::ExposureOutput actual;timer.restart();
                 QVERIFY(BT::exposureOnly(doc,width,height,tile.rect,&actual,nullptr,frame));
                 raster+=timer.nsecsElapsed()/1e6;
                 QCOMPARE(actual.visitedDabPixels,tile.candidateVisits);
+                QCOMPARE(indexedOutput.visitedDabPixels,actual.visitedDabPixels);
+                QVERIFY(sameExposureBits(indexedOutput.weightedExposureEv,actual.weightedExposureEv));
+                if(repeat==0) {
+                    BT::ExposureOutput fallbackOutput;
+                    QVERIFY(BT::exposureOnly(fallback,tileIndex,&fallbackOutput));
+                    QCOMPARE(fallbackOutput.visitedDabPixels,actual.visitedDabPixels);
+                    QVERIFY(sameExposureBits(fallbackOutput.weightedExposureEv,actual.weightedExposureEv));
+                }
                 visits+=actual.visitedDabPixels;
                 std::vector<float> rgba(actual.weightedExposureEv.size()*4,.25f);
                 BT::Output reference;timer.restart();
                 QVERIFY(BT::render(doc,width,height,tile.rect,rgba,&reference,nullptr,frame));
                 oracle+=timer.nsecsElapsed()/1e6;
-                QVERIFY(actual.weightedExposureEv==reference.weightedExposureEv);
+                QVERIFY(sameExposureBits(actual.weightedExposureEv,reference.weightedExposureEv));
             }
             QCOMPARE(visits,plan.candidateVisits);
-            rasterMs.push_back(raster);oracleMs.push_back(oracle);
+            rasterMs.push_back(raster);indexedMs.push_back(indexed);oracleMs.push_back(oracle);
         }
-        for(auto *times:{&planningMs,&rasterMs,&oracleMs}) std::sort(times->begin(),times->end());
+        for(auto *times:{&planningMs,&rasterMs,&indexedMs,&oracleMs}) std::sort(times->begin(),times->end());
         qInfo()<<"brush-workload"<<QTest::currentDataTag()<<"pixels"<<width*height
                <<"tiles"<<tileCount<<"candidate_visits"<<visits
                <<"median_plan_ms"<<planningMs[1]<<"median_exposure_ms"<<rasterMs[1]
                <<"median_rgba_oracle_ms"<<oracleMs[1];
+        qInfo()<<"brush-candidate-index"<<QTest::currentDataTag()<<"document_dabs"<<2*dabs
+               <<"document_strokes"<<2*doc.layers.front().strokes.size()
+               <<"candidate_references"<<candidateReferences<<"index_capacity_bytes"<<indexBytes
+               <<"median_plan_ms"<<planningMs[1]<<"median_indexed_exposure_ms"<<indexedMs[1]
+               <<"median_unindexed_exposure_ms"<<rasterMs[1];
         // Timings are evidence, not a portable GPU/interactive latency claim.
         std::atomic_bool cancel{true};BT::FramePlan sentinel;
         sentinel.candidateVisits=42;
@@ -137,6 +200,10 @@ private slots:
         plan.setFrameRect(QRectF(frame.x,frame.y,frame.width,frame.height));
         BT::FramePlan framePlan;
         QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&framePlan,nullptr,frame));
+        BT::ExposureOutput cancelled{{9.f},42};
+        QVERIFY(!BT::exposureOnly(framePlan,0,&cancelled,&cancel));
+        QCOMPARE(cancelled.visitedDabPixels,std::size_t(42));
+        QVERIFY(cancelled.weightedExposureEv==std::vector<float>{9.f});
         const auto expectedPruned=std::count_if(framePlan.tiles.begin(),framePlan.tiles.end(),
             [](const auto &tile){return tile.candidateVisits==0;});
         const auto counter=[](const char *key) {
@@ -144,6 +211,9 @@ private slots:
         };
         const auto beforePruned=counter("brush_research_pruned_tiles");
         const auto beforeRaster=counter("brush_research_rasterized_tiles");
+        const auto beforeVisits=counter("brush_research_dab_pixel_visits");
+        const auto beforeReferences=counter("brush_research_candidate_references");
+        const auto beforeFallbacks=counter("brush_research_candidate_index_fallbacks");
         std::vector<double> cpuMs;QImage processed;
         for(int repeat=0;repeat<3;++repeat) {
             QElapsedTimer timer;timer.start();
@@ -156,6 +226,10 @@ private slots:
         QCOMPARE(counter("brush_research_pruned_tiles")-beforePruned,qint64(3*expectedPruned));
         QCOMPARE(counter("brush_research_rasterized_tiles")-beforeRaster,
                  qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        QCOMPARE(counter("brush_research_dab_pixel_visits")-beforeVisits,qint64(3*framePlan.candidateVisits));
+        QCOMPARE(counter("brush_research_candidate_references")-beforeReferences,
+                 qint64(3*framePlan.candidateReferences()));
+        QCOMPARE(counter("brush_research_candidate_index_fallbacks"),beforeFallbacks);
         if(offscreen) {
             QCOMPARE(framePlan.candidateVisits,std::size_t(0));
             QCOMPARE(processed,ImagePipeline::processWithPlan(source,nonRawLinearPlan(),{},false));

@@ -745,19 +745,22 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
         PerformanceRecorder::count("brush_research_rasterized_tiles",qint64(rasterized));
         PerformanceRecorder::count("brush_research_pruned_tiles",qint64(brushFrame.tiles.size()-rasterized));
         PerformanceRecorder::count("brush_research_dab_pixel_visits",qint64(brushFrame.candidateVisits));
+        PerformanceRecorder::count("brush_research_candidate_references",qint64(brushFrame.candidateReferences()));
+        PerformanceRecorder::count("brush_research_candidate_index_bytes",qint64(brushFrame.candidateIndexBytes()));
+        PerformanceRecorder::count("brush_research_candidate_index_fallbacks",brushFrame.hasCandidateIndex()?0:1);
     };
     if (brushResearch && brushFrame.candidateVisits!=0) {
         // Zero-candidate tiles have a provably zero EV plane. Do not allocate
         // coverage/alpha/output arrays or scan the document again for them.
         std::size_t totalVisits=0,rasterized=0;
-        for(const auto &tile:brushFrame.tiles) {
+        for(std::size_t tileIndex=0;tileIndex<brushFrame.tiles.size();++tileIndex) {
+                const auto &tile=brushFrame.tiles[tileIndex];
                 if(cancelled(token))return {};
                 const int tileX=tile.rect.x-origin.x(),tileY=tile.rect.y-origin.y();
                 const int w=tile.rect.width,h=tile.rect.height;
                 BrushMaskTileRaster::ExposureOutput mask;
                 if (tile.candidateVisits!=0) {
-                    if (!BrushMaskTileRaster::exposureOnly(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
-                            tile.rect,&mask,token.get(),frame)
+                    if (!BrushMaskTileRaster::exposureOnly(brushFrame,tileIndex,&mask,token.get())
                         || mask.visitedDabPixels!=tile.candidateVisits) return {};
                     totalVisits+=mask.visitedDabPixels;
                     ++rasterized;
