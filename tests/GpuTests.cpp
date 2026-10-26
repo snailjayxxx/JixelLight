@@ -395,6 +395,27 @@ private slots:
     // In-memory research-only brush plans cannot be saved or enabled in the
     // user interface. Until the QRhi brush shader is validated, ALL backends
     // must use the existing CPU reference upload and preserve scopes/alpha.
+    void researchBrushEmptyTilePruningKeepsFallbackAndGpuScopes() {
+        QImage source(273,259,QImage::Format_RGBA64);
+        for(int y=0;y<source.height();++y) {
+            auto *row=reinterpret_cast<QRgba64 *>(source.scanLine(y));
+            for(int x=0;x<source.width();++x)
+                row[x]=QRgba64::fromRgba64(30000+x*50,12000+y*75,17000,(x+y)%2?65535:12345);
+        }
+        BrushMaskDocument::Layer layer;layer.id="sparse_gpu";layer.enabled=true;layer.exposureEv=1.3;
+        layer.strokes={BrushMaskGeometry::Stroke{
+            BrushMaskGeometry::Style{.035,.5,.8},{{{.12,.14},1.}}}};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        for(const auto frame:{QRectF(0,0,1,1),QRectF(.5,.5,.5,.5)}) {
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,
+                         ColorManagement::OutputSpace::SRgb,true,"M4.4B.3 sparse/empty tiles",frame);
+            if(QTest::currentTestFailed())return;
+            // Even an empty viewport is still an active research request; do
+            // not misreport its CPU pixels as native GPU brush computation.
+            QVERIFY(engine->lastProcessUsedCpuFallback());
+        }
+    }
+
     void researchBrushCpuGpuFallbackFullViewportAndHdrParity() {
         QImage source(47,39,QImage::Format_RGBA32FPx4);
         const std::array<float,4> alphas{0.0f,1.0f/65535.0f,.5f,1.0f};

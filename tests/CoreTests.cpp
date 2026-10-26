@@ -1530,6 +1530,85 @@ private slots:
     }
     // M4.4A: actual scene-linear CPU processing of an active brush in a
     // *transient in-memory* research plan. Persisted/UI brush stays disabled.
+    void brushSparseTilesPruneOnlyProvenZeroCoverage() {
+        namespace BM=BrushMaskGeometry; namespace BD=BrushMaskDocument;
+        namespace BT=BrushMaskTileRaster;
+        QImage source(300,270,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.2f+.003f*x;p[1]=-.05f+.002f*y;p[2]=.3f;
+            p[3]=float((x+y)%4)/3.f;
+        }
+        const auto original=source.copy();
+        BD::Layer layer;layer.id="sparse";layer.enabled=true;layer.exposureEv=1.2;
+        layer.strokes={BM::Stroke{BM::Style{.08,.4,.8},{{{.13,.14},1.}}}};
+        AdjustmentState state;state.brushMasks.layers={layer};state.vignetteAmount=-.3;
+        const auto compile=[](const AdjustmentState &s) {
+            return ProcessingPlan::compile(s,ImagePipeline::InputEncoding::LinearProPhoto,
+                                           ColorManagement::OutputSpace::SRgb,false,0);
+        };
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        auto base=state;base.brushMasks={};
+        const auto neutral=ImagePipeline::processWithPlan(source,compile(base),{},false);
+        const auto beforeRaster=counter("brush_research_rasterized_tiles");
+        const auto beforePrune=counter("brush_research_pruned_tiles");
+        const auto actual=ImagePipeline::processWithPlan(source,compile(state),{},false);
+        QVERIFY(!actual.isNull());QVERIFY(actual!=neutral);
+        QCOMPARE(counter("brush_research_rasterized_tiles")-beforeRaster,qint64(1));
+        QCOMPARE(counter("brush_research_pruned_tiles")-beforePrune,qint64(8));
+        QCOMPARE(actual.copy(QRect(128,0,172,270)),neutral.copy(QRect(128,0,172,270)));
+        // Independent scalar brush oracle on scene-linear source channels.
+        auto weighted=source.copy();
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            const auto ev=BD::weightedExposureStops(state.brushMasks,
+                {(x+.5)/source.width(),(y+.5)/source.height()},source.width(),source.height());
+            QVERIFY(ev);
+            auto *p=reinterpret_cast<float *>(weighted.scanLine(y))+4*x;
+            const float gain=std::exp2(float(*ev));
+            for(int c=0;c<3;++c)p[c]*=gain;
+        }
+        const auto oracle=ImagePipeline::processWithPlan(weighted,compile(base),{},false);
+        int maxError=0;
+        for(int y=0;y<source.height();++y) {
+            const auto *a=reinterpret_cast<const QRgba64 *>(actual.constScanLine(y));
+            const auto *b=reinterpret_cast<const QRgba64 *>(oracle.constScanLine(y));
+            for(int x=0;x<source.width();++x) {
+                QCOMPARE(a[x].alpha(),b[x].alpha());
+                maxError=std::max({maxError,std::abs(int(a[x].red())-int(b[x].red())),
+                    std::abs(int(a[x].green())-int(b[x].green())),std::abs(int(a[x].blue())-int(b[x].blue()))});
+            }
+        }
+        QVERIFY(maxError<=2); // only FP32 reassociation in independent oracle
+        for(const QRect region:{QRect(128,0,172,270),QRect(7,9,273,249)})
+            QCOMPARE(ImagePipeline::processRegion(source,compile(state),region),actual.copy(region));
+        // A panned viewport contains no candidates: preserve ordinary color,
+        // alpha and serial/parallel identity without allocating zero masks.
+        auto viewport=compile(state);viewport.setFrameRect(QRectF(.5,.5,.5,.5));
+        auto neutralViewport=compile(base);neutralViewport.setFrameRect(QRectF(.5,.5,.5,.5));
+        const auto zeroBefore=counter("brush_research_rasterized_tiles");
+        QCOMPARE(ImagePipeline::processWithPlan(source,viewport,{},true),
+                 ImagePipeline::processWithPlan(source,neutralViewport,{},true));
+        QCOMPARE(counter("brush_research_rasterized_tiles"),zeroBefore);
+        for(int mode=0;mode<3;++mode) {
+            auto zero=state;
+            if(mode==0)zero.brushMasks.layers[0].exposureEv=0;
+            if(mode==1)zero.brushMasks.layers[0].strokes[0].style.opacity=0;
+            if(mode==2)zero.brushMasks.layers[0].strokes[0].dabs[0].pressure=0;
+            QCOMPARE(ImagePipeline::processWithPlan(source,compile(zero)),neutral);
+        }
+        auto invalid=state;invalid.brushMasks.layers.push_back(layer);
+        invalid.brushMasks.layers[0].exposureEv=0;
+        QVERIFY(ImagePipeline::processWithPlan(source,compile(invalid)).isNull());
+        auto cancel=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(ImagePipeline::processWithPlan(source,viewport,cancel).isNull());
+        QImage huge(2048,1025,QImage::Format_RGBA64);huge.fill(Qt::gray);
+        auto zero=state;zero.brushMasks.layers[0].exposureEv=0;
+        QVERIFY(ImagePipeline::processWithPlan(huge,compile(zero)).isNull());
+        QCOMPARE(source,original);
+    }
+
     void brushResearchCpuSceneFrameRegionRoiAndRefusal() {
         namespace BM=BrushMaskGeometry;
         namespace BD=BrushMaskDocument;

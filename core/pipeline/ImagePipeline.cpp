@@ -740,18 +740,28 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     const uchar *src=input.constBits(); const qsizetype srcStride=input.bytesPerLine();
     uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
     const ColorKernel kernel(plan,sourceSize);
-    if (brushResearch) {
-        // The immutable request was budgeted before staging the image.
-        std::size_t totalVisits=0;
+    const auto recordBrushTiles=[&](std::size_t rasterized) {
+        PerformanceRecorder::count("brush_research_cpu_tiles",qint64(brushFrame.tiles.size()));
+        PerformanceRecorder::count("brush_research_rasterized_tiles",qint64(rasterized));
+        PerformanceRecorder::count("brush_research_pruned_tiles",qint64(brushFrame.tiles.size()-rasterized));
+        PerformanceRecorder::count("brush_research_dab_pixel_visits",qint64(brushFrame.candidateVisits));
+    };
+    if (brushResearch && brushFrame.candidateVisits!=0) {
+        // Zero-candidate tiles have a provably zero EV plane. Do not allocate
+        // coverage/alpha/output arrays or scan the document again for them.
+        std::size_t totalVisits=0,rasterized=0;
         for(const auto &tile:brushFrame.tiles) {
                 if(cancelled(token))return {};
                 const int tileX=tile.rect.x-origin.x(),tileY=tile.rect.y-origin.y();
                 const int w=tile.rect.width,h=tile.rect.height;
                 BrushMaskTileRaster::ExposureOutput mask;
-                if (!BrushMaskTileRaster::exposureOnly(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
-                        tile.rect,&mask,token.get(),frame)
-                    || mask.visitedDabPixels!=tile.candidateVisits) return {};
-                totalVisits+=mask.visitedDabPixels;
+                if (tile.candidateVisits!=0) {
+                    if (!BrushMaskTileRaster::exposureOnly(plan.state.brushMasks,sourceSize.width(),sourceSize.height(),
+                            tile.rect,&mask,token.get(),frame)
+                        || mask.visitedDabPixels!=tile.candidateVisits) return {};
+                    totalVisits+=mask.visitedDabPixels;
+                    ++rasterized;
+                }
                 for(int yy=0;yy<h;++yy) {
                     if(cancelled(token))return {};
                     auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
@@ -760,7 +770,8 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                     const auto *rgba64= floating ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
                     for(int xx=0;xx<w;++xx) {
                         const int x=tileX+xx;
-                        const float ev=mask.weightedExposureEv[std::size_t(yy)*w+xx];
+                        const float ev=tile.candidateVisits==0 ? 0.0f
+                            : mask.weightedExposureEv[std::size_t(yy)*w+xx];
                         if (!std::isfinite(ev) || std::abs(ev)>8.0f) return {};
                         line[x]=floating
                             ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
@@ -769,10 +780,12 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                 }
         }
         if (totalVisits!=brushFrame.candidateVisits) return {};
-        PerformanceRecorder::count("brush_research_cpu_tiles",qint64(brushFrame.tiles.size()));
-        PerformanceRecorder::count("brush_research_dab_pixel_visits",qint64(totalVisits));
+        recordBrushTiles(rasterized);
         return finishColor(std::move(out),plan,token);
     }
+    // An all-zero candidate frame uses the historical row renderer, including
+    // its parallel scheduling. Preflight, research caps and source validation
+    // have already run, so this cannot turn malformed active masks into identity.
     ParallelRows::run(out.height(),out.width(),token,[&](int y) {
         auto *line=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
         if (floating) {
@@ -785,6 +798,7 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                 line[x]=colorPixel(in[x],kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
         }
     },parallel);
+    if (brushResearch && !cancelled(token)) recordBrushTiles(0);
     return finishColor(std::move(out),plan,token);
 }
 }

@@ -1,6 +1,6 @@
 # F4 M4.4B.2 — frame work preflight and representative brush measurements
 
-Branch `design/lightcraft-fusion-20261008`; PR #16 stays Draft. Candidate pending its own exact-HEAD CI. Baseline `5d624d3` passed run #39350778492.
+Branch `design/lightcraft-fusion-20261008`; PR #16 stays Draft. Accepted at `7a27d7f11ab629bafae846cc76e0887f559e42b0`, [CI #40262658009](https://github.com/snailjayxxx/JixelLight/actions/runs/40262658009) Success on all three platforms and deployed desktop packages. Baseline `5d624d3` passed run #39350778492.
 
 ## Change and boundaries
 
@@ -18,8 +18,18 @@ CoreTests compare preflight versus actual raster counts on uneven partial tiles,
 
 PerformanceTests add deterministic synthetic inputs (no private photo data): sparse landscape 512×384, overlapping portrait 384×512 and dense viewport 1024×768; each uses two opposite-EV layers. Three repetitions report median planning, exposure-only and legacy RGBA-oracle milliseconds, pixels, tile counts and candidate visits. Every measured tile also checks exact mask-plane equality and work counts. Timing excludes constructing the synthetic RGBA oracle input, and the first of three samples is not discarded. These are bounded research CPU kernel measurements, not physical GPU benchmarks, interactive latency promises, or a comparison to a previous binary. Each workload also runs the real CPU pipeline and pre-cancel refusal. A separate asynchronous 1024×1024 overlapping request is cancelled while pending and must return no partial image; a later independent request must still succeed.
 
-Local environment has no Qt 6.8.3 SDK/CMake. `git diff --check` passed; full compilation, timing values and functional acceptance remain pending CI. The unchanged workflow must pass Windows x64/macOS ARM64/Linux GPU, real public Sony RAW/JPEG, 1024-bin full Scopes, 40/65535 GPU tolerance, original Windows CPU RAW GUI **60,000ms**, and actual Windows/macOS deployed packages. Any failure must be inspected and fixed; do not skip, retry quota failures, or widen limits.
+## Accepted measurements
+
+Three-sample median milliseconds from run #40262658009; plan / mask-only / original RGBA-oracle kernel, excluding synthetic RGBA input construction. First sample retained. All mask planes/work counts matched exactly.
+
+| Platform | Sparse landscape | Overlap portrait | Dense viewport |
+|---|---:|---:|---:|
+| Linux | 0.0035 / 0.6828 / 2.1252 | 0.0306 / 13.8149 / 15.2525 | 0.0657 / 25.7289 / 32.3194 |
+| macOS | 0.0094 / 1.3987 / 4.5078 | 0.0160 / 12.7583 / 18.8790 | 0.0376 / 16.6815 / 23.2932 |
+| Windows | 0.0055 / 2.7804 / 8.7724 | 0.0414 / 10.8772 / 20.3057 | 0.0937 / 24.6303 / 69.1416 |
+
+Each platform passed 175 core / 33 mandatory GPU / 31 performance checks, CTest 10/10, original real Sony RAW/JPEG, strict 60,000ms RAW GUI and 40/65535 GPU limits, 1024-bin Scopes and Windows/macOS deployed package checks. Tests used merge commit `92339a055fcaaae13dd329b2fbd3de6ade17aa07`; its tree `31de28aa87875c4a7d63cf40cd5edae3a645aed4` equals the accepted branch HEAD tree. No local Qt SDK was available; acceptance is from CI. These results do not establish production large-RAW brush latency or physical GPU speed.
 
 ## Next gate
 
-Collect exact-HEAD three-platform timing/acceptance evidence and inspect cancellation under representative load before considering further indexing or active large-frame work. F0–F6 is not complete.
+Use accepted zero-candidate counts to remove empty-tile mask allocation/rasterization, keeping the independent pixel oracle, work limits and cancellation refusal. F0–F6 is not complete.

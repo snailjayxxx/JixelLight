@@ -77,17 +77,18 @@ private slots:
     void brushRepresentativeWorkloads_data() {
         QTest::addColumn<int>("width"); QTest::addColumn<int>("height");
         QTest::addColumn<int>("dabs"); QTest::addColumn<double>("radius");
-        QTest::addColumn<bool>("viewport");
-        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false;
-        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false;
-        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true;
+        QTest::addColumn<bool>("viewport"); QTest::addColumn<bool>("offscreen");
+        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false<<false;
+        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false<<false;
+        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true<<false;
+        QTest::newRow("empty-viewport")<<512<<384<<8<<.025<<true<<true;
     }
     void brushRepresentativeWorkloads() {
         namespace BT=BrushMaskTileRaster;
         namespace BD=BrushMaskDocument;
         namespace BM=BrushMaskGeometry;
         QFETCH(int,width); QFETCH(int,height); QFETCH(int,dabs);
-        QFETCH(double,radius); QFETCH(bool,viewport);
+        QFETCH(double,radius); QFETCH(bool,viewport); QFETCH(bool,offscreen);
         BD::Document doc;
         for(int layerIndex=0;layerIndex<2;++layerIndex) {
             BM::Stroke stroke{BM::Style{radius,.4,.7},{}};
@@ -97,7 +98,8 @@ private slots:
             layer.enabled=true;layer.exposureEv=layerIndex?-.7:1.2;layer.strokes={stroke};
             doc.layers.push_back(layer);
         }
-        const BT::NormalizedFrame frame=viewport?BT::NormalizedFrame{.2,.15,.6,.7}:BT::NormalizedFrame{};
+        const BT::NormalizedFrame frame=offscreen?BT::NormalizedFrame{.8,.8,.2,.2}
+            : viewport?BT::NormalizedFrame{.2,.15,.6,.7}:BT::NormalizedFrame{};
         std::vector<double> planningMs,rasterMs,oracleMs;
         std::size_t visits=0,tileCount=0;
         for(int repeat=0;repeat<3;++repeat) {
@@ -131,9 +133,36 @@ private slots:
         QVERIFY(!BT::planFrame(doc,width,height,{0,0,width,height},&sentinel,&cancel,frame));
         QCOMPARE(sentinel.candidateVisits,std::size_t(42));
         const auto source=fixture(width,height);auto state=AdjustmentState{};state.brushMasks=doc;
-        const auto plan=nonRawLinearPlan(state);
-        const auto processed=ImagePipeline::processWithPlan(source,plan,{},false);
-        QVERIFY(!processed.isNull());
+        auto plan=nonRawLinearPlan(state);
+        plan.setFrameRect(QRectF(frame.x,frame.y,frame.width,frame.height));
+        BT::FramePlan framePlan;
+        QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&framePlan,nullptr,frame));
+        const auto expectedPruned=std::count_if(framePlan.tiles.begin(),framePlan.tiles.end(),
+            [](const auto &tile){return tile.candidateVisits==0;});
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto beforePruned=counter("brush_research_pruned_tiles");
+        const auto beforeRaster=counter("brush_research_rasterized_tiles");
+        std::vector<double> cpuMs;QImage processed;
+        for(int repeat=0;repeat<3;++repeat) {
+            QElapsedTimer timer;timer.start();
+            const auto result=ImagePipeline::processWithPlan(source,plan,{},false);
+            cpuMs.push_back(timer.nsecsElapsed()/1e6);
+            QVERIFY(!result.isNull());
+            if(repeat)QCOMPARE(result,processed);
+            processed=result;
+        }
+        QCOMPARE(counter("brush_research_pruned_tiles")-beforePruned,qint64(3*expectedPruned));
+        QCOMPARE(counter("brush_research_rasterized_tiles")-beforeRaster,
+                 qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        if(offscreen) {
+            QCOMPARE(framePlan.candidateVisits,std::size_t(0));
+            QCOMPARE(processed,ImagePipeline::processWithPlan(source,nonRawLinearPlan(),{},false));
+        }
+        std::sort(cpuMs.begin(),cpuMs.end());
+        qInfo()<<"brush-frame-pruning"<<QTest::currentDataTag()<<"tiles"<<framePlan.tiles.size()
+               <<"pruned_tiles"<<expectedPruned<<"median_cpu_frame_ms"<<cpuMs[1];
         auto token=std::make_shared<std::atomic_bool>(true);
         QVERIFY(ImagePipeline::processWithPlan(source,plan,token,false).isNull());
     }
