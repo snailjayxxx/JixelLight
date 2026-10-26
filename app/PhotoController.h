@@ -54,6 +54,10 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString currentFlag READ currentFlag NOTIFY curationChanged)
     Q_PROPERTY(QString previewUrl READ previewUrl NOTIFY previewUrlChanged)
     Q_PROPERTY(bool hasImage READ hasImage NOTIFY currentIndexChanged)
+    Q_PROPERTY(bool currentSourceAvailable READ currentSourceAvailable NOTIFY currentIndexChanged)
+    Q_PROPERTY(qulonglong thumbnailRevision READ thumbnailRevision NOTIFY libraryChanged)
+    Q_PROPERTY(bool relinkBusy READ relinkBusy NOTIFY relinkChanged)
+    Q_PROPERTY(QVariantMap relinkPreview READ relinkPreview NOTIFY relinkChanged)
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentIndexChanged)
     Q_PROPERTY(QString currentFormat READ currentFormat NOTIFY currentIndexChanged)
     Q_PROPERTY(bool currentIsRaw READ currentIsRaw NOTIFY currentIndexChanged)
@@ -225,6 +229,14 @@ public:
     QString currentFlag() const { return hasImage() ? m_photos[m_currentIndex].flag : QStringLiteral("none"); }
     QString previewUrl() const;
     bool hasImage() const { return m_currentIndex >= 0 && m_currentIndex < m_photos.size(); }
+    bool currentSourceAvailable() const { return hasImage() && m_photos[m_currentIndex].available; }
+    qulonglong thumbnailRevision() const { return hasImage()?m_photos[m_currentIndex].thumbnailRevision:0; }
+    bool relinkBusy() const { return m_relinkBusy; }
+    QVariantMap relinkPreview() const { return m_relinkPreview; }
+    Q_INVOKABLE QString relinkCatalogToken() const { return QString::number(m_catalogEpoch); }
+    Q_INVOKABLE bool beginRelink(const QString &versionKey, const QUrl &candidate, const QString &catalogToken={});
+    Q_INVOKABLE bool confirmRelink(const QString &requestId, bool acknowledgeUnknownIdentity=false);
+    Q_INVOKABLE void cancelRelink();
     QString currentFile() const;
     QString currentFormat() const;
     bool currentIsRaw() const;
@@ -380,6 +392,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void relinkChanged();
     void diagnosticChanged();
     void diagnosticFinished(const QString &path);
     void adjustmentClipboardChanged();
@@ -427,10 +440,36 @@ private:
         EditHistory history; CatalogTags tags;
         QString copyKey, versionName, originalKey;
         PhotoTimeline timeline;
+        QString sourceKey;
+        bool available=true;
+        quint64 thumbnailRevision=0;
         QString storageKey() const { return copyKey.isEmpty() ? (originalKey.isEmpty() ? path : originalKey) : copyKey; }
     };
     QVector<PhotoEntry> resolveExportVersions(const QStringList &keys, QString *error) const;
     QVector<PhotoEntry> m_photos;
+    struct RelinkRequest {
+        quint64 epoch=0, id=0;
+        QString sourceKey, sourcePath, candidatePath;
+        QStringList versionKeys;
+        ProjectDatabase::OriginalIdentity expected, candidateIdentity;
+        bool confirming=false, acknowledgeUnknown=false;
+    };
+    struct RelinkResult { ProjectDatabase::OriginalIdentity identity; SourceData source; QString error, verifiedKey; };
+    struct IdentityRequest { quint64 epoch=0; QStringList paths; };
+    std::unique_ptr<LatestJob<RelinkRequest,RelinkResult>> m_relinkJob;
+    std::unique_ptr<LatestJob<IdentityRequest,QHash<QString,ProjectDatabase::OriginalIdentity>>> m_identityJob;
+    std::unique_ptr<RelinkRequest> m_relinkRequest;
+    QVariantMap m_relinkPreview;
+    bool m_relinkBusy=false;
+    quint64 m_nextRelinkId=0, m_thumbnailRevision=0;
+    QSet<QString> m_identityPending;
+    QSet<QString> m_identityEstablished;
+    void initializeRelinkJobs();
+    void queueSourceIdentity(const QString &path);
+    void startSourceIdentities();
+    QString sourceFamily(const PhotoEntry &photo) const;
+    QStringList familyVersionKeys(const QString &sourcePath) const;
+    bool sourceReadable(const PhotoEntry &photo) const;
     QSet<QString> m_importedPaths;
     QSet<int> m_selectedPhotos;
     int m_currentIndex = -1;

@@ -9,6 +9,7 @@ Rectangle {
     objectName: "libraryWorkspace"
     required property var controller
     signal editRequested()
+    signal relinkRequested()
     property int filterMode: 0 // all, picks, rejects, rating >= 3
     property string searchText: ""
     property string filterAlbum: ""
@@ -127,11 +128,17 @@ Rectangle {
                             Image {
                                 anchors.fill: parent
                                 anchors.margins: 2
-                                source: "image://thumbnails/" + encodeURIComponent(modelData.path)
+                                source: modelData.available ? "image://thumbnails/" + encodeURIComponent(modelData.path) + "?relink=" + modelData.thumbnailRevision : ""
                                 sourceSize: Qt.size(384, 280)
                                 fillMode: Image.PreserveAspectFit
                                 asynchronous: true
                                 cache: true
+                            }
+                            Label {
+                                anchors.centerIn: parent
+                                visible: !modelData.available
+                                text: root.t("源文件缺失", "Source missing")
+                                color: "#e6b078"; font.pixelSize: 13
                             }
                             Label {
                                 anchors.right: parent.right
@@ -174,6 +181,12 @@ Rectangle {
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 4
+            RowLayout {
+                visible: root.controller.hasImage && !root.controller.currentSourceAvailable
+                Layout.fillWidth: true
+                Label { Layout.fillWidth: true; text: root.t("源文件缺失；版本、历史和标签仍保留。", "Source missing; versions, history and tags are retained."); color: "#e6b078"; wrapMode: Text.WordWrap }
+                Button { objectName: "relinkSourceAction"; text: root.t("重新关联源文件…", "Relink source…"); enabled: root.controller.projectPath.length > 0 && !root.controller.relinkBusy && !root.controller.exportBusy; onClicked: root.relinkRequested() }
+            }
             RowLayout {
                 Layout.fillWidth: true
                 Label { text: root.controller.selectedIndices.length + root.t(" 张已选 / ", " selected / ") + root.visiblePhotos.length + root.t(" 张显示", " shown"); color: "#a5b4c4" }

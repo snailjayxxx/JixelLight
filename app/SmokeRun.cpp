@@ -17,6 +17,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QCryptographicHash>
+#include <QUuid>
 #include <exiv2/exiv2.hpp>
 #include <memory>
 #include <cmath>
@@ -430,6 +431,136 @@ void startMaskCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,co
     original.close();
     if(!controller->importFile(QUrl::fromLocalFile(photo)))
         {finish(QStringLiteral("Cannot import synthetic fixture"));return;}
+    timer->start();
+}
+
+void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath) {
+    // Owned synthetic fixture; keeps the real-RAW 60s smoke unchanged. Native
+    // pointer events exercise the actual acknowledgement/cancel/confirm UI.
+    struct State {
+        QElapsedTimer elapsed; int phase=0; bool finished=false;
+        bool missing=false,cancel=false,ack=false,frozen=false,complete=false,reopened=false,exported=false,compact=false;
+        bool exportFinished=false; int succeeded=0,failed=0; bool stopped=false;
+        QString project,original,candidate,copy,request; QByteArray checksum;
+    };
+    const auto state=std::make_shared<State>();state->elapsed.start();
+    const auto dir=std::make_shared<QTemporaryDir>();
+    auto *timer=new QTimer(controller);timer->setInterval(50);
+    const auto finish=[=](const QString &error) {
+        if(state->finished)return;state->finished=true;timer->stop();
+        QFile source(state->candidate);const bool unchanged=source.open(QIODevice::ReadOnly)
+            && QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256)==state->checksum;
+        const bool passed=error.isEmpty()&&state->missing&&state->cancel&&state->ack&&state->frozen&&state->complete
+            &&state->reopened&&state->exported&&state->compact&&unchanged;
+        const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+            {"elapsed_ms",state->elapsed.elapsed()},{"phase",state->phase},{"error",error},
+            {"missing_placeholder_passed",state->missing},{"cancel_preserves_catalog",state->cancel},
+            {"unknown_identity_acknowledgement",state->ack},{"captured_family_passed",state->frozen},
+            {"relink_complete",state->complete},{"reopen_preserves_versions",state->reopened},
+            {"selected_export_passed",state->exported},{"compact_dialog_passed",state->compact},{"source_unchanged",unchanged},
+            {"file_picker_automated",false}};
+        QSaveFile output(reportPath);const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
+        const bool saved=output.open(QIODevice::WriteOnly)&&output.write(data)==data.size()&&output.commit();
+        QCoreApplication::exit(passed&&saved?0:1);
+    };
+    QObject::connect(controller,&PhotoController::exportFinished,timer,[=](int succeeded,int failed,bool stopped){
+        state->exportFinished=true;state->succeeded=succeeded;state->failed=failed;state->stopped=stopped;
+    });
+    const auto openPreview=[=]() {
+        auto *dialog=window->findChild<QObject *>("relinkSourceDialog");
+        return dialog && QMetaObject::invokeMethod(dialog,"open");
+    };
+    QObject::connect(timer,&QTimer::timeout,controller,[=] {
+        if(state->elapsed.elapsed()>=20000){finish("Missing-source GUI validation timed out");return;}
+        auto *dialog=window->findChild<QObject *>("relinkSourceDialog");
+        auto *confirm=window->findChild<QQuickItem *>("confirmRelinkSource");
+        auto *ack=window->findChild<QQuickItem *>("relinkUnknownIdentityAcknowledgement");
+        auto *cancel=window->findChild<QQuickItem *>("cancelRelinkSource");
+        const auto preview=controller->relinkPreview();
+        if(state->phase==0) {
+            state->missing=controller->library().size()==2&&controller->hasImage()&&!controller->currentSourceAvailable()
+                &&controller->previewUrl().isEmpty()&&controller->gpuSource().isNull()&&controller->scopesPixelCount()==0
+                &&!controller->loading()&&!controller->rendering()&&!controller->editHistory().isEmpty();
+            if(!state->missing){finish("Missing versions or stale image state");return;}
+            if(!window->grabWindow().save(reportPath+".missing.png")){finish("Cannot save missing-source screenshot");return;}
+            if(!controller->beginRelink(state->copy,QUrl::fromLocalFile(state->candidate))||!openPreview()){
+                finish("Cannot open relink preview");return;
+            }
+            state->phase=1;
+        } else if(state->phase==1) {
+            if(controller->relinkBusy())return;
+            if(preview.value("status")!="ready"||!dialog||!dialog->property("visible").toBool()
+                ||!confirm||confirm->isEnabled()||!ack||!ack->isVisible()){finish("Unknown identity must require acknowledgement");return;}
+            if(!clickItem(window,cancel)){finish("Cancel is inaccessible");return;}state->phase=2;
+        } else if(state->phase==2) {
+            if(dialog&&dialog->property("visible").toBool())return;
+            state->cancel=controller->relinkPreview().isEmpty()&&!controller->currentSourceAvailable()
+                &&controller->library().size()==2&&controller->currentFile()==state->original;
+            if(!state->cancel||!controller->beginRelink(state->copy,QUrl::fromLocalFile(state->candidate))||!openPreview()){
+                finish("Cancel changed catalog or retry failed");return;
+            }
+            state->phase=3;
+        } else if(state->phase==3) {
+            if(controller->relinkBusy())return;
+            if(preview.value("status")!="ready"||!dialog||!confirm||confirm->isEnabled()){finish("Retry identity validation failed");return;}
+            state->request=preview.value("requestId").toString();
+            state->compact=dialog->property("width").toDouble()<=window->width()-20
+                &&dialog->property("height").toDouble()<=window->height()-20
+                &&dialog->property("x").toDouble()>=0&&dialog->property("y").toDouble()>=0;
+            if(!state->compact||!window->grabWindow().save(reportPath+".confirm.png")){finish("Relink dialog does not fit compact window");return;}
+            controller->selectPhoto(0);controller->setPhotoSelection({});
+            state->frozen=controller->relinkPreview().value("requestId").toString()==state->request
+                &&controller->relinkPreview().value("versionCount").toInt()==2;
+            if(!state->frozen||!clickItem(window,ack)){finish("Captured family or acknowledgement interaction failed");return;}
+            state->phase=4;
+        } else if(state->phase==4) {
+            state->ack=ack&&ack->property("checked").toBool()&&confirm&&confirm->isEnabled();
+            if(!state->ack||!clickItem(window,confirm)){finish("Confirmed acknowledgement did not enable relink");return;}
+            state->phase=5;
+        } else if(state->phase==5) {
+            if(controller->relinkBusy()||!controller->previewReady()||controller->loading()||controller->rendering())return;
+            state->complete=preview.value("status")=="complete"&&controller->currentSourceAvailable()
+                &&controller->library().size()==2&&controller->currentFile()==state->candidate
+                &&(!dialog||!dialog->property("visible").toBool());
+            if(!state->complete){finish("Relink did not publish restored source");return;}
+            window->setProperty("workspaceIndex",1);
+            if(!controller->exportVersions({state->candidate,state->copy},QUrl::fromLocalFile(dir->filePath("exports")),"display-p3",92,"png","{name}_{seq:4}")){
+                finish("Restored selected-version export refused");return;
+            }
+            state->phase=6;
+        } else if(state->phase==6) {
+            if(!state->exportFinished||controller->exportBusy())return;
+            state->exported=state->succeeded==2&&state->failed==0&&!state->stopped
+                &&QDir(dir->filePath("exports")).entryList({"*.png"},QDir::Files).size()==2;
+            if(!state->exported||!window->grabWindow().save(reportPath+".restored.png")
+                ||!controller->openProject(QUrl::fromLocalFile(state->project))){finish("Export or project reopen failed");return;}
+            state->phase=7;
+        } else if(state->phase==7) {
+            if(!controller->previewReady()||controller->loading()||controller->rendering())return;
+            state->reopened=controller->library().size()==2&&controller->currentSourceAvailable()
+                &&controller->currentFile()==state->candidate&&controller->currentRating()==4
+                &&controller->currentKeywords().contains("retained")&&std::abs(controller->exposure()-.35)<1e-9;
+            finish(state->reopened?QString():QStringLiteral("Reopened project lost version state"));
+        }
+    });
+    if(!dir->isValid()){finish("Fixture directory unavailable");return;}
+    state->original=dir->filePath("owned-original.png");state->candidate=dir->filePath("owned-relocated.png");
+    state->copy="jixel-copy:"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QImage image(192,128,QImage::Format_RGB32);image.fill(QColor(62,125,181));
+    if(!image.save(state->original)||!QDir().mkpath(dir->filePath("exports"))){finish("Cannot create fixture");return;}
+    {QFile source(state->original);if(source.open(QIODevice::ReadOnly))state->checksum=QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256);}
+    {
+        ProjectDatabase db;AdjustmentState edits;edits.exposure=.35;EditHistory history;history.initialize({});history.record(edits,"exposure");
+        CatalogTags tags;tags.keywords={"retained"};
+        if(!db.create(dir->path(),"Recovery")||!db.updateBatch({{state->original,edits}},{{state->original,history}})||!db.flush()
+            ||!db.updateCurationBatch({{state->original,{4,"pick"}}})||!db.updateTagsBatch({{state->original,tags}})
+            ||!db.addVirtualCopy(state->copy,state->original,"Alternative",edits,history,tags,{3,"none"})||!db.flush()){
+            finish("Cannot create recovery project");return;
+        }
+        state->project=db.projectPath();
+    }
+    resizeForSmoke(window,1180,720);window->setProperty("workspaceIndex",0);controller->setGpuEnabled(false);
+    if(!QFile::rename(state->original,state->candidate)||!controller->openProject(QUrl::fromLocalFile(state->project))){finish("Cannot open missing-source fixture");return;}
     timer->start();
 }
 

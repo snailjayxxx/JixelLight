@@ -134,7 +134,7 @@ bool PhotoController::isProtectedPhoto(const QString &path) const {
     return false;
 }
 bool PhotoController::loadLookProfile(const QUrl &url) {
-    if(!hasImage()||!url.isLocalFile())return false;
+    if(!currentSourceAvailable()||!url.isLocalFile())return false;
     QFile file(url.toLocalFile());if(!file.open(QIODevice::ReadOnly)||file.size()>4*1024*1024||file.size()<=0){setStatus(uiText("外观文件不可读或超过 4 MB。", "Look file is unreadable or exceeds 4 MB."));return false;}
     const QByteArray bytes=file.readAll();LookState look;QString error;
     if(QFileInfo(file).suffix().compare("cube",Qt::CaseInsensitive)==0){look.lut=LookLut::fromCube(bytes,&error);look.mode="calibrated";}

@@ -52,6 +52,7 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/RelinkController.cpp
     app/LookController.cpp
     app/DisplayColorController.cpp
     core/cache/SourceCache.cpp
@@ -128,6 +129,16 @@ enable_testing()
 qt_add_executable(JixelLightCoreTests tests/CoreTests.cpp)
 target_link_libraries(JixelLightCoreTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME core-tests COMMAND JixelLightCoreTests -o core-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightProjectRelinkTests tests/ProjectRelinkTests.cpp)
+target_link_libraries(JixelLightProjectRelinkTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME project-relink COMMAND JixelLightProjectRelinkTests -o project-relink-results.txt,txt -o -,txt)
+set_tests_properties(project-relink PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightProjectRelinkTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightMissingSourceTests tests/MissingSourceTests.cpp)
+target_link_libraries(JixelLightMissingSourceTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME missing-source COMMAND JixelLightMissingSourceTests -o missing-source-results.txt,txt -o -,txt)
+set_tests_properties(missing-source PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightMissingSourceTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp)
 target_link_libraries(JixelLightPerformanceTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME performance-correctness COMMAND JixelLightPerformanceTests -o performance-results.txt,txt -o -,txt)

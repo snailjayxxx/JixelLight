@@ -72,7 +72,7 @@ Item {
         // invisible RHI item can still receive updates and flood the log.
         Loader {
             anchors.fill: parent
-            active: root.controller.gpuEnabled && root.controller.hasImage
+            active: root.controller.gpuEnabled && root.controller.currentSourceAvailable
             sourceComponent: Component {
                 GpuPreview { controller: root.controller }
             }

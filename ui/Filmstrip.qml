@@ -61,11 +61,15 @@ Rectangle {
                 Image {
                     anchors.fill: parent
                     anchors.margins: 4
-                    source: "image://thumbnails/" + encodeURIComponent(modelData.path)
+                    source: modelData.available ? "image://thumbnails/" + encodeURIComponent(modelData.path) + "?relink=" + modelData.thumbnailRevision : ""
                     sourceSize: Qt.size(256, 180)
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: true
+                }
+                Label {
+                    anchors.centerIn: parent; visible: !modelData.available
+                    text: root.t("源文件缺失", "Source missing"); color: "#e6b078"; font.pixelSize: 11
                 }
                 Label {
                     anchors.top: parent.top

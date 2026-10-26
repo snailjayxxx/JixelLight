@@ -108,6 +108,7 @@ jobs:
           fi
           test -f "$EXE"
           python tools/ValidateMaskCanvas.py "$EXE" gui-mask-canvas.json
+          python tools/ValidateRelink.py "$EXE" gui-source-relink.json
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -320,6 +321,7 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           python tools/ValidateMaskCanvas.py ./build/bin/JixelLight gui-mask-canvas.json
+          python tools/ValidateRelink.py ./build/bin/JixelLight gui-source-relink.json
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

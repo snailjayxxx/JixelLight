@@ -19,6 +19,9 @@ class SourceCache final {
 public:
     explicit SourceCache(qint64 memoryBytes = 0, QString diskDirectory = {});
     static QString fileKey(const QString &path);
+    // Explicit relinking can replace bytes without changing size/mtime. Make
+    // old in-flight/cache keys unreachable and remove the old disk preview.
+    void invalidatePath(const QString &path);
     SourceData get(const QString &key);
     void put(const SourceData &source);
     SourceData diskPreview(const QString &key);
@@ -45,3 +48,5 @@ private:
 };
 SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken &cancel,
                       const std::function<void(SourceData)> &partial = {});
+// Validation must decode actual candidate bytes, never a previous cache hit.
+SourceData loadSourceFresh(const QString &path, const CancelToken &cancel);

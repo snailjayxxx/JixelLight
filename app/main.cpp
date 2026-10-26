@@ -39,10 +39,11 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"smoke-report", "Run deterministic GUI validation and write a JSON report", "file"});
     arguments.addOption({"diagnostic-smoke-report", "Validate a frozen diagnostic snapshot using an owned small image", "file"});
     arguments.addOption({"mask-canvas-smoke-report", "Validate local mask handles with an owned synthetic image", "file"});
+    arguments.addOption({"relink-smoke-report", "Validate missing-source recovery with owned synthetic images", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
     if (int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
-        +int(arguments.isSet("mask-canvas-smoke-report"))>1) return 2;
+        +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))>1) return 2;
 
     LoggingEngine::install();
     CrashReporter::install();
@@ -111,6 +112,10 @@ int main(int argc, char *argv[]) {
     if (arguments.isSet("mask-canvas-smoke-report")) {
         if (!window || !photos.isEmpty()) return 2;
         startMaskCanvasSmokeRun(&controller,window,arguments.value("mask-canvas-smoke-report"));
+    }
+    if (arguments.isSet("relink-smoke-report")) {
+        if (!window || !photos.isEmpty()) return 2;
+        startRelinkSmokeRun(&controller,window,arguments.value("relink-smoke-report"));
     }
     return app.exec();
 }

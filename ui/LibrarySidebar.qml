@@ -51,7 +51,7 @@ Rectangle {
             Image {
                 anchors.fill: parent
                 anchors.margins: 5
-                source: root.controller.hasImage ? "image://thumbnails/" + encodeURIComponent(root.controller.currentFile) : ""
+                source: root.controller.currentSourceAvailable ? "image://thumbnails/" + encodeURIComponent(root.controller.currentFile) + "?relink=" + root.controller.thumbnailRevision : ""
                 sourceSize: Qt.size(260, 175)
                 asynchronous: true
                 fillMode: Image.PreserveAspectFit
@@ -59,8 +59,8 @@ Rectangle {
             }
             Label {
                 anchors.centerIn: parent
-                visible: !root.controller.hasImage
-                text: root.t("尚未导入照片", "No photo imported")
+                visible: !root.controller.currentSourceAvailable
+                text: root.controller.hasImage ? root.t("源文件缺失", "Source missing") : root.t("尚未导入照片", "No photo imported")
                 color: "#677585"
                 font.pixelSize: 12
             }

@@ -8,6 +8,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QUuid>
 #include <algorithm>
 
@@ -38,6 +39,99 @@ bool backupBeforeTable(QSqlDatabase &db, const QString &folder, const QString &t
     if (!query.exec()) { *error = "Catalog backup failed: " + query.lastError().text(); return false; }
     return true;
 }
+struct StoredIdentity {
+    ProjectDatabase::OriginalIdentity identity;
+    QString sortKey;
+};
+bool tableExists(QSqlDatabase &db, const QString &table, bool *exists, QString *error) {
+    QSqlQuery query(db);query.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");query.addBindValue(table);
+    if(!query.exec()){*error=query.lastError().text();return false;}
+    *exists=query.next();return true;
+}
+bool readIdentities(QSqlDatabase &db,QHash<QString,StoredIdentity> *identities,bool *exists,QString *error) {
+    if(!tableExists(db,"original_identity",exists,error)||!*exists)return error->isEmpty();
+    QSqlQuery query(db);
+    // Schema 1 includes a nullable sort_key; NULL retains the original source
+    // key's ordering. Missing columns/future row schemas fail without migration.
+    if(!query.exec("SELECT source_key,schema,size_bytes,sha256,sort_key,typeof(size_bytes) FROM original_identity")){
+        *error=query.lastError().text();return false;
+    }
+    while(query.next()) {
+        const auto key=query.value(0).toString();
+        const ProjectDatabase::OriginalIdentity identity{query.value(2).toLongLong(),query.value(3).toByteArray()};
+        if(key.isEmpty()||key.contains(QChar::Null)||validCopyKey(key)||query.value(1).toDouble()!=1
+            ||query.value(5).toString()!="integer"||!identity.isKnown()||identities->contains(key)||identities->size()>=1000000){
+            *error="Invalid or unsupported original identity";return false;
+        }
+        identities->insert(key,{identity,query.value(4).isNull()?key:query.value(4).toString()});
+    }
+    return true;
+}
+bool identityForSource(const QHash<QString,StoredIdentity> &identities,const QString &folder,const QString &source,
+                       ProjectDatabase::OriginalIdentity *identity,QString *error) {
+    *identity={};const auto normalized=ProjectDatabase::normalizedSourcePath(folder,source);
+    for(auto it=identities.cbegin();it!=identities.cend();++it) {
+        if(ProjectDatabase::normalizedSourcePath(folder,it.key())!=normalized)continue;
+        if(identity->isKnown()&&*identity!=it->identity){*error="Conflicting identities for the source family";return false;}
+        *identity=it->identity;
+    }
+    return true;
+}
+struct SourceFamily {
+    QStringList originals;
+    QHash<QString,QJsonObject> copies;
+    QSet<QString> photoKeys;
+    QHash<QString,QJsonObject> allCopies;
+};
+bool readSourceFamily(QSqlDatabase &db,const QString &folder,const QString &sourceKey,SourceFamily *family,QString *error) {
+    const auto normalized=ProjectDatabase::normalizedSourcePath(folder,sourceKey);
+    if(normalized.isEmpty()||validCopyKey(sourceKey)){*error="Invalid original source key";return false;}
+    QSqlQuery query(db);
+    if(!query.exec("SELECT path FROM photos")){*error=query.lastError().text();return false;}
+    while(query.next()) {
+        const auto key=query.value(0).toString();family->photoKeys.insert(key);
+        if(!validCopyKey(key)&&ProjectDatabase::normalizedSourcePath(folder,key)==normalized)family->originals.append(key);
+    }
+    bool hasCopies=false;if(!tableExists(db,"virtual_sources",&hasCopies,error))return false;
+    if(hasCopies) {
+        if(!query.exec("SELECT key,json FROM virtual_sources")){*error=query.lastError().text();return false;}
+        while(query.next()) {
+            const auto key=query.value(0).toString();const auto bytes=query.value(1).toByteArray();
+            QJsonParseError parse;const auto doc=QJsonDocument::fromJson(bytes,&parse);const auto object=doc.object();
+            QStringList name{object.value("name").toString()};
+            if(!validCopyKey(key)||!family->photoKeys.contains(key)||bytes.size()>16384||parse.error!=QJsonParseError::NoError
+                ||!doc.isObject()||object.value("schema").toDouble()!=1||!object.value("source").isString()
+                ||object.value("source").toString().isEmpty()||!CatalogTags::normalize(&name,1)||name.size()!=1
+                ||name[0]!=object.value("name").toString()
+                ||object!=QJsonObject{{"schema",1},{"source",object.value("source")},{"name",object.value("name")}}){
+                *error="Invalid or unsupported virtual copy source";return false;
+            }
+            family->allCopies.insert(key,object);
+            if(ProjectDatabase::normalizedSourcePath(folder,object.value("source").toString())==normalized)family->copies.insert(key,object);
+        }
+    }
+    if(family->originals.size()>1){*error="Ambiguous original source family";return false;}
+    if(family->originals.isEmpty()&&family->copies.isEmpty()){*error="Original source is not in the project";return false;}
+    return true;
+}
+bool createIdentityTable(QSqlDatabase &db,QString *error) {
+    QSqlQuery query(db);
+    if(query.exec("CREATE TABLE IF NOT EXISTS original_identity(source_key TEXT PRIMARY KEY,schema INTEGER NOT NULL CHECK(schema=1),size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),sha256 TEXT NOT NULL,sort_key TEXT)"))return true;
+    *error=query.lastError().text();return false;
+}
+}
+
+bool ProjectDatabase::OriginalIdentity::isKnown() const {
+    if(sizeBytes<0||sha256.size()!=64)return false;
+    return std::all_of(sha256.cbegin(),sha256.cend(),[](char c){return(c>='0'&&c<='9')||(c>='a'&&c<='f');});
+}
+QString ProjectDatabase::normalizedSourcePath(const QString &folder,const QString &sourceKey) {
+    if(sourceKey.isEmpty()||sourceKey.contains(QChar::Null))return {};
+    auto normalized=QDir::cleanPath(QDir::isAbsolutePath(sourceKey)?sourceKey:QDir(folder).absoluteFilePath(sourceKey));
+#ifdef Q_OS_WIN
+    normalized=normalized.toCaseFolded();
+#endif
+    return normalized;
 }
 
 ProjectDatabase::ProjectDatabase(QObject *parent) : QObject(parent), m_state(std::make_shared<WorkerState>()) {
@@ -235,10 +329,22 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     }
                 }
                 if (!ready && error.isEmpty()) error = dateQuery.lastError().text();
+                QHash<QString,StoredIdentity> identities;QHash<QString,OriginalIdentity> identityFamilies;bool hasIdentities=false;
+                if(ready)ready=readIdentities(db,&identities,&hasIdentities,&error);
+                for(auto it=identities.cbegin();ready&&it!=identities.cend();++it) {
+                    const auto family=normalizedSourcePath(folder,it.key());
+                    if(identityFamilies.contains(family)&&identityFamilies.value(family)!=it->identity){
+                        ready=false;error="Conflicting identities for the source family";break;
+                    }
+                    identityFamilies.insert(family,it->identity);
+                }
                 QSqlQuery query(db);
-                const QString querySql = hasCuration
-                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none'),p.imported_at FROM photos p LEFT JOIN curation c ON c.path=p.path ORDER BY CASE WHEN p.path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,p.imported_at,p.path")
-                    : QStringLiteral("SELECT path,adjustment_json,imported_at FROM photos ORDER BY CASE WHEN path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,imported_at,path");
+                QString querySql=hasCuration
+                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none'),p.imported_at FROM photos p LEFT JOIN curation c ON c.path=p.path")
+                    : QStringLiteral("SELECT p.path,p.adjustment_json,p.imported_at FROM photos p");
+                if(hasIdentities)querySql+=" LEFT JOIN original_identity i ON i.source_key=p.path";
+                querySql+=" ORDER BY CASE WHEN p.path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,p.imported_at,";
+                querySql+=hasIdentities?"COALESCE(i.sort_key,p.path),p.path":"p.path";
                 if (ready && !query.exec(querySql)) {
                     ready = false;
                     error = query.lastError().text();
@@ -301,8 +407,10 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     const auto source = isCopy ? copies.take(path) : QJsonObject{};
                     auto timeline = timelines.value(path);
                     if (!timelines.contains(path)) timeline.importedAt = std::max(qint64(0),PhotoTimeline::sqlImportTime(query.value(hasCuration ? 4 : 2).toString()));
-                    staged.push_back({isCopy ? source.value("source").toString() : path, adjustments, rating, flag, history, tags.value(path),
-                                      isCopy ? path : QString(), source.value("name").toString(),timeline});
+                    const auto sourceKey=isCopy?source.value("source").toString():path;
+                    staged.push_back({sourceKey, adjustments, rating, flag, history, tags.value(path),
+                                      isCopy ? path : QString(), source.value("name").toString(),timeline,sourceKey,
+                                      identityFamilies.value(normalizedSourcePath(folder,sourceKey))});
                     if (staged.size() > 1000000) {
                         ready = false;
                         error = QStringLiteral("Project contains too many photos");
@@ -351,6 +459,155 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
         m_projectName = projectName;
     }
     return true;
+}
+
+bool ProjectDatabase::originalIdentity(const QString &sourceKey,OriginalIdentity *identity) {
+    m_lastOpenError.clear();
+    if(!m_open||!identity){m_lastOpenError="Missing open project or identity destination";return false;}
+    OriginalIdentity staged;bool ok=false;QString error;const auto state=m_state;const auto folder=m_projectPath;
+    QMetaObject::invokeMethod(m_worker,[&,state,folder]{
+        auto db=QSqlDatabase::database(state->connectionName,false);
+        SourceFamily family;QHash<QString,StoredIdentity> identities;bool exists=false;
+        ok=db.isOpen()&&db.transaction();
+        if(ok)ok=readSourceFamily(db,folder,sourceKey,&family,&error)
+            &&readIdentities(db,&identities,&exists,&error)
+            &&identityForSource(identities,folder,sourceKey,&staged,&error);
+        if(ok){ok=db.commit();if(!ok)error=db.lastError().text();}
+        if(!ok)db.rollback();
+    },Qt::BlockingQueuedConnection);
+    if(!ok){m_lastOpenError=error.isEmpty()?QString("Cannot read original identity"):error;return false;}
+    *identity=staged;return true;
+}
+
+bool ProjectDatabase::recordOriginalIdentity(const QString &sourceKey,const OriginalIdentity &identity) {
+    m_lastOpenError.clear();
+    if(!m_open||!identity.isKnown()){m_lastOpenError="Invalid original identity";return false;}
+    if(!flush())return false;
+    bool ok=false;QString error;const auto state=m_state;const auto folder=m_projectPath;
+    QMetaObject::invokeMethod(m_worker,[&,state,folder]{
+        auto db=QSqlDatabase::database(state->connectionName,false);
+        SourceFamily family;QHash<QString,StoredIdentity> identities;bool exists=false;OriginalIdentity known;
+        auto validate=[&]{
+            family={};identities.clear();
+            if(!readSourceFamily(db,folder,sourceKey,&family,&error)
+                ||!readIdentities(db,&identities,&exists,&error)
+                ||!identityForSource(identities,folder,sourceKey,&known,&error))return false;
+            if(known.isKnown()&&known!=identity){error="Original identity does not match the recorded baseline";return false;}
+            return true;
+        };
+        ok=db.isOpen()&&validate();
+        if(ok&&known.isKnown())return;
+        if(ok)ok=backupBeforeTable(db,folder,"original_identity",&error)&&db.transaction();
+        if(ok)ok=validate()&&createIdentityTable(db,&error);
+        if(ok&&!known.isKnown()) {
+            const auto key=family.originals.isEmpty()?sourceKey:family.originals.front();
+            QSqlQuery query(db);query.prepare("INSERT INTO original_identity(source_key,schema,size_bytes,sha256,sort_key) VALUES(?,1,?,?,?)");
+            query.addBindValue(key);query.addBindValue(identity.sizeBytes);query.addBindValue(QString::fromLatin1(identity.sha256));query.addBindValue(key);
+            ok=query.exec();if(!ok)error=query.lastError().text();
+        }
+        if(ok){ok=db.commit();if(!ok)error=db.lastError().text();}
+        if(!ok)db.rollback();
+    },Qt::BlockingQueuedConnection);
+    if(!ok){m_lastOpenError=error.isEmpty()?QString("Cannot record original identity"):error;emit writeFailed(m_lastOpenError);}
+    else emit saved(1);
+    return ok;
+}
+
+bool ProjectDatabase::relinkSource(const RelinkRequest &request) {
+    m_lastOpenError.clear();
+    if(!m_open||request.sourceKey.isEmpty()||validCopyKey(request.sourceKey)
+        ||request.candidatePath.isEmpty()||request.candidatePath.contains(QChar::Null)
+        ||!QDir::isAbsolutePath(request.candidatePath)||!request.candidateIdentity.isKnown()){
+        m_lastOpenError="Invalid source relink request";return false;
+    }
+    if(!flush())return false;
+    bool ok=false;QString error;int affected=0;const auto state=m_state;const auto folder=m_projectPath;
+    // A Windows family key is case-folded; retain the verified candidate's
+    // spelling in photos/virtual_sources/identity and the eventual display.
+    const auto candidate=QDir::cleanPath(QDir::fromNativeSeparators(request.candidatePath));
+    const auto candidateFamily=normalizedSourcePath(folder,candidate);
+    QMetaObject::invokeMethod(m_worker,[&,state,folder,candidate,candidateFamily]{
+        auto db=QSqlDatabase::database(state->connectionName,false);
+        SourceFamily family;QHash<QString,StoredIdentity> identities;bool exists=false;OriginalIdentity known;
+        const auto source=normalizedSourcePath(folder,request.sourceKey);
+        auto validate=[&]{
+            family={};identities.clear();
+            if(!readSourceFamily(db,folder,request.sourceKey,&family,&error)
+                ||!readIdentities(db,&identities,&exists,&error)
+                ||!identityForSource(identities,folder,request.sourceKey,&known,&error))return false;
+            if(known.isKnown()&&known!=request.candidateIdentity){error="Candidate does not match the recorded original identity";return false;}
+            if(!known.isKnown()&&!request.acknowledgeUnknownIdentity){error="Unknown original identity requires explicit confirmation";return false;}
+            for(const auto &key:family.photoKeys) {
+                if(!validCopyKey(key)&&normalizedSourcePath(folder,key)==candidateFamily&&!family.originals.contains(key)){
+                    error="Relink destination belongs to another source family";return false;
+                }
+            }
+            for(auto it=family.allCopies.cbegin();it!=family.allCopies.cend();++it) {
+                if(normalizedSourcePath(folder,it->value("source").toString())==candidateFamily&&!family.copies.contains(it.key())){
+                    error="Relink destination belongs to another virtual source family";return false;
+                }
+            }
+            for(auto it=identities.cbegin();it!=identities.cend();++it) {
+                const auto normalized=normalizedSourcePath(folder,it.key());
+                if(normalized==candidateFamily&&normalized!=source){error="Relink destination has another recorded identity";return false;}
+            }
+            // Adjunct rows can exist in legacy catalogs without a photo row.
+            // Never overwrite or silently adopt those annotations either.
+            for(const auto &table:{"photos","curation","catalog_tags","catalog_dates"}) {
+                bool tablePresent=false;if(!tableExists(db,table,&tablePresent,&error))return false;
+                if(!tablePresent)continue;
+                QSqlQuery query(db);query.prepare("SELECT path FROM "+QString::fromLatin1(table));
+                if(!query.exec()){error=query.lastError().text();return false;}
+                while(query.next()) {
+                    const auto key=query.value(0).toString();
+                    if(normalizedSourcePath(folder,key)==candidateFamily&&!family.originals.contains(key)){
+                        error="Relink destination already has a catalog record";return false;
+                    }
+                }
+            }
+            return true;
+        };
+        ok=db.isOpen()&&validate();
+        if(ok)ok=backupBeforeTable(db,folder,"original_identity",&error)&&db.transaction();
+        if(ok)ok=validate()&&createIdentityTable(db,&error);
+        QString sortKey=request.sourceKey;
+        if(ok&&!family.originals.isEmpty()) {
+            const auto old=family.originals.front();
+            sortKey=identities.contains(old)?identities.value(old).sortKey:old;
+            for(const auto &table:{"photos","curation","catalog_tags","catalog_dates"}) {
+                bool tablePresent=false;if(!tableExists(db,table,&tablePresent,&error)){ok=false;break;}
+                if(!tablePresent)continue;
+                QSqlQuery query(db);query.prepare("UPDATE "+QString::fromLatin1(table)+" SET path=? WHERE path=?");
+                query.addBindValue(candidate);query.addBindValue(old);
+                ok=query.exec();
+                if(ok&&QString::fromLatin1(table)=="photos")ok=query.numRowsAffected()==1;
+                if(!ok){error=query.lastError().text();if(error.isEmpty())error="Original source record changed during relink";break;}
+            }
+        }
+        for(auto it=family.copies.cbegin();ok&&it!=family.copies.cend();++it) {
+            auto mapping=it.value();mapping.insert("source",candidate);
+            QSqlQuery query(db);query.prepare("UPDATE virtual_sources SET json=? WHERE key=?");
+            query.addBindValue(QString::fromUtf8(QJsonDocument(mapping).toJson(QJsonDocument::Compact)));query.addBindValue(it.key());
+            ok=query.exec()&&query.numRowsAffected()==1;if(!ok)error=query.lastError().text();
+        }
+        for(auto it=identities.cbegin();ok&&it!=identities.cend();++it) {
+            if(normalizedSourcePath(folder,it.key())!=source)continue;
+            QSqlQuery query(db);query.prepare("DELETE FROM original_identity WHERE source_key=?");query.addBindValue(it.key());
+            ok=query.exec();if(!ok)error=query.lastError().text();
+        }
+        if(ok) {
+            QSqlQuery query(db);query.prepare("INSERT INTO original_identity(source_key,schema,size_bytes,sha256,sort_key) VALUES(?,1,?,?,?)");
+            query.addBindValue(candidate);query.addBindValue(request.candidateIdentity.sizeBytes);
+            query.addBindValue(QString::fromLatin1(request.candidateIdentity.sha256));query.addBindValue(sortKey);
+            ok=query.exec();if(!ok)error=query.lastError().text();
+        }
+        if(ok){ok=db.commit();if(!ok)error=db.lastError().text();}
+        if(!ok)db.rollback();
+        else affected=family.originals.size()+family.copies.size();
+    },Qt::BlockingQueuedConnection);
+    if(!ok){m_lastOpenError=error.isEmpty()?QString("Cannot relink original source"):error;emit writeFailed(m_lastOpenError);}
+    else emit saved(affected);
+    return ok;
 }
 
 bool ProjectDatabase::addOrUpdatePhoto(const QString &path, const AdjustmentState &state) { return updateBatch({{path,state}}); }

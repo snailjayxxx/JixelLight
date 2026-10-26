@@ -26,7 +26,7 @@ struct ThumbnailStore {
 };
 
 namespace {
-QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<ThumbnailStore> &store) {
+QImage loadThumbnail(const QString &path, const QString &revision, QSize size, const std::shared_ptr<ThumbnailStore> &store) {
     const QFileInfo info(path);
     if (!info.isAbsolute() || !info.isFile() || !info.isReadable()) return {};
 
@@ -34,6 +34,7 @@ QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<Thum
     const QString key = info.absoluteFilePath()
         + QLatin1Char('|') + QString::number(info.size())
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch())
+        + QLatin1Char('|') + revision
         + QLatin1Char('|') + QString::number(size.width()) + QLatin1Char('x') + QString::number(size.height());
     {
         QMutexLocker lock(&store->mutex);
@@ -71,8 +72,8 @@ QImage loadThumbnail(const QString &path, QSize size, const std::shared_ptr<Thum
 
 class ThumbnailResponse final : public QQuickImageResponse, public QRunnable {
 public:
-    ThumbnailResponse(QString path, QSize size, std::shared_ptr<ThumbnailStore> store)
-        : m_path(std::move(path)), m_size(size), m_store(std::move(store)) {
+    ThumbnailResponse(QString path, QString revision, QSize size, std::shared_ptr<ThumbnailStore> store)
+        : m_path(std::move(path)), m_revision(std::move(revision)), m_size(size), m_store(std::move(store)) {
         // Qt Quick owns the QQuickImageResponse. Never let QThreadPool delete
         // it as a QRunnable; Qt Quick calls deleteLater() after finished().
         setAutoDelete(false);
@@ -81,7 +82,7 @@ public:
     void run() override {
         QImage image;
         if (!m_cancelled.load(std::memory_order_relaxed))
-            image = loadThumbnail(m_path, m_size, m_store);
+            image = loadThumbnail(m_path, m_revision, m_size, m_store);
         {
             QMutexLocker lock(&m_resultMutex);
             m_image = std::move(image);
@@ -98,6 +99,7 @@ public:
 
 private:
     QString m_path;
+    QString m_revision;
     QSize m_size;
     std::shared_ptr<ThumbnailStore> m_store;
     std::atomic_bool m_cancelled {false};
@@ -110,8 +112,10 @@ ThumbnailProvider::ThumbnailProvider() : m_store(std::make_shared<ThumbnailStore
 
 QQuickImageResponse *ThumbnailProvider::requestImageResponse(const QString &id, const QSize &requestedSize) {
     // QML uses encodeURIComponent(path). No network URLs or full RAW decode.
-    const QString path = QUrl::fromPercentEncoding(id.toUtf8());
-    auto *response = new ThumbnailResponse(path, requestedSize, m_store);
+    const auto separator=id.indexOf(QStringLiteral("?relink="));
+    const QString path = QUrl::fromPercentEncoding((separator<0?id:id.left(separator)).toUtf8());
+    const QString revision=separator<0?QString():id.mid(separator+8);
+    auto *response = new ThumbnailResponse(path, revision, requestedSize, m_store);
     m_store->pool.start(response);
     return response;
 }

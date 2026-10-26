@@ -3,6 +3,7 @@
 #include "core/library/CatalogTags.h"
 #include "core/library/PhotoTimeline.h"
 #include <QObject>
+#include <QByteArray>
 #include <QHash>
 #include <QVector>
 #include <QThread>
@@ -14,7 +15,18 @@ class ProjectDatabase final : public QObject {
     Q_OBJECT
 public:
     struct PhotoCuration { int rating = 0; QString flag = QStringLiteral("none"); };
-    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; QString copyKey; QString versionName; PhotoTimeline timeline; };
+    struct OriginalIdentity {
+        qint64 sizeBytes = -1;
+        QByteArray sha256; // Complete file SHA-256, 64 lowercase hexadecimal bytes.
+        bool isKnown() const;
+        bool operator==(const OriginalIdentity &) const = default;
+    };
+    struct RelinkRequest {
+        QString sourceKey, candidatePath;
+        OriginalIdentity candidateIdentity;
+        bool acknowledgeUnknownIdentity = false;
+    };
+    struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; QString copyKey; QString versionName; PhotoTimeline timeline; QString sourceKey; OriginalIdentity identity; };
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);
@@ -23,6 +35,16 @@ public:
     bool open(const QString &projectDirectory, QVector<SavedPhoto> *photos);
     // A consistent read-only snapshot; never adopts a writer or migrates tables.
     bool readSnapshot(const QString &projectDirectory, QVector<SavedPhoto> *photos);
+    // Family comparison key only, never a path to persist or display. Lexical
+    // resolution works for missing files; Windows compares without case.
+    static QString normalizedSourcePath(const QString &projectDirectory, const QString &sourceKey);
+    // Unknown identities return true with a default identity. Reads never migrate.
+    bool originalIdentity(const QString &sourceKey, OriginalIdentity *identity);
+    // Caller hashes/verifies the source. A known baseline cannot be replaced.
+    bool recordOriginalIdentity(const QString &sourceKey, const OriginalIdentity &identity);
+    // Caller verifies candidate bytes before calling. No file I/O or hashing
+    // occurs here; all source-family database changes commit atomically.
+    bool relinkSource(const RelinkRequest &request);
     // Curation is independent of Develop adjustments, so syncing presets
     // cannot overwrite a photo's personal pick/reject/rating decision.
     bool updateCurationBatch(const QHash<QString, PhotoCuration> &changes);

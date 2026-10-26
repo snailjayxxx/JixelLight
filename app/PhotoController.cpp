@@ -49,6 +49,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider, QObject *pare
     m_statusMessage = uiText(QStringLiteral("就绪"), QStringLiteral("Ready"));
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
+    initializeRelinkJobs();
     initializeLookJobs();
     m_diagnosticTimer.setSingleShot(true);
     connect(&m_diagnosticTimer, &QTimer::timeout, this, [this] {
@@ -77,6 +78,8 @@ QVariantList PhotoController::library() const {
         QVariantMap row;
         row["name"] = m_photos[i].name;
         row["path"] = m_photos[i].path;
+        row["available"] = m_photos[i].available;
+        row["thumbnailRevision"] = qulonglong(m_photos[i].thumbnailRevision);
         row["current"] = i == m_currentIndex;
         row["index"] = i;
         row["id"] = m_photos[i].storageKey();
@@ -117,7 +120,7 @@ QString PhotoController::pipelineDescription() const {
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
 AdjustmentState *PhotoController::mutableCurrentState() {
-    if (!hasImage()) return nullptr;
+    if (!currentSourceAvailable()) return nullptr;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state);
     return &photo.state;
@@ -342,7 +345,7 @@ bool PhotoController::saveNamedPreset(const QString &name) {
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
 bool PhotoController::applyNamedPreset(const QString &name) {
-    if (!hasImage()) return false;
+    if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
     if (!presets.load(&error) || !presets.get(name, &state)) {
         setStatus(uiText("无法读取预设：", "Cannot read preset: ") + (error.isEmpty() ? name : error)); return false;
@@ -418,7 +421,7 @@ bool PhotoController::importXmp(const QUrl &source) {
     return applyParsedXmp(document);
 }
 bool PhotoController::applyParsedXmp(const XmpSidecar::Document &document) {
-    if (!hasImage()) return false;
+    if (!hasImage() || (document.hasAdjustments && !currentSourceAvailable())) return false;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state); photo.history.finish();
     if (document.hasRating) photo.rating = document.rating;
@@ -513,8 +516,8 @@ void PhotoController::openXmpImportDialog() {
     applyParsedXmp(parsed);
 }
 
-bool PhotoController::canUndo() const { return hasImage() && m_photos[m_currentIndex].history.canUndo(); }
-bool PhotoController::canRedo() const { return hasImage() && m_photos[m_currentIndex].history.canRedo(); }
+bool PhotoController::canUndo() const { return currentSourceAvailable() && m_photos[m_currentIndex].history.canUndo(); }
+bool PhotoController::canRedo() const { return currentSourceAvailable() && m_photos[m_currentIndex].history.canRedo(); }
 QVariantList PhotoController::editHistory() const {
     QVariantList out;
     if (!hasImage()) return out;
@@ -892,11 +895,13 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     }
 
     PhotoEntry entry{info.absoluteFilePath(), info.fileName(), {}, isRaw};
+    entry.sourceKey=entry.path;
     entry.timeline.importedAt = QDateTime::currentMSecsSinceEpoch();
     if (isRaw) entry.state.look.mode = "as-shot"; // New imports only; old projects remain off.
     m_photos.push_back(entry);
     m_importedPaths.insert(identity);
     markPhotoDirty(entry); m_catalogDateTimer.start();
+    queueSourceIdentity(entry.path);
     ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
 
     if (notifyImmediately) {
@@ -1038,7 +1043,7 @@ void PhotoController::importFiles(const QVariantList &urls) {
 void PhotoController::selectPhoto(int index) {
     if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
     m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
-    if (index == m_currentIndex) return;
+    if (index == m_currentIndex && (!hasImage() || m_photos[index].available==sourceReadable(m_photos[index]))) return;
     if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
     enqueueEdits();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
@@ -1059,18 +1064,27 @@ void PhotoController::selectPhoto(int index) {
     m_fastSource = {}; m_gpuSource = {}; m_loadedPreview = {}; m_loadedKey.clear();
     m_sourceIsFull = false; m_currentMetadata.clear(); m_scopes = {};
     m_scopesUpdating = true; m_scopesRank = -1; m_displayPixels = {};
-    m_loading = hasImage(); m_preparing = false; m_gpuActive = false; emit backendChanged();
+    if(hasImage()) {
+        const bool available=sourceReadable(m_photos[index]);
+        if(available!=m_photos[index].available) {m_photos[index].available=available;emit libraryChanged();}
+    }
+    m_loading = currentSourceAvailable(); m_preparing = false; m_gpuActive = false; emit backendChanged();
+    m_scopesLabel.clear();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
     emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
     emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
     emit activityChanged();
     ActionTrace::instance().record("select_photo", {{"index", index}, {"file", currentFile()}, {"raw", currentIsRaw()}, {"photo_epoch", qint64(m_photoEpoch)}});
-    if (hasImage()) loadCurrent(); else setBusy(false);
+    if (currentSourceAvailable()) loadCurrent();
+    else {
+        m_scopesUpdating=false; setBusy(false);
+        if(hasImage())setStatus(uiText("源文件缺失或不可读，版本、历史和标签已保留。请重新关联源文件。", "Source is missing or unreadable. Versions, history and tags are retained. Relink the source."));
+    }
 }
 
 void PhotoController::loadCurrent() {
-    if (!hasImage()) return;
+    if (!currentSourceAvailable()) return;
     setBusy(true);
     setStatus(uiText(QStringLiteral("正在后台读取：%1").arg(QFileInfo(currentFile()).fileName()), QStringLiteral("Loading in background: %1").arg(QFileInfo(currentFile()).fileName())));
     m_loader->submit({currentFile(), m_photoEpoch});
@@ -1099,9 +1113,13 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
+        cancelRelink(); ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
         // A new catalog stores absolute source keys; an opened legacy catalog
         // keeps its original relative keys until it is explicitly copied here.
-        for (auto &photo : m_photos) if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
+        for (auto &photo : m_photos) {
+            photo.sourceKey=photo.path;
+            if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
+        }
         for (const auto &p : m_photos) {
             if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag},p.timeline)) {
                 setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError()); return false;
@@ -1114,6 +1132,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
             m_dirtyDates.insert(p.storageKey(),p.timeline);
         }
         enqueueEdits();
+        for(const auto &photo:m_photos)if(sourceReadable(photo))queueSourceIdentity(photo.path);
         emit projectChanged();
         setStatus(uiText(QStringLiteral("项目已创建：") + m_project.projectName(), QStringLiteral("Project created: ") + m_project.projectName()));
     } else {
@@ -1136,6 +1155,7 @@ bool PhotoController::openProject(const QUrl &url) {
 
     // All callbacks are generation-guarded: no in-flight task from the old
     // project may publish a preview or scopes for this project's first photo.
+    cancelRelink(); m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
     ++m_photoEpoch;
@@ -1165,15 +1185,21 @@ bool PhotoController::openProject(const QUrl &url) {
     for (const auto &record : saved) {
         const QFileInfo rawPath(record.path);
         const QFileInfo info(rawPath.isAbsolute() ? record.path : QDir(m_project.projectPath()).filePath(record.path));
-        if (!info.isFile() || !info.isReadable()) { ++missing; continue; }
+        const bool available=info.isFile() && info.isReadable() && !info.canonicalFilePath().isEmpty();
+        if (!available) ++missing;
         const QString identity = info.canonicalFilePath();
-        if (identity.isEmpty() || (record.copyKey.isEmpty() && m_importedPaths.contains(identity))) continue;
         const QString absolute = info.absoluteFilePath();
         m_photos.push_back({absolute, info.fileName() + (record.copyKey.isEmpty() ? QString() : " · " + record.versionName), record.adjustments,
                             RawDecoder::isRawFile(absolute), record.rating, record.flag, record.history, record.tags, record.copyKey, record.versionName, record.copyKey.isEmpty() ? record.path : QString(),record.timeline});
-        if (record.copyKey.isEmpty()) m_importedPaths.insert(identity);
+        auto &photo=m_photos.last();
+        photo.available=available; photo.sourceKey=record.sourceKey.isEmpty()?record.path:record.sourceKey;
+        if(record.identity.isKnown())m_identityEstablished.insert(absolute);
+        if (record.copyKey.isEmpty() && !identity.isEmpty()) m_importedPaths.insert(identity);
     }
-    for (const auto &photo : m_photos) m_importedPaths.insert(QFileInfo(photo.path).canonicalFilePath());
+    for (const auto &photo : m_photos) {
+        const auto canonical=QFileInfo(photo.path).canonicalFilePath();
+        if(!canonical.isEmpty())m_importedPaths.insert(canonical);
+    }
     m_catalogDateTimer.start();
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
     emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
@@ -1183,12 +1209,12 @@ bool PhotoController::openProject(const QUrl &url) {
     emit previewGeometryChanged(); emit activityChanged();
     if (!m_photos.isEmpty()) selectPhoto(0);
 
-    setStatus(uiText(QStringLiteral("已打开项目：%1 · %2 张照片 · %3 个缺失文件保留在原目录中")
+    setStatus(uiText(QStringLiteral("已打开项目：%1 · %2 个照片/版本 · %3 个版本的源文件缺失")
                           .arg(m_project.projectName()).arg(m_photos.size()).arg(missing),
-                     QStringLiteral("Opened project: %1 · %2 photos · %3 missing files kept in catalog")
+                     QStringLiteral("Opened project: %1 · %2 photos/versions · %3 versions with missing sources")
                           .arg(m_project.projectName()).arg(m_photos.size()).arg(missing)));
     ActionTrace::instance().record("project_opened",
-        {{"project", path}, {"available", m_photos.size()}, {"missing", missing}});
+        {{"project", path}, {"available", m_photos.size()-missing}, {"missing", missing}});
     return true;
 }
 
@@ -1243,7 +1269,7 @@ void PhotoController::pasteAdjustments() {
 }
 
 bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
-    if (!hasImage() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
+    if (!currentSourceAvailable() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
     auto *state=mutableCurrentState();
     AdjustmentTransfer::apply(*state,m_clipboard,groups);
     m_photos[m_currentIndex].history.finish();
@@ -1257,7 +1283,9 @@ void PhotoController::syncAdjustmentsToAll() {
 }
 
 int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
-    if (!hasImage() || !AdjustmentTransfer::validGroups(groups)) return -1;
+    if (!currentSourceAvailable() || !AdjustmentTransfer::validGroups(groups)) return -1;
+    for(int i=0;i<m_photos.size();++i)
+        if(i!=m_currentIndex && (!selectedOnly || m_selectedPhotos.contains(i)) && !m_photos[i].available)return -1;
     const auto source=m_photos[m_currentIndex].state;
     const auto sourceKey=m_photos[m_currentIndex].storageKey();
     QStringList changedKeys; int targets=0;
@@ -1283,7 +1311,7 @@ int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selecte
 }
 
 bool PhotoController::exportCurrent(const QUrl &destination, const QString &colorSpaceKey, int quality) {
-    if (!hasImage() || exportBusy()) return false;
+    if (!currentSourceAvailable() || !sourceReadable(m_photos[m_currentIndex]) || exportBusy() || m_relinkBusy) return false;
     QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
     if (path.isEmpty()) return false;
     if (!QStringList{"jpg","jpeg","png","tif","tiff","webp"}.contains(QFileInfo(path).suffix().toLower())) path += ".jpg";
@@ -1369,10 +1397,13 @@ QVariantMap PhotoController::exportVersionNamePreview(const QStringList &keys, c
 
 bool PhotoController::exportVersions(const QStringList &keys, const QUrl &folder, const QString &colorSpaceKey,
                                      int quality, const QString &format, const QString &pattern, int sequenceStart) {
-    if (exportBusy() || !folder.isLocalFile()) return false;
+    if (exportBusy() || m_relinkBusy || !folder.isLocalFile()) return false;
     QString error;
     const auto resolved=resolveExportVersions(keys,&error);
     if (!error.isEmpty()) { setStatus(error); return false; }
+    for(const auto &photo:resolved)if(!photo.available || !sourceReadable(photo)) {
+        setStatus(uiText("所选版本包含缺失或不可读的源文件，请先重新关联。", "Selected versions include a missing or unreadable source. Relink it first.")); return false;
+    }
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
     // One resolved catalog-order snapshot drives both names and requests.
@@ -1416,7 +1447,10 @@ bool PhotoController::exportVersions(const QStringList &keys, const QUrl &folder
 
 bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format,
                                 const QString &pattern, int sequenceStart) {
-    if (m_photos.isEmpty() || exportBusy() || !folder.isLocalFile()) return false;
+    if (m_photos.isEmpty() || exportBusy() || m_relinkBusy || !folder.isLocalFile()) return false;
+    for(const auto &photo:m_photos)if(!photo.available || !sourceReadable(photo)) {
+        setStatus(uiText("目录包含缺失或不可读的源文件，请先重新关联或只导出可用版本。", "Catalog contains a missing or unreadable source. Relink it or export available selected versions.")); return false;
+    }
     QDir directory(folder.toLocalFile());
     if (!directory.exists()) return false;
     QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
@@ -1592,6 +1626,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_relinkJob.reset(); m_identityJob.reset();
     m_importNameDatesJob.reset();
     m_copyImportQueue.reset();
     m_plotTimer.stop(); m_plotJob.reset();
@@ -1677,7 +1712,7 @@ void PhotoController::initializeJobs() {
         });
     m_catalogDateTimer.setSingleShot(true); m_catalogDateTimer.setInterval(50);
     connect(&m_catalogDateTimer,&QTimer::timeout,this,[this] {
-        QStringList paths; for (const auto &photo : m_photos) if (!photo.timeline.captureChecked) paths.append(photo.path);
+        QStringList paths; for (const auto &photo : m_photos) if (photo.available && !photo.timeline.captureChecked) paths.append(photo.path);
         paths.removeDuplicates(); paths.sort();
         if (!paths.isEmpty()) m_catalogDatesJob->submit({m_catalogEpoch,paths});
     });
@@ -1790,6 +1825,20 @@ void PhotoController::initializeJobs() {
 void PhotoController::acceptSource(quint64 photo, SourceData data) {
     if (photo != m_photoEpoch || m_closing) { PerformanceRecorder::count("source_results_discarded"); return; }
     if (!data.error.isEmpty()) {
+        if(hasImage()) {
+            m_photos[m_currentIndex].available=false;
+            ++m_photoEpoch; ++m_requestedRevision;
+            m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
+            m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_plotJob->cancel();
+            m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop(); m_plotTimer.stop();
+            m_fullSource={};m_loadedPreview={};m_previewSource={};m_processedPreview={};m_gpuSource={};m_fastSource={};
+            m_scopes={};m_scopesLabel.clear();m_scopePlot={};m_preparing=false;m_gpuActive=false;m_sourceIsFull=false;m_currentMetadata.clear();
+            if(m_provider){m_provider->setImage({});m_provider->setScopePlot({});}
+            ++m_previewRevision;
+            emit libraryChanged();emit currentIndexChanged();emit previewUrlChanged();emit gpuFrameChanged();
+            emit scopesChanged();emit scopePlotChanged();emit backendChanged();
+            emit currentMetadataChanged();
+        }
         m_loading = false; setBusy(false); emit activityChanged();
         setStatus(uiText(QStringLiteral("读取失败：%1").arg(data.error), QStringLiteral("Load failed: %1").arg(data.error)));
         ActionTrace::instance().record("source_load_failed", {{"file", currentFile()}, {"error", data.error}});
@@ -1813,6 +1862,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
     updateCaptureTime(currentFile(),data.metadata.value("captureTime").toString());
     if (data.fullResolution) {
         m_fullSource = data.image; m_loading = false;
+        queueSourceIdentity(currentFile());
         m_prefetchTimer.start();
         setStatus(uiText(QStringLiteral("已读取：%1 × %2 · 线性宽色域").arg(data.image.width()).arg(data.image.height()),
                          QStringLiteral("Loaded: %1 × %2 · linear wide gamut").arg(data.image.width()).arg(data.image.height())));
@@ -2026,7 +2076,7 @@ void PhotoController::requestScopePlot() {
 void PhotoController::prefetchNeighbor() {
     if (!hasImage() || m_loading || exportBusy()) return;
     const int next = m_currentIndex + 1 < m_photos.size() ? m_currentIndex + 1 : m_currentIndex - 1;
-    if (next < 0) return;
+    if (next < 0 || !m_photos[next].available) return;
     if (m_fullSource.sizeInBytes() * 2 > m_sourceCache->budgetBytes()) return;
     m_prefetch->submit({m_photos[next].path, m_photoEpoch});
 }

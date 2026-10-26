@@ -64,6 +64,75 @@ ApplicationWindow {
     }
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.undo() }
+    function chooseRelinkSource() {
+        if (!photoController.hasImage || !photoController.projectPath) return
+        relinkFilePicker.versionKey = photoController.library[photoController.currentIndex].id
+        relinkFilePicker.catalogToken = photoController.relinkCatalogToken()
+        relinkFilePicker.open()
+    }
+    FileDialog {
+        id: relinkFilePicker
+        objectName: "relinkFilePicker"
+        property string versionKey: ""
+        property string catalogToken: ""
+        title: window.t("选择该原片的新位置", "Choose the original's new location")
+        fileMode: FileDialog.OpenFile
+        onAccepted: { if (photoController.beginRelink(versionKey, selectedFile, catalogToken)) relinkDialog.open() }
+    }
+    Dialog {
+        id: relinkDialog
+        objectName: "relinkSourceDialog"
+        anchors.centerIn: parent
+        width: Math.min(window.width-40,620)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: window.t("重新关联源文件", "Relink source")
+        readonly property var preview: photoController.relinkPreview
+        onAboutToShow: unknownIdentityAcknowledgement.checked = false
+        onRejected: photoController.cancelRelink()
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                text: window.t("原位置：", "Previous location: ") + (relinkDialog.preview.oldPath || "")
+                    + "\n\n" + window.t("新位置：", "New location: ") + (relinkDialog.preview.candidatePath || "")
+                    + "\n\n" + window.t("将更新共享此源文件的 %1 个照片/版本，保留各自的编辑、历史、评分和标签。", "Update %1 photos/versions sharing this source, preserving their edits, history, ratings and tags.").arg(relinkDialog.preview.versionCount || 0)
+                color: "#d6dee8"
+            }
+            BusyIndicator { Layout.alignment: Qt.AlignHCenter; running: photoController.relinkBusy; visible: running }
+            Label {
+                objectName: "relinkIdentityVerdict"
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                text: relinkDialog.preview.status === "error" ? (relinkDialog.preview.error || "")
+                    : photoController.relinkBusy ? window.t("正在后台校验完整文件和解码，请稍候…", "Verifying full file content and decoding in background…")
+                    : relinkDialog.preview.identityKnown ? window.t("完整 SHA-256 与目录记录一致，文件可解码。", "Full SHA-256 matches the catalog record; the file decodes successfully.")
+                    : window.t("旧目录没有完整内容校验记录，无法证明这是原来的照片。请自行核对新位置后确认。", "This older catalog has no full content identity. It cannot prove this is the original photograph. Check the new source before confirming.")
+                color: relinkDialog.preview.status === "error" ? "#ef9b85" : "#a8bed4"
+            }
+            CheckBox {
+                id: unknownIdentityAcknowledgement
+                objectName: "relinkUnknownIdentityAcknowledgement"
+                visible: !relinkDialog.preview.identityKnown && relinkDialog.preview.status === "ready"
+                Layout.fillWidth: true
+                text: window.t("我已核对该文件，同意将其作为这些版本的源文件。", "I checked this file and accept it as the source of these versions.")
+                contentItem: Label { text: unknownIdentityAcknowledgement.text; leftPadding: unknownIdentityAcknowledgement.indicator.width + 8; wrapMode: Text.WordWrap; color: "#d6dee8"; verticalAlignment: Text.AlignVCenter }
+            }
+        }
+        footer: DialogButtonBox {
+            Button {
+                objectName: "confirmRelinkSource"
+                text: window.t("确认关联", "Confirm relink")
+                enabled: !photoController.relinkBusy && relinkDialog.preview.status === "ready"
+                    && (relinkDialog.preview.identityKnown || unknownIdentityAcknowledgement.checked)
+                onClicked: photoController.confirmRelink(relinkDialog.preview.requestId,unknownIdentityAcknowledgement.checked)
+            }
+            Button { objectName: "cancelRelinkSource"; text: window.t("取消", "Cancel"); onClicked: relinkDialog.reject() }
+        }
+        Connections {
+            target: photoController
+            function onRelinkChanged() { if (photoController.relinkPreview.status === "complete") relinkDialog.accept() }
+        }
+    }
     Shortcut { sequences: [StandardKey.Redo]; enabled: photoController.canRedo; onActivated: photoController.redo() }
     Shortcut { sequence: StandardKey.Open; onActivated: photoController.openImportDialog() }
 
@@ -284,6 +353,7 @@ ApplicationWindow {
             MenuItem { text: window.t("打开已有项目", "Open Existing Project"); enabled: !photoController.copyImportBusy; onTriggered: openProjectFolder.open() }
             MenuSeparator {}
             MenuItem { text: window.t("导入 XMP 到当前版本…", "Import XMP into current version…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpImportDialog() }
+            MenuItem { objectName: "relinkSourceMenuAction"; text: window.t("重新关联源文件…", "Relink source…"); enabled: photoController.hasImage && photoController.projectPath.length > 0 && !photoController.relinkBusy && !photoController.exportBusy; onTriggered: window.chooseRelinkSource() }
         }
         Menu {
             id: exportActions
@@ -456,6 +526,7 @@ ApplicationWindow {
                         LibraryWorkspace {
                             controller: photoController
                             onEditRequested: window.workspaceIndex = 1
+                            onRelinkRequested: window.chooseRelinkSource()
                         }
                     }
                 }
@@ -470,13 +541,19 @@ ApplicationWindow {
             Item {
                 anchors.fill: parent; anchors.margins: 18
                 RowLayout {
-                    anchors.fill: parent; spacing: 12; visible: photoController.hasImage
+                    anchors.fill: parent; spacing: 12; visible: photoController.currentSourceAvailable
                     ColumnLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0
                         Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.t("当前 RAW / 编辑结果", "Current RAW / edit result"); color: "#aebccc" }
                         PhotoCanvas { objectName: "photoCanvas"; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController }
                     }
                     CameraReferenceView { controller: photoController; visible: photoController.showCameraReference; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0 }
+                }
+                Column {
+                    anchors.centerIn: parent; visible: photoController.hasImage && !photoController.currentSourceAvailable; spacing: 14
+                    Label { anchors.horizontalCenter: parent.horizontalCenter; text: window.t("源文件缺失或不可读", "Source missing or unreadable"); color: "#e6b078"; font.pixelSize: 22 }
+                    Label { text: window.t("照片版本、编辑历史、评分和标签仍保留在项目中。", "Versions, edit history, ratings and tags remain in the project."); color: "#a2b2c3" }
+                    Button { anchors.horizontalCenter: parent.horizontalCenter; text: window.t("重新关联源文件…", "Relink source…"); enabled: !photoController.relinkBusy && !photoController.exportBusy; onClicked: window.chooseRelinkSource() }
                 }
                 Column {
                     anchors.centerIn: parent; visible: !photoController.hasImage; spacing: 10
@@ -495,6 +572,7 @@ ApplicationWindow {
                 id: rightDevelop
                 objectName: "developRightPanel"
                 controller: photoController
+                enabled: photoController.currentSourceAvailable
                 visible: window.workspaceIndex === 1 && window.rightPanelVisible
                 SplitView.preferredWidth: 390
                 SplitView.minimumWidth: 320
