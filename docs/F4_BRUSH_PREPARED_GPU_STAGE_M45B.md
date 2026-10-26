@@ -1,6 +1,6 @@
 # F4 M4.5B — prepared brush preview and GPU display handoff
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Candidate working tree based on `ea31a48`. This stage's own three-platform/deployed-package acceptance is pending. It builds on the explicit M4.5A owned CPU request, without enabling saved brush documents or a painting UI.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Accepted at exact HEAD `381078d32c1fc17d58c1afe1f0ce734288df04b7` by [CI #40355916212](https://github.com/snailjayxxx/JixelLight/actions/runs/40355916212). It builds on the explicit M4.5A owned CPU request, without enabling saved brush documents or a painting UI.
 
 ## Problem and behavior
 
@@ -39,6 +39,14 @@ Final working-tree **26/26 CTest passed in293.80s**, with mandatory actual Metal
 
 Native existing-app GUI also passed CPU14,042ms and Metal14,707ms, each23/23 screenshots,10,340,960 full scopes pixels, selected-export checks and zero QML errors under the unchanged60,000ms gate. Independent mask pointer912ms and missing-source recovery486ms passed, with all required flags and recovery screenshots; recovery still reports `file_picker_automated:false`. Evidence is in the physical build `local-brush-prepared-gui/`. These verify the current application, not a paintable brush UI.
 
-## Remaining work
+## Exact-HEAD CI acceptance
+
+[CI #40355916212](https://github.com/snailjayxxx/JixelLight/actions/runs/40355916212) completed Success on Windows x64, macOS ARM64 and Linux QRhi. Tested merge `1b92ce3634e91509d39c831bc96ad9c20da1b5c1` has tree `b74dd09366233ac75960f4d58810565301406369`, identical to HEAD `381078d32c1fc17d58c1afe1f0ce734288df04b7`. Every platform passed **26/26 CTest**,212 Core/36 mandatory GPU/39 performance/21 Sony Look/9 DB/9 missing-source/16 admission results, nine existing large CPU shards and four new GPU shards, zero failed/skipped results. Complete test elapsed801.17s Windows,727.66s macOS,313.50s Linux; all120s shard and original GUI/GPU limits remained.
+
+All three prepared-frame cases in all three output spaces on all three platforms (27 combinations) had maximumRGB error **0/65535**, exact alpha and all1024 histogram bins. Actual native fit/pan still contained3,763,200/2,649,357 pixels; signed/HDR/alpha2,124,881 pixels. GPU readback reports CPU-reference-upload and actual upload executed, never native GPU brush. Original2Mi APIs refuse these complete frames. Texture/memory/mutated-plan refusal, unchanged source/revision, healthy retry, retained upload lease and ordinary-compute/destruction release passed. All platforms reported the same641,073,152/498,501,248/431,368,320 peak reservation ceilings for replacement fit/pan/HDR requests. Source hashes and real-camera RGBA64 storage remained unchanged.
+
+Both actual deployed packages passed all **seven modes**, SDK paths removed. CPU GUI Windows54,894ms/macOS37,090ms and GPU38,052/31,458ms retained23/23 screenshots,10,340,960 full scopes pixels, selected-export checks and zero QML errors under60,000ms. Native source recovery3,191/1,307ms passed all flags/three screenshots with `file_picker_automated:false`. Five original evidence ZIPs passed GitHub SHA-256 and ZIP CRC validation. Complete original logs, reports and numeric summary are in `/tmp/jixellight-40355916212-*` and the immutable run artifacts. This acceptance covers only the exact tree above; later production routing or refined retained-payload accounting needs its own CI.
+
+## Remaining production work
 
 Integrate owned requests into the actual preview/analysis/export scheduling with visible refusal/retry and shared-budget competition handling; hand off completed frames into independently charged caches; validate full Controller/CLI/queue routes. Only then enable document persistence, history/undo and native painting with reopen/export/scopes evidence. Native GPU brush computation and calibrated native FP32 RAW remain separate unfinished work.

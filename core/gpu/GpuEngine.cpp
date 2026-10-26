@@ -257,9 +257,9 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             const QImage cpuResult = admitted ? admittedPixels.image() : ImagePipeline::processWithPlan(source, plan);
             if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
             auto uploadFrame=ImagePipeline::floatSource(cpuResult);
+            if(admitted)uploadFrame=admitted->retainFloatUpload(std::move(uploadFrame));
             if(uploadFrame.isNull()){updates->release();return fail("CPU fallback upload allocation failed");}
             m_cpuFallbackFrame=std::move(uploadFrame);
-            m_cpuFallbackLease=std::move(admittedPixels);
             QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));
             upload.setSourceSize(m_cpuFallbackFrame.size());
             upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));
@@ -273,7 +273,7 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
                     ? QStringLiteral("M4.4A research brush CPU numeric -> GPU display/scopes")
                     : QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
         } else {
-            m_cpuFallbackFrame={};m_cpuFallbackLease={};
+            m_cpuFallbackFrame={};
             cb->beginComputePass(updates);
             cb->setComputePipeline(m_pipeline.get());
             cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());

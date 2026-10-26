@@ -1,13 +1,15 @@
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/pipeline/StageGraph.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QMutexLocker>
 #include <QRgba64>
 #include <algorithm>
 #include <limits>
 
-RenderedPreviewCache::RenderedPreviewCache(qint64 bytes)
-    : m_entries(int(std::clamp(bytes / 1024, qint64(0), qint64(std::numeric_limits<int>::max())))) {}
+RenderedPreviewCache::RenderedPreviewCache(qint64 bytes,std::shared_ptr<BrushRenderBudget> brushBudget)
+    : m_entries(int(std::clamp(bytes / 1024, qint64(0), qint64(std::numeric_limits<int>::max())))),
+      m_brushBudget(std::move(brushBudget)) {}
 
 QJsonObject RenderedPreviewCache::snapshotLocked() const {
     return {{"schema", 1}, {"backend", "cpu-preview"}, {"key_version", "cpu-preview-v1"},
@@ -25,15 +27,18 @@ void RenderedPreviewCache::recordLocked() {
     PerformanceRecorder::value("render_cache", snapshotLocked());
 }
 
-QImage RenderedPreviewCache::render(const QImage &source, const ProcessingPlan &plan, const CancelToken &cancel) {
+QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel,QString *error) {
+    if(error)error->clear();
     PerformanceSpan timing("preview_render_cached");
     if (cancelled(cancel)) {
         QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {};
     }
     if (source.isNull()) return {};
+    const bool brush=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
+    if(brush&&!BrushRenderRequest::validPreparedPlan(plan,error))return {};
     const auto lut = plan.data[ProcessingPlan::LookStyle].w > 0 ? plan.state.look.lut : nullptr;
     const qint64 bytes = qint64(source.width()) * source.height() * sizeof(QRgba64)
-        + (lut ? qint64(lut->rgb.size()) * sizeof(float) : 0);
+        + (lut ? qint64(lut->rgb.capacity()) * sizeof(float) : 0);
     const qint64 cost = (bytes + 1023) / 1024;
     const bool cacheable = m_entries.maxCost() > 0 && cost <= m_entries.maxCost();
     const QString key = cacheable ? StageGraph::renderKey(source, plan) : QString{};
@@ -51,7 +56,11 @@ QImage RenderedPreviewCache::render(const QImage &source, const ProcessingPlan &
         }
         recordLocked();
     }
-    QImage image = ImagePipeline::processWithPlan(source, plan, cancel);
+    QImage image;
+    if(brush) {
+        auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,cancel,error,m_brushBudget);
+        if(request)image=request->render(cancel,error).sharedImage();
+    }else image=ImagePipeline::processWithPlan(source,plan,cancel);
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     if (image.isNull() || !cacheable) return image;

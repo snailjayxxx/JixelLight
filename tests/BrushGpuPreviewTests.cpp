@@ -104,14 +104,14 @@ private slots:
         QVERIFY(engine->error().isEmpty());QCOMPARE(engine->sourceUploads(),quint64(0));QVERIFY(!engine->outputTexture());
         auto budget=std::make_shared<BrushRenderBudget>();const auto good=render(source,plan,budget);
         QVERIFY2(!good.image.isNull(),qPrintable(good.error));QCOMPARE(good.image,independentStrips(source,plan));
-        QVERIFY(budget->snapshot().charged>0);QVERIFY(engine->lastProcessUsedCpuFallback());
+        QCOMPARE(budget->snapshot().charged,source.sizeInBytes());QVERIFY(engine->lastProcessUsedCpuFallback());
         QCOMPARE(good.fingerprint["producer"].toString(),QString("cpu-reference-upload"));
         const auto uploads=engine->sourceUploads(),rendered=engine->renderedRevision();
         auto changed=plan;changed.state.hue+=1e-12;
         denied=render(source,changed,budget);QVERIFY(denied.image.isNull());QVERIFY(denied.error.contains("original intent"));
         QCOMPARE(engine->sourceUploads(),uploads);QCOMPARE(engine->renderedRevision(),rendered);QVERIFY(engine->error().isEmpty());
         QVERIFY(ordinaryFrame(source));QVERIFY(!engine->lastProcessUsedCpuFallback());QCOMPARE(budget->snapshot().charged,0);
-        QVERIFY(!render(source,plan,budget).image.isNull());QVERIFY(budget->snapshot().charged>0);
+        QVERIFY(!render(source,plan,budget).image.isNull());QCOMPARE(budget->snapshot().charged,source.sizeInBytes());
         engine.reset();QCOMPARE(budget->snapshot().charged,0);engine=std::make_unique<GpuEngine>(rhi.get());
     }
     void realSonyPreparedPreview_data() {
@@ -141,7 +141,7 @@ private slots:
             }
             QVERIFY2(maximum<=40,qPrintable(QString::number(maximum)));
             QCOMPARE(actual.fingerprint["producer"].toString(),QString("cpu-reference-upload"));
-            QCOMPARE(actual.histogram.pixelCount,quint64(source.width())*source.height());
+            QCOMPARE(actual.histogram.pixelCount,quint64(source.width())*source.height());QCOMPARE(budget->snapshot().charged,source.sizeInBytes());
             const auto bins=ScopesEngine::analyze(actual.image);QCOMPARE(actual.histogram.red,bins.red);QCOMPARE(actual.histogram.green,bins.green);QCOMPARE(actual.histogram.blue,bins.blue);QCOMPARE(actual.histogram.luma,bins.luma);
             qInfo().noquote()<<"ADMITTED_BRUSH_GPU_EVIDENCE "<<QJsonDocument(QJsonObject{
                 {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case","prepared-signed-hdr-alpha"},
@@ -186,7 +186,7 @@ private slots:
             const auto bins=ScopesEngine::analyze(actual.image);QCOMPARE(actual.histogram.pixelCount,quint64(expected.width())*expected.height());
             QCOMPARE(actual.histogram.red,bins.red);QCOMPARE(actual.histogram.green,bins.green);QCOMPARE(actual.histogram.blue,bins.blue);QCOMPARE(actual.histogram.luma,bins.luma);
             QVERIFY(actual.fingerprint["available"].toBool());QCOMPARE(actual.fingerprint["producer"].toString(),QString("cpu-reference-upload"));
-            QVERIFY(!actual.fingerprint["monitor_icc"].toBool());QVERIFY(budget->snapshot().charged>0);
+            QVERIFY(!actual.fingerprint["monitor_icc"].toBool());QCOMPARE(budget->snapshot().charged,prepared.gpu.sizeInBytes());
             qInfo().noquote()<<"ADMITTED_BRUSH_GPU_EVIDENCE "<<QJsonDocument(QJsonObject{
                 {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case",panned?"sony-pan100":"sony-fit"},
                 {"raw_sha256",QString::fromLatin1(expectedHash)},{"raw_pixels",qint64(source.image.width())*source.image.height()},

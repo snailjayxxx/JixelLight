@@ -26,6 +26,9 @@ class BrushImageLease final {
 public:
     BrushImageLease()=default;
     const QImage &image() const { return m_image; }
+    // A read-only pixel view whose shallow copies retain both pixels and charge.
+    // Use this when returning a QImage to caches/providers beyond this lease.
+    QImage sharedImage() const;
     explicit operator bool() const { return !m_image.isNull(); }
 private:
     // Hold the lease for the entire use of image(); don't escape an unleased
@@ -60,6 +63,8 @@ public:
     static std::unique_ptr<BrushRenderRequest> createPrepared(const QImage &source,const ProcessingPlan &plan,
         Layout layout=Layout::Whole,const CancelToken &cancel={},QString *error=nullptr,
         std::shared_ptr<BrushRenderBudget> budget={});
+    // Bounded control-state validation for cache lookup, without pixel work.
+    static bool validPreparedPlan(const ProcessingPlan &plan,QString *error=nullptr);
     BrushRenderRequest(const BrushRenderRequest &)=delete;
     BrushRenderRequest &operator=(const BrushRenderRequest &)=delete;
     QSize size() const { return m_region.size(); }
@@ -80,6 +85,8 @@ private:
         const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
         const ProcessingPlan *expectedPlan);
     QImage prepare(const CancelToken &cancel,QString *error) const;
+    QImage retainFloatUpload(QImage image);
+    friend class GpuEngine;
     bool begin(Layout expected,const CancelToken &cancel,QString *error);
     // Reservation outlives all request-owned image/plan payloads.
     std::shared_ptr<BrushRenderBudget> m_budget;
@@ -92,4 +99,5 @@ private:
     QRect m_region;
     qint64 m_reservedBytes=0;
     std::atomic_bool m_used{false};
+    bool m_renderCompleted=false,m_uploadRetained=false;
 };

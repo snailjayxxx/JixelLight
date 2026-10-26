@@ -75,7 +75,6 @@ private:
     QString m_uploadedDisplayColorLutKey;
     QString m_displayColorProfileName;
     // Keeps CPU safety-fallback upload bytes alive until the following frame.
-    // Declare the lease first so its charge outlives the float upload image.
-    BrushImageLease m_cpuFallbackLease;
+    // Admitted uploads carry a payload reservation in their QImage cleanup.
     QImage m_cpuFallbackFrame;
 };

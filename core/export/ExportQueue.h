@@ -6,6 +6,7 @@
 #include <QFutureWatcher>
 #include <QThreadPool>
 #include <QVector>
+class BrushRenderBudget;
 
 struct ExportRequest {
     QString sourcePath, destination;
@@ -19,7 +20,8 @@ struct ExportResult { QString source, destination, error; bool ok=false; };
 class ExportQueue final : public QObject {
     Q_OBJECT
 public:
-    explicit ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent=nullptr);
+    explicit ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent=nullptr,
+                         std::shared_ptr<BrushRenderBudget> brushBudget={});
     ~ExportQueue() override;
     bool start(QVector<ExportRequest> requests);
     void cancel();
@@ -31,6 +33,7 @@ signals:
     void finished(int succeeded,int failed,bool cancelled);
 private:
     std::shared_ptr<SourceCache> m_cache;
+    std::shared_ptr<BrushRenderBudget> m_brushBudget;
     std::shared_ptr<std::atomic_bool> m_interactive=std::make_shared<std::atomic_bool>(false);
     QThreadPool m_pool;
     QFutureWatcher<QVector<ExportResult>> m_watcher;

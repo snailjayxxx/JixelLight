@@ -17,8 +17,19 @@ struct BrushRenderBudget::Accounting {
 struct BrushRenderBudget::Reservation {
     Reservation(std::shared_ptr<Accounting> owner,qint64 count):accounting(std::move(owner)),bytes(count){}
     std::shared_ptr<Accounting> accounting;
-    qint64 bytes=0;
-    ~Reservation(){accounting->charged.fetch_sub(bytes,std::memory_order_relaxed);}
+    mutable std::atomic<qint64> bytes{0};
+    // Transfer already reserved bytes without increasing aggregate charge.
+    // A child is allocated before changing the parent, so allocation failure
+    // cannot lose a charge or refund memory that is still in use.
+    std::shared_ptr<const void> split(qint64 count) const {
+        if(count<=0)return {};
+        auto child=std::make_shared<Reservation>(accounting,0);
+        auto remaining=bytes.load(std::memory_order_relaxed);
+        do {if(remaining<count)return {};}
+        while(!bytes.compare_exchange_weak(remaining,remaining-count,std::memory_order_relaxed));
+        child->bytes.store(count,std::memory_order_relaxed);return child;
+    }
+    ~Reservation(){accounting->charged.fetch_sub(bytes.load(std::memory_order_relaxed),std::memory_order_relaxed);}
 };
 BrushRenderBudget::BrushRenderBudget(qint64 bytes):m_accounting(std::make_shared<Accounting>(bytes)){}
 BrushRenderBudget::Snapshot BrushRenderBudget::snapshot() const {
@@ -40,6 +51,21 @@ std::shared_ptr<const void> BrushRenderBudget::reserve(qint64 bytes) {
 }
 
 namespace {
+QImage retainPixels(const QImage &image,std::shared_ptr<const void> reservation) {
+    if(image.isNull()||!reservation)return {};
+    struct Owner {std::shared_ptr<const void> reservation;QImage image;};
+    auto owner=std::make_unique<Owner>(Owner{std::move(reservation),image});
+    const auto *pixels=owner->image.constBits();
+    QImage result(pixels,image.width(),image.height(),image.bytesPerLine(),image.format(),
+        [](void *data){delete static_cast<Owner *>(data);},owner.get());
+    if(result.isNull())return {};
+    owner.release();
+    result.setColorSpace(image.colorSpace());result.setDevicePixelRatio(image.devicePixelRatio());
+    result.setDotsPerMeterX(image.dotsPerMeterX());result.setDotsPerMeterY(image.dotsPerMeterY());
+    for(const auto &key:image.textKeys())result.setText(key,image.text(key));
+    // Metadata must not have detached the buffer and escaped its reservation.
+    return result.constBits()==pixels?result:QImage{};
+}
 bool fail(QString *error,const QString &message){if(error)*error=message;return false;}
 QSize outputSize(const QSize &source,const GeometryState &geometry) {
     if(!GeometryState::validJson(geometry.toJson()))return {};
@@ -118,6 +144,25 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
 }
 }
 
+QImage BrushImageLease::sharedImage() const {
+    try{return retainPixels(m_image,m_reservation);}catch(...){return {};}
+}
+bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *error) {
+    if(error)error->clear();
+    if(!plan.m_brushIntent)return fail(error,"Prepared brush plan has no original intent");
+    try {
+        if((plan.encoding!=ImagePipeline::InputEncoding::SRgb&&plan.encoding!=ImagePipeline::InputEncoding::LinearProPhoto)
+            ||int(plan.output)<0||int(plan.output)>int(ColorManagement::OutputSpace::ProPhotoRgb)
+            ||!std::isfinite(plan.baseExposureStops)||plan.baseExposureStops<-8||plan.baseExposureStops>8)
+            return fail(error,"Invalid prepared brush specification");
+        if(!validState(*plan.m_brushIntent))return fail(error,"Invalid original brush intent");
+        const auto frame=plan.data[ProcessingPlan::FrameRect];
+        if(!BrushMaskTileRaster::validNormalizedFrame({frame.x,frame.y,frame.z,frame.w}))return fail(error,"Invalid prepared viewport");
+        auto expected=ProcessingPlan::compile(*plan.m_brushIntent,plan.encoding,plan.output,plan.rawSource,plan.baseExposureStops);
+        expected.setFrameRect({frame.x,frame.y,frame.z,frame.w});
+        return samePreparedPlan(expected,plan)||fail(error,"Prepared brush plan differs from its original intent");
+    }catch(...){return fail(error,"Cannot validate prepared brush intent");}
+}
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget) {
     return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr);
@@ -201,7 +246,10 @@ BrushImageLease BrushRenderRequest::render(const CancelToken &cancel,QString *er
         const auto source=prepare(cancel,error);if(source.isNull())return {};
         auto rendered=ImagePipeline::renderAdmittedBrush(source,m_plan,m_region,cancel,m_spec.parallel);
         if(rendered.isNull()||cancelled(cancel)){fail(error,cancelled(cancel)?"Cancelled":"Admitted brush rendering failed");return {};}
-        BrushImageLease lease;lease.m_reservation=m_reservation;lease.m_image=std::move(rendered);return lease;
+        BrushImageLease lease;
+        lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(rendered.sizeInBytes());
+        if(!lease.m_reservation){fail(error,"Cannot retain admitted output payload");return {};}
+        lease.m_image=std::move(rendered);m_renderCompleted=true;return lease;
     }catch(...){fail(error,"Admitted brush rendering failed");return {};}
 }
 bool BrushRenderRequest::visitStrips(const StripConsumer &consumer,const CancelToken &cancel,QString *error) {
@@ -212,11 +260,23 @@ bool BrushRenderRequest::visitStrips(const StripConsumer &consumer,const CancelT
         for(int y=m_region.y();y<=m_region.bottom();y+=128) {
             if(cancelled(cancel))return fail(error,"Cancelled");
             const QRect region(m_region.x(),y,m_region.width(),std::min(128,m_region.bottom()-y+1));
-            BrushImageLease lease;lease.m_reservation=m_reservation;
+            BrushImageLease lease;
             lease.m_image=ImagePipeline::renderAdmittedBrush(source,m_plan,region,cancel,m_spec.parallel);
             if(lease.m_image.isNull())return fail(error,cancelled(cancel)?"Cancelled":"Admitted strip rendering failed");
+            lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(lease.m_image.sizeInBytes());
+            if(!lease.m_reservation)return fail(error,"Cannot retain admitted strip payload");
             if(!consumer(lease,y-m_region.y()))return fail(error,"Admitted strip consumer refused output");
         }
         return !cancelled(cancel)||fail(error,"Cancelled");
     }catch(...){return fail(error,"Admitted strip rendering or consumer failed");}
+}
+QImage BrushRenderRequest::retainFloatUpload(QImage image) {
+    if(!m_renderCompleted||m_uploadRetained||m_spec.layout!=Layout::Whole
+        ||image.format()!=QImage::Format_RGBA32FPx4||image.size()!=size())return {};
+    try {
+        auto charge=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(image.sizeInBytes());
+        auto retained=retainPixels(image,std::move(charge));
+        if(!retained.isNull())m_uploadRetained=true;
+        return retained;
+    }catch(...){return {};}
 }

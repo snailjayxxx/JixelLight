@@ -1,5 +1,6 @@
 #include "core/gpu/GpuPreviewItem.h"
 #include "core/gpu/GpuEngine.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/color/MonitorColorTransform.h"
 #include "app/PhotoController.h"
 #include <QQuickWindow>
@@ -43,16 +44,21 @@ public:
             if (gpuSeconds>0) PerformanceRecorder::sample("gpu_previous_frame_ms",gpuSeconds*1000.0,{{"scope",QStringLiteral("whole previous QRhi frame, not one node")}});
         }
         const auto controller=m_controller;
-        const bool processed=m_engine->process(cb,m_source,m_plan,m_revision,
+        const auto histogram=GpuEngine::HistogramReady(
             [controller](quint64 revision,QByteArray counts,quint64 pixels) {
                 if (controller) QMetaObject::invokeMethod(controller,[controller,revision,counts=std::move(counts),pixels] {
                     if (controller) controller->gpuScopes(revision,counts,pixels);
                 },Qt::QueuedConnection);
             });
+        QString failure;
+        const bool processed=BrushMaskTileRaster::anyEnabled(m_plan.state.brushMasks)
+            ?m_engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure)
+            :m_engine->process(cb,m_source,m_plan,m_revision,histogram);
         if (!processed || !m_engine->draw(cb,renderTarget())) {
-            diagnosticUnavailable(m_engine->error());
+            if(failure.isEmpty())failure=m_engine->error();
+            diagnosticUnavailable(failure);
             m_failed=true;
-            if (controller) QMetaObject::invokeMethod(controller,[controller,error=m_engine->error()] {
+            if (controller) QMetaObject::invokeMethod(controller,[controller,error=failure] {
                 if (controller) controller->gpuFailed(error);
             },Qt::QueuedConnection);
             return;

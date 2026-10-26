@@ -45,6 +45,19 @@ QByteArray fileBytes(const QString &path){QFile file(path);return file.open(QIOD
 class BrushAdmissionTests final:public QObject {
     Q_OBJECT
 private slots:
+    void returnedQImageAliasesRetainPayloadWithoutRetainingTransientReservation() {
+        auto source=scene(83,61);source.setDevicePixelRatio(2);source.setDotsPerMeterX(11811);source.setDotsPerMeterY(11811);
+        const auto state=edits();BrushRenderRequest::Spec spec;QString error;auto budget=std::make_shared<BrushRenderBudget>();
+        auto request=BrushRenderRequest::create(source,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));
+        const auto admitted=request->reservedBytes();auto lease=request->render({},&error);QVERIFY2(lease,qPrintable(error));
+        auto image=lease.sharedImage();QVERIFY(!image.isNull());QCOMPARE(image.constBits(),lease.image().constBits());
+        QCOMPARE(image.colorSpace(),lease.image().colorSpace());QCOMPARE(image.devicePixelRatio(),lease.image().devicePixelRatio());
+        QCOMPARE(image.dotsPerMeterX(),lease.image().dotsPerMeterX());QCOMPARE(image.dotsPerMeterY(),lease.image().dotsPerMeterY());
+        auto alias=image;const auto bytes=image.sizeInBytes();QCOMPARE(budget->snapshot().charged,admitted);
+        request.reset();lease={};QCOMPARE(budget->snapshot().charged,bytes);QCOMPARE(budget->snapshot().peak,admitted);
+        auto changed=alias;changed.fill(Qt::black);QVERIFY(changed.constBits()!=alias.constBits());QVERIFY(changed!=alias);
+        image={};QCOMPARE(budget->snapshot().charged,bytes);alias={};QCOMPARE(budget->snapshot().charged,0);
+    }
     void preparedPlanPreservesOriginalLookAndAppliesGeometryOnce() {
         const auto source=scene(317,239);auto state=edits();state.geometry.straighten=1.2;
         state.geometry.crop={.03,.02,.92,.95};state.geometry.quarterTurns=1;
@@ -113,8 +126,8 @@ private slots:
         auto request=BrushRenderRequest::create(source,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));QCOMPARE(budget->snapshot().charged,needed);
         QVERIFY(!BrushRenderRequest::create(source,state,spec,{},&error,budget));QCOMPARE(budget->snapshot().charged,needed);
         auto lease=request->render({},&error);QVERIFY2(lease,qPrintable(error));auto borrowed=lease;
-        request.reset();QCOMPARE(budget->snapshot().charged,needed);QVERIFY(!borrowed.image().isNull());
-        lease={};QCOMPARE(budget->snapshot().charged,needed);borrowed={};QCOMPARE(budget->snapshot().charged,0);QCOMPARE(budget->snapshot().peak,needed);
+        const auto outputBytes=lease.image().sizeInBytes();request.reset();QCOMPARE(budget->snapshot().charged,outputBytes);QVERIFY(!borrowed.image().isNull());
+        lease={};QCOMPARE(budget->snapshot().charged,outputBytes);borrowed={};QCOMPARE(budget->snapshot().charged,0);QCOMPARE(budget->snapshot().peak,needed);
         auto recovered=BrushRenderRequest::create(source,state,spec,{},&error,budget);QVERIFY2(recovered,qPrintable(error));recovered.reset();QCOMPARE(budget->snapshot().charged,0);
     }
     void streamedUnevenRoiAndRetainedStripsMatchFullDetailPixels() {
@@ -128,7 +141,7 @@ private slots:
         QCOMPARE(rows,337);QCOMPARE(retained.size(),std::size_t(3));QCOMPARE(retained.back().image().height(),81);
         QImage assembled(expected.size(),QImage::Format_RGBA64);assembled.setColorSpace(expected.colorSpace());int y=0;
         for(const auto &lease:retained)for(int row=0;row<lease.image().height();++row,++y)std::memcpy(assembled.scanLine(y),lease.image().constScanLine(row),std::size_t(assembled.width())*8);
-        QCOMPARE(assembled,expected);const auto charge=request->reservedBytes();request.reset();QCOMPARE(budget->snapshot().charged,charge);
+        QCOMPARE(assembled,expected);request.reset();QCOMPARE(budget->snapshot().charged,expected.sizeInBytes());
         retained.clear();QCOMPARE(budget->snapshot().charged,0);
     }
     void preparedInputNeverAppliesStoredGeometryTwice() {
@@ -187,7 +200,7 @@ private slots:
         auto budget=std::make_shared<BrushRenderBudget>();auto request=BrushRenderRequest::create(source,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));
         std::vector<BrushImageLease> partial;int calls=0;auto token=std::make_shared<std::atomic_bool>(false);
         QVERIFY(!request->visitStrips([&](const auto &lease,int){partial.push_back(lease);if(++calls==2)token->store(true);return true;},token,&error));
-        QCOMPARE(calls,2);QVERIFY(error.contains("Cancelled"));const auto charged=request->reservedBytes();
+        QCOMPARE(calls,2);QVERIFY(error.contains("Cancelled"));qint64 charged=0;for(const auto &lease:partial)charged+=lease.image().sizeInBytes();
         QVERIFY(!request->visitStrips([](const auto &,int){return true;},{},&error));QVERIFY(error.contains("already"));request.reset();QCOMPARE(budget->snapshot().charged,charged);
         partial.clear();QCOMPARE(budget->snapshot().charged,0);
         auto healthy=BrushRenderRequest::create(source,state,spec,{},&error,budget);QVERIFY2(healthy,qPrintable(error));
