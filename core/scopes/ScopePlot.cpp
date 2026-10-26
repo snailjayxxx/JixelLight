@@ -77,6 +77,8 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
         PerformanceSpan timing("cpu_scope_plot",{{"mode",request.mode},{"full",request.fullResolution}});
         const auto source=request.geometry.apply(request.source,cancel);
         if (source.isNull() || cancelled(cancel)) return result;
+        if (!ImagePipeline::preflightTiledResearchRequest(source.size(),request.plan,128,cancel,&result.error))
+            return cancelled(cancel) ? ScopePlotResult{} : result;
         // The same processRegion path and halos as exact histogram/JPEG; bounded
         // rendered rows instead of an additional full-size output allocation.
         for (int y=0;y<source.height();y+=128) {
@@ -103,6 +105,9 @@ std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request,c
         std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
         const auto source=request.geometry.apply(request.source,cancel);
         if (source.isNull() || cancelled(cancel)) return {};
+        QString preflightError;
+        if (!ImagePipeline::preflightTiledResearchRequest(source.size(),request.plan,128,cancel,&preflightError))
+            return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(preflightError);
         for (int y=0;y<source.height();y+=128) {
             if (cancelled(cancel)) return {};
             const auto tile=ImagePipeline::processRegion(source,request.plan,{0,y,source.width(),std::min(128,source.height()-y)},cancel);

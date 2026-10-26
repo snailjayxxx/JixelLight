@@ -104,9 +104,10 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
                                            {"raw",rawSource},{"raw_base_ev",rawBaseExposureStops}});
     const QImage transformed = state.geometry.apply(source,token);
     if (transformed.isNull() || cancelled(token)) { if (error) *error="Cancelled or invalid geometry"; return false; }
+    const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
+    if (!ImagePipeline::preflightTiledResearchRequest(transformed.size(),plan,128,token,error)) return false;
     Writer writer(path);
     if (!writer.begin(transformed.width(),transformed.height(),quality,ColorManagement::iccProfile(space))) { if (error) *error=writer.failure; return false; }
-    const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
     const QImage input=transformed.format()==QImage::Format_RGBA64 ? transformed : transformed.convertToFormat(QImage::Format_RGBA64);
     for (int y=0;y<input.height();y+=128) {
         while (interactive && interactive->load(std::memory_order_relaxed) && !cancelled(token)) QThread::msleep(10);

@@ -665,6 +665,20 @@ void copySourceMetadata(const QImage &source,QImage &target) {
     target.setDotsPerMeterX(source.dotsPerMeterX()); target.setDotsPerMeterY(source.dotsPerMeterY());
     for (const auto &key : source.textKeys()) target.setText(key,source.text(key));
 }
+bool validResearchDetail(const Float4 &detail) {
+    return std::isfinite(detail.x) && std::isfinite(detail.y)
+        && std::isfinite(detail.z) && std::isfinite(detail.w)
+        && detail.z>=0 && detail.z<=12 && detail.w>=0 && detail.w<=12;
+}
+QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,const QRect &region) {
+    const QRect bounds(QPoint{},sourceSize);
+    const QRect roi=region.intersected(bounds);
+    if (roi.isEmpty()) return {};
+    const auto detail=plan.data[ProcessingPlan::LookDetail];
+    if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks) && !validResearchDetail(detail)) return {};
+    const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w});
+    return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
+}
 }
 bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &token) {
     if (source.isNull() || source.format()!=QImage::Format_RGBA32FPx4 || cancelled(token)) return false;
@@ -710,6 +724,88 @@ QImage ImagePipeline::rgba64Source(const QImage &source,const CancelToken &token
 QImage ImagePipeline::process(const QImage &source, const AdjustmentState &state, InputEncoding encoding,
                              ColorManagement::OutputSpace output, const CancelToken &token, bool parallel) {
     return processWithPlan(source, ProcessingPlan::compile(state, encoding, output), token, parallel);
+}
+bool ImagePipeline::preflightTiledResearchRequest(const QSize &frameSize,const ProcessingPlan &plan,
+                                                 int stripeHeight,const CancelToken &token,QString *error) {
+    if (error) error->clear();
+    const auto fail=[&](const QString &message) { if (error) *error=message; return false; };
+    if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+    if (frameSize.width()<=0 || frameSize.height()<=0 || stripeHeight<=0)
+        return fail(QStringLiteral("Invalid research request size or stripe height"));
+    const auto &document=plan.state.brushMasks;
+    // The ordinary no-brush path neither allocates nor scans source pixels.
+    if (document.layers.empty())
+        return cancelled(token) ? fail(QStringLiteral("Cancelled")) : true;
+    if (!BrushMaskDocument::validDocument(document))
+        return fail(QStringLiteral("Invalid research brush document"));
+    if (!BrushMaskTileRaster::anyEnabled(document))
+        return cancelled(token) ? fail(QStringLiteral("Cancelled")) : true;
+    if (!BrushMaskGeometry::validFrame(frameSize.width(),frameSize.height()))
+        return fail(QStringLiteral("Invalid research brush frame size"));
+    if (std::size_t(frameSize.width())*frameSize.height()>BrushMaskTileRaster::MaxResearchFramePixels)
+        return fail(QStringLiteral("Research brush request exceeds the whole-frame pixel budget"));
+    const auto rect=plan.data[ProcessingPlan::FrameRect];
+    const BrushMaskTileRaster::NormalizedFrame frame{rect.x,rect.y,rect.z,rect.w};
+    if (!BrushMaskTileRaster::validNormalizedFrame(frame))
+        return fail(QStringLiteral("Invalid research brush normalized frame"));
+    // Public research plans can be assembled by tools. Validate before halo's
+    // float-to-int conversion and QRect expansion; compiled radii are 0..12.
+    const auto detail=plan.data[ProcessingPlan::LookDetail];
+    if (!validResearchDetail(detail))
+        return fail(QStringLiteral("Invalid research brush detail settings"));
+
+    // Transform each active dab once. Retain only integer bounds; this check
+    // neither copies the document nor prepares a per-strip candidate index.
+    struct Bounds { int left,top,right,bottom; };
+    std::vector<Bounds> candidates;
+    const BrushMaskTileRaster::Rect whole{0,0,frameSize.width(),frameSize.height()};
+    for (const auto &layer : document.layers) {
+        if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+        if (!layer.enabled || layer.exposureEv==0) continue;
+        for (const auto &stroke : layer.strokes) {
+            if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+            if (stroke.style.opacity==0) continue;
+            for (const auto &dab : stroke.dabs) {
+                if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+                if (dab.pressure==0) continue;
+                const auto bounds=BrushMaskTileRaster::detail::candidateBounds(
+                    dab,stroke.style,frameSize.width(),frameSize.height(),whole,frame);
+                if (bounds.area()) candidates.push_back({bounds.left,bounds.top,bounds.right,bounds.bottom});
+            }
+        }
+    }
+    std::size_t totalVisits=0;
+    constexpr int edge=BrushMaskTileRaster::MaxTileEdge;
+    for (int y=0;y<frameSize.height();) {
+        if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+        const int height=std::min(stripeHeight,frameSize.height()-y);
+        const auto expanded=expandedColorRegion(frameSize,plan,{0,y,frameSize.width(),height});
+        const int columns=(expanded.width()+edge-1)/edge;
+        const int rows=(expanded.height()+edge-1)/edge;
+        std::vector<std::size_t> tileVisits(std::size_t(columns)*rows,0);
+        for (const auto &bounds : candidates) {
+            if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+            const int left=std::max(bounds.left,expanded.left()),right=std::min(bounds.right,expanded.right());
+            const int top=std::max(bounds.top,expanded.top()),bottom=std::min(bounds.bottom,expanded.bottom());
+            if (left>right || top>bottom) continue;
+            for (int row=(top-expanded.y())/edge;row<=(bottom-expanded.y())/edge;++row) {
+                for (int column=(left-expanded.x())/edge;column<=(right-expanded.x())/edge;++column) {
+                    if (cancelled(token)) return fail(QStringLiteral("Cancelled"));
+                    const int tileX=expanded.x()+column*edge,tileY=expanded.y()+row*edge;
+                    const auto area=std::size_t(std::min(right,tileX+edge-1)-std::max(left,tileX)+1)
+                                   *std::size_t(std::min(bottom,tileY+edge-1)-std::max(top,tileY)+1);
+                    auto &visits=tileVisits[std::size_t(row)*columns+column];
+                    if (area>BrushMaskTileRaster::MaxDabPixelVisits-visits
+                        || area>BrushMaskTileRaster::MaxFrameDabPixelVisits-totalVisits)
+                        return fail(QStringLiteral("Research brush request exceeds the whole-operation work budget"));
+                    visits+=area;
+                    totalVisits+=area;
+                }
+            }
+        }
+        y+=height;
+    }
+    return cancelled(token) ? fail(QStringLiteral("Cancelled")) : true;
 }
 namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,const QSize &sourceSize,const QPoint &origin) {
@@ -878,8 +974,8 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
 
 QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &token) {
     const QRect roi=region.intersected(source.rect());if(roi.isEmpty())return {};
-    const auto d=plan.data[ProcessingPlan::LookDetail];const int pad=LookDetail::halo({d.x,d.y,d.z,d.w});
-    const QRect expanded=roi.adjusted(-pad,-pad,pad,pad).intersected(source.rect());
+    const QRect expanded=expandedColorRegion(source.size(),plan,roi);
+    if (expanded.isEmpty()) return {};
     const QImage result=processColorFrame(source.copy(expanded),plan,token,true,source.size(),expanded.topLeft());
     if(result.isNull())return {};
     return result.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));

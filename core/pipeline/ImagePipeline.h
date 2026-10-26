@@ -24,6 +24,12 @@ public:
                           InputEncoding encoding = InputEncoding::SRgb,
                           ColorManagement::OutputSpace output = ColorManagement::OutputSpace::SRgb,
                           const CancelToken &cancel = {}, bool parallel = true);
+    // Whole-operation research guard for row-streamed callers. Charge every
+    // expanded strip, including repeated detail halos, before source color
+    // conversion or output creation. A single bounded processRegion remains
+    // an independent ROI request; inactive brushes retain ordinary large images.
+    static bool preflightTiledResearchRequest(const QSize &frameSize,const ProcessingPlan &plan,
+                          int stripeHeight,const CancelToken &cancel = {},QString *error = nullptr);
     static QImage processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &cancel = {});
     static QImage processWithPlan(const QImage &source, const ProcessingPlan &plan,
                           const CancelToken &cancel = {}, bool parallel = true);

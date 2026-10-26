@@ -61,6 +61,7 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins, const CancelTo
 }
 ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
     if (source.isNull()) return {};
+    if (!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,token)) return {};
     PerformanceSpan timing("full_resolution_scopes",{{"pixels",qint64(source.width())*source.height()}});
     // FP32 scenes must enter the *same* color kernel as the preview and
     // export. The former integer adapter truncated values >1 before user

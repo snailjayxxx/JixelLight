@@ -13,7 +13,10 @@ bool exportRaster(const QImage &source, const AdjustmentState &state, const QStr
     if (!QImageWriter::supportedImageFormats().contains(codec)) return fail("Required image format plugin is unavailable: "+codec);
     PerformanceSpan timer("raster_export", {{"format",QString::fromLatin1(codec)}, {"space",ColorManagement::key(space)}, {"raw",rawSource}});
     const auto plan = ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
-    auto rendered = ImagePipeline::processWithPlan(state.geometry.apply(source,cancel),plan,cancel);
+    const auto transformed=state.geometry.apply(source,cancel);
+    if (transformed.isNull() || cancelled(cancel)) return fail("Cancelled or image allocation failed");
+    if (!ImagePipeline::preflightTiledResearchRequest(transformed.size(),plan,transformed.height(),cancel,error)) return false;
+    auto rendered = ImagePipeline::processWithPlan(transformed,plan,cancel);
     if (rendered.isNull() || cancelled(cancel)) return fail("Cancelled or image allocation failed");
     if (rendered.format() != QImage::Format_RGBA64) return fail("Expected 16-bit RGBA output");
     if (format == RasterFormat::Tiff16 && rendered.sizeInBytes() > qint64(0xffffffff)-16*1024*1024)

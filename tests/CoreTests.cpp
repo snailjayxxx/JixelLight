@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 #include <QStandardPaths>
 #include <QScopeGuard>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QUuid>
 #include <QUrl>
 #include <exiv2/exiv2.hpp>
@@ -42,6 +43,7 @@
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
 #include "core/export/PngExporter.h"
+#include "core/export/JpegExporter.h"
 #include "core/export/RasterExporter.h"
 #include "core/export/ExportNaming.h"
 #include "core/export/ExportQueue.h"
@@ -1902,6 +1904,275 @@ private slots:
         QVERIFY(!active.updateAdjustment("active.png",bad));
         bad=settings;bad.brushMasks.layers[0].id="../escaped";
         QVERIFY(!active.updateAdjustment("invalid.png",bad));
+    }
+
+    // F4 M4.4B.5: budgets belong to the entire logical operation, including
+    // repeated detail halos, rather than restarting at each 128-row strip.
+    void brushTiledOperationPreflightCancelsWhilePlanningWithoutPoisoningLaterRequests() {
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        constexpr int height=100000;
+        QVERIFY(BM::validFrame(1,height));
+        BM::Stroke stroke{BM::Style{.002,.5,.75},{}};
+        // Every dab has exactly one integer candidate pixel. The complete
+        // request is legal, while 100000 one-row strips keep planning active
+        // long enough to cancel without doing any pixel rendering.
+        stroke.dabs.assign(128,{{.5,(50000+.5)/height},1.});
+        AdjustmentState state;
+        for(int layerIndex=0;layerIndex<2;++layerIndex) {
+            BD::Layer layer;layer.id=QStringLiteral("cancel_preflight_%1").arg(layerIndex);
+            layer.enabled=true;layer.exposureEv=layerIndex?-.1:.1;
+            layer.strokes.assign(64,stroke);
+            state.brushMasks.layers.push_back(std::move(layer));
+        }
+        QVERIFY(BD::validDocument(state.brushMasks));
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+        auto token=std::make_shared<std::atomic_bool>(false);
+        std::atomic_bool entered{false};QString error;
+        auto future=QtConcurrent::run([&] {
+            entered.store(true,std::memory_order_release);
+            return ImagePipeline::preflightTiledResearchRequest(QSize(1,height),plan,1,token,&error);
+        });
+        const auto cancelAndJoin=qScopeGuard([&] {
+            token->store(true,std::memory_order_relaxed);
+            future.waitForFinished();
+        });
+        while(!entered.load(std::memory_order_acquire))QTest::qWait(1);
+        QTest::qWait(1);
+        const bool pending=!future.isFinished();
+        token->store(true,std::memory_order_relaxed);
+        future.waitForFinished();
+        QVERIFY(pending);
+        QVERIFY(!future.result());
+        QCOMPARE(error,QString("Cancelled"));
+        error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(QSize(1,1),plan,1,{},&error));
+        QVERIFY(error.isEmpty());
+    }
+
+    void brushTiledOperationPreflightCountsWholeFrameAndRepeatedHalos() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        BD::Layer layer;layer.id="whole_operation";layer.enabled=true;layer.exposureEv=.1;
+        BM::Stroke stroke{BM::Style{.5,1,1},{}};
+        stroke.dabs.assign(96,{{.5,.5},1.});layer.strokes={stroke};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        const auto compile=[](const AdjustmentState &settings) {
+            return ProcessingPlan::compile(settings,ImagePipeline::InputEncoding::LinearProPhoto,
+                                           ColorManagement::OutputSpace::SRgb,false,0);
+        };
+        const QSize frameSize(2048,1024);
+        auto plan=compile(state);
+        QString error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(frameSize,plan,128,{},&error));
+        QVERIFY(error.isEmpty());
+        // The integer candidate square is 1024x1024. Ninety-six dabs
+        // exactly consume 96 Mi visits; each real strip remains legal.
+        std::size_t visits=0;
+        for(int y=0;y<frameSize.height();y+=128) {
+            BT::FramePlan strip;
+            QVERIFY(BT::planFrame(state.brushMasks,frameSize.width(),frameSize.height(),
+                                  {0,y,frameSize.width(),128},&strip));
+            visits+=strip.candidateVisits;
+        }
+        QCOMPARE(visits,BT::MaxFrameDabPixelVisits);
+        state.brushMasks.layers[0].strokes[0].dabs.push_back({{.5,.5},1.});
+        const auto excessive=compile(state);
+        visits=0;
+        for(int y=0;y<frameSize.height();y+=128) {
+            BT::FramePlan strip;
+            QVERIFY(BT::planFrame(state.brushMasks,frameSize.width(),frameSize.height(),
+                                  {0,y,frameSize.width(),128},&strip));
+            visits+=strip.candidateVisits;
+        }
+        QCOMPARE(visits,std::size_t(101711872));
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,excessive,128,{},&error));
+        QVERIFY(error.contains("brush",Qt::CaseInsensitive));
+        QVERIFY(error.contains("budget",Qt::CaseInsensitive));
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,excessive,frameSize.height()));
+
+        // Eight strips with twelve-row detail halos visit 1192 rows in
+        // total. A single full-height render has no duplicated halo work.
+        plan.data[ProcessingPlan::LookDetail]={1,0,12,0};
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,plan,128,{},&error));
+        QVERIFY(!error.isEmpty());
+        error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(frameSize,plan,frameSize.height(),{},&error));
+        QVERIFY(error.isEmpty());
+
+        auto tileHeavy=state;
+        tileHeavy.brushMasks.layers[0].strokes[0].dabs.assign(513,{{.5,.5},1.});
+        const auto tileHeavyPlan=compile(tileHeavy);
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(QSize(128,128),tileHeavyPlan,128,{},&error));
+        QVERIFY(error.contains("budget",Qt::CaseInsensitive));
+        // A real one-row schedule never exceeds the per-tile budget and
+        // remains below the whole-operation budget; count its actual work.
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(QSize(128,128),tileHeavyPlan,1,{},&error));
+        QVERIFY(error.isEmpty());
+
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(QSize(2048,1025),plan,128,{},&error));
+        QVERIFY(error.contains("pixel",Qt::CaseInsensitive));
+        auto zero=state;zero.brushMasks.layers[0].exposureEv=0;
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(QSize(2048,1025),compile(zero),128));
+        const auto cancel=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,plan,128,cancel,&error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(QSize(),plan,128,{},&error));
+        QVERIFY(!error.isEmpty());
+        for(int stripeHeight:{0,-1}) {
+            QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,plan,stripeHeight,{},&error));
+            QVERIFY(!error.isEmpty());
+        }
+        auto invalidViewport=plan;invalidViewport.data[ProcessingPlan::FrameRect]={.2f,.3f,0,.5f};
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,invalidViewport,128,{},&error));
+        QVERIFY(!error.isEmpty());
+        for(int mode=0;mode<4;++mode) {
+            auto invalidDetail=plan;
+            if(mode==0)invalidDetail.data[ProcessingPlan::LookDetail].x=std::numeric_limits<float>::quiet_NaN();
+            if(mode==1)invalidDetail.data[ProcessingPlan::LookDetail].z=std::numeric_limits<float>::max();
+            if(mode==2)invalidDetail.data[ProcessingPlan::LookDetail].z=-1;
+            if(mode==3)invalidDetail.data[ProcessingPlan::LookDetail].w=13;
+            QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,invalidDetail,128,{},&error));
+            QVERIFY(error.contains("detail",Qt::CaseInsensitive));
+        }
+
+        // Ordinary large images and valid disabled drafts retain their
+        // historical path, including unrelated detail settings.
+        auto inactive=state;inactive.brushMasks.layers[0].enabled=false;
+        auto inactivePlan=compile(inactive);
+        inactivePlan.data[ProcessingPlan::LookDetail].z=std::numeric_limits<float>::max();
+        error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(QSize(2048,1025),inactivePlan,128,{},&error));
+        QVERIFY(error.isEmpty());
+        auto ordinary=compile({});ordinary.data[ProcessingPlan::LookDetail].z=-1;
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(QSize(2048,1025),ordinary,128,{},&error));
+        QVERIFY(error.isEmpty());
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,ordinary,128,cancel,&error));
+        QVERIFY(!error.isEmpty());
+        inactive.brushMasks.layers.push_back(inactive.brushMasks.layers.front());
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(frameSize,compile(inactive),128,{},&error));
+        QVERIFY(!error.isEmpty());
+    }
+
+    void brushWholeOperationRefusalPrecedesScopesAndExportPublication() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        QImage source(2048,1024,QImage::Format_RGBA64);
+        source.fill(QColor::fromRgba64(13000,21000,31000,23456));
+        const QImage original=source.copy();
+        BM::Stroke stroke{BM::Style{.5,1,1},{}};
+        stroke.dabs.assign(97,{{.5,.5},1.});
+        BD::Layer layer;layer.id="reject_whole_operation";layer.enabled=true;
+        layer.exposureEv=.1;layer.strokes={stroke};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+        QString stripError,rasterError;
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,{},&stripError));
+        QVERIFY(!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,source.height(),{},&rasterError));
+        QVERIFY(!stripError.isEmpty());QVERIFY(!rasterError.isEmpty());
+        const auto before=PerformanceRecorder::snapshot()["counters"].toObject();
+        const auto scopes=ScopesEngine::analyzeFull(source,plan);
+        QCOMPARE(scopes.pixelCount,quint64(0));QVERIFY(scopes.red.isEmpty());
+        ScopePlotRequest request{source,plan,{},"waveform",1,true};
+        const auto individual=renderScopePlot(request,{});
+        QVERIFY(individual.image.isNull());QCOMPARE(individual.pixels,quint64(0));
+        QVERIFY(!individual.error.isEmpty());
+        const auto shared=renderScopePlots(request,{});
+        for(const auto &plot:shared) {
+            QVERIFY(plot.image.isNull());QCOMPARE(plot.pixels,quint64(0));
+            QVERIFY(!plot.error.isEmpty());
+        }
+
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        const QByteArray preserved("existing destination must survive\n");
+        for(const QString name:{"preserved.jpg","preserved.png"}) {
+            QFile file(directory.filePath(name));QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(preserved),qint64(preserved.size()));
+        }
+        const auto entries=QDir(directory.path()).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot);
+        for(const QString name:{"preserved.jpg","new.jpg","missing-parent/new.jpg"}) {
+            QString error;int progressCalls=0;
+            QVERIFY(!exportJpegTiled(source,state,directory.filePath(name),ColorManagement::OutputSpace::SRgb,
+                                     92,{},&error,[&](int){++progressCalls;}));
+            QCOMPARE(error,stripError); // before Writer.begin, even with no parent directory
+            QCOMPARE(progressCalls,0);
+        }
+        for(const QString name:{"preserved.png","new.png","missing-parent/new.png"}) {
+            QString error;
+            QVERIFY(!exportRaster(source,state,directory.filePath(name),ColorManagement::OutputSpace::SRgb,
+                                  RasterFormat::Png16,100,{},&error,false,0));
+            QCOMPARE(error,rasterError);
+        }
+        QCOMPARE(fixtureBytes(directory.filePath("preserved.jpg")),preserved);
+        QCOMPARE(fixtureBytes(directory.filePath("preserved.png")),preserved);
+        QCOMPARE(QDir(directory.path()).entryList(QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot),entries);
+        const auto after=PerformanceRecorder::snapshot()["counters"].toObject();
+        for(const char *key:{"brush_research_cpu_tiles","brush_research_rasterized_tiles",
+                            "brush_research_pruned_tiles","brush_research_dab_pixel_visits",
+                            "brush_research_candidate_references","scope_plot_shared_tiles",
+                            "scope_plot_shared_passes"})
+            QCOMPARE(after.value(key).toInteger(),before.value(key).toInteger());
+        QCOMPARE(source,original);
+    }
+
+    void brushLegalTiledScopesAndExportsRetainFullFramePixels() {
+        namespace BM=BrushMaskGeometry;
+        namespace BD=BrushMaskDocument;
+        QImage source(29,137,QImage::Format_RGBA64);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                9000+x*150,13000+y*100,23000+x*90,(x+y)%3?65535:23456);
+        const QImage original=source.copy();
+        BD::Layer layer;layer.id="legal_striped_brush";layer.enabled=true;layer.exposureEv=.6;
+        layer.strokes={BM::Stroke{BM::Style{.2,.4,.8},{{{.45,.53},1.},{{.5,.94},.75}}}};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        state.look.mode="manual";state.look.code="ST";state.look.parameters={{"sharpness",2}};
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,
+                                               ColorManagement::OutputSpace::SRgb,false,0);
+        QVERIFY(plan.data[ProcessingPlan::LookDetail].x>0);
+        QString error="stale";
+        QVERIFY(ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,{},&error));
+        QVERIFY(error.isEmpty());
+        const auto rendered=ImagePipeline::processWithPlan(source,plan,{},false);
+        QVERIFY(!rendered.isNull());
+        const auto expectedScopes=ScopesEngine::analyze(rendered);
+        const auto actualScopes=ScopesEngine::analyzeFull(source,plan);
+        QCOMPARE(actualScopes.pixelCount,quint64(source.width())*source.height());
+        QCOMPARE(actualScopes.red,expectedScopes.red);QCOMPARE(actualScopes.green,expectedScopes.green);
+        QCOMPARE(actualScopes.blue,expectedScopes.blue);QCOMPARE(actualScopes.luma,expectedScopes.luma);
+        ScopePlotRequest request{source,plan,{},"waveform",1,true};
+        const auto shared=renderScopePlots(request,{});
+        const QStringList modes{"waveform","parade","vectorscope"};
+        for(int i=0;i<modes.size();++i) {
+            request.mode=modes[i];ScopePlotCounts expected(modes[i]);QVERIFY(expected.add(rendered));
+            const auto individual=renderScopePlot(request,{});
+            QVERIFY(individual.error.isEmpty());QVERIFY(shared[i].error.isEmpty());
+            QCOMPARE(individual.pixels,quint64(source.width())*source.height());
+            QCOMPARE(individual.image,expected.image());QCOMPARE(shared[i].image,individual.image);
+        }
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        const auto jpeg=directory.filePath("legal.jpg"),png=directory.filePath("legal.png");
+        QVERIFY2(exportJpegTiled(source,state,jpeg,ColorManagement::OutputSpace::SRgb,92,{},&error),qPrintable(error));
+        QVERIFY(error.isEmpty());QCOMPARE(QImage(jpeg).size(),source.size());
+        QVERIFY2(exportRaster(source,state,png,ColorManagement::OutputSpace::SRgb,
+                              RasterFormat::Png16,100,{},&error,false,0),qPrintable(error));
+        QVERIFY(error.isEmpty());
+        const auto decoded=QImage(png).convertToFormat(QImage::Format_RGBA64);
+        QCOMPARE(decoded.size(),rendered.size());
+        for(int y=0;y<rendered.height();++y)
+            QVERIFY(std::memcmp(decoded.constScanLine(y),rendered.constScanLine(y),std::size_t(rendered.width())*8)==0);
+        const auto jpegBytes=fixtureBytes(jpeg),pngBytes=fixtureBytes(png);
+        const auto cancel=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!exportJpegTiled(source,state,jpeg,ColorManagement::OutputSpace::SRgb,92,cancel,&error));
+        QVERIFY(!error.isEmpty());QCOMPARE(fixtureBytes(jpeg),jpegBytes);
+        QVERIFY(!exportRaster(source,state,png,ColorManagement::OutputSpace::SRgb,
+                              RasterFormat::Png16,100,cancel,&error,false,0));
+        QVERIFY(!error.isEmpty());QCOMPARE(fixtureBytes(png),pngBytes);
+        QCOMPARE(ScopesEngine::analyzeFull(source,plan,cancel).pixelCount,quint64(0));
+        QCOMPARE(source,original);
     }
 
     // F4 M4.4B.4: request-owned candidates preserve the original arithmetic
