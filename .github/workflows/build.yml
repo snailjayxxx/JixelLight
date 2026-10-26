@@ -109,6 +109,8 @@ jobs:
           test -f "$EXE"
           python tools/ValidateMaskCanvas.py "$EXE" gui-mask-canvas.json
           python tools/ValidateRelink.py "$EXE" gui-source-relink.json
+          python tools/ValidateBrushCanvas.py "$EXE" gui-brush-cpu.json cpu
+          python tools/ValidateBrushCanvas.py "$EXE" gui-brush-gpu.json gpu
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -322,6 +324,8 @@ jobs:
         run: |
           python tools/ValidateMaskCanvas.py ./build/bin/JixelLight gui-mask-canvas.json
           python tools/ValidateRelink.py ./build/bin/JixelLight gui-source-relink.json
+          python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-gpu.json gpu
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

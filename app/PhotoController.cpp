@@ -45,6 +45,9 @@
 
 PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget)
     : QObject(parent),m_provider(provider),m_brushBudget(brushBudget?std::move(brushBudget):BrushRenderBudget::sharedDefault()) {
+    connect(this,&PhotoController::currentIndexChanged,this,&PhotoController::cancelBrushStroke);
+    connect(this,&PhotoController::adjustmentsChanged,this,&PhotoController::cancelBrushStroke);
+    connect(this,&PhotoController::cropEditingChanged,this,&PhotoController::cancelBrushStroke);
     QSettings settings;
     m_language = settings.value(QStringLiteral("ui/language"), QStringLiteral("zh_CN")).toString();
     if (m_language != QStringLiteral("zh_CN") && m_language != QStringLiteral("en_US")) m_language = QStringLiteral("zh_CN");
@@ -598,7 +601,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -1940,6 +1943,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
 }
 
 void PhotoController::prepareCurrent() {
+    cancelBrushStroke();
     if (m_loadedPreview.isNull()) return;
     m_preparing = true;
     m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
@@ -1964,6 +1968,7 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
+    cancelBrushStroke();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     emit libraryChanged();
     m_refineTimer.stop();

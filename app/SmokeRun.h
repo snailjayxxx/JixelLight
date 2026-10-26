@@ -6,3 +6,4 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
 void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath);
 void startMaskCanvasSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath);
 void startRelinkSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath);
+void startBrushCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath);

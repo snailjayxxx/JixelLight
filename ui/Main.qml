@@ -26,6 +26,16 @@ ApplicationWindow {
     property bool leftPanelVisible: true
     property bool rightPanelVisible: true
     property bool filmstripVisible: true
+    // Editor choices are UI state; only completed strokes enter photo history.
+    QtObject {
+        id: brushEditorState
+        property bool active: false
+        property string layerId: ""
+        property real radius: 0.05
+        property real hardness: 0.6
+        property real opacity: 1
+        property real exposure: 1
+    }
 
     Settings {
         id: workspaceSettings
@@ -421,8 +431,8 @@ ApplicationWindow {
                 onClicked: importActions.open()
             }
             ToolSeparator {}
-            ToolButton { text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.undo() }
-            ToolButton { text: window.t("重做", "Redo"); enabled: photoController.canRedo; onClicked: photoController.redo() }
+            ToolButton { objectName: "undoEditButton"; text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.undo() }
+            ToolButton { objectName: "redoEditButton"; text: window.t("重做", "Redo"); enabled: photoController.canRedo; onClicked: photoController.redo() }
             ToolButton {
                 text: window.t("复制", "Copy")
                 enabled: photoController.hasImage
@@ -545,7 +555,7 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0
                         Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.t("当前 RAW / 编辑结果", "Current RAW / edit result"); color: "#aebccc" }
-                        PhotoCanvas { objectName: "photoCanvas"; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController }
+                        PhotoCanvas { objectName: "photoCanvas"; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController; brushEditor: brushEditorState }
                     }
                     CameraReferenceView { controller: photoController; visible: photoController.showCameraReference; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0 }
                 }
@@ -572,6 +582,7 @@ ApplicationWindow {
                 id: rightDevelop
                 objectName: "developRightPanel"
                 controller: photoController
+                brushEditor: brushEditorState
                 enabled: photoController.currentSourceAvailable
                 visible: window.workspaceIndex === 1 && window.rightPanelVisible
                 SplitView.preferredWidth: 390

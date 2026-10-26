@@ -8,6 +8,34 @@ import QtCore
 Rectangle {
     id: root
     required property var controller
+    property var brushEditor: null
+    property bool brushExpanded: false
+    readonly property var brushOptions: {
+        let options=[{id:"",label:root.t("新图层（绘制后创建）","New layer (paint to create)")}]
+        const layers=root.controller.brushLayers
+        for (let i=0;i<layers.length;++i) options.push({id:layers[i].id,label:root.t("笔刷 ","Brush ")+(i+1)+" · "+layers[i].strokes})
+        return options
+    }
+    readonly property var currentBrush: {
+        if (!brushEditor) return null
+        const layers=controller.brushLayers
+        for (const layer of layers) if (layer.id === brushEditor.layerId) return layer
+        return null
+    }
+    Connections {
+        target: root.brushEditor
+        function onActiveChanged() { if (root.brushEditor.active) { root.brushExpanded=true; revealBrush.restart() } }
+    }
+    Timer {
+        id: revealBrush; interval: 30
+        onTriggered: {
+            if (!root.brushEditor || !root.brushEditor.active) return
+            const flick=toolScroll.contentItem
+            if (!flick || !flick.contentItem) return
+            const y=brushPanelHeader.mapToItem(flick.contentItem,0,0).y
+            flick.contentY=Math.max(0,Math.min(y,flick.contentHeight-flick.height))
+        }
+    }
     property bool sonyExpanded: false
     property bool basicExpanded: true
     property bool colorExpanded: true
@@ -540,8 +568,8 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；支持画布手柄调整位置、旋转和两侧羽化（Shift 精调）；笔刷、颜色/亮度选择及多层尚未实现。",
-                                     "One linear gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles edit position, rotation and both feather boundaries (Shift for precision); brush, color/luma selection and multiple layers are not yet available.")
+                        text: root.t("手动线性渐变：0° 向下，90° 向右。以裁切/旋转后的完整照片为坐标基准；支持画布手柄调整位置、旋转和两侧羽化（Shift 精调）；颜色/亮度选择及多个同类渐变尚未实现。",
+                                     "One linear gradient: 0° down, 90° right. Anchored to the complete post-crop/rotation image; canvas handles edit position, rotation and both feather boundaries (Shift for precision); color/luma selection and multiple gradients are not yet available.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
@@ -618,9 +646,48 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；支持旋转椭圆及画布两侧羽化手柄（Shift 精调）；笔刷及多个同类蒙版尚未实现。",
-                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval and two-sided canvas feather handles are supported (Shift for precision); brush and multiple radial layers remain future work.")
+                        text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；支持旋转椭圆及画布两侧羽化手柄（Shift 精调）；多个同类渐变仍待支持。",
+                                     "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval and two-sided feather handles support Shift precision; multiple radial gradients remain future work.")
                     }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton { id: brushPanelHeader; objectName: "brushPanelToggle"; text: (root.brushExpanded ? "▾ " : "▸ ")+root.t("笔刷局部曝光","BRUSH EXPOSURE"); font.bold: true; onClicked: root.brushExpanded=!root.brushExpanded }
+                    Item { Layout.fillWidth: true }
+                    Button { text: root.t("清空","Clear"); enabled: root.controller.brushLayers.length>0; onClicked: root.controller.executeEditCommand({command:"mask.brush.reset"}) }
+                }
+                ColumnLayout {
+                    visible: root.brushExpanded; Layout.fillWidth: true; spacing: 6; enabled: root.brushEditor !== null
+                    ComboBox {
+                        objectName: "brushLayerSelector"; Layout.fillWidth: true; model: root.brushOptions; textRole: "label"
+                        currentIndex: { if (!root.brushEditor) return 0; for(let i=0;i<root.brushOptions.length;++i)if(root.brushOptions[i].id===root.brushEditor.layerId)return i; return 0 }
+                        onActivated: function(index) { root.brushEditor.layerId=root.brushOptions[index].id }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
+                        Item { Layout.fillWidth: true }
+                        Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
+                    }
+                    AdjustmentSlider {
+                        Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
+                        value: root.currentBrush ? root.currentBrush.exposure : root.brushEditor ? root.brushEditor.exposure : 1
+                        onEdited: function(v) { if(root.currentBrush)root.controller.setBrushLayerExposure(root.currentBrush.id,v);else if(root.brushEditor)root.brushEditor.exposure=v }
+                    }
+                    RowLayout { Layout.fillWidth: true; Label { text: root.t("半径","Radius"); Layout.preferredWidth: 74 }
+                        Slider { objectName: "brushRadiusSlider"; Layout.fillWidth: true; from: .002; to: .5; value: root.brushEditor ? root.brushEditor.radius : .05; onMoved: root.brushEditor.radius=value }
+                        Label { text: root.brushEditor ? (root.brushEditor.radius*100).toFixed(1)+"%" : ""; Layout.preferredWidth: 42 }
+                    }
+                    RowLayout { Layout.fillWidth: true; Label { text: root.t("硬度","Hardness"); Layout.preferredWidth: 74 }
+                        Slider { objectName: "brushHardnessSlider"; Layout.fillWidth: true; from: 0; to: 1; value: root.brushEditor ? root.brushEditor.hardness : .6; onMoved: root.brushEditor.hardness=value }
+                        Label { text: root.brushEditor ? Math.round(root.brushEditor.hardness*100)+"%" : ""; Layout.preferredWidth: 42 }
+                    }
+                    RowLayout { Layout.fillWidth: true; Label { text: root.t("不透明度","Opacity"); Layout.preferredWidth: 74 }
+                        Slider { objectName: "brushOpacitySlider"; Layout.fillWidth: true; from: 0; to: 1; value: root.brushEditor ? root.brushEditor.opacity : 1; onMoved: root.brushEditor.opacity=value }
+                        Label { text: root.brushEditor ? Math.round(root.brushEditor.opacity*100)+"%" : ""; Layout.preferredWidth: 42 }
+                    }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"; text: root.t("选择画布上的“绘制笔刷”，拖动后松开应用。每笔可独立撤销；Esc 取消当前笔触。","Choose Paint brush on the canvas; drag and release to apply. Each stroke has one Undo step; Esc cancels it.") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

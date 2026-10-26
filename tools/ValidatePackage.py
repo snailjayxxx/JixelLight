@@ -10,6 +10,7 @@ import sys
 import tempfile
 from ValidateDiagnostic import validate_diagnostic
 from ValidateRelink import validate_relink
+from ValidateBrushCanvas import validate_brush
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -103,6 +104,10 @@ def main() -> int:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)
             results.append(validate_diagnostic(executable, env, home, reports, mode))
+            brush_home = Path(temp) / ("brush-" + mode)
+            brush_home.mkdir()
+            results.append(validate_brush(executable, env, brush_home,
+                                          reports / ("brush-" + mode + ".json"), mode))
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))

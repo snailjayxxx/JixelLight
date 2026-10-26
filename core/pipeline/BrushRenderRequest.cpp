@@ -163,6 +163,20 @@ bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *e
         return samePreparedPlan(expected,plan)||fail(error,"Prepared brush plan differs from its original intent");
     }catch(...){return fail(error,"Cannot validate prepared brush intent");}
 }
+QSize BrushRenderRequest::geometrySize(const QSize &source,const GeometryState &geometry) {
+    if(!BrushMaskGeometry::validFrame(source.width(),source.height()))return {};
+    return outputSize(source,geometry);
+}
+bool BrushRenderRequest::preflightGesture(const QSize &source,const ProcessingPlan &plan,QString *error) {
+    if(error)error->clear();
+    if(!BrushMaskGeometry::validFrame(source.width(),source.height())||qint64(source.width())*source.height()>MaxSourcePixels)
+        return fail(error,"Brush source exceeds the admitted geometry limit");
+    if(!validPreparedPlan(plan,error))return false;
+    if(!validState(*plan.m_brushIntent))return fail(error,"Invalid brush gesture state");
+    const auto size=geometrySize(source,plan.m_brushIntent->geometry);
+    if(size.isEmpty())return fail(error,"Invalid brush gesture geometry");
+    return ImagePipeline::preflightAdmittedBrush(size,plan,QRect(QPoint{},size),128,{},error);
+}
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
     return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr,failure);

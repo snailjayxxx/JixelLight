@@ -7,11 +7,13 @@ Item {
     id: root
     clip: true
     property var controller
+    property var brushEditor: null
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
     // Edit-mode state is UI-only, never persisted in a photo or a project.
     property string maskTool: ""
+    onMaskToolChanged: if (brushEditor && brushEditor.active !== (maskTool === "brush")) brushEditor.active = maskTool === "brush"
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
     function refresh() {
         if (controller && width>0 && height>0)
@@ -32,7 +34,10 @@ Item {
     Shortcut {
         sequence: "Escape"
         enabled: root.visible && root.maskTool !== "" && !controller.cropEditing
-        onActivated: root.maskTool = ""
+        onActivated: {
+            if (root.maskTool === "brush" && controller.brushDrawing) controller.cancelBrushStroke()
+            else root.maskTool = ""
+        }
     }
     Shortcut { sequence: "Escape"; enabled: root.visible && controller.cropEditing; onActivated: controller.cancelCrop() }
     Shortcut { sequence: "Return"; enabled: root.visible && controller.cropEditing; onActivated: root.applyCrop() }
@@ -41,11 +46,29 @@ Item {
         controller.applyCrop(r.x,r.y,r.width,r.height)
     }
     Timer { id: geometryTimer; interval: 16; onTriggered: root.refresh() }
+    Component.onDestruction: {
+        controller.cancelBrushStroke()
+        if (brushEditor) brushEditor.active = false
+    }
+    Connections {
+        target: root.brushEditor
+        function onActiveChanged() {
+            if (root.brushEditor.active) root.maskTool = "brush"
+            else if (root.maskTool === "brush") root.maskTool = ""
+        }
+    }
     Connections {
         target: root.controller
         function onCurrentIndexChanged() {
             root.maskTool=""
+            if (root.brushEditor) root.brushEditor.layerId=""
             root.centerX=.5;root.centerY=.5;root.refresh()
+        }
+        function onAdjustmentsChanged() {
+            if (!root.brushEditor || root.brushEditor.layerId === "") return
+            const layers=root.controller.brushLayers
+            for (const layer of layers) if (layer.id === root.brushEditor.layerId) return
+            root.brushEditor.layerId = ""
         }
         function onCropEditingChanged() {
             if (root.controller.cropEditing) {
@@ -84,9 +107,16 @@ Item {
             anchors.fill: parent; z: 4
             controller: root.controller
             mode: root.maskTool
-            visible: root.maskTool !== "" && !controller.cropEditing
+            visible: (root.maskTool === "linear" || root.maskTool === "radial") && !controller.cropEditing
                      && controller.previewReady && !controller.loading
             enabled: visible
+        }
+        BrushCanvasOverlay {
+            objectName: "brushCanvasOverlay"
+            anchors.fill: parent; z: 5
+            controller: root.controller; editor: root.brushEditor
+            visible: root.maskTool === "brush" && !controller.cropEditing && controller.previewReady
+            enabled: visible && controller.brushReady
         }
         CropOverlay {
             id: cropOverlay
@@ -142,12 +172,28 @@ Item {
                 onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
             }
         }
+        Row {
+            spacing: 5
+            Button {
+                objectName: "editBrushMaskCanvas"
+                enabled: controller.currentSourceAvailable && controller.previewReady && !controller.loading
+                highlighted: root.maskTool === "brush"
+                text: root.t("绘制笔刷", "Paint brush")
+                onClicked: root.maskTool = root.maskTool === "brush" ? "" : "brush"
+            }
+            Button {
+                objectName: "newBrushLayerCanvas"
+                visible: root.maskTool === "brush"; enabled: controller.brushReady
+                text: root.t("新图层", "New layer")
+                onClicked: if (root.brushEditor) { root.brushEditor.layerId=""; root.brushEditor.exposure=1 }
+            }
+        }
     }
     Label {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "linear"
+        text: root.maskTool === "brush" ? root.controller.brushStatus : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
               : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",

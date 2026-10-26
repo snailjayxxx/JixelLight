@@ -100,6 +100,11 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool brushDrawing READ brushDrawing NOTIFY brushDrawingChanged)
+    Q_PROPERTY(bool brushReady READ brushReady NOTIFY activityChanged)
+    Q_PROPERTY(QString brushStatus READ brushStatus NOTIFY activityChanged)
+    Q_PROPERTY(QSize brushFrameSize READ brushFrameSize NOTIFY previewGeometryChanged)
     Q_PROPERTY(bool blackWhite READ blackWhite WRITE setBlackWhite NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList blackWhiteMix READ blackWhiteMix NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool gradingEnabled READ gradingEnabled WRITE setGradingEnabled NOTIFY adjustmentsChanged)
@@ -294,9 +299,21 @@ public:
     // Atomic 2D center change: one undo entry per completed canvas drag.
     Q_INVOKABLE bool setRadialMaskCenter(double x,double y);
     Q_INVOKABLE void resetRadialMask();
-    // C++-only draft entrypoint. QML/CLI do NOT expose painting until the
-    // live image pipeline can render and export these masks correctly.
+    // Legacy C++ draft entrypoint stays disabled-only. Active intent uses
+    // the command registry or the guarded pointer-gesture API below.
     bool replaceBrushMaskDraft(const QJsonObject &document);
+    QVariantList brushLayers() const;
+    bool brushDrawing() const { return bool(m_brushGesture); }
+    bool brushReady() const;
+    QString brushStatus() const;
+    QSize brushFrameSize() const;
+    Q_INVOKABLE bool beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure);
+    Q_INVOKABLE bool appendBrushStroke(double x,double y,double pressure=1);
+    Q_INVOKABLE QString endBrushStroke();
+    Q_INVOKABLE void cancelBrushStroke();
+    Q_INVOKABLE bool setBrushLayerExposure(const QString &id,double exposure);
+    Q_INVOKABLE bool setBrushLayerEnabled(const QString &id,bool enabled);
+    Q_INVOKABLE bool removeBrushLayer(const QString &id);
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();
@@ -395,6 +412,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void brushDrawingChanged();
     void relinkChanged();
     void diagnosticChanged();
     void diagnosticFinished(const QString &path);
@@ -550,6 +568,18 @@ private:
     void deferBudgetJob(int job,quint64 revision);
     void retryBudgetJobs(bool afterExport=false);
     friend class BrushScopeRoutingTests;
+    struct BrushGesture {
+        QString photoKey,layer;
+        quint64 epoch=0,generation=0,revision=0;
+        qint64 sourceKey=0;
+        QSize frame;
+        QJsonObject geometry;
+        double exposure=1;
+        std::unique_ptr<BrushMaskGeometry::StrokeBuilder> builder;
+    };
+    std::unique_ptr<BrushGesture> m_brushGesture;
+    bool brushGestureCurrent() const;
+    bool brushGestureCurrent(const BrushGesture &gesture) const;
     void requestScopePlot();
 
     bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;

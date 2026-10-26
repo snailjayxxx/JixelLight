@@ -52,6 +52,7 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/BrushController.cpp
     app/RelinkController.cpp
     app/LookController.cpp
     app/DisplayColorController.cpp
@@ -107,9 +108,9 @@ target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Q
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/BrushCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
@@ -162,6 +163,12 @@ add_test(NAME brush-scopes-native COMMAND JixelLightBrushScopeRoutingTests nativ
 add_test(NAME brush-scopes-controller COMMAND JixelLightBrushScopeRoutingTests controllerFailuresRetryAndDiagnostic -o brush-scopes-controller-results.txt,txt -o -,txt)
 set_tests_properties(brush-scopes-cache brush-scopes-cancel brush-scopes-native brush-scopes-controller PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightBrushPersistenceTests tests/BrushPersistenceTests.cpp)
+qt_add_executable(JixelLightBrushGestureTests tests/BrushGestureTests.cpp)
+target_link_libraries(JixelLightBrushGestureTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushGestureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-gesture COMMAND JixelLightBrushGestureTests completedStrokeIsOneUndoAndProducesAllExportsAfterReopen geometryViewportCancellationAndSourceGuards invalidLongAndOverBudgetGesturesNeverPublishPartialState -o brush-gesture-results.txt,txt -o -,txt)
+add_test(NAME brush-gesture-sony COMMAND JixelLightBrushGestureTests realSonyGestureProducesExactFullStatistics -o brush-gesture-sony-results.txt,txt -o -,txt)
+set_tests_properties(brush-gesture brush-gesture-sony PROPERTIES TIMEOUT 120)
 target_link_libraries(JixelLightBrushPersistenceTests PRIVATE JixelLightCore Qt6::Test)
 set_target_properties(JixelLightBrushPersistenceTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_dependencies(JixelLightBrushPersistenceTests JixelLightCli)
