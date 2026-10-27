@@ -118,8 +118,10 @@ coordinates the actual histogram/plot producers without changing the deadline.
 E required committed65/all3/Core215/display-ICC4 and analytic-alpha evidence,
 both actual17-mode packages and original-byte/actual-source proof. Its Windows
 native failure prevents aggregate acceptance. F retains those gates, adds its
-new scheduling shard for66 total, and needs its own committed aggregate. C remains
-the last fully accepted checkpoint; local success does not complete F4/F0-F6.
+new scheduling shard for66 total, and now passes its own committed aggregate:
+CI40564889527 verifies66/all3, both actual17-mode packages and original-byte/
+actual-source proof. F is the latest fully accepted checkpoint; E's original
+failure stays failed. This does not complete F4/F0-F6.
 
 Source32Mi/shared3GiB, research2Mi/tile8Mi/work96Mi, all color precision,
 owned45000ms/RAW-Sony60000ms and performance120s gates remain. Pressure-device

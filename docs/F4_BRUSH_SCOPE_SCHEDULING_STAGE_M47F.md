@@ -6,7 +6,8 @@ Esc, one Undo, deletion, reopen, full32,947,264-pixel scopes and compact English
 controls, but completes final capture/hash/validation too late. The final full
 waveform capture is at59000ms and English capture at60384ms. Every three-platform
 65-test suite passes; the actual macOS17-mode SDK-stripped package also passes.
-E remains failed and C remains the last fully accepted aggregate.
+E remains failed. F's subsequent committed validation below passes all required
+gates and supersedes C as the latest fully accepted brush checkpoint.
 
 Exact histograms publish completed pre-monitor RGBA64 pixels into the shared
 analysis cache. Previously the plot timer could submit while that histogram
@@ -80,12 +81,40 @@ No Windows package manifest or validation ZIP was produced. Four available
 original ZIPs, three full original job logs, actual checkout/tree proof and the
 failed summary are archived under the physical build parent's evidence/ci-40551927782/.
 
-F requires its own committed66/all3/Core215/display-ICC4/new schedulingQt6
-and all previous numerical/native checks, both actual17-mode SDK-stripped
-packages, five original validation ZIPs, three full job logs and actual
-checkout/tree proof. Local success does not establish a Windows deadline repair
-or complete F4/F0-F6. C remains the last fully accepted aggregate until a newer
-run passes every required gate.
+## Committed F result: accepted
+
+[5178b83 / CI40564889527](https://github.com/snailjayxxx/JixelLight/actions/runs/40564889527)
+passes all three jobs. Linux66/66 in1029.22s, Windows66/66 in1761.57s and
+macOS66/66 in1528.44s have zero failures/skips. Each retains Core215,
+display-ICC4, the four scheduling rows (Qt6), all18 analytic alpha draws at
+at most1/255 and all previous numerical/source/export/ICC/budget gates.
+
+| Genuine Sony Paint/Erase, CPU / GPU ms | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| Standalone native | 49907 / 35911 | 27547 / 24784 | 18730 / 22804 |
+| Actual SDK-stripped package | 49875 / 37414 | 26158 / 25659 | n/a |
+
+Both actual SDK-stripped packages pass all17 modes, including opaque,
+transparent and genuineSony CPU/GPU Paint/Erase. Every new native workflow
+retains all12 controls-only captures, full-source scope counts, held-input RGB,
+Esc, single Undo, stored selection, reopen and compact English controls.
+The Windows Sony CPU run records49 non-blocking histogram deferrals and one
+completed-frame plot pass. The original60000ms gate includes final validation;
+F supplies its own passing result without changing E's original60880ms failure.
+Windows Sony English controls and macOS packaged transparent controls have
+also been visually inspected.
+
+All three full original job logs prove actual checkout
+703f96a0fffe1c299e6ff318e155de988bb09c2f, whose tree
+124f1c3919f68907ef01e6c0ce8319f64dcff38e equals the committed5178b83 tree.
+Five original validation ZIPs have verified API sizes, SHA256, CRC and safe
+extraction. They, the three full logs, audit scripts/configuration, accepted
+summary and terminal SHA receipt are archived under the physical build parent's
+evidence/ci-40564889527/. Earlier partial receipts and D/E failures are preserved.
+No successful heavy tests were repeated to assemble this evidence.
+
+F is the latest fully accepted brush checkpoint. This accepts the stated
+scheduling and retained brush behavior; it does not complete F4 or F0-F6.
 
 Source32Mi/shared3GiB, research2Mi/tile8Mi/work96Mi, color precision and all
 45/60/120s gates remain. Operation reservations are not RSS. Native GPU brush
