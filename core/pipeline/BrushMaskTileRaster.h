@@ -157,7 +157,7 @@ inline bool calculateCoverage(const BrushMaskDocument::Document &document,
                     return false;
             }
             for (std::size_t i=0;i<count;++i)
-                layerAlpha[i]=1-(1-layerAlpha[i])*(1-strokeAlpha[i]);
+                layerAlpha[i]=stroke.mode==BrushMaskGeometry::StrokeMode::Erase ? layerAlpha[i]*(1-strokeAlpha[i]) : 1-(1-layerAlpha[i])*(1-strokeAlpha[i]);
         }
         for (std::size_t i=0;i<count;++i)
             stops[i]+=layer.exposureEv*layerAlpha[i];
@@ -347,7 +347,7 @@ inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
                         ++i;
                     } while (i<refs.size() && refs[i].layer==layerIndex && refs[i].stroke==strokeIndex);
                     for (std::size_t p=0;p<count;++p)
-                        layerAlpha[p]=1-(1-layerAlpha[p])*(1-strokeAlpha[p]);
+                        layerAlpha[p]=stroke.mode==BrushMaskGeometry::StrokeMode::Erase ? layerAlpha[p]*(1-strokeAlpha[p]) : 1-(1-layerAlpha[p])*(1-strokeAlpha[p]);
                 }
                 for (std::size_t p=0;p<count;++p)
                     coverage.stops[p]+=layer.exposureEv*layerAlpha[p];

@@ -29,6 +29,13 @@ AdjustmentState edits() {
     for(int i=0;i<13;++i)stroke.dabs.push_back({{.21+i*.041,.32+i*.019},.6+(i%3)*.1});
     state.brushMasks.layers={{"portrait",true,.8,{stroke}},{"retained",false,-.3,{stroke}}};return state;
 }
+AdjustmentState withErase(AdjustmentState state) {
+    auto erase=state.brushMasks.layers[0].strokes[0];erase.mode=BrushMaskGeometry::StrokeMode::Erase;
+    erase.style.radius*=1.19;erase.style.opacity=.61;
+    auto repaint=erase;repaint.mode=BrushMaskGeometry::StrokeMode::Paint;repaint.style.opacity=.29;
+    repaint.dabs={erase.dabs[erase.dabs.size()/3],erase.dabs[2*erase.dabs.size()/3],erase.dabs.back()};
+    state.brushMasks.layers[0].strokes.push_back(erase);state.brushMasks.layers[0].strokes.push_back(repaint);return state;
+}
 QJsonObject document(const AdjustmentState &state){return state.toJson()["brushMasks"].toObject();}
 QImage sourceImage() {
     QImage image(2203,1207,QImage::Format_RGBA64);
@@ -143,14 +150,19 @@ private slots:
         QCOMPARE(fileHash(database),databaseHash);QCOMPARE(fileHash(path),originalHash);
     }
     void realSonyCliEnabledBrushExport_data() {
-        QTest::addColumn<QString>("format");for(const auto &format:{"png","tif","webp","jpg"})QTest::newRow(format)<<QString(format);
+        QTest::addColumn<QString>("format");QTest::addColumn<bool>("erased");
+        for(const auto &format:{"png","tif","webp","jpg"}) {
+            QTest::newRow(format)<<QString(format)<<false;
+            QTest::newRow((QString("erase-")+format).toUtf8().constData())<<QString(format)<<true;
+        }
     }
     void realSonyCliEnabledBrushExport() {
-        QFETCH(QString,format);const auto fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        QFETCH(QString,format);QFETCH(bool,erased);const auto fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
         if(fixtures.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required public Sony RAW unavailable");QSKIP("No public Sony fixture configured");}
         const auto path=QDir(fixtures).filePath("sony_a7_iv_07.arw");const QByteArray hash="aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d";
         QCOMPARE(fileHash(path),hash);const auto source=loadSourceFresh(path,{});QVERIFY2(!source.image.isNull(),qPrintable(source.error));QCOMPARE(source.image.size(),QSize(7028,4688));
-        const auto fingerprint=StageGraph::outputFingerprint(source.image);auto state=edits();state.look.mode="as-shot";state.geometry.crop={.07,.05,.4,.4};state.geometry.straighten=.7;state.geometry.quarterTurns=1;
+        const auto fingerprint=StageGraph::outputFingerprint(source.image);auto state=erased?withErase(edits()):edits();
+        QCOMPARE(document(state)["schema"].toInt(),erased?2:1);state.look.mode="as-shot";state.geometry.crop={.07,.05,.4,.4};state.geometry.straighten=.7;state.geometry.quarterTurns=1;
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto commands=dir.filePath("commands.json"),target=dir.filePath("cli."+format);
         const QJsonArray batch{QJsonObject{{"command","mask.brush.replace"},{"document",document(state)}},
             QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",state.exposure}},
@@ -175,7 +187,7 @@ private slots:
         }
         QCOMPARE(fileHash(path),hash);QCOMPARE(StageGraph::outputFingerprint(source.image),fingerprint);
         qInfo().noquote()<<"BRUSH_PERSISTENCE_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
-            {"case","real-sony-cli-enabled-brush"},{"format",format},{"source_pixels",32947264},{"output_pixels",qint64(actual.width())*actual.height()},
+            {"case","real-sony-cli-enabled-brush"},{"erase",erased},{"document_schema",erased?2:1},{"format",format},{"source_pixels",32947264},{"output_pixels",qint64(actual.width())*actual.height()},
             {"raw_sha256",QString::fromLatin1(hash)},{"source_override",false},{"source_unchanged",true},{"producer","cpu-reference"},
             {"native_float_raw_decoder",false},{"native_gpu_brush",false}}).toJson(QJsonDocument::Compact);
     }

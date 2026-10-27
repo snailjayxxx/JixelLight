@@ -310,6 +310,7 @@ public:
     QString brushStatus() const;
     QSize brushFrameSize() const;
     Q_INVOKABLE bool beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure);
+    Q_INVOKABLE bool beginBrushStrokeMode(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode);
     Q_INVOKABLE bool appendBrushStroke(double x,double y,double pressure=1);
     Q_INVOKABLE QString endBrushStroke();
     Q_INVOKABLE void cancelBrushStroke();
@@ -580,6 +581,7 @@ private:
         QSize frame;
         QJsonObject geometry;
         double exposure=1;
+        BrushMaskGeometry::StrokeMode mode=BrushMaskGeometry::StrokeMode::Paint;
         std::unique_ptr<BrushMaskGeometry::StrokeBuilder> builder;
     };
     std::unique_ptr<BrushGesture> m_brushGesture;

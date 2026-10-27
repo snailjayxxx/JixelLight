@@ -21,6 +21,13 @@ AdjustmentState painted() {
     for(int i=0;i<17;++i)stroke.dabs.push_back({{.21+i*.031,.32+i*.013},.6+(i%3)*.1});
     state.brushMasks.layers={{"preview",true,.9,{stroke}}};return state;
 }
+AdjustmentState withErase(AdjustmentState state) {
+    auto erase=state.brushMasks.layers[0].strokes[0];erase.mode=BrushMaskGeometry::StrokeMode::Erase;
+    erase.style.radius*=1.19;erase.style.opacity=.61;
+    auto repaint=erase;repaint.mode=BrushMaskGeometry::StrokeMode::Paint;repaint.style.opacity=.29;
+    repaint.dabs={erase.dabs[erase.dabs.size()/3],erase.dabs[2*erase.dabs.size()/3],erase.dabs.back()};
+    state.brushMasks.layers[0].strokes.push_back(erase);state.brushMasks.layers[0].strokes.push_back(repaint);return state;
+}
 QByteArray fileHash(const QString &path) {
     QFile file(path);if(!file.open(QIODevice::ReadOnly))return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);
@@ -115,9 +122,15 @@ private slots:
         engine.reset();QCOMPARE(budget->snapshot().charged,0);engine=std::make_unique<GpuEngine>(rhi.get());
     }
     void realSonyPreparedPreview_data() {
-        QTest::addColumn<bool>("panned");QTest::newRow("fit")<<false;QTest::newRow("pan100")<<true;
+        QTest::addColumn<bool>("panned");QTest::addColumn<bool>("erased");
+        QTest::newRow("fit")<<false<<false;QTest::newRow("pan100")<<true<<false;
+        QTest::newRow("erase-fit")<<false<<true;QTest::newRow("erase-pan100")<<true<<true;
+    }
+    void preparedHdrRetainsSignedRgbHiddenColorAndFractionalAlpha_data() {
+        QTest::addColumn<bool>("erased");QTest::newRow("paint")<<false;QTest::newRow("erase")<<true;
     }
     void preparedHdrRetainsSignedRgbHiddenColorAndFractionalAlpha() {
+        QFETCH(bool,erased);
         QImage source(2057,1033,QImage::Format_RGBA32FPx4);
         const std::array<float,4> alphas{0.f,1.f/65535.f,.375f,1.f};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
@@ -125,7 +138,8 @@ private slots:
             p[0]=1.07f+float(x%127)*.003f;p[1]=-.13f+float(y%97)*.006f;
             p[2]=.23f+float((x+y)%89)*.008f;p[3]=alphas[(x+y)%4];
         }
-        const auto unchanged=imageHash(source);auto state=painted();
+        const auto unchanged=imageHash(source);auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);
         auto budget=std::make_shared<BrushRenderBudget>();
         for(const auto output:{ColorManagement::OutputSpace::SRgb,ColorManagement::OutputSpace::DisplayP3,ColorManagement::OutputSpace::ProPhotoRgb}) {
             auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0);
@@ -144,7 +158,7 @@ private slots:
             QCOMPARE(actual.histogram.pixelCount,quint64(source.width())*source.height());QCOMPARE(budget->snapshot().charged,source.sizeInBytes());
             const auto bins=ScopesEngine::analyze(actual.image);QCOMPARE(actual.histogram.red,bins.red);QCOMPARE(actual.histogram.green,bins.green);QCOMPARE(actual.histogram.blue,bins.blue);QCOMPARE(actual.histogram.luma,bins.luma);
             qInfo().noquote()<<"ADMITTED_BRUSH_GPU_EVIDENCE "<<QJsonDocument(QJsonObject{
-                {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case","prepared-signed-hdr-alpha"},
+                {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"erase",erased},{"document_schema",erased?2:1},{"case","prepared-signed-hdr-alpha"},
                 {"prepared_pixels",qint64(source.width())*source.height()},{"output",ColorManagement::key(output)},
                 {"max_channel_error",maximum},{"gpu_limit",40},{"alpha_exact",true},{"histogram_pixels",qint64(actual.histogram.pixelCount)},
                 {"producer","cpu-reference-upload"},{"native_gpu_brush",false},{"gpu_upload_executed",true},
@@ -154,6 +168,7 @@ private slots:
         QVERIFY(ordinaryFrame(source));QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source),unchanged);
     }
     void realSonyPreparedPreview() {
+        QFETCH(bool,erased);
         QFETCH(bool,panned);const auto fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
         if(fixtures.isEmpty()) {
             if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required public Sony fixture unavailable");
@@ -163,7 +178,8 @@ private slots:
         const QByteArray expectedHash="aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d";
         QCOMPARE(fileHash(path),expectedHash);auto source=loadSourceFresh(path,{});QVERIFY2(!source.image.isNull(),qPrintable(source.error));
         QCOMPARE(source.image.size(),QSize(7028,4688));QCOMPARE(source.image.format(),QImage::Format_RGBA64);
-        const auto sourceHash=imageHash(source.image);const auto state=painted();
+        const auto sourceHash=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);
         PrepareRequest prepare;prepare.image=source.image;prepare.geometry=state.geometry;prepare.fullResolution=true;
         prepare.viewport=panned?QSize(2049,1293):QSize(2400,1600);prepare.zoom=panned?1:0;prepare.centerX=.63;prepare.centerY=.41;
         const auto prepared=preparePreview(prepare,{});QVERIFY2(!prepared.gpu.isNull(),qPrintable(prepared.error));
@@ -188,7 +204,7 @@ private slots:
             QVERIFY(actual.fingerprint["available"].toBool());QCOMPARE(actual.fingerprint["producer"].toString(),QString("cpu-reference-upload"));
             QVERIFY(!actual.fingerprint["monitor_icc"].toBool());QCOMPARE(budget->snapshot().charged,prepared.gpu.sizeInBytes());
             qInfo().noquote()<<"ADMITTED_BRUSH_GPU_EVIDENCE "<<QJsonDocument(QJsonObject{
-                {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case",panned?"sony-pan100":"sony-fit"},
+                {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"erase",erased},{"document_schema",erased?2:1},{"case",panned?"sony-pan100":"sony-fit"},
                 {"raw_sha256",QString::fromLatin1(expectedHash)},{"raw_pixels",qint64(source.image.width())*source.image.height()},
                 {"prepared_pixels",qint64(prepared.gpu.width())*prepared.gpu.height()},
                 {"frame",QJsonArray{prepared.frameRect.x(),prepared.frameRect.y(),prepared.frameRect.width(),prepared.frameRect.height()}},

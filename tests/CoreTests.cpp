@@ -2315,6 +2315,104 @@ private slots:
     // F4 M4.3: persist future brush intent using the existing non-destructive
     // adjustment/history/project/preset/XMP implementation. Rendering remains
     // explicitly disabled in this milestone, including saved drafts.
+    void brushEraseOrderKeepsLegacyPaintBytesAndWithinStrokeDensity() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
+        const BM::Stroke legacy{{.05,.6,.5},{{{.5,.5},1}}};
+        const BD::Document old{{{"legacy",true,1,{legacy}}}};QJsonObject json;
+        QVERIFY(BD::toJson(old,&json));
+        QCOMPARE(QJsonDocument(json).toJson(QJsonDocument::Compact),
+            QByteArray(R"({"layers":[{"enabled":true,"exposure":1,"id":"legacy","strokes":[{"dabs":[[0.5,0.5,1]],"hardness":0.6,"opacity":0.5,"radius":0.05}]}],"schema":1})"));
+        const BM::Stroke paint{{.2,1,.8},{{{.5,.5},1}}};
+        const BM::Stroke erase{{.2,1,.5},{{{.5,.5},1}},BM::StrokeMode::Erase};
+        const BM::Stroke later{{.2,1,.25},{{{.5,.5},1}}};
+        const auto alpha=[](std::vector<BM::Stroke> strokes) {return BM::combinedOpacity(strokes,{.5,.5},101,77);};
+        const auto reduced=alpha({paint,erase}),reversed=alpha({erase,paint}),repainted=alpha({paint,erase,later}),empty=alpha({erase});
+        QVERIFY(reduced&&reversed&&repainted&&empty);
+        QVERIFY(std::abs(*reduced-.4)<1e-12);QVERIFY(std::abs(*reversed-.8)<1e-12);
+        QVERIFY(std::abs(*repainted-.55)<1e-12);QCOMPARE(*empty,0.);
+        auto dense=erase;dense.dabs.assign(100,erase.dabs[0]);
+        QCOMPARE(alpha({paint,dense}),reduced); // Intra-stroke samples use max.
+        auto pressured=erase;pressured.dabs[0].pressure=.5;
+        const auto pressureResult=alpha({paint,pressured});QVERIFY(pressureResult);
+        QVERIFY(std::abs(*pressureResult-.6)<1e-12);
+        BM::StrokeBuilder builder(101,77,erase.style,BM::StrokeMode::Erase);
+        QVERIFY(builder.append({{.3,.5},1}));QVERIFY(builder.append({{.7,.5},1}));
+        const auto frozen=builder.finish();QVERIFY(frozen);QVERIFY(frozen->mode==BM::StrokeMode::Erase);
+        QVERIFY(!builder.finish());auto invalid=erase;invalid.mode=static_cast<BM::StrokeMode>(17);
+        QVERIFY(!BM::validStroke(invalid));QVERIFY(!alpha({paint,invalid}));
+    }
+    void brushEraseSchemaAndAtomicCommandsRejectUnknownModes() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
+        const BM::Stroke paint{{.1,.6,.8},{{{.5,.5},1}}};
+        const BM::Stroke erase{{.1,.6,.5},{{{.5,.5},1}},BM::StrokeMode::Erase};
+        AdjustmentState state;state.exposure=.4;
+        state.brushMasks.layers={{"selected",true,1,{paint,erase}},{"other",false,-.3,{paint}}};
+        const auto saved=state.toJson();const auto document=saved["brushMasks"].toObject();
+        QCOMPARE(document["schema"].toInt(),2);QVERIFY(AdjustmentState::validBrushMaskJson(saved));
+        QCOMPARE(AdjustmentState::fromJson(saved).toJson(),saved);
+        BD::Document parsed;QVERIFY(BD::fromJson(document,&parsed));
+        QJsonObject canonical;QVERIFY(BD::toJson(parsed,&canonical));QCOMPARE(canonical,document);
+        auto dormant=state;dormant.brushMasks.layers[0].enabled=false;dormant.brushMasks.layers[0].exposureEv=0;
+        QCOMPARE(dormant.toJson()["brushMasks"].toObject()["schema"].toInt(),2);
+        for(const QJsonValue &mode:QJsonArray{"unknown","Erase","",1,true,QJsonValue::Null}) {
+            auto bad=document;auto layers=bad["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();
+            auto stroke=strokes[1].toObject();stroke["mode"]=mode;strokes[1]=stroke;layer["strokes"]=strokes;layers[0]=layer;bad["layers"]=layers;
+            const auto prior=canonical;QVERIFY(!BD::fromJson(bad,&parsed));QVERIFY(BD::toJson(parsed,&canonical));QCOMPARE(canonical,prior);
+            auto staged=state;QString error;
+            QVERIFY(!CommandRegistry::executeBatch(staged,{QJsonObject{{"command","mask.brush.reset"}},QJsonObject{{"command","mask.brush.replace"},{"document",bad}}},&error));
+            QCOMPARE(staged.toJson(),saved);
+        }
+        for(const int schema:{0,3}) {auto future=document;future["schema"]=schema;QVERIFY(!BD::fromJson(future,&parsed));}
+        auto missing=document;auto layers=missing["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();
+        auto stroke=strokes[1].toObject();stroke.remove("mode");strokes[1]=stroke;layer["strokes"]=strokes;layers[0]=layer;missing["layers"]=layers;
+        QVERIFY(!BD::fromJson(missing,&parsed));
+        EditHistory history;history.initialize(state);
+        auto reduced=state;QVERIFY(CommandRegistry::execute(reduced,{{"command","mask.brush.remove-stroke"},{"layer","selected"},{"index",1}}));
+        const auto paintOnly=reduced.toJson();QCOMPARE(paintOnly["brushMasks"].toObject()["schema"].toInt(),1);
+        QVERIFY(history.record(reduced,"remove-erasure"));QCOMPARE(history.undo().toJson(),saved);QCOMPARE(history.redo().toJson(),paintOnly);
+        EditHistory reopened;QVERIFY(reopened.restore(history.toJson(),reduced));
+        QCOMPARE(reopened.undo().toJson(),saved);QCOMPARE(reopened.redo().toJson(),paintOnly);
+        QCOMPARE(reduced.brushMasks.layers[1].id,state.brushMasks.layers[1].id);
+        QJsonObject sentinel{{"unchanged",true}};const auto initial=sentinel;
+        auto invalid=state.brushMasks;invalid.layers[0].strokes[1].mode=static_cast<BM::StrokeMode>(17);
+        QVERIFY(!BD::toJson(invalid,&sentinel));QCOMPARE(sentinel,initial);
+    }
+    void brushEraseIndexedRoiMatchesIndependentOrderAndOwnsModeSnapshot() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;namespace R=BrushMaskTileRaster;
+        const BM::Stroke paint{{.23,.47,.7},{{{.42,.5},1},{{.51,.55},.65},{{.6,.6},.9}}};
+        const BM::Stroke erase{{.14,.3,.6},{{{.45,.52},.85},{{.54,.55},1}},BM::StrokeMode::Erase};
+        const BM::Stroke later{{.1,1,.4},{{{.52,.51},1}}};
+        for(const QSize size:{QSize(193,147),QSize(81,127)})for(const bool roi:{false,true}) {
+            const int w=size.width(),h=size.height();const R::Rect region{3,5,w-7,h-11};
+            const R::NormalizedFrame frame=roi?R::NormalizedFrame{.2,.1,.5,.5}:R::NormalizedFrame{};
+            BD::Document doc{{{"a",true,1.25,{paint,erase,later}},{"b",true,-.5,{later}}}};
+            R::FramePlan indexed,scan;QVERIFY(R::planFrame(doc,w,h,region,&indexed,nullptr,frame));
+            QVERIFY(R::planFrame(doc,w,h,region,&scan,nullptr,frame,0));
+            QVERIFY(indexed.hasCandidateIndex());QVERIFY(!scan.hasCandidateIndex());QCOMPARE(indexed.candidateVisits,scan.candidateVisits);
+            for(std::size_t t=0;t<indexed.tiles.size();++t) {
+                R::ExposureOutput actual,unindexed;QVERIFY(R::exposureOnly(indexed,t,&actual));QVERIFY(R::exposureOnly(scan,t,&unindexed));
+                QVERIFY(actual.weightedExposureEv==unindexed.weightedExposureEv);QCOMPARE(actual.visitedDabPixels,unindexed.visitedDabPixels);
+                const auto rect=indexed.tiles[t].rect;bool exact=true;
+                for(int y=0;y<rect.height;++y)for(int x=0;x<rect.width;++x) {
+                    const BM::Point point{frame.x+(rect.x+x+.5)/w*frame.width,frame.y+(rect.y+y+.5)/h*frame.height};
+                    const auto a=BM::strokeOpacity(paint,point,w,h),e=BM::strokeOpacity(erase,point,w,h),b=BM::strokeOpacity(later,point,w,h);
+                    if(!a||!e||!b){exact=false;continue;}
+                    const double selected=1-(1-(*a)*(1-*e))*(1-*b);
+                    const float expected=float(1.25*selected-.5*(*b));
+                    exact=exact&&actual.weightedExposureEv[std::size_t(y)*rect.width+x]==expected;
+                }
+                QVERIFY(exact); // Oracle composes fixed Paint/Erase/Paint order explicitly.
+                std::atomic_bool cancel{true};R::ExposureOutput untouched{{123.5f},71};
+                QVERIFY(!R::exposureOnly(indexed,t,&untouched,&cancel));
+                QVERIFY(untouched.weightedExposureEv==std::vector<float>{123.5f});QCOMPARE(untouched.visitedDabPixels,std::size_t(71));
+            }
+            R::ExposureOutput frozen;QVERIFY(R::exposureOnly(indexed,0,&frozen));
+            doc.layers[0].strokes[1].mode=BM::StrokeMode::Paint;R::FramePlan fresh;QVERIFY(R::planFrame(doc,w,h,region,&fresh,nullptr,frame));
+            R::ExposureOutput oldOutput,newOutput;QVERIFY(R::exposureOnly(indexed,0,&oldOutput));QVERIFY(R::exposureOnly(fresh,0,&newOutput));
+            QVERIFY(oldOutput.weightedExposureEv==frozen.weightedExposureEv);
+            QVERIFY(oldOutput.weightedExposureEv!=newOutput.weightedExposureEv);
+        }
+    }
     void brushDraftControllerHistoryVirtualCopyPresetAndXmpRoundTrip() {
         namespace BM=BrushMaskGeometry;
         namespace BD=BrushMaskDocument;

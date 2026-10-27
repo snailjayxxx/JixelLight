@@ -6,12 +6,14 @@ Item {
     property var editor: null
     readonly property string paintBlock: {
         if (!controller || !editor) return "unavailable"
-        if (editor.layerId === "") return controller.brushCapacity.new_layer_block
+        if (editor.mode !== "paint" && editor.mode !== "erase") return "invalid"
+        if (editor.layerId === "") return editor.mode === "erase" ? "erase-layer" : controller.brushCapacity.new_layer_block
         for (const layer of controller.brushLayers)
             if (layer.id === editor.layerId) return layer.paint_block
         return "missing"
     }
     readonly property bool layerPaintable: paintBlock === ""
+    readonly property bool erasing: editor && editor.mode === "erase"
     property bool drawing: false
     property var points: []
     readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []
@@ -52,6 +54,7 @@ Item {
             if (root.editor.strokeSelection.token) root.cancel()
             guide.requestPaint()
         }
+        function onModeChanged() { root.cancel(); root.editor.strokeSelection=({}); guide.requestPaint() }
         function onRadiusChanged() { root.cancel() }
         function onHardnessChanged() { root.cancel() }
         function onOpacityChanged() { root.cancel() }
@@ -61,7 +64,8 @@ Item {
         id: guide; anchors.fill: parent
         onPaint: {
             const c=getContext("2d"); c.clearRect(0,0,width,height)
-            c.strokeStyle="#f4d992"; c.lineWidth=2
+            const eraseGuide=root.drawing ? root.erasing : root.editor && root.editor.strokeSelection.mode === "erase"
+            c.strokeStyle=eraseGuide ? "#ffa99a" : "#f4d992"; c.lineWidth=2
             if (root.drawing && root.points.length > 0) {
                 c.beginPath(); c.moveTo(root.points[0].x,root.points[0].y)
                 for (let i=1;i<root.points.length;++i) c.lineTo(root.points[i].x,root.points[i].y)
@@ -75,7 +79,7 @@ Item {
                 c.stroke()
             }
             if (pointer.containsMouse || root.drawing) {
-                c.strokeStyle="#bce7f2"; c.lineWidth=1
+                c.strokeStyle=root.erasing ? "#ffa99a" : "#bce7f2"; c.lineWidth=1
                 c.beginPath(); c.ellipse(root.cursorPoint.x-root.radiusX,root.cursorPoint.y-root.radiusY,root.radiusX*2,root.radiusY*2); c.stroke()
             }
         }
@@ -88,7 +92,7 @@ Item {
         onPressed: function(mouse) {
             root.forceActiveFocus()
             const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
-            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStroke(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure)) return
+            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeMode(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode)) return
             root.editor.strokeSelection=({})
             root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
         }

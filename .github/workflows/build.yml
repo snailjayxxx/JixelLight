@@ -123,6 +123,18 @@ jobs:
           fi
           python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
           python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
+      - name: Native ordered Paint Erase workflow and compact English controls
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-cpu.json cpu
+          python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+          python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -346,6 +358,15 @@ jobs:
         run: |
           python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
           xvfb-run -a python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
+      - name: Native ordered Paint Erase workflow and compact English controls
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

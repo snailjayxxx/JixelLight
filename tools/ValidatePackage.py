@@ -12,6 +12,7 @@ from ValidateDiagnostic import validate_diagnostic
 from ValidateRelink import validate_relink
 from ValidateBrushCanvas import validate_brush
 from ValidateSonyBrushCanvas import validate_sony_brush
+from ValidateBrushErase import validate_brush_erase
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -110,11 +111,19 @@ def main() -> int:
             brush_home.mkdir()
             results.append(validate_brush(executable, env, brush_home,
                                           reports / ("brush-" + mode + ".json"), mode))
+            erase_home = Path(temp) / ("brush-erase-" + mode)
+            erase_home.mkdir()
+            results.append(validate_brush_erase(executable, environment, erase_home,
+                reports / ("brush-erase-" + mode + ".json"), mode))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()
                 results.append(validate_sony_brush(executable, args.sony_brush_raw.resolve(),
                     environment, sony_home, reports / ("sony-brush-" + mode + ".json"), mode))
+                sony_erase_home = Path(temp) / ("sony-brush-erase-" + mode)
+                sony_erase_home.mkdir()
+                results.append(validate_brush_erase(executable, environment, sony_erase_home,
+                    reports / ("sony-brush-erase-" + mode + ".json"), mode, args.sony_brush_raw.resolve()))
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))

@@ -47,6 +47,13 @@ AdjustmentState painted(bool detail=true) {
     if(detail){state.look.mode="manual";state.look.code="FL";state.look.parameters={{"sharpness",4},{"clarity",3}};}
     return state;
 }
+AdjustmentState withErase(AdjustmentState state) {
+    auto erase=state.brushMasks.layers[0].strokes[0];erase.mode=BrushMaskGeometry::StrokeMode::Erase;
+    erase.style.radius*=1.19;erase.style.opacity=.61;
+    auto repaint=erase;repaint.mode=BrushMaskGeometry::StrokeMode::Paint;repaint.style.opacity=.29;
+    repaint.dabs={erase.dabs[erase.dabs.size()/3],erase.dabs[2*erase.dabs.size()/3],erase.dabs.back()};
+    state.brushMasks.layers[0].strokes.push_back(erase);state.brushMasks.layers[0].strokes.push_back(repaint);return state;
+}
 ProcessingPlan planFor(const AdjustmentState &state,const BrushRenderRequest::Spec &spec) {
     auto plan=ProcessingPlan::compile(state,spec.encoding,spec.output,spec.rawSource,spec.rawBaseExposureStops);plan.setFrameRect(spec.normalizedFrame);return plan;
 }
@@ -131,22 +138,31 @@ private slots:
             {"roi_pixels",qint64(spec.region.width())*spec.region.height()},{"max_channel_error",0},{"source_unchanged",true},{"float_signed_hdr_alpha",true}},*budget,memory,timer);
     }
     void sony33MpWholeAndRoiMatchIndependentStrips_data() {
-        QTest::addColumn<QString>("space");QTest::newRow("srgb")<<"srgb";QTest::newRow("p3")<<"display-p3";QTest::newRow("prophoto")<<"prophoto-rgb";
+        QTest::addColumn<QString>("space");QTest::addColumn<bool>("erased");
+        QTest::newRow("srgb")<<"srgb"<<false;QTest::newRow("p3")<<"display-p3"<<false;QTest::newRow("prophoto")<<"prophoto-rgb"<<false;
+        QTest::newRow("erase-srgb")<<"srgb"<<true;QTest::newRow("erase-p3")<<"display-p3"<<true;QTest::newRow("erase-prophoto")<<"prophoto-rgb"<<true;
     }
     void sony33MpWholeAndRoiMatchIndependentStrips() {
+        QFETCH(bool,erased);
         QFETCH(QString,space);MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;
-        const auto before=imageHash(source.image);const auto state=painted();auto spec=sonySpec(source,ColorManagement::fromKey(space));auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        const auto before=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);auto spec=sonySpec(source,ColorManagement::fromKey(space));auto budget=std::make_shared<BrushRenderBudget>();QString error;
         auto whole=BrushRenderRequest::create(source.image,state,spec,{},&error,budget);QVERIFY2(whole,qPrintable(error));auto rendered=whole->render({},&error);QVERIFY2(rendered,qPrintable(error));
         QVERIFY2(compareLegacyStrips(rendered.image(),source.image,planFor(state,spec),source.image.rect(),&error),qPrintable(error));
         const QRect region(373,257,2901,1459);spec.region=region;spec.normalizedFrame={.11,.08,.73,.81};
         rendered={};whole.reset();auto roi=BrushRenderRequest::create(source.image,state,spec,{},&error,budget);QVERIFY2(roi,qPrintable(error));auto cropped=roi->render({},&error);QVERIFY2(cropped,qPrintable(error));
         QVERIFY2(compareLegacyStrips(cropped.image(),source.image,planFor(state,spec),region,&error),qPrintable(error));
         cropped={};roi.reset();QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source.image),before);
-        report({{"case","sony33mp-render"},{"space",space},{"source_pixels",32947264},{"source_bytes",source.image.sizeInBytes()},
+        report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-render"},{"space",space},{"source_pixels",32947264},{"source_bytes",source.image.sizeInBytes()},
             {"raw_sha256",SonyHash},{"max_channel_error",0},{"source_unchanged",true},{"roi_pixels",qint64(region.width())*region.height()}},*budget,memory,timer);
     }
+    void sony33MpSharedFullScopesAndPlotsMatchIndependentEncodedFrame_data() {
+        QTest::addColumn<bool>("erased");QTest::newRow("paint")<<false;QTest::newRow("erase")<<true;
+    }
     void sony33MpSharedFullScopesAndPlotsMatchIndependentEncodedFrame() {
-        MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;const auto before=imageHash(source.image);const auto state=painted();
+        QFETCH(bool,erased);
+        MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;const auto before=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);
         auto spec=sonySpec(source);spec.layout=BrushRenderRequest::Layout::Stripes128;auto budget=std::make_shared<BrushRenderBudget>();QString error;
         auto request=BrushRenderRequest::create(source.image,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));std::array<ScopePlotResult,3> plots;
         const auto histogram=ScopesEngine::analyzeAdmitted(*request,{},&error,&plots);QCOMPARE(histogram.pixelCount,quint64(32947264));
@@ -155,18 +171,23 @@ private slots:
         QCOMPARE(histogram.shadowClipPercent,expected.shadowClipPercent);QCOMPARE(histogram.highlightClipPercent,expected.highlightClipPercent);
         const auto ink=renderEncodedScopePlots(encoded);for(int i=0;i<3;++i){QCOMPARE(plots[i].pixels,quint64(32947264));QCOMPARE(plots[i].image,ink[i].image);}
         request.reset();QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source.image),before);
-        report({{"case","sony33mp-scopes"},{"source_pixels",32947264},{"scope_pixels",qint64(histogram.pixelCount)},
+        report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-scopes"},{"source_pixels",32947264},{"scope_pixels",qint64(histogram.pixelCount)},
             {"all_1024_bins_exact",true},{"all_three_plots_exact",true},{"source_unchanged",true},{"raw_sha256",SonyHash}},*budget,memory,timer);
     }
     void sony33MpRasterExportsMatchIndependentPixelsAndIcc_data() {
-        QTest::addColumn<int>("format");QTest::addColumn<QString>("space");
-        QTest::newRow("png16")<<int(RasterFormat::Png16)<<"prophoto-rgb";
-        QTest::newRow("tiff16")<<int(RasterFormat::Tiff16)<<"display-p3";
-        QTest::newRow("webp8")<<int(RasterFormat::WebP8)<<"srgb";
+        QTest::addColumn<int>("format");QTest::addColumn<QString>("space");QTest::addColumn<bool>("erased");
+        QTest::newRow("png16")<<int(RasterFormat::Png16)<<"prophoto-rgb"<<false;
+        QTest::newRow("erase-png16")<<int(RasterFormat::Png16)<<"prophoto-rgb"<<true;
+        QTest::newRow("tiff16")<<int(RasterFormat::Tiff16)<<"display-p3"<<false;
+        QTest::newRow("erase-tiff16")<<int(RasterFormat::Tiff16)<<"display-p3"<<true;
+        QTest::newRow("webp8")<<int(RasterFormat::WebP8)<<"srgb"<<false;
+        QTest::newRow("erase-webp8")<<int(RasterFormat::WebP8)<<"srgb"<<true;
     }
     void sony33MpRasterExportsMatchIndependentPixelsAndIcc() {
+        QFETCH(bool,erased);
         QFETCH(int,format);QFETCH(QString,space);MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;
-        const auto before=imageHash(source.image);const auto state=painted();const auto raster=RasterFormat(format);auto spec=sonySpec(source,ColorManagement::fromKey(space));
+        const auto before=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);const auto raster=RasterFormat(format);auto spec=sonySpec(source,ColorManagement::fromKey(space));
         auto budget=std::make_shared<BrushRenderBudget>();QString error;auto request=BrushRenderRequest::create(source.image,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto suffix=raster==RasterFormat::Png16?"png":raster==RasterFormat::Tiff16?"tif":"webp";const auto path=dir.filePath("owned-output."+QString(suffix));
         QVERIFY2(exportRaster(*request,path,raster,100,{},&error),qPrintable(error));const auto fileBytes=QFileInfo(path).size();QVERIFY(fileBytes>0);
@@ -175,12 +196,17 @@ private slots:
         const auto expected=legacyEncoded(source.image,planFor(state,spec),referenceFormat);QVERIFY(!expected.isNull());
         QCOMPARE(decoded.colorSpace(),ColorManagement::colorSpace(spec.output));QCOMPARE(decoded.convertToFormat(referenceFormat),expected);
         request.reset();QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source.image),before);
-        report({{"case","sony33mp-raster"},{"format",suffix},{"space",space},{"source_pixels",32947264},
+        report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-raster"},{"format",suffix},{"space",space},{"source_pixels",32947264},
             {"decoded_pixels",32947264},{"exact_pixels",true},{"icc_exact",true},{"encoded_file_bytes",fileBytes},
             {"source_unchanged",true},{"raw_sha256",SonyHash}},*budget,memory,timer);
     }
+    void sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu_data() {
+        QTest::addColumn<bool>("erased");QTest::newRow("paint")<<false;QTest::newRow("erase")<<true;
+    }
     void sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu() {
-        MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;const auto before=imageHash(source.image);const auto state=painted();
+        QFETCH(bool,erased);
+        MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;const auto before=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
+        QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);
         auto spec=sonySpec(source);spec.layout=BrushRenderRequest::Layout::Stripes128;auto budget=std::make_shared<BrushRenderBudget>();QString error;
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned-output.jpg");
         {QFile target(path);QVERIFY(target.open(QIODevice::WriteOnly));QCOMPARE(target.write("keep-original-target"),20);}
@@ -197,7 +223,7 @@ private slots:
         for(int y=0;y<expected.height();++y){const auto *a=decoded.constScanLine(y),*b=expected.constScanLine(y);for(int x=0;x<expected.width()*3;++x)maximum=std::max(maximum,std::abs(int(a[x])-int(b[x])));}
         QVERIFY2(maximum<=5,qPrintable(QString("JPEG quality100 maximum channel error %1 exceeds 5/255").arg(maximum)));
         healthy.reset();QCOMPARE(budget->snapshot().charged,0);QVERIFY(cancel->load());QCOMPARE(imageHash(source.image),before);
-        report({{"case","sony33mp-jpeg"},{"source_pixels",32947264},{"decoded_pixels",32947264},{"icc_exact",true},
+        report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-jpeg"},{"source_pixels",32947264},{"decoded_pixels",32947264},{"icc_exact",true},
             {"jpeg_quality",100},{"max_jpeg_error_255",maximum},{"jpeg_error_limit_255",5},{"cancel_progress_percent",progress},
             {"cancel_preserved_target",true},{"encoded_file_bytes",fileBytes},{"source_unchanged",true},{"raw_sha256",SonyHash}},*budget,memory,timer);
     }

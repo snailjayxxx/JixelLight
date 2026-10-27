@@ -18,6 +18,7 @@ Item {
     onMaskToolChanged: if (brushEditor && brushEditor.active !== (maskTool === "brush")) brushEditor.active = maskTool === "brush"
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
     function brushBlockHint(reason) {
+        if (reason === "erase-layer") return root.t("请先选择要擦除的已有笔刷图层。", "Select an existing brush layer to erase first.")
         if (reason === "disabled") return root.t("请先启用所选笔刷图层。", "Enable the selected brush layer first.")
         if (reason === "layers") return root.t("已达笔刷图层上限，请删除图层后再新建。", "Brush layer limit reached. Remove a layer to create another.")
         if (reason === "strokes") return root.t("该图层已达笔触上限，请删除一笔后继续。", "Stroke limit reached for this layer. Remove a stroke to continue.")
@@ -72,7 +73,7 @@ Item {
         target: root.controller
         function onCurrentIndexChanged() {
             root.maskTool=""
-            if (root.brushEditor) { root.brushEditor.strokeSelection=({}); root.brushEditor.layerId="" }
+            if (root.brushEditor) { root.brushEditor.strokeSelection=({}); root.brushEditor.mode="paint"; root.brushEditor.layerId="" }
             root.centerX=.5;root.centerY=.5;root.refresh()
         }
         function onAdjustmentsChanged() {
@@ -200,7 +201,7 @@ Item {
                 objectName: "newBrushLayerCanvas"
                 visible: root.maskTool === "brush"; enabled: controller.brushReady && controller.brushCapacity.new_layer_allowed
                 text: root.t("新图层", "New layer")
-                onClicked: if (root.brushEditor) { root.brushEditor.layerId=""; root.brushEditor.exposure=1 }
+                onClicked: if (root.brushEditor) { root.brushEditor.mode="paint"; root.brushEditor.layerId=""; root.brushEditor.exposure=1 }
             }
         }
     }
@@ -211,7 +212,8 @@ Item {
         visible: root.maskTool !== ""
         text: root.maskTool === "brush" ? (!brushOverlay.layerPaintable
               ? root.brushBlockHint(brushOverlay.paintBlock) : root.controller.brushReady && !root.brushDisplayReady
-              ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushStatus) : root.maskTool === "linear"
+              ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushReady && root.brushEditor && root.brushEditor.mode === "erase"
+              ? root.t("拖动擦除所选图层，松开应用 · Esc 取消当前笔触", "Drag to erase the selected layer, release to apply · Esc cancels the stroke") : root.controller.brushStatus) : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
               : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",

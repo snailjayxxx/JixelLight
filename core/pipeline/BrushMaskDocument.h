@@ -16,7 +16,8 @@
 // Pixel work still requires the separate production admission boundary.
 // An unsupported future schema must never be imported as an empty mask.
 namespace BrushMaskDocument {
-constexpr int Schema = 1;
+constexpr int Schema = 1; // Keep paint-only canonical bytes unchanged.
+constexpr int EraserSchema = 2;
 constexpr std::size_t MaxLayers = 16;
 constexpr std::size_t MaxTotalDabs = 16384;
 
@@ -62,6 +63,9 @@ inline bool validDocument(const Document &doc) {
 inline bool toJson(const Document &doc, QJsonObject *out) {
     if (!out || !validDocument(doc)) return false;
     if (doc.layers.empty()) { *out={}; return true; }
+    const bool usesEraserSchema=std::any_of(doc.layers.begin(),doc.layers.end(),[](const auto &layer){
+        return std::any_of(layer.strokes.begin(),layer.strokes.end(),[](const auto &stroke){return stroke.mode==BrushMaskGeometry::StrokeMode::Erase;});
+    });
     QJsonArray layers;
     for (const auto &layer : doc.layers) {
         QJsonArray strokes;
@@ -69,15 +73,17 @@ inline bool toJson(const Document &doc, QJsonObject *out) {
             QJsonArray dabs;
             for (const auto &dab : stroke.dabs)
                 dabs.append(QJsonArray{dab.center.x,dab.center.y,dab.pressure});
-            strokes.append(QJsonObject{
+            QJsonObject encoded{
                 {"radius",stroke.style.radius}, {"hardness",stroke.style.hardness},
-                {"opacity",stroke.style.opacity}, {"dabs",dabs}});
+                {"opacity",stroke.style.opacity}, {"dabs",dabs}};
+            if(usesEraserSchema)encoded["mode"]=stroke.mode==BrushMaskGeometry::StrokeMode::Erase?QStringLiteral("erase"):QStringLiteral("paint");
+            strokes.append(encoded);
         }
         layers.append(QJsonObject{
             {"id",layer.id}, {"enabled",layer.enabled},
             {"exposure",layer.exposureEv}, {"strokes",strokes}});
     }
-    *out=QJsonObject{{"schema",Schema},{"layers",layers}};
+    *out=QJsonObject{{"schema",usesEraserSchema?EraserSchema:Schema},{"layers",layers}};
     return true;
 }
 
@@ -90,11 +96,13 @@ inline bool fromJson(const QJsonValue &value, Document *out) {
     if (!value.isObject()) return false;
     const auto root=value.toObject();
     if (root.size()!=2 || !root.value("schema").isDouble()
-        || root.value("schema").toDouble()!=Schema
+        || (root.value("schema").toDouble()!=Schema && root.value("schema").toDouble()!=EraserSchema)
         || !root.value("layers").isArray()) return false;
+    const bool usesEraserSchema=root.value("schema").toDouble()==EraserSchema;
     const auto layers=root.value("layers").toArray();
     if (layers.size()==0 || layers.size()>int(MaxLayers)) return false;
     Document parsed;
+    bool sawEraser=false;
     std::size_t totalDabs=0;
     for (const auto &layerValue : layers) {
         if (!layerValue.isObject()) return false;
@@ -115,11 +123,17 @@ inline bool fromJson(const QJsonValue &value, Document *out) {
         for (const auto &strokeValue : strokes) {
             if (!strokeValue.isObject()) return false;
             const auto strokeObject=strokeValue.toObject();
-            if (strokeObject.size()!=4 || !strokeObject.value("radius").isDouble()
+            if (strokeObject.size()!=(usesEraserSchema?5:4) || !strokeObject.value("radius").isDouble()
                 || !strokeObject.value("hardness").isDouble()
                 || !strokeObject.value("opacity").isDouble()
                 || !strokeObject.value("dabs").isArray()) return false;
             BrushMaskGeometry::Stroke stroke;
+            if(usesEraserSchema) {
+                const auto mode=strokeObject.value("mode");
+                if(!mode.isString() || (mode.toString()!="paint" && mode.toString()!="erase"))return false;
+                stroke.mode=mode.toString()=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
+                sawEraser=sawEraser||stroke.mode==BrushMaskGeometry::StrokeMode::Erase;
+            }
             stroke.style={
                 strokeObject.value("radius").toDouble(),
                 strokeObject.value("hardness").toDouble(),
@@ -146,7 +160,7 @@ inline bool fromJson(const QJsonValue &value, Document *out) {
         }
         parsed.layers.push_back(std::move(layer));
     }
-    if (!validDocument(parsed)) return false;
+    if ((usesEraserSchema&&!sawEraser) || !validDocument(parsed)) return false;
     *out=std::move(parsed);
     return true;
 }

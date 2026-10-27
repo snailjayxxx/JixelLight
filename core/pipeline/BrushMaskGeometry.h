@@ -17,10 +17,13 @@ namespace BrushMaskGeometry {
 constexpr std::size_t MaxDabsPerStroke = 4096;
 constexpr std::size_t MaxStrokes = 64;
 
+enum class StrokeMode { Paint, Erase };
+inline bool validMode(StrokeMode mode) { return mode==StrokeMode::Paint || mode==StrokeMode::Erase; }
+
 struct Point { double x = 0, y = 0; };
 struct Dab { Point center; double pressure = 1; };
 struct Style { double radius = 0.05, hardness = 0.6, opacity = 1; };
-struct Stroke { Style style; std::vector<Dab> dabs; };
+struct Stroke { Style style; std::vector<Dab> dabs; StrokeMode mode=StrokeMode::Paint; };
 struct Bounds { double left = 0, top = 0, right = 0, bottom = 0; };
 
 inline bool finite(double value) { return std::isfinite(value); }
@@ -42,7 +45,7 @@ inline bool validStyle(Style style) {
         && style.opacity >= 0 && style.opacity <= 1;
 }
 inline bool validStroke(const Stroke &stroke) {
-    return validStyle(stroke.style) && !stroke.dabs.empty()
+    return validMode(stroke.mode) && validStyle(stroke.style) && !stroke.dabs.empty()
         && stroke.dabs.size() <= MaxDabsPerStroke
         && std::all_of(stroke.dabs.begin(), stroke.dabs.end(), validDab);
 }
@@ -106,7 +109,7 @@ inline std::optional<double> combinedOpacity(std::span<const Stroke> strokes, Po
     for (const auto &stroke : strokes) {
         const auto value=strokeOpacity(stroke,pixel,width,height);
         if (!value) return std::nullopt;
-        result=1-(1-result)*(1-*value);
+        result=stroke.mode==StrokeMode::Erase ? result*(1-*value) : 1-(1-result)*(1-*value);
     }
     return std::clamp(result,0.0,1.0);
 }
@@ -117,9 +120,9 @@ inline std::optional<double> combinedOpacity(std::span<const Stroke> strokes, Po
 // result for serialization. No persistent input is modified by this builder.
 class StrokeBuilder {
 public:
-    StrokeBuilder(int width, int height, Style style)
-        : width_(width),height_(height),style_(style),spacing_(style.radius*.25),
-          remaining_(spacing_),invalid_(!validFrame(width,height)||!validStyle(style)) {}
+    StrokeBuilder(int width, int height, Style style, StrokeMode mode=StrokeMode::Paint)
+        : width_(width),height_(height),style_(style),mode_(mode),spacing_(style.radius*.25),
+          remaining_(spacing_),invalid_(!validFrame(width,height)||!validStyle(style)||!validMode(mode)) {}
 
     bool append(Dab value) {
         if (invalid_ || finished_) return false;
@@ -164,7 +167,7 @@ public:
             if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return std::nullopt; }
             stamps_.push_back(previous_);
         }
-        Stroke stroke{style_,std::move(stamps_)};
+        Stroke stroke{style_,std::move(stamps_),mode_};
         if (!validStroke(stroke)) return std::nullopt;
         return stroke;
     }
@@ -173,6 +176,7 @@ private:
     void invalidate() { invalid_=true; stamps_.clear(); }
     int width_=0,height_=0;
     Style style_;
+    StrokeMode mode_;
     double spacing_=0,remaining_=0;
     bool invalid_=false,started_=false,finished_=false;
     Dab previous_;

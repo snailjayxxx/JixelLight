@@ -137,10 +137,20 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true
                     ComboBox {
+                        id: scopeModeChoice
                         objectName: "scopeModeChoice"; Layout.fillWidth: true
-                        model: [root.t("直方图", "Histogram"),root.t("亮度波形", "Luma waveform"),"RGB Parade",root.t("矢量示波器", "Vectorscope")]
-                        currentIndex: ["histogram","waveform","parade","vectorscope"].indexOf(root.controller.scopeMode)
-                        onActivated: root.controller.scopeMode=["histogram","waveform","parade","vectorscope"][currentIndex]
+                        model: ["histogram","waveform","parade","vectorscope"]
+                        function modeText(index) {
+                            return [root.t("直方图", "Histogram"),root.t("亮度波形", "Luma waveform"),"RGB Parade",root.t("矢量示波器", "Vectorscope")][index] || ""
+                        }
+                        displayText: modeText(currentIndex)
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: scopeModeChoice.width; text: scopeModeChoice.modeText(index)
+                            highlighted: scopeModeChoice.highlightedIndex===index
+                        }
+                        currentIndex: model.indexOf(root.controller.scopeMode)
+                        onActivated: root.controller.scopeMode=model[currentIndex]
                     }
                 }
                 RowLayout {
@@ -151,7 +161,8 @@ Rectangle {
                     Label { text: "1024 bins · " + root.controller.scopesPixelCount; color: "#738293"; font.pixelSize: 10 }
                 }
                 RowLayout {
-                    Label { text: root.controller.scopeMode==="histogram" ? root.controller.scopesStatus : root.controller.scopePlotStatus; wrapMode: Text.WordWrap; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
+                    // The C++ status getter uses language, so include that dependency explicitly.
+                    Label { objectName: "scopeStatusLabel"; text: root.controller.language ? (root.controller.scopeMode==="histogram" ? root.controller.scopesStatus : root.controller.scopePlotStatus) : ""; wrapMode: Text.WordWrap; color: "#8e9aa8"; font.pixelSize: 10; Layout.fillWidth: true }
                     CheckBox { objectName: "exactScopesCheck"; text: root.t("全分辨率", "Full resolution"); checked: root.controller.exactScopes; onToggled: root.controller.exactScopes=checked }
                 }
                 HistogramView {
@@ -706,16 +717,36 @@ Rectangle {
                 }
                 ColumnLayout {
                     visible: root.brushExpanded; Layout.fillWidth: true; spacing: 6; enabled: root.brushEditor !== null
-                    ComboBox {
-                        objectName: "brushLayerSelector"; Layout.fillWidth: true; model: root.brushOptions; textRole: "label"
-                        currentIndex: { if (!root.brushEditor) return 0; for(let i=0;i<root.brushOptions.length;++i)if(root.brushOptions[i].id===root.brushEditor.layerId)return i; return 0 }
-                        onActivated: function(index) { root.brushEditor.layerId=root.brushOptions[index].id }
-                        ToolTip.visible: hovered
-                        ToolTip.text: {
-                            const cap=root.controller.brushCapacity
-                            return root.t("图层 ","Layers ")+cap.layers+"/"+cap.layer_limit
-                                +root.t(" · 文档落点 "," · Document dabs ")+cap.dabs+"/"+cap.dab_limit
-                                +(root.currentBrush ? root.t(" · 本图层笔触 "," · Layer strokes ")+root.currentBrush.strokes+"/"+cap.stroke_limit : "")
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ComboBox {
+                            objectName: "brushLayerSelector"; Layout.fillWidth: true; Layout.minimumWidth: 80; model: root.brushOptions; textRole: "label"
+                            currentIndex: { if (!root.brushEditor) return 0; for(let i=0;i<root.brushOptions.length;++i)if(root.brushOptions[i].id===root.brushEditor.layerId)return i; return 0 }
+                            onActivated: function(index) { root.brushEditor.layerId=root.brushOptions[index].id; if(root.brushEditor.layerId==="")root.brushEditor.mode="paint" }
+                            ToolTip.visible: hovered
+                            ToolTip.text: {
+                                const cap=root.controller.brushCapacity
+                                return root.t("图层 ","Layers ")+cap.layers+"/"+cap.layer_limit
+                                    +root.t(" · 文档落点 "," · Document dabs ")+cap.dabs+"/"+cap.dab_limit
+                                    +(root.currentBrush ? root.t(" · 本图层笔触 "," · Layer strokes ")+root.currentBrush.strokes+"/"+cap.stroke_limit : "")
+                            }
+                        }
+                        ComboBox {
+                            id: brushModeChoice
+                            objectName: "brushModeSelector"; Layout.preferredWidth: 88; Layout.minimumWidth: 88; Layout.maximumWidth: 88
+                            // Stable mode values keep a language refresh from resetting the selection.
+                            model: ["paint","erase"]
+                            displayText: currentIndex===1 ? root.t("擦除","Erase") : root.t("绘制","Paint")
+                            delegate: ItemDelegate {
+                                required property int index
+                                width: brushModeChoice.width
+                                text: index===1 ? root.t("擦除","Erase") : root.t("绘制","Paint")
+                                highlighted: brushModeChoice.highlightedIndex===index
+                            }
+                            currentIndex: root.brushEditor && root.brushEditor.mode === "erase" ? 1 : 0
+                            onActivated: function(index) { root.brushEditor.mode=index===1 ? "erase" : "paint" }
+                            ToolTip.visible: hovered
+                            ToolTip.text: root.t("擦除仅影响所选已有图层；每笔可独立撤销。","Erase affects only the selected existing layer; each stroke has one Undo step.")
                         }
                     }
                     RowLayout {
@@ -732,7 +763,10 @@ Rectangle {
                             enabled: root.controller.currentSourceAvailable && root.currentBrush !== null
                             model: {
                                 let options=[root.t("选择笔触以预览位置","Select stroke to preview")]
-                                for(let i=0;root.currentBrush && i<root.currentBrush.strokes;++i) options.push(root.t("笔触 ","Stroke ")+(i+1))
+                                for(let i=0;root.currentBrush && i<root.currentBrush.strokes;++i) {
+                                    const erase=root.currentBrush.stroke_modes && root.currentBrush.stroke_modes[i]==="erase"
+                                    options.push((erase ? root.t("擦除笔触 ","Erase stroke ") : root.t("笔触 ","Stroke "))+(i+1))
+                                }
                                 return options
                             }
                             currentIndex: root.brushEditor && root.brushEditor.strokeSelection.token ? root.brushEditor.strokeSelection.index+1 : 0
@@ -740,7 +774,7 @@ Rectangle {
                                 root.brushEditor.strokeSelection=index>0 && root.currentBrush ? root.controller.brushStrokeSelection(root.currentBrush.id,index-1) : ({})
                             }
                             ToolTip.visible: hovered
-                            ToolTip.text: root.t("黄色线条显示所选整笔的路径；删除后可撤销。","The yellow line shows the selected whole stroke's path. Deletion can be undone.")
+                            ToolTip.text: root.t("黄色为绘制，粉色为擦除；线条显示所选整笔路径，删除后可撤销。","Yellow marks paint; pink marks erase. The line shows the selected whole stroke; deletion can be undone.")
                         }
                         Button {
                             objectName: "removeSelectedBrushStroke"; text: root.t("删除所选笔触","Delete stroke")
@@ -770,7 +804,7 @@ Rectangle {
                         Slider { objectName: "brushOpacitySlider"; Layout.fillWidth: true; from: 0; to: 1; value: root.brushEditor ? root.brushEditor.opacity : 1; onMoved: root.brushEditor.opacity=value }
                         Label { text: root.brushEditor ? Math.round(root.brushEditor.opacity*100)+"%" : ""; Layout.preferredWidth: 42 }
                     }
-                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"; text: root.t("选择画布上的“绘制笔刷”，拖动后松开应用。每笔可独立撤销；Esc 取消当前笔触。","Choose Paint brush on the canvas; drag and release to apply. Each stroke has one Undo step; Esc cancels it.") }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"; text: root.t("选择画布上的“绘制笔刷”，再选绘制或擦除；擦除需选择已有图层。拖动后松开应用，每笔可撤销，Esc 取消。","Choose Paint brush on the canvas, then Paint or Erase. Erase needs an existing layer. Drag and release to apply; each stroke has one Undo step; Esc cancels it.") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

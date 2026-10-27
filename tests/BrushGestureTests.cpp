@@ -41,6 +41,86 @@ class BrushGestureTests final:public QObject {
     Q_OBJECT
 private slots:
     void initTestCase(){QStandardPaths::setTestModeEnabled(true);}
+    void eraserGestureFreezesModeIsOneUndoAndPersistsExactPng() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("eraser-owned.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));const auto hash=hashFile(path);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto initial=state(c);const auto firstHistory=cursor(c);
+        QVERIFY(!c.beginBrushStrokeMode("",.5,.5,.12,1,.5,1,"erase"));
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),initial);QCOMPARE(cursor(c),firstHistory);
+        QVERIFY(c.beginBrushStroke("",.3,.5,.12,1,.8,1));QVERIFY(c.appendBrushStroke(.6,.5));
+        const auto id=c.endBrushStroke();QVERIFY(!id.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto painted=state(c);QCOMPARE(cursor(c),firstHistory+1);
+        QCOMPARE(painted["brushMasks"].toObject()["schema"].toInt(),1);
+        QVERIFY(c.beginBrushStrokeMode(id,.45,.5,.12,1,.5,1,"erase"));
+        QCOMPARE(state(c),painted);QCOMPARE(cursor(c),firstHistory+1);
+        QVERIFY(c.appendBrushStroke(.55,.5));QCOMPARE(c.endBrushStroke(),id);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto erased=state(c);
+        QCOMPARE(cursor(c),firstHistory+2);QCOMPARE(erased["brushMasks"].toObject()["schema"].toInt(),2);
+        const auto doc=c.gpuPlan(true).state.brushMasks;QCOMPARE(doc.layers.size(),std::size_t(1));
+        QCOMPARE(doc.layers[0].strokes.size(),std::size_t(2));QVERIFY(doc.layers[0].strokes[1].mode==BM::StrokeMode::Erase);
+        const auto ev=BD::weightedExposureStops(doc,{.5,.5},160,96);QVERIFY(ev);QVERIFY(std::abs(*ev-.4)<1e-12);
+        const auto selection=c.brushStrokeSelection(id,1);
+        QCOMPARE(selection["mode"].toString(),QString("erase"));QVERIFY(!selection["token"].toString().isEmpty());
+        c.undo();QCOMPARE(state(c),painted);c.redo();QCOMPARE(state(c),erased);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QString mode="erase";QVERIFY(c.beginBrushStrokeMode(id,.5,.5,.12,1,.5,1,mode));mode="paint";
+        QCOMPARE(c.endBrushStroke(),id);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.gpuPlan(true).state.brushMasks.layers[0].strokes.back().mode==BM::StrokeMode::Erase);
+        c.undo();QCOMPARE(state(c),erased);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.beginBrushStrokeMode(id,.5,.5,.12,1,.5,1,"erase"));c.cancelBrushStroke();
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),erased);QCOMPARE(cursor(c),firstHistory+2);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"EraserGesture"));QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);
+        QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);
+        QCOMPARE(state(reopened),erased);reopened.undo();QCOMPARE(state(reopened),painted);reopened.redo();QCOMPARE(state(reopened),erased);
+        QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);
+        const auto loaded=loadSourceFresh(path,{});QVERIFY(!loaded.image.isNull());
+        const auto expected=reference(loaded.image,reopened.gpuPlan(true));QVERIFY(!expected.isNull());
+        QSignalSpy done(&reopened,&PhotoController::exportFinished);const auto output=dir.filePath("erased.png");
+        QVERIFY(reopened.exportCurrent(QUrl::fromLocalFile(output),"srgb",100));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,30000);
+        QCOMPARE(done[0][0].toInt(),1);QCOMPARE(done[0][1].toInt(),0);
+        const QImage actual(output);QCOMPARE(actual.colorSpace(),expected.colorSpace());
+        QCOMPARE(actual.convertToFormat(QImage::Format_RGBA64),expected);QCOMPARE(hashFile(path),hash);
+    }
+    void eraserModeRejectsMalformedDisabledAndFullTargetsBeforeTransient() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("eraser-limits.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));QVERIFY(image.save(path));
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto initial=state(c);const auto before=cursor(c);
+        for(const QString mode:QStringList{"Erase","erase ","unknown",""}) {
+            QVERIFY(!c.beginBrushStrokeMode("",.5,.5,.002,.6,1,1,mode));
+            QVERIFY(!c.brushDrawing());QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);
+        }
+        const BM::Stroke erase{{.002,.6,1},{{{.5,.5},1}},BM::StrokeMode::Erase};
+        const auto install=[&](const BD::Document &doc) {QJsonObject json;return BD::toJson(doc,&json)&&c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}});};
+        BD::Document disabled{{{"disabled",false,1,{erase}}}};QVERIFY(install(disabled));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto disabledState=state(c);const auto disabledHistory=cursor(c);
+        QVERIFY(!c.beginBrushStrokeMode("disabled",.5,.5,.002,.6,1,1,"erase"));
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),disabledState);QCOMPARE(cursor(c),disabledHistory);
+        BD::Document strokes{{{"cap",true,0,{}}}};strokes.layers[0].strokes.assign(BM::MaxStrokes,erase);
+        QVERIFY(install(strokes));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto capped=state(c);const auto cappedHistory=cursor(c);
+        QVERIFY(c.brushCapacity()["new_layer_allowed"].toBool());
+        QVERIFY(!c.beginBrushStrokeMode("cap",.5,.5,.002,.6,1,1,"erase"));
+        QVERIFY(!c.beginBrushStrokeMode("",.5,.5,.002,.6,1,1,"erase"));
+        QVERIFY(!c.beginBrushStrokeMode("missing",.5,.5,.002,.6,1,1,"erase"));
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),capped);QCOMPARE(cursor(c),cappedHistory);
+        auto repeated=erase;repeated.dabs.assign(BM::MaxDabsPerStroke,erase.dabs[0]);
+        BD::Document full{{{"full",true,0,{}}}};
+        full.layers[0].strokes.assign(BD::MaxTotalDabs/BM::MaxDabsPerStroke,repeated);
+        QVERIFY(install(full));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto fullState=state(c);const auto fullHistory=cursor(c);
+        QCOMPARE(c.brushCapacity()["dabs"].toInt(),int(BD::MaxTotalDabs));
+        QVERIFY(!c.brushCapacity()["new_layer_allowed"].toBool());
+        QVERIFY(!c.beginBrushStrokeMode("full",.5,.5,.002,.6,1,1,"erase"));
+        QVERIFY(!c.beginBrushStroke("",.5,.5,.002,.6,1,1));QVERIFY(!c.brushDrawing());
+        QCOMPARE(state(c),fullState);QCOMPARE(cursor(c),fullHistory);
+    }
     void capacityReadsTargetLimitsAndRefusesFullDocumentBeforeDrawing() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("capacity.png"),other=dir.filePath("other.png");
         QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));

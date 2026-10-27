@@ -31,6 +31,7 @@ ApplicationWindow {
         id: brushEditorState
         property bool active: false
         property string layerId: ""
+        property string mode: "paint"
         property var strokeSelection: ({})
         onActiveChanged: if (!active) strokeSelection=({})
         property real radius: 0.05

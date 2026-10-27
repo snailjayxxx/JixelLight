@@ -57,10 +57,14 @@ QVariantList PhotoController::brushLayers() const {
     QVariantList result;if(!hasImage())return result;
     const auto &document=m_photos[m_currentIndex].state.brushMasks;const auto facts=capacityFacts(document);
     for(const auto &layer:document.layers) {
-        int dabs=0;for(const auto &stroke:layer.strokes)dabs+=int(stroke.dabs.size());
+        int dabs=0;QVariantList modes;
+        for(const auto &stroke:layer.strokes) {
+            dabs+=int(stroke.dabs.size());
+            modes.append(stroke.mode==BrushMaskGeometry::StrokeMode::Erase?QStringLiteral("erase"):QStringLiteral("paint"));
+        }
         const auto reason=paintRefusal(document,facts,layer.id);
         result.append(QVariantMap{{"id",layer.id},{"enabled",layer.enabled},{"exposure",layer.exposureEv},
-            {"strokes",int(layer.strokes.size())},{"dabs",dabs},
+            {"strokes",int(layer.strokes.size())},{"dabs",dabs},{"stroke_modes",modes},
             {"append_allowed",reason==BrushPaintRefusal::None},{"paint_block",refusalKey(reason)}});
     }
     return result;
@@ -97,11 +101,19 @@ void PhotoController::cancelBrushStroke() {
     if(!m_brushGesture)return;m_brushGesture.reset();emit brushDrawingChanged();
 }
 bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure) {
+    return beginBrushStrokeMode(layer,x,y,radius,hardness,opacity,exposure,QStringLiteral("paint"));
+}
+bool PhotoController::beginBrushStrokeMode(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode) {
+    if(mode!="paint"&&mode!="erase")return false;
+    const auto strokeMode=mode=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
     if(m_brushGesture)return false;
     if(!brushReady()){setStatus(brushStatus());return false;}
     const BrushMaskGeometry::Style style{radius,hardness,opacity};
     if(!BrushMaskGeometry::validStyle(style)||!BrushMaskGeometry::validPoint({x,y})
         ||!std::isfinite(exposure)||exposure<-3||exposure>3)return false;
+    if(strokeMode==BrushMaskGeometry::StrokeMode::Erase&&layer.isEmpty()) {
+        setStatus(uiText("请先选择要擦除的已有笔刷图层。","Select an existing brush layer to erase first."));return false;
+    }
     const auto &doc=m_photos[m_currentIndex].state.brushMasks;
     switch(paintRefusal(doc,capacityFacts(doc),layer)) {
     case BrushPaintRefusal::Invalid:case BrushPaintRefusal::Missing:return false;
@@ -115,7 +127,8 @@ bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,do
         auto g=std::make_unique<BrushGesture>();g->photoKey=m_photos[m_currentIndex].storageKey();g->epoch=m_photoEpoch;
         g->generation=m_prepareGeneration;g->revision=m_requestedRevision;g->sourceKey=m_fullSource.cacheKey();
         g->layer=layer;g->frame=brushFrameSize();g->geometry=m_photos[m_currentIndex].state.geometry.toJson();g->exposure=exposure;
-        g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style);
+        g->mode=strokeMode;
+        g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
         if(!g->builder->append({{x,y},1}))return false;
         m_brushGesture=std::move(g);emit brushDrawingChanged();return brushGestureCurrent();
     }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
@@ -151,7 +164,8 @@ QString PhotoController::endBrushStroke() {
     }catch(...){setStatus(uiText("笔触未应用：内存不足或处理失败。","Stroke was not applied: allocation or processing failed."));return {};}
     if(!brushGestureCurrent(*g))return {};
     auto &photo=m_photos[m_currentIndex];photo.history.finish();photo.state=std::move(candidate);
-    persistAndApply("brush_stroke",{{"layer",g->layer}});finishInteraction();return g->layer;
+    persistAndApply(g->mode==BrushMaskGeometry::StrokeMode::Erase?"brush_erase":"brush_stroke",
+        {{"layer",g->layer},{"mode",g->mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}});finishInteraction();return g->layer;
 }
 bool PhotoController::setBrushLayerEnabled(const QString &id,bool enabled) {
     return executeEditCommand({{"command","mask.brush.enable"},{"layer",id},{"enabled",enabled}});
@@ -194,7 +208,8 @@ QVariantMap PhotoController::brushStrokeSelection(const QString &id,int index) c
             const auto &p=dabs[count==1?0:i*(dabs.size()-1)/(count-1)].center;
             points.append(QVariantMap{{"x",p.x},{"y",p.y}});
         }
-        return {{"layer",id},{"index",index},{"token",token},{"points",points}};
+        return {{"layer",id},{"index",index},{"token",token},{"points",points},
+            {"mode",found->strokes[std::size_t(index)].mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}};
     }catch(...){return {};}
 }
 bool PhotoController::removeBrushStroke(const QString &id,int index,const QString &selectionToken) {
