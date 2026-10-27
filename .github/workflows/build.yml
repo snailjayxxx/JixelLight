@@ -23,7 +23,7 @@ jobs:
           - os: windows-2022
             artifact: JixelLight-Windows-x64
             triplet: x64-windows-static-md
-            job_timeout: 45
+            job_timeout: 60
           - os: macos-15
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static

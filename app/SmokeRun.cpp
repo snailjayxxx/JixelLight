@@ -21,6 +21,7 @@
 #include <exiv2/exiv2.hpp>
 #include <memory>
 #include <cmath>
+#include <vector>
 
 namespace {
 void resizeForSmoke(QQuickWindow *window,int width,int height) {
@@ -93,6 +94,39 @@ bool clickSlider(QQuickWindow *window,QQuickItem *item,double fraction) {
     QCoreApplication::sendEvent(window,&press);
     QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
     QCoreApplication::sendEvent(window,&release); return true;
+}
+QJsonObject sliderPointerPose(QQuickWindow *window,QQuickItem *item,double fraction) {
+    if(!window||!item)return {{"ready",false}};
+    const auto before=item->mapToScene(QPointF(item->width()*fraction,item->height()/2));
+    const QSizeF beforeSize(item->width(),item->height());
+    std::vector<QQuickItem *> ancestors;
+    for(auto *parent=item;parent;parent=parent->parentItem())ancestors.push_back(parent);
+    // Visibility alone does not mean a newly expanded layout is positioned.
+    for(auto it=ancestors.rbegin();it!=ancestors.rend();++it)(*it)->ensurePolished();
+    const auto point=item->mapToScene(QPointF(item->width()*fraction,item->height()/2));
+    bool insideClips=true,scrollSettled=true;
+    QJsonArray scrolls;
+    for(auto *parent=item->parentItem();parent;parent=parent->parentItem()) {
+        if(parent->clip()&&!parent->contains(parent->mapFromScene(point)))insideClips=false;
+        if(parent->metaObject()->indexOfProperty("contentY")<0)continue;
+        const bool moving=parent->property("moving").toBool()||parent->property("flicking").toBool()||parent->property("dragging").toBool();
+        scrollSettled=scrollSettled&&!moving;
+        scrolls.append(QJsonObject{{"y",parent->property("contentY").toDouble()},
+            {"height",parent->height()},{"content_height",parent->property("contentHeight").toDouble()},{"moving",moving}});
+    }
+    const bool insideWindow=window->contentItem()->contains(window->contentItem()->mapFromScene(point));
+    auto *hit=window->contentItem();bool hitsTarget=false;
+    for(int depth=0;hit&&depth<64;++depth) {
+        if(hit==item){hitsTarget=true;break;}
+        const auto local=hit->mapFromScene(point);hit=hit->childAt(local.x(),local.y());
+    }
+    const bool ready=window->isVisible()&&item->isVisible()&&item->isEnabled()
+        &&item->width()>0&&item->height()>0&&std::isfinite(point.x())&&std::isfinite(point.y())
+        &&insideWindow&&insideClips&&scrollSettled&&hitsTarget;
+    return {{"ready",ready},{"x",point.x()},{"y",point.y()},{"width",item->width()},{"height",item->height()},
+        {"inside_window",insideWindow},{"inside_clips",insideClips},{"scroll_settled",scrollSettled},
+        {"hits_target",hitsTarget},{"scrolls",scrolls},
+        {"polish_changed",before!=point||beforeSize!=QSizeF(item->width(),item->height())}};
 }
 }
 
@@ -565,7 +599,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; };
     auto state=std::make_shared<State>();state->elapsed.start();
     const auto saveScreenshot=[window,state](const QString &path) {
         QElapsedTimer grabTimer;grabTimer.start();
@@ -1036,7 +1070,28 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             vignetteTrace->insert("amount_revealed",revealItem(visualChild(window->contentItem(),"vignetteAmountSlider")));
             state->phase=283;
         } else if (state->phase==283 && ready) {
-            vignetteTrace->insert("amount_clicked",clickSlider(window,visualChild(window->contentItem(),"vignetteAmountSlider"),.2));
+            auto *slider=visualChild(window->contentItem(),"vignetteAmountSlider");
+            const auto pose=sliderPointerPose(window,slider,.2);
+            if(pose.value("polish_changed").toBool())++state->vignettePolishes;
+            auto stablePose=pose;stablePose.remove("polish_changed");
+            if(!pose.value("ready").toBool()) {
+                ++state->vignetteWaits;++state->vignetteNotReady;state->vignetteStable=0;
+                vignetteTrace->insert("amount_last_wait_pose",pose);
+                if(!pose.value("inside_clips").toBool()||!pose.value("inside_window").toBool())revealItem(slider);
+                return;
+            }
+            if(stablePose!=state->vignettePointerPose) {
+                state->vignettePointerPose=stablePose;state->vignetteStable=1;++state->vignetteWaits;return;
+            }
+            if(++state->vignetteStable<2){++state->vignetteWaits;return;}
+            vignetteTrace->insert("amount_pointer_ready",true);
+            vignetteTrace->insert("amount_geometry_stable",true);
+            vignetteTrace->insert("amount_pointer_pose",pose);
+            vignetteTrace->insert("amount_wait_ticks",state->vignetteWaits);
+            vignetteTrace->insert("amount_not_ready_ticks",state->vignetteNotReady);
+            vignetteTrace->insert("amount_polish_changes",state->vignettePolishes);
+            // Exactly one native click, followed by the original value check.
+            vignetteTrace->insert("amount_clicked",clickSlider(window,slider,.2));
             vignetteTrace->insert("amount_changed",controller->vignetteAmount()<-.5);
             vignetteTrace->insert("midpoint_revealed",revealItem(visualChild(window->contentItem(),"vignetteMidpointSlider")));
             state->phase=284;
@@ -1264,7 +1319,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         for (const auto *key : {"toggle_revealed","opened","controls_found","perspective_revealed","perspective_clicked","perspective_changed","ca_revealed","ca_clicked","ca_changed","other_values_set","full_scopes","undo_restored"})
             correctionOk=correctionOk && correctionTrace->value(key).toBool();
         bool vignetteOk=true;
-        for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
+        for (const auto *key : {"toggle_revealed","opened","controls_found","amount_revealed","amount_pointer_ready","amount_geometry_stable","amount_clicked","amount_changed","midpoint_revealed","midpoint_clicked","midpoint_changed","feather_revealed","feather_clicked","feather_changed","full_scopes","reset_revealed","reset_clicked","isolated_reset_undo_redo","undo_restored"})
             vignetteOk=vignetteOk && vignetteTrace->value(key).toBool();
         bool gradingUiOk=true;
         for (const auto *key : {"toggle_found","toggle_revealed","opened","enabled_control_visible",

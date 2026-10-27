@@ -1,6 +1,16 @@
 # F4 M4.6K — allow complete Linux cold-setup validation
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This workflow repair awaits its own committed three-platform and actual-package acceptance. Last fully accepted checkpoint remains I8ed006a/[CI40445440071](https://github.com/snailjayxxx/JixelLight/actions/runs/40445440071). [J's original Linux cancellation and successful desktop evidence](F4_BRUSH_CAPACITY_STAGE_M46J.md) remain retained; J is not retroactively accepted.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. K `183d42d21a8189bdb6910baf149e7382c6a8735d` is not accepted: Linux completes successfully, but macOS package CPU vignette input fails and Windows package CLI/final manifest is interrupted by its45-minute total job budget. Last fully accepted checkpoint remains I8ed006a/[CI40445440071](https://github.com/snailjayxxx/JixelLight/actions/runs/40445440071). [J's original Linux cancellation and successful desktop evidence](F4_BRUSH_CAPACITY_STAGE_M46J.md) remain retained; J is not retroactively accepted.
+
+## Committed outcome
+
+[CI40462199953](https://github.com/snailjayxxx/JixelLight/actions/runs/40462199953) passes45/45 without skips on Linux643.78s, Windows1,138.63s and macOS931.53s. Linux completes all subsequent native/RAW steps: owned CPU/GPU13,034/13,859ms24/nine/7 blocked+4 ready/full2,659,021/45s; realSony19,925/22,476ms16/six/full32,947,264/sourceSHA/shared3GiB/60s. This verifies the Linux whole-job repair, independently of the failed desktop package outcomes.
+
+Mac package manifest attempts11 modes;10 pass. Only original-RAW CPU GUI returns2 at33,444ms, below the unchanged60,000ms gate. All23 screenshots save, final10,340,960-pixel statistics and every other UI flag pass. `ui_vignette_trace` records amount_revealed=true/clicked=true/changed=false/amount0 while midpoint and feather change. The vignette-control phase uses the smoke's owned64×48 JPG; it is distinct from real RAW/real Sony numerical acceptance. Original `.vignette.png`, JSON and logs are retained; there is no observed color-precision failure or60s timeout. Native brush and Sony modes pass.
+
+Windows's GitHub annotation confirms45m0s total-job exhaustion. Its package has9 passing GUI reports: originalRAWCPU55,492/GPU38,202ms23screens/full10,340,960/QML0/60s; owned31,147/19,386ms24/nine/7+4/full2,659,021/45s; Sony49,420/43,779ms16/six/full32,947,264/sourceSHA/3GiB/60s; both diagnostics and relink also pass. CLI completion and final manifest are absent, so this is not an11-mode package pass.
+
+All three actual full logs prove checkout `6ae7e675d53a3bc5f161b847ce48dda00d40c5c5`, tree `cec52ab1f67b93d3fcccd4bbd82852c9d50b4693`, equal K HEAD. Five original ZIP sizes/SHA/CRC/safe extraction and complete1,028,812-character Linux/1,176,445-character macOS/905,722-character Windows logs (original CRLF preserved) are verified. Originals, receipts and accepted=false summary are `/tmp/jixellight-40462199953-*`; physical build parent retains `ci-40462199953-summary.json`, `brush-ci-budget-windows-check-annotation.json` and `brush-vignette-first-click-failure.json`. [L](F4_VIGNETTE_POINTER_STAGE_M46L.md) repairs these two observed blockers; K remains failed.
 
 ## Observed failure and narrow repair
 
