@@ -88,7 +88,7 @@ def validate_sony_brush(binary: Path, raw: Path, environment: dict[str, str],
             shutil.copyfile(controls, Path(str(report) + "." + label + "-controls.png"))
     required = ("settings_isolated", "source_is_raw", "source_unchanged", "live_uncommitted", "escape_cancel", "one_undo",
                 "display_changed", "undo_redo", "project_reopen", "loaded_layer_cancel", "scope_controls",
-                "full_scopes", "brush_pointer_ready", "budget_admitted", "selected_stroke_delete")
+                "full_scopes", "brush_pointer_ready", "budget_admitted", "selected_stroke_delete", "brush_controls_reveal")
     markers = ("TypeError:", "ReferenceError:", "Unable to assign [undefined]",
                "QQmlApplicationEngine failed", "Binding loop detected")
     qml_errors = [line for line in log.splitlines() if any(m in line for m in markers)]

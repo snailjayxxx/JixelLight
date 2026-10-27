@@ -22,16 +22,47 @@ Rectangle {
         for (const layer of layers) if (layer.id === brushEditor.layerId) return layer
         return null
     }
+    property int brushRevealAttempts: 0
+    property int brushRevealStableFrames: 0
+    readonly property bool brushRevealPending: revealBrush.running
+    readonly property Flickable brushToolFlick: toolScroll.contentItem as Flickable
+    function requestBrushReveal() {
+        brushRevealAttempts=0; brushRevealStableFrames=0
+        revealBrush.restart()
+    }
+    onVisibleChanged: if (!visible) revealBrush.stop()
+    onBrushExpandedChanged: if (!brushExpanded) revealBrush.stop()
     Connections {
         target: root.brushEditor
-        function onActiveChanged() { if (root.brushEditor.active) { root.brushExpanded=true; revealBrush.restart() } }
+        function onActiveChanged() {
+            if (root.brushEditor.active) { root.brushExpanded=true; root.requestBrushReveal() }
+            else revealBrush.stop()
+        }
+    }
+    Connections {
+        target: root.brushToolFlick
+        ignoreUnknownSignals: true
+        function onDraggingChanged() { if (root.brushToolFlick && root.brushToolFlick.dragging) revealBrush.stop() }
+        function onFlickingChanged() { if (root.brushToolFlick && root.brushToolFlick.flicking) revealBrush.stop() }
     }
     Timer {
-        id: revealBrush; interval: 30
+        id: revealBrush; interval: 16; repeat: true
         onTriggered: {
-            if (!root.brushEditor || !root.brushEditor.active) return
-            const flick=toolScroll.contentItem
-            if (!flick || !flick.contentItem) return
+            if (++root.brushRevealAttempts>60 || !root.visible || !root.brushExpanded || !root.brushEditor || !root.brushEditor.active) {
+                stop(); return
+            }
+            const flick=root.brushToolFlick
+            if (!flick || !flick.contentItem || flick.height<=0) return
+            const headerContentY=brushPanelHeader.mapToItem(flick.contentItem,0,0).y
+            const exposureContentY=brushExposureControl.mapToItem(flick.contentItem,0,0).y
+            if (flick.contentHeight<=flick.height || brushPanelHeader.height<=0 || exposureContentY<headerContentY+brushPanelHeader.height) return
+            const top=brushPanelHeader.mapToItem(flick,0,0).y
+            const bottom=brushExposureControl.mapToItem(flick,0,brushExposureControl.height).y
+            if (top>=-1 && bottom<=flick.height+1 && brushExposureControl.height>0) {
+                if (++root.brushRevealStableFrames>=2) stop()
+                return
+            }
+            root.brushRevealStableFrames=0
             const y=brushPanelHeader.mapToItem(flick.contentItem,0,0).y
             flick.contentY=Math.max(0,Math.min(y,flick.contentHeight-flick.height))
         }
@@ -173,7 +204,11 @@ Rectangle {
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: "#303840" }
         ScrollView {
-            id: toolScroll
+            id: toolScroll; objectName: "developToolScroll"
+            WheelHandler {
+                target: null; blocking: false
+                onWheel: function(event) { revealBrush.stop(); event.accepted=false }
+            }
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -699,6 +734,7 @@ Rectangle {
                         }
                     }
                     AdjustmentSlider {
+                        id: brushExposureControl
                         Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
                         value: root.currentBrush ? root.currentBrush.exposure : root.brushEditor ? root.brushEditor.exposure : 1
                         onEdited: function(v) { if(root.currentBrush)root.controller.setBrushLayerExposure(root.currentBrush.id,v);else if(root.brushEditor)root.brushEditor.exposure=v }

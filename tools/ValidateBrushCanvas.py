@@ -48,15 +48,16 @@ def validate_brush(binary: Path, environment: dict[str, str], home: Path,
     required = ("live_uncommitted", "escape_cancel", "one_undo", "display_changed",
                 "undo_redo", "project_reopen", "zoom_roi", "full_scopes", "source_unchanged", "settings_visible",
                 "layer_selection", "layer_ev_drag_one_undo", "layer_toggle", "remove_last_stroke",
-                "empty_layer_pruned_undo", "delete_layer_undo", "english_controls_visible", "scope_display", "photo_display_ready", "brush_pointer_ready", "disabled_layer_guard", "selected_stroke_delete")
+                "empty_layer_pruned_undo", "delete_layer_undo", "english_controls_visible", "scope_display", "photo_display_ready", "brush_pointer_ready", "disabled_layer_guard", "selected_stroke_delete", "brush_controls_reveal")
     screenshots = all(Path(str(report) + suffix).is_file()
-                      for suffix in (".before.png", ".painted.png", ".reopen.png", ".zoom.png", ".layers.png", ".disabled.png", ".selected-stroke.png"))
+                      for suffix in (".before.png", ".painted.png", ".reopen.png", ".zoom.png", ".layers.png", ".disabled.png", ".selected-stroke.png", ".reveal.png"))
     passed = (code == 0 and data.get("passed") is True and not errors and screenshots
               and all(data.get(key) is True for key in required)
               and data.get("synthetic_fixture") is True and data.get("scope_pixels") == 2659021
               and data.get("gpu_active") is (mode == "gpu") and data.get("elapsed_ms", 45000) < 45000
               and data.get("scope_display_ink_samples", 0) >= 64
               and data.get("selected_guide_new_ink_samples", 0) >= 16 and data.get("selected_delete_rgb_delta", 0) >= 3
+              and data.get("manual_scroll_respected") is True
               and data.get("native_gpu_brush") is False and data.get("native_float_raw_decoder") is False)
     result = {"mode": "brush-" + mode, "passed": passed, "returncode": code,
               "source_commit": data.get("source_commit"), "qml_errors": errors,

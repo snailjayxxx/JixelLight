@@ -4,6 +4,7 @@
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QKeyEvent>
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -53,6 +54,31 @@ bool selectFirstStroke(QQuickWindow *window) {
     if(!exposed(window,selector)||!click(window,selector))return false;
     key(window,Qt::Key_Home);key(window,Qt::Key_Down);key(window,Qt::Key_Return);
     return selector->property("currentIndex").toInt()==1;
+}
+QQuickItem *toolFlick(QQuickWindow *window) {
+    auto *scroll=child(window->contentItem(),"developToolScroll");
+    return scroll?scroll->property("contentItem").value<QQuickItem *>():nullptr;
+}
+QJsonObject brushControls(QQuickWindow *window) {
+    auto *panel=child(window->contentItem(),"developRightPanel"),*flick=toolFlick(window);
+    auto *header=child(window->contentItem(),"brushPanelToggle"),*slider=child(window->contentItem(),"brushExposureSlider");
+    return {{"pending",panel&&panel->property("brushRevealPending").toBool()},
+        {"attempts",panel?panel->property("brushRevealAttempts").toInt():-1},
+        {"content_y",flick?flick->property("contentY").toDouble():-1},
+        {"content_height",flick?flick->property("contentHeight").toDouble():-1},
+        {"viewport_height",flick?flick->height():0},
+        {"header_y",flick&&header?header->mapToItem(flick,{0,0}).y():-1},
+        {"exposure_y",flick&&slider?slider->mapToItem(flick,{0,0}).y():-1},
+        {"critical_visible",exposed(window,header)&&exposed(window,slider)}};
+}
+bool wheelToToolsStart(QQuickWindow *window) {
+    auto *scroll=child(window->contentItem(),"developToolScroll");if(!exposed(window,scroll))return false;
+    // The content's4px gutter avoids wheel-enabled sliders/combos.
+    const auto point=scroll->mapToScene({4,scroll->height()*.5});
+    QWheelEvent event(point,window->mapToGlobal(point.toPoint()),QPoint(),QPoint(0,120*80),Qt::NoButton,Qt::NoModifier,Qt::ScrollUpdate,false);
+    QCoreApplication::sendEvent(window,&event);
+    QWheelEvent end(point,window->mapToGlobal(point.toPoint()),QPoint(),QPoint(),Qt::NoButton,Qt::NoModifier,Qt::ScrollEnd,false);
+    QCoreApplication::sendEvent(window,&end);return true;
 }
 QJsonObject firstLayerProperty(QJsonObject document,const QString &name,const QJsonValue &value) {
     auto layers=document["layers"].toArray();auto layer=layers[0].toObject();layer[name]=value;layers[0]=layer;document["layers"]=layers;return document;
@@ -110,6 +136,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool pointerReady=false;QString actualHint,expectedHint;
         bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
         bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
+        bool revealed=false,manualScroll=false;int revealHistory=0;QJsonObject revealMasks;QRectF revealFrame;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -119,7 +146,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
             &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
-            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
+            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
@@ -136,6 +163,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"disabled_layer_input_ignored",s->disabledInput},{"disabled_layer_hint",s->disabledHint},{"expected_disabled_layer_hint",s->expectedDisabledHint},
             {"disabled_layer_cursor_shape",s->disabledCursor},
             {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},{"selected_delete_rgb_delta",s->selectedDelta},
+            {"brush_controls_reveal",s->revealed},{"manual_scroll_respected",s->manualScroll},{"brush_controls",brushControls(window)},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -264,6 +292,32 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             // The original stroke can be outside a200% ROI on clipped720px
             // windows. Fit via the visible control before selecting its path.
             if(!click(window,child(window->contentItem(),"fitPreviewButton"))){finish("Cannot fit the source before selecting an earlier stroke");return;}
+            s->revealHistory=cursor(c);s->revealMasks=masks(c);
+            if(!wheelToToolsStart(window)){finish("Cannot scroll away from brush controls through a native wheel event");return;}s->phase=30;s->settle=0;
+        }else if(s->phase==30) {
+            auto *flick=toolFlick(window);if(!flick||flick->property("moving").toBool()||++s->settle<3)return;
+            const auto geometry=brushControls(window);
+            if(geometry["critical_visible"].toBool()||geometry["pending"].toBool()||geometry["content_y"].toDouble()>16){finish("Automatic brush reveal overrode manual scrolling");return;}
+            s->revealFrame=c->previewFrameRect();
+            if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("Cannot re-enter the brush tool after scrolling away");return;}
+            s->phase=31;s->settle=0;
+        }else if(s->phase==31) {
+            if(++s->settle<3)return;const auto geometry=brushControls(window);
+            if(!geometry["critical_visible"].toBool()||geometry["pending"].toBool()){finish("Re-entering the brush tool did not reveal its actual controls");return;}
+            if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!wheelToToolsStart(window)){finish("Cannot interrupt pending reveal with a native wheel");return;}
+            s->phase=32;s->settle=0;
+        }else if(s->phase==32) {
+            auto *flick=toolFlick(window);if(!flick||flick->property("moving").toBool()||++s->settle<3)return;
+            const auto geometry=brushControls(window);
+            s->manualScroll=!geometry["pending"].toBool()&&!geometry["critical_visible"].toBool()&&geometry["content_y"].toDouble()<=16;
+            if(!s->manualScroll){finish("Pending brush reveal fought the user's manual scroll");return;}
+            if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("Cannot restore the brush tool after canceling its reveal");return;}
+            s->phase=33;s->settle=0;
+        }else if(s->phase==33) {
+            if(++s->settle<3)return;const auto geometry=brushControls(window);
+            s->revealed=geometry["critical_visible"].toBool()&&!geometry["pending"].toBool()&&masks(c)==s->revealMasks
+                &&cursor(c)==s->revealHistory&&c->previewFrameRect()==s->revealFrame;
+            if(!s->revealed||!window->grabWindow().save(reportPath+".reveal.png")){finish("Brush reveal changed edit/viewport state or did not restore controls");return;}
             s->phase=22;s->settle=0;
         }else if(s->phase==22) {
             if(!previewDisplayedReady(c,window)||++s->settle<3)return;
@@ -402,7 +456,8 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
         const bool admitted=budget.limit==BrushRenderBudget::DefaultBytes&&budget.peak>0&&budget.peak<=budget.limit&&budget.charged<=budget.limit;
         const bool full=c->currentIsRaw()&&c->brushFrameSize()==QSize(7028,4688);
         const bool ok=error.isEmpty()&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->loadedCancel
-            &&s->scopeControls&&s->scopes&&s->ready&&s->selectedDelete&&admitted&&unchanged&&full&&s->clock.elapsed()<60000
+            &&s->scopeControls&&s->scopes&&s->ready&&s->selectedDelete&&brushControls(window)["critical_visible"].toBool()
+            &&!brushControls(window)["pending"].toBool()&&admitted&&unchanged&&full&&s->clock.elapsed()<60000
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"deadline_ms",60000},{"phase",s->phase},{"error",error},{"synthetic_fixture",false},{"source_override",false},
@@ -413,6 +468,8 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
             {"one_undo",s->oneUndo},{"display_changed",s->display},{"display_rgb_delta",s->delta},{"undo_redo",s->undoRedo},
             {"undo_rgb_delta",s->undoDelta},{"redo_rgb_delta",s->redoDelta},{"project_reopen",s->reopen},{"loaded_layer_cancel",s->loadedCancel},
             {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},
+            {"brush_controls_reveal",brushControls(window)["critical_visible"].toBool()&&!brushControls(window)["pending"].toBool()},
+            {"brush_controls",brushControls(window)},
             {"scope_controls",s->scopeControls},{"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},
             {"scope_plot_pixels",qint64(c->scopePlotPixels())},{"scope_display_ink_samples",s->ink},{"brush_pointer_ready",s->ready},
             {"layer_exposure",s->exposure},{"budget_admitted",admitted},{"operation_budget_bytes",budget.limit},
