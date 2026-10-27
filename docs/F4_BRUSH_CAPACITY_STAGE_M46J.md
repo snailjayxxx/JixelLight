@@ -1,6 +1,25 @@
 # F4 M4.6J — target-specific brush capacity feedback
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. This slice is a local candidate awaiting its own committed three-platform and deployed-package acceptance. The last fully accepted checkpoint remains [I at `8ed006a`](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md), [CI40445440071](https://github.com/snailjayxxx/JixelLight/actions/runs/40445440071). Earlier F/G/H failures remain retained.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. J `fbf61f638f4e660c717240f4dfc55830ae3d4d90` is not accepted: its Linux job was cancelled at the25-minute total-job budget after38/45 tests. Windows/macOS45/45 and both actual11-mode packages pass. The last fully accepted checkpoint remains [I at `8ed006a`](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md), [CI40445440071](https://github.com/snailjayxxx/JixelLight/actions/runs/40445440071). Earlier F/G/H failures remain retained.
+
+## Committed Linux cancellation and successful desktop gates
+
+[CI40457184947 Linux122033117031](https://github.com/snailjayxxx/JixelLight/actions/runs/40457184947/job/122033117031) was cancelled by the total job budget. GitHub's check annotation states: “The job has exceeded the maximum execution time of 25m0s.” Dependency/Qt preparation before the build consumed approximately13 minutes. At cancellation,38/45 tests had passed without an observed assertion failure; `brush-gpu-pan100` was running. Linux native pointer, Sony GUI and subsequent gates did not run. This is incomplete acceptance, not a45/45 pass.
+
+The complete346,584-character original job log and original292,284-byte validation ZIP are retained under `/tmp/jixellight-40457184947-*attempt1*`. ZIP SHA-256 is `89a8c443b86caac1573c8832614e5d790758c935ffc8923c07bc1e68f576541b`; original artifact12713539526 was verified against GitHub's digest, CRC and safe extraction. Full-log checkout proves actual merge `1b43d27ca3cc9bd7878f575df6c260afa9085339`, tree `637634a5bb7cd5c7f7aa9b7fe7bdfe5bf558d628`, equal to J HEAD. Parent `brush-capacity-linux-cancelled-proof.json` records the partial result and source proof. J is not retroactively accepted.
+
+Windows/macOS completed successfully on their original jobs:45/45 in1,138.71s/881.08s, zero failures/skips. Each retains212 Core/36 GPU/39 performance/21 Look/17 admission/new capacity3, and all18 admitted GPU cases across those two platforms have max0/65535. Owned native CPU/GPU Windows30,835/19,413ms and macOS23,796/24,421ms pass24/nine/all seven bilingual blocked cases and four ready/recovery cases/full2,659,021/QML0/45s. Sony native49,536/43,477ms and23,680/23,617ms retains16/six/full32,947,264/sourceSHA/shared3GiB/60s.
+
+Both actual SDK-stripped11-mode packages pass:
+
+| Actual package CPU / GPU ms | Original RAW | Owned brush | Real Sony brush |
+| --- | --- | --- | --- |
+| Windows | 54,951 / 37,640 | 30,965 / 19,380 | 49,431 / 43,035 |
+| macOS | 32,358 / 30,096 | 24,420 / 23,673 | 22,902 / 15,765 |
+
+Original RAW retains23 screenshots/full10,340,960/all UI/QML0/60s; owned retains24/nine/7 blocked+4 ready/current full scopes/45s; Sony retains16/six/current full statistics/sourceSHA/3GiB/60s. Mac packaged CPU observes one pending reveal before passing; all other J owned counters are0 and are not credited with that delayed path. Full original Windows966,143-character/CRLF and macOS954,770-character logs prove the same actual1b43d27/tree637634 as Linux. All five original validation ZIPs have verified GitHub sizes/SHA/CRC/safe extraction; `/tmp/jixellight-40457184947-receipts.json` and parent `ci-40457184947-summary.json` record them, accepted=false. Actual standalone Mac Metal capacity capture was inspected: visible English hint/no transient; its intermediate previous-result scope remains labelled separately from final full-statistics acceptance.
+
+After all current jobs finished, K applies a Linux-only25→45-minute total-job repair. All owned45s, RAW/Sony60s, performance120s and numerical limits remain unchanged. No passed local heavy suite is restarted for this workflow-only repair. J remains failed; fresh committed K acceptance is required.
 
 ## Problem and behavior
 
@@ -50,7 +69,7 @@ Original real DNG GUI passes CPU14,252ms and Metal15,519ms with23 successful scr
 
 Physical evidence is in `build-local/local-brush-capacity-gui/`; full Sony photograph captures remain separately under physical build parent `private-sony-brush/capacity-*`. Parent `brush-capacity-gui-local-summary.json` and `/tmp/jixellight-brush-capacity-gui-local-summary.json` retain all ten checks, nine source hashes and their precommit8ed006a stamp. Log is parent `brush-capacity-gui-validation.log`.
 
-No old acceptance result is substituted for these changed production paths. The candidate still requires its own committed all-three45/45 suites, native wrappers, actual tested source/tree proof and both actual11-mode SDK-stripped packages before acceptance.
+No old acceptance result is substituted for these changed production paths. A subsequent repaired committed workflow must complete all-three45/45 suites, native wrappers, actual tested source/tree proof and both actual11-mode SDK-stripped packages before acceptance; J retains its original Linux cancellation.
 
 ## Preserved boundaries
 
