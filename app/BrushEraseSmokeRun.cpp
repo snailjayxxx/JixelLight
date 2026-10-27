@@ -7,6 +7,7 @@
 #include <QQuickItem>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QWheelEvent>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QTimer>
@@ -56,6 +57,18 @@ bool select(QQuickWindow *window,const QString &name,int index) {
     key(window,Qt::Key_Home);for(int i=0;i<index;++i)key(window,Qt::Key_Down);key(window,Qt::Key_Return);
     return item->property("currentIndex").toInt()==index;
 }
+bool wheelToToolsStart(QQuickWindow *window) {
+    auto *scroll=findItem(window->contentItem(),"developToolScroll");if(!exposed(window,scroll))return false;
+    // The content's4px gutter avoids wheel-enabled sliders/combos.
+    const auto point=scroll->mapToScene({4,scroll->height()*.5});
+    // Move the native pointer into the gutter before its wheel gesture.
+    mouse(window,QEvent::MouseMove,point,Qt::NoButton,Qt::NoButton);
+    // A clicky mouse wheel has no touchpad phase; give Qt a real monotonic timestamp.
+    // Sending Update+End in one call can discard/cancel the still unconsumed wheel motion.
+    QWheelEvent event(point,window->mapToGlobal(point.toPoint()),QPoint(),QPoint(0,120*80),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QElapsedTimer eventClock;eventClock.start();event.setTimestamp(quint64(std::max<qint64>(1,eventClock.msecsSinceReference())));
+    QCoreApplication::sendEvent(window,&event);return true;
+}
 QByteArray hashFile(const QString &path) {
     QFile file(path);if(!file.open(QIODevice::ReadOnly))return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);return hash.addData(&file)?hash.result().toHex():QByteArray{};
@@ -88,7 +101,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             ||std::filesystem::equivalent(nativePath(source),nativePath(output),pathError);
     };
     bool aliases=aliasesSource(report);
-    for(const auto *label:{"before","painted","erased","undo","selected","deleted","reopen","final","english","failure"})
+    for(const auto *label:{"before","painted","erased","undo","selected","deleted","reopen","locale-selected","final","english","failure"})
         aliases=aliases||aliasesSource(report+"."+label+"-controls.png");
     if(aliases) {
         // Refuse before any report/capture write, including symlink aliases.
@@ -97,10 +110,11 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
     const QSize size=realSony?QSize(7028,4688):QSize(2203,1207);const qint64 pixels=qint64(size.width())*size.height();
     const int deadline=realSony?60000:45000;
     struct State {
-        QElapsedTimer clock;int phase=0,settle=0,initialHistory=0,ink=0,paintDelta=0,eraseDelta=0,undoDelta=999,redoDelta=999;
+        QElapsedTimer clock;int phase=0,settle=0,initialHistory=0,localeHistory=0,scopeHistory=0,scopePopupWaitTicks=0,ink=0,paintDelta=0,eraseDelta=0,undoDelta=999,redoDelta=999;
         bool done=false,noLayer=false,nativePaint=false,nativeErase=false,transient=false,escape=false,oneUndo=false,display=false;
         bool undoRedo=false,selectedDelete=false,reopen=false,loadedCancel=false,scopeControls=false,scopes=false,english=false;
-        QString layer,project;QByteArray sourceHash;QJsonObject initial,painted,erased,captures;QColor baseline,paintedColor;
+        bool compactScopeReflow=false,selectedLocale=false,scopeLayoutChecked=false,automaticScope=false,manualScope=false,scopeReentry=false;
+        QString layer,project;QByteArray sourceHash;QJsonObject initial,painted,erased,captures,compactScopeGeometry;QJsonArray scopeGeometry;QColor baseline,paintedColor;
     };
     auto s=std::make_shared<State>();s->clock.start();auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return findItem(window->contentItem(),name);};
@@ -126,7 +140,8 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool controls=exposed(window,item("brushModeSelector"))&&exposed(window,item("brushExposureSlider"));
         const bool required=s->noLayer&&s->nativePaint&&s->nativeErase&&s->transient&&s->escape&&s->oneUndo&&s->display
-            &&s->undoRedo&&s->selectedDelete&&s->reopen&&s->loadedCancel&&s->scopeControls&&s->scopes&&s->english;
+            &&s->undoRedo&&s->selectedDelete&&s->reopen&&s->loadedCancel&&s->scopeControls&&s->scopes&&s->english&&s->selectedLocale
+            &&(realSony|| (s->compactScopeReflow&&s->scopeLayoutChecked&&s->automaticScope&&s->manualScope&&s->scopeReentry));
         const bool passed=error.isEmpty()&&required&&isolated&&unchanged&&shape&&admitted&&controls&&s->clock.elapsed()<deadline
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject data{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
@@ -140,6 +155,9 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             {"live_uncommitted",s->transient},{"escape_cancel",s->escape},{"one_undo",s->oneUndo},{"display_changed",s->display},
             {"paint_rgb_delta",s->paintDelta},{"erase_rgb_delta",s->eraseDelta},{"undo_rgb_delta",s->undoDelta},{"redo_rgb_delta",s->redoDelta},
             {"undo_redo",s->undoRedo},{"selected_erase_delete",s->selectedDelete},{"project_reopen",s->reopen},
+            {"compact_scope_reflow_checked",s->compactScopeReflow},{"compact_scope_reflow_geometry",s->compactScopeGeometry},
+            {"scope_popup_wait_ticks",s->scopePopupWaitTicks},{"scope_layout_geometry",s->scopeGeometry},{"selected_locale_preserved",s->selectedLocale},{"scope_layout_checked",s->scopeLayoutChecked},
+            {"automatic_scope_reveal",s->automaticScope},{"manual_scope_scroll_preserved",s->manualScope},{"scope_reentry_revealed",s->scopeReentry},
             {"loaded_layer_cancel",s->loadedCancel},{"scope_controls",s->scopeControls},{"full_scopes",s->scopes},
             {"scope_pixels",qint64(c->scopesPixelCount())},{"scope_plot_pixels",qint64(c->scopePlotPixels())},{"scope_display_ink_samples",s->ink},
             {"controls_visible",controls},{"english_controls_visible",s->english},{"budget_admitted",admitted},{"operation_budget_bytes",budget.limit},
@@ -167,6 +185,15 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             for(int i=1;i<=8;++i)mouse(window,QEvent::MouseMove,point(.3+.4*i/8),Qt::NoButton,Qt::LeftButton);
             const bool active=c->brushDrawing();if(cancel)key(window,Qt::Key_Escape);
             mouse(window,QEvent::MouseButtonRelease,point(.7),Qt::LeftButton,Qt::NoButton);return active;
+        };
+        const auto exposureGeometry=[&] {
+            auto *panel=item("developRightPanel"),*scroll=item("developToolScroll"),*slider=item("brushExposureSlider");
+            auto *flick=scroll?scroll->property("contentItem").value<QQuickItem *>():nullptr;
+            return QJsonObject{{"mode",c->scopeMode()},{"automatic_owner",panel&&panel->property("brushAutoPositionOwned").toBool()},
+                {"pending",panel&&panel->property("brushRevealPending").toBool()},{"content_y",flick?flick->property("contentY").toDouble():-1},
+                {"viewport_height",flick?flick->height():0},{"exposure_top",flick&&slider?slider->mapToItem(flick,{0,0}).y():-1},
+                {"exposure_bottom",flick&&slider?slider->mapToItem(flick,{0,slider->height()}).y():-1},
+                {"document_unchanged",masks(c)==s->erased},{"history_unchanged",history(c)==s->localeHistory}};
         };
         if(s->phase==0) {
             s->initial=masks(c);s->initialHistory=history(c);
@@ -230,14 +257,48 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             if(!s->reopen||!capture("reopen",image)||!click(window,item("editBrushMaskCanvas"))){finish("Reopened project lost visible eraser intent");return;}s->phase=13;s->settle=0;
         }else if(s->phase==13) {
             if(++s->settle<3)return;if(!select(window,"brushLayerSelector",1)||!select(window,"brushModeSelector",1)){finish("Cannot select the reopened eraser target");return;}
-            const auto cursor=history(c);const bool active=gesture(true);s->loadedCancel=active&&!c->brushDrawing()&&masks(c)==s->erased&&history(c)==cursor;
-            if(!s->loadedCancel||!select(window,"scopeModeChoice",1)){finish("Loaded eraser Escape or native waveform choice failed");return;}s->phase=14;s->settle=0;
+            if(!select(window,"brushStrokeSelector",2)){finish("Cannot select the reopened stored erase stroke");return;}
+            s->localeHistory=history(c);c->setLanguage("en_US");s->phase=20;s->settle=0;
+        }else if(s->phase==20) {
+            if(++s->settle<3)return;auto *panel=item("developRightPanel"),*stroke=item("brushStrokeSelector");
+            if(!panel||panel->property("brushRevealPending").toBool())return;
+            if(!stroke||stroke->property("currentIndex").toInt()!=2||stroke->property("displayText").toString()!="Erase stroke 2"
+                ||!exposed(window,stroke)||masks(c)!=s->erased||history(c)!=s->localeHistory
+                ||!capture("locale-selected",window->grabWindow())){finish("Language change reset the saved erase selection or changed edit history");return;}
+            c->setLanguage("zh_CN");s->phase=21;s->settle=0;
+        }else if(s->phase==21) {
+            if(++s->settle<3)return;auto *panel=item("developRightPanel"),*stroke=item("brushStrokeSelector");
+            if(!panel||panel->property("brushRevealPending").toBool())return;
+            s->selectedLocale=stroke&&stroke->property("currentIndex").toInt()==2&&stroke->property("displayText").toString()==QString::fromUtf8("擦除笔触 2")
+                &&exposed(window,stroke)&&masks(c)==s->erased&&history(c)==s->localeHistory;
+            const bool active=gesture(true);s->loadedCancel=active&&!c->brushDrawing()&&masks(c)==s->erased&&history(c)==s->localeHistory;
+            if(!s->selectedLocale||!s->loadedCancel){finish("Saved erase selection roundtrip or loaded Escape failed");return;}
+            // All RGB probes are complete: resize the owned view BEFORE waveform expansion.
+            if(!realSony){c->setLanguage("en_US");window->resize(1180,720);s->phase=22;}
+            else {if(!select(window,"scopeModeChoice",1)){finish("Cannot choose Sony waveform");return;}s->phase=14;}
+            s->settle=0;
+        }else if(s->phase==22) {
+            if(++s->settle<3)return;auto *panel=item("developRightPanel");if(!panel||panel->property("brushRevealPending").toBool())return;
+            const auto g=exposureGeometry();
+            if(c->language()!="en_US"||window->height()!=720||c->scopeMode()!="histogram"||!g["automatic_owner"].toBool()
+                ||g["exposure_top"].toDouble()<0||g["exposure_bottom"].toDouble()>g["viewport_height"].toDouble()+1
+                ||masks(c)!=s->erased||history(c)!=s->localeHistory){finish("Compact histogram brush controls did not settle before expansion");return;}
+            s->compactScopeGeometry["before"]=g;
+            if(!select(window,"scopeModeChoice",1)){finish("Cannot expand compact owned waveform");return;}s->phase=14;s->settle=0;
         }else if(s->phase==14) {
             if(++s->settle<3)return;if(!c->exactScopes()&&!click(window,item("exactScopesCheck"))){finish("Cannot enable native exact scopes");return;}
             s->scopeControls=c->scopeMode()=="waveform"&&c->exactScopes();if(!s->scopeControls){finish("Native scopes did not enter exact waveform mode");return;}s->phase=15;
         }else if(s->phase==15) {
             auto *plot=item("scopePlotImage");if(!c->scopePlotCurrent()||c->scopesPixelCount()!=quint64(pixels)||c->scopePlotPixels()!=quint64(pixels)
                 ||!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl()))return;
+            if(!realSony) {
+                auto *panel=item("developRightPanel");if(!panel||panel->property("brushRevealPending").toBool())return;
+                const auto g=exposureGeometry();s->compactScopeGeometry["after"]=g;
+                s->compactScopeReflow=g["automatic_owner"].toBool()&&g["exposure_top"].toDouble()>=-1
+                    &&g["exposure_bottom"].toDouble()<=g["viewport_height"].toDouble()+1
+                    &&masks(c)==s->erased&&history(c)==s->localeHistory;
+                if(!s->compactScopeReflow){finish("Compact waveform expansion clipped owned brush exposure controls");return;}
+            }
             const auto image=window->grabWindow();s->ink=plotInk(image,window,plot);if(s->ink<64)return;
             s->scopes=masks(c)==s->erased&&c->scopeMode()=="waveform"&&c->exactScopes();
             if(!s->scopes||!capture("final",image)){finish("Final eraser scopes/capture are not current");return;}
@@ -252,7 +313,68 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
                 &&mode->property("currentIndex").toInt()==1&&mode->property("displayText").toString()=="Erase"&&masks(c)==s->erased
                 &&scope&&scope->property("currentIndex").toInt()==1&&scope->property("displayText").toString()=="Luma waveform"
                 &&status&&status->property("text").toString().contains("Full resolution");
-            if(!s->english||!capture("english",window->grabWindow())){finish("Compact English eraser controls are not current/visible");return;}finish({});
+            if(!s->english){finish("Compact English eraser controls are not current/visible");return;}
+            // Exercise layout/manual ownership on owned pixels only; keep realSony's original60s and full-source checks.
+            if(realSony){if(!capture("english",window->grabWindow())){finish("Cannot capture compact Sony controls");return;}finish({});return;}
+            s->scopeHistory=history(c);
+            if(!panel->property("brushAutoPositionOwned").toBool()||!select(window,"scopeModeChoice",0)){finish("Cannot enter owned histogram with automatic reveal ownership");return;}
+            s->phase=30;s->settle=0;
+        }else if(s->phase==30) {
+            if(++s->settle<3)return;auto *panel=item("developRightPanel");if(!panel||panel->property("brushRevealPending").toBool())return;
+            if(c->scopeMode()!="histogram"||!panel->property("brushAutoPositionOwned").toBool()||!exposed(window,item("brushExposureSlider"))
+                ||masks(c)!=s->erased||history(c)!=s->scopeHistory||!select(window,"scopeModeChoice",1)){finish("Owned histogram reflow changed intent/ownership");return;}
+            s->phase=31;s->settle=0;
+        }else if(s->phase==31) {
+            if(++s->settle<3||!c->scopePlotCurrent()||c->scopePlotPixels()!=quint64(pixels))return;
+            // A closing ComboBox popup can still intercept the next native wheel.
+            // Observe its actual visibility before dispatch, within the original45s.
+            auto *choice=item("scopeModeChoice");auto *popup=choice?choice->property("popup").value<QObject *>():nullptr;
+            if(popup&&popup->property("visible").toBool()){++s->scopePopupWaitTicks;return;}
+            auto *panel=item("developRightPanel");if(!panel||panel->property("brushRevealPending").toBool())return;
+            s->automaticScope=c->scopeMode()=="waveform"&&panel->property("brushAutoPositionOwned").toBool()
+                &&exposed(window,item("brushExposureSlider"))&&masks(c)==s->erased&&history(c)==s->scopeHistory;
+            if(!s->automaticScope||!wheelToToolsStart(window)){finish("Scope expansion clipped automatic brush controls or native wheel failed");return;}
+            s->phase=32;s->settle=0;
+        }else if(s->phase==32||s->phase==33||s->phase==34) {
+            if(++s->settle<3)return;
+            if(s->phase!=32&&(!c->scopePlotCurrent()||c->scopePlotPixels()!=quint64(pixels)))return;
+            auto *panel=item("developRightPanel"),*scroll=item("developToolScroll");
+            auto *flick=scroll?scroll->property("contentItem").value<QQuickItem *>():nullptr;
+            // Observe actual native wheel settling, as in the existing brush acceptance.
+            // This is bounded by the same owned45s deadline; no synthetic contentY writes.
+            if(!flick||flick->property("moving").toBool())return;
+            s->scopeGeometry.append(QJsonObject{{"phase",s->phase},{"mode",c->scopeMode()},
+                {"pending",panel&&panel->property("brushRevealPending").toBool()},
+                {"automatic_owner",panel&&panel->property("brushAutoPositionOwned").toBool()},
+                {"moving",flick->property("moving").toBool()},{"content_y",flick->property("contentY").toDouble()},
+                {"exposure_visible",exposed(window,item("brushExposureSlider"))},
+                {"document_unchanged",masks(c)==s->erased},{"history_unchanged",history(c)==s->scopeHistory}});
+            const auto expected=s->phase==33?"parade":"waveform";
+            const bool held=panel&&flick&&!panel->property("brushRevealPending").toBool()&&!panel->property("brushAutoPositionOwned").toBool()
+                &&flick->property("contentY").toDouble()<=16&&!exposed(window,item("brushExposureSlider"))
+                &&c->scopeMode()==expected&&masks(c)==s->erased&&history(c)==s->scopeHistory;
+            if(!held){finish("Scope layout overrode native manual scroll or changed edit history");return;}
+            if(s->phase==32){if(!select(window,"scopeModeChoice",2)){finish("Cannot choose parade after manual scroll");return;}s->phase=33;}
+            else if(s->phase==33){if(!select(window,"scopeModeChoice",1)){finish("Cannot restore waveform after manual scroll");return;}s->phase=34;}
+            else {
+                s->manualScope=true;
+                if(!click(window,item("editBrushMaskCanvas"))||!click(window,item("editBrushMaskCanvas"))){finish("Cannot re-enter brush after manual scope reflow");return;}s->phase=35;
+            }
+            s->settle=0;
+        }else if(s->phase==35) {
+            if(++s->settle<3||!c->scopePlotCurrent()||c->scopePlotPixels()!=quint64(pixels)||c->scopesPixelCount()!=quint64(pixels))return;
+            auto *panel=item("developRightPanel"),*plot=item("scopePlotImage");if(!panel||panel->property("brushRevealPending").toBool())return;
+            if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl()))return;
+            const auto image=window->grabWindow();s->ink=plotInk(image,window,plot);if(s->ink<64)return;
+            auto *mode=item("brushModeSelector"),*scope=item("scopeModeChoice"),*status=item("scopeStatusLabel");
+            s->english=s->english&&c->language()=="en_US"&&window->width()==1180&&window->height()==720
+                &&mode&&mode->property("currentIndex").toInt()==1&&mode->property("displayText").toString()=="Erase"
+                &&scope&&scope->property("currentIndex").toInt()==1&&scope->property("displayText").toString()=="Luma waveform"
+                &&status&&status->property("text").toString().contains("Full resolution");
+            s->scopeReentry=s->english&&panel->property("brushAutoPositionOwned").toBool()&&exposed(window,item("brushModeSelector"))
+                &&exposed(window,item("brushExposureSlider"))&&c->scopeMode()=="waveform"&&masks(c)==s->erased&&history(c)==s->scopeHistory;
+            s->scopeLayoutChecked=s->automaticScope&&s->manualScope&&s->scopeReentry;
+            if(!s->scopeLayoutChecked||!capture("english",image)){finish("Explicit brush re-entry did not restore controls after manual scope reflow");return;}finish({});
         }
     });
     if(!owned->isValid()){finish("Cannot create owned QA directory");return;}

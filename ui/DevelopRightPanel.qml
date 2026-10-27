@@ -23,6 +23,12 @@ Rectangle {
         return null
     }
     property bool brushAutoPositionOwned: false
+    // Sticky scope mode changes resize the tool viewport; respect manual scroll ownership.
+    readonly property string brushScopeMode: root.controller.scopeMode
+    onBrushScopeModeChanged: {
+        if(root.brushAutoPositionOwned && root.visible && root.brushExpanded && root.brushEditor && root.brushEditor.active)
+            root.requestBrushReveal()
+    }
     property int brushRevealAttempts: 0
     property int brushRevealStableFrames: 0
     readonly property bool brushRevealPending: revealBrush.running
@@ -759,15 +765,20 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         ComboBox {
+                            id: brushStrokeChoice
                             objectName: "brushStrokeSelector"; Layout.fillWidth: true
                             enabled: root.controller.currentSourceAvailable && root.currentBrush !== null
-                            model: {
-                                let options=[root.t("选择笔触以预览位置","Select stroke to preview")]
-                                for(let i=0;root.currentBrush && i<root.currentBrush.strokes;++i) {
-                                    const erase=root.currentBrush.stroke_modes && root.currentBrush.stroke_modes[i]==="erase"
-                                    options.push((erase ? root.t("擦除笔触 ","Erase stroke ") : root.t("笔触 ","Stroke "))+(i+1))
-                                }
-                                return options
+                            model: root.currentBrush ? root.currentBrush.strokes+1 : 1
+                            function strokeText(index) {
+                                if(index<=0 || !root.currentBrush) return root.t("选择笔触以预览位置","Select stroke to preview")
+                                const erase=root.currentBrush.stroke_modes && root.currentBrush.stroke_modes[index-1]==="erase"
+                                return (erase ? root.t("擦除笔触 ","Erase stroke ") : root.t("笔触 ","Stroke "))+index
+                            }
+                            displayText: strokeText(currentIndex)
+                            delegate: ItemDelegate {
+                                required property int index
+                                width: brushStrokeChoice.width; text: brushStrokeChoice.strokeText(index)
+                                highlighted: brushStrokeChoice.highlightedIndex===index
                             }
                             currentIndex: root.brushEditor && root.brushEditor.strokeSelection.token ? root.brushEditor.strokeSelection.index+1 : 0
                             onActivated: function(index) {

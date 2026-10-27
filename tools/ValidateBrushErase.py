@@ -14,7 +14,7 @@ import tempfile
 
 SONY_BYTES = 69_120_000
 SONY_SHA256 = "aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d"
-CAPTURES = ("before", "painted", "erased", "undo", "selected", "deleted", "reopen", "final", "english")
+CAPTURES = ("before", "painted", "erased", "undo", "selected", "deleted", "reopen", "locale-selected", "final", "english")
 
 
 def sha256(path: Path) -> str:
@@ -87,7 +87,7 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
     errors = [line for line in log.splitlines() if any(marker in line for marker in markers)]
     required = ("erase_no_layer_refusal", "native_paint", "native_erase_mode", "live_uncommitted",
                 "escape_cancel", "one_undo", "display_changed", "undo_redo", "selected_erase_delete",
-                "project_reopen", "loaded_layer_cancel", "scope_controls", "full_scopes",
+                "project_reopen", "selected_locale_preserved", "loaded_layer_cancel", "scope_controls", "full_scopes",
                 "controls_visible", "english_controls_visible", "source_unchanged", "settings_isolated", "budget_admitted")
     width, height = (7028, 4688) if raw else (2203, 1207)
     pixels = width * height
@@ -111,6 +111,16 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
                               and not Path(str(report) + "." + label + ".png").exists())
         except (OSError, ValueError, TypeError, struct.error):
             valid_captures = False
+    geometry = data.get("compact_scope_reflow_geometry")
+    valid_geometry = geometry == {} if raw else isinstance(geometry, dict) and set(geometry) == {"before", "after"}
+    if raw is None and valid_geometry:
+        for phase, expected_mode in (("before", "histogram"), ("after", "waveform")):
+            record = geometry.get(phase, {})
+            valid_geometry = (valid_geometry and isinstance(record, dict) and record.get("mode") == expected_mode
+                              and record.get("automatic_owner") is True and record.get("pending") is False
+                              and record.get("document_unchanged") is True and record.get("history_unchanged") is True
+                              and record.get("viewport_height", 0) > 0 and record.get("exposure_top", -2) >= -1
+                              and 0 < record.get("exposure_bottom", 0) <= record.get("viewport_height", 0) + 1)
     budget = 3 * 1024 ** 3
     checks = {
         "process": code == 0,
@@ -118,6 +128,10 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
         "source_commit": re.fullmatch(r"[0-9a-f]{7,40}", str(data.get("source_commit", ""))) is not None,
         "qml": not errors,
         "native_workflow": all(data.get(key) is True for key in required),
+        "compact_scope_geometry": bool(valid_geometry),
+        "scope_layout_ownership": all(data.get(key) is (raw is None) for key in
+                                      ("compact_scope_reflow_checked", "scope_layout_checked", "automatic_scope_reveal",
+                                       "manual_scope_scroll_preserved", "scope_reentry_revealed")),
         "original_deadline": data.get("deadline_ms") == deadline and 0 < data.get("elapsed_ms", deadline) < deadline,
         "render_mode": data.get("gpu_active") is (mode == "gpu") and (mode == "cpu" or
                        ("Direct3D 11" if sys.platform == "win32" else "Metal" if sys.platform == "darwin"
