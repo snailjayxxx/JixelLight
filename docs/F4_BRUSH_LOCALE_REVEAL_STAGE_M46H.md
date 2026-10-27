@@ -1,6 +1,34 @@
 # F4 M4.6H — preserve brush controls across language changes
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Candidate based on G `3428eec995c09c94fa960b4dc6946f0e55e169e9`. Physical app build and actual local native checks pass. This candidate still requires its own committed three-platform44/44 and both actual eleven-mode packages, especially the Linux Noto language-reflow case. E24ac54d remains the last fully accepted checkpoint.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Committed H `21cd3d87029fadca196a12fd3684976ca87ea464` is **not accepted**: macOS packaged owned Metal failed its phase31 reveal-completion assertion. All three44/44 suites and the actual Windows11-mode package passed. Linux language reflow is verified; the [M4.6I follow-up](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) addresses the observed native-test synchronization failure. E24ac54d remains the last fully accepted checkpoint.
+
+## Committed outcome
+
+[CI40440387028](https://github.com/snailjayxxx/JixelLight/actions/runs/40440387028) finished Linux/Windows success and macOS package failure. All44/44 passed without skips: Linux647.21s, Windows1,108.15s, macOS879.32s;212 Core/36 GPU/39 performance/21 Sony Look/17 admission remain, all27 admitted GPU cases max0/65535. All three full logs show actual merge `9a252be664111be6e5593a3d4bb93688144b1b10`, tree `6a72cb6ecfbae204fb495ce4bfb462aa24fb6e68` equal to H HEAD.
+
+| Standalone native CPU / GPU ms | Owned23/eight plus locale | RealSony16/six |
+| --- | --- | --- |
+| Linux | 9,577 / 10,510 | 19,902 / 22,065 |
+| Windows | 23,900 / 14,491 | 48,002 / 40,930 |
+| macOS | 17,206 / 15,753 | 21,683 / 21,216 |
+
+
+Linux's English headerY0/EVY125 within244px, pending=false/owner=true, and both locale/manual-scroll invariants pass; actual English controls and legible Chinese Sony controls/waveform captures were inspected. The prior G English clipping regression closes on Linux. Original RAW CPU19,926/GPU23,975ms retains full10,340,960/QML0/60,000ms; GPU has23 screenshots, while the existing Linux CPU workflow omits screenshots.
+
+The actual Windows SDK-stripped11-mode package passes. Original RAW CPU54,683/GPU37,349ms retains23 screenshots/full10,340,960/QML0/60,000ms; ownedCPU23,943/GPU14,706ms and SonyCPU48,262/GPU42,138ms retain all criteria.
+
+macOS attempted all11 modes:10 passed; only owned Metal failed at phase31/7,684ms. Its failure JSON reports critical_visible=true, headerY0/EVY129/viewport162, owner=true, attempts2 and pending=true. The actual failure screenshot shows the controls. The native test checks completion after three smoke timer ticks while the independent bounded QML reveal is still running. It must observe completion before asserting the same actual visibility. This is not accepted as success. Original Mac RAW CPU33,331/GPU29,971ms retains23 screenshots/full10,340,960/QML0/60,000ms; ownedCPU16,380ms and SonyCPU22,025/GPU22,905ms pass, along with diagnostics/relink/CLI.
+
+All five original ZIPs have verified size, SHA-256, CRC and safe extraction. Full logs preserve979,557 Linux/925,441 Windows/910,516 macOS characters, including original Windows CRLF. Originals, failure PNG/JSON and failure-aware summary are retained under `/tmp/jixellight-40440387028-*`; physical build parent also retains `ci-40440387028-summary.json`, accepted=false.
+
+| Original artifact | ID | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| package-validation-macOS | 12707840065 | 20,721,224 | `dea45ea523008b5441f6059566573f36dc6cf654df135788039cad6468315581` |
+| validation-Windows | 12707770857 | 28,719,545 | `5e9742e05b12de315f980deab55a69aec8e3a3f7d552add91ee1308c7f59d4ed` |
+| package-validation-Windows | 12707583883 | 15,502,236 | `f3edc76dd62a5c587840e7be459f67bc4e2edec5eeecec658572d6feca93986e` |
+| validation-Linux | 12707485221 | 32,157,637 | `f332c7aba227b2cd39b6e5c00e7111a42bff52f2e63afc1a7c27dd612d181602` |
+| validation-macOS | 12707082639 | 31,640,055 | `56a55e7e488fbbff8bea06eee82b8a2d9660541eefa6def31176e2ac44d2110d` |
+
 
 ## Observed failure and change
 
@@ -41,4 +69,4 @@ G's original five ZIPs, three full logs, actual merge/tree proof and Linux RED r
 
 ## Remaining acceptance
 
-This slice changes only panel positioning and its native harness/wrapper; model, command, kernel, persistence, headers, CTest and CI configuration are unchanged. No duplicate heavy local44 run is needed for those unchanged sources. New committed-H CI must nevertheless pass all44/44 without skips on Linux/Windows/macOS, actual native owned/realSony/RAW modes, both complete11-mode packages and exact source/tree/artifact checks. Local macOS success alone does not establish the Linux Noto reflow fix. Capacity feedback remains deferred until this observed regression closes. Eraser, pressure-device input, live-drag color, native GPU brush, native FP32 RAW and overall F0–F6 completion remain outside this slice.
+H's committed outcome is complete and failed as recorded above; none of the local results is substituted for the missing packaged Metal criteria. [M4.6I](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) retains H's production code and observes bounded reveal completion in the native scenario. Its own committed44/all three and both complete11-mode packages are required. Capacity feedback stays deferred until this observed acceptance gap closes. Eraser, pressure-device input, live-drag color, native GPU brush, native FP32 RAW and overall F0–F6 completion remain outside this slice.

@@ -137,7 +137,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool pointerReady=false;QString actualHint,expectedHint;
         bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
         bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
-        bool revealed=false,manualScroll=false,manualLocale=false,localeRequest=false;int revealHistory=0;QJsonObject revealMasks;QRectF revealFrame;
+        bool revealed=false,manualScroll=false,manualLocale=false,localeRequest=false;int revealHistory=0,revealWaitTicks=0;QJsonObject revealMasks;QRectF revealFrame;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -166,6 +166,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},{"selected_delete_rgb_delta",s->selectedDelta},
             {"brush_controls_reveal",s->revealed},{"manual_scroll_respected",s->manualScroll},{"brush_controls",brushControls(window)},
             {"manual_locale_scroll_preserved",s->manualLocale},{"language_reveal_requested",s->localeRequest},
+            {"reveal_wait_ticks",s->revealWaitTicks},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -305,6 +306,9 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->phase=31;s->settle=0;
         }else if(s->phase==31) {
             if(++s->settle<3)return;const auto geometry=brushControls(window);
+            // QML's bounded reveal uses its own timer. Observe completion
+            // before asserting visibility, within the unchanged45s deadline.
+            if(geometry["pending"].toBool()){++s->revealWaitTicks;return;}
             if(!geometry["critical_visible"].toBool()||geometry["pending"].toBool()){finish("Re-entering the brush tool did not reveal its actual controls");return;}
             if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!wheelToToolsStart(window)){finish("Cannot interrupt pending reveal with a native wheel");return;}
             s->phase=32;s->settle=0;
@@ -328,6 +332,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->phase=33;s->settle=0;
         }else if(s->phase==33) {
             if(++s->settle<3)return;const auto geometry=brushControls(window);
+            if(geometry["pending"].toBool()){++s->revealWaitTicks;return;}
             s->revealed=geometry["critical_visible"].toBool()&&!geometry["pending"].toBool()&&masks(c)==s->revealMasks
                 &&cursor(c)==s->revealHistory&&c->previewFrameRect()==s->revealFrame;
             if(!s->revealed||!window->grabWindow().save(reportPath+".reveal.png")){finish("Brush reveal changed edit/viewport state or did not restore controls");return;}
@@ -398,6 +403,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->phase=19;s->settle=0;
         }else if(s->phase==19) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
+            if(brushControls(window)["pending"].toBool()){++s->revealWaitTicks;return;}
             auto *plot=child(window->contentItem(),"scopePlotImage");
             if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
             auto *hint=child(window->contentItem(),"maskToolHint");s->actualHint=hint?hint->property("text").toString():QString{};s->expectedHint=c->brushStatus();
