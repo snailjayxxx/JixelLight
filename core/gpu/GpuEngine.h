@@ -25,6 +25,9 @@ public:
         quint64 revision,const HistogramReady &histogramReady,bool forceHistogram=false,
         QString *error=nullptr,std::shared_ptr<BrushRenderBudget> budget={});
     bool draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
+    // Qt Quick composites premultiplied monitor-device RGB. Keep draw() and
+    // the working output texture straight for diagnostic/scopes/export users.
+    bool drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
     bool captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
                              QString *error = nullptr, qint64 budget = 64 * 1024 * 1024);
     // Display color management is intentionally downstream of m_output so it
@@ -44,7 +47,8 @@ private:
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
     bool ensureDetail();
-    bool createDisplay(QRhiRenderTarget *target);
+    bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha);
+    bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha);
     bool ensureDisplayColorResources();
     bool buildCompute(std::unique_ptr<QRhiComputePipeline> &pipeline,
                       QRhiShaderResourceBindings *bindings, const QString &name);
@@ -68,6 +72,7 @@ private:
     std::unique_ptr<QRhiGraphicsPipeline> m_display;
     QRhiRenderPassDescriptor *m_displayPass = nullptr;
     int m_displaySamples = 0;
+    bool m_displayPremultipliedAlpha = false;
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
     QImage m_displayColorLut;

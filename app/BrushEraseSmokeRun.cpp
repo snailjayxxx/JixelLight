@@ -86,7 +86,7 @@ int plotInk(const QImage &image,QQuickWindow *window,QQuickItem *plot) {
     }
     return count;
 }
-void startErase(PhotoController *c,QQuickWindow *window,const QString &requestedSource,const QString &report,bool realSony) {
+void startErase(PhotoController *c,QQuickWindow *window,const QString &requestedSource,const QString &report,bool realSony,bool transparent=false) {
     const auto owned=std::make_shared<QTemporaryDir>();const QString source=realSony?requestedSource:owned->filePath("eraser-owned.png");
     const auto nativePath=[](const QString &path) {
 #ifdef Q_OS_WIN
@@ -116,7 +116,8 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         bool compactScopeReflow=false,selectedLocale=false,scopeLayoutChecked=false,automaticScope=false,manualScope=false,scopeReentry=false;
         bool livePaint=false,liveErase=false,liveCancelPaint=false,liveCancelErase=false,livePointer=true,liveRevision=true,liveCurrent=true;
         int livePaintDelta=0,liveEraseDelta=0,liveCancelPaintDelta=999,liveCancelEraseDelta=999,liveMoves=0,livePhaseMoves=0;
-        quint64 liveCommittedRevision=0;
+        int liveCommitPaintDelta=999,liveCommitEraseDelta=999,ownedAlpha=0;QColor livePaintColor,liveEraseColor;
+        quint64 liveCommittedRevision=0;int lastObservedPhase=-1;QJsonArray phaseTrace;
         QString layer,project;QByteArray sourceHash;QJsonObject initial,painted,erased,captures,compactScopeGeometry;QJsonArray scopeGeometry;QColor baseline,paintedColor;
     };
     auto s=std::make_shared<State>();s->clock.start();auto *timer=new QTimer(c);timer->setInterval(50);
@@ -131,7 +132,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         const auto path=report+"."+label+"-controls.png";if(!image.copy(rect).save(path))return false;
         s->captures[label]=QJsonObject{{"sha256",QString::fromLatin1(QCryptographicHash::hash(full,QCryptographicHash::Sha256).toHex())},
             {"controls_sha256",QString::fromLatin1(hashFile(path))},{"width",image.width()},{"height",image.height()},
-            {"controls_width",rect.width()},{"controls_height",rect.height()},{"device_scale",window->effectiveDevicePixelRatio()}};
+            {"controls_width",rect.width()},{"controls_height",rect.height()},{"device_scale",window->effectiveDevicePixelRatio()},{"elapsed_ms",s->clock.elapsed()}};
         return true;
     };
     const auto finish=[=](const QString &error) {
@@ -144,13 +145,13 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         const bool controls=exposed(window,item("brushModeSelector"))&&exposed(window,item("brushExposureSlider"));
         const bool required=s->noLayer&&s->nativePaint&&s->nativeErase&&s->transient&&s->escape&&s->oneUndo&&s->display
             &&s->undoRedo&&s->selectedDelete&&s->reopen&&s->loadedCancel&&s->scopeControls&&s->scopes&&s->english&&s->selectedLocale
-            &&s->livePaint&&s->liveErase&&s->liveCancelPaint&&s->liveCancelErase&&s->livePointer&&s->liveRevision&&s->liveCurrent&&s->liveMoves>=4
+            &&s->livePaint&&s->liveErase&&s->liveCancelPaint&&s->liveCancelErase&&s->livePointer&&s->liveRevision&&s->liveCurrent&&s->liveMoves>=4&&s->liveCommitPaintDelta<=2&&s->liveCommitEraseDelta<=2
             &&(realSony|| (s->compactScopeReflow&&s->scopeLayoutChecked&&s->automaticScope&&s->manualScope&&s->scopeReentry));
         const bool passed=error.isEmpty()&&required&&isolated&&unchanged&&shape&&admitted&&controls&&s->clock.elapsed()<deadline
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject data{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
-            {"elapsed_ms",s->clock.elapsed()},{"deadline_ms",deadline},{"phase",s->phase},{"error",error},
-            {"synthetic_fixture",!realSony},{"source_override",false},{"source_kind",realSony?"public-sony-arw":"owned-rgba64-png"},
+            {"elapsed_ms",s->clock.elapsed()},{"deadline_ms",deadline},{"phase",s->phase},{"error",error},{"phase_trace",s->phaseTrace},
+            {"synthetic_fixture",!realSony},{"source_override",false},{"transparent_fixture",transparent},{"owned_alpha_u16",s->ownedAlpha},{"source_kind",realSony?"public-sony-arw":"owned-rgba64-png"},
             {"source_pixels",qint64(c->brushFrameSize().width())*c->brushFrameSize().height()},
             {"source_width",c->brushFrameSize().width()},{"source_height",c->brushFrameSize().height()},{"expected_source_pixels",pixels},
             {"source_bytes",QFileInfo(source).size()},{"source_sha256",QString::fromLatin1(s->sourceHash)},
@@ -160,6 +161,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             {"live_color_paint",s->livePaint},{"live_color_erase",s->liveErase},{"live_cancel_paint",s->liveCancelPaint},{"live_cancel_erase",s->liveCancelErase},
             {"live_pointer_held",s->livePointer},{"live_committed_revision_unchanged",s->liveRevision},{"live_display_current",s->liveCurrent},{"live_input_moves",s->liveMoves},
             {"live_paint_rgb_delta",s->livePaintDelta},{"live_erase_rgb_delta",s->liveEraseDelta},{"live_cancel_paint_rgb_delta",s->liveCancelPaintDelta},{"live_cancel_erase_rgb_delta",s->liveCancelEraseDelta},
+            {"live_to_committed_paint_rgb_delta",s->liveCommitPaintDelta},{"live_to_committed_erase_rgb_delta",s->liveCommitEraseDelta},
             {"paint_rgb_delta",s->paintDelta},{"erase_rgb_delta",s->eraseDelta},{"undo_rgb_delta",s->undoDelta},{"redo_rgb_delta",s->redoDelta},
             {"undo_redo",s->undoRedo},{"selected_erase_delete",s->selectedDelete},{"project_reopen",s->reopen},
             {"compact_scope_reflow_checked",s->compactScopeReflow},{"compact_scope_reflow_geometry",s->compactScopeGeometry},
@@ -177,6 +179,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
     };
     QObject::connect(timer,&QTimer::timeout,c,[=,keepAlive=owned] {
         Q_UNUSED(keepAlive); // Keep the owned source/project until the timer is destroyed.
+        if(s->lastObservedPhase!=s->phase){s->lastObservedPhase=s->phase;s->phaseTrace.append(QJsonObject{{"phase",s->phase},{"observed_ms",s->clock.elapsed()}});}
         if(s->clock.elapsed()>=deadline){finish("Native eraser GUI exceeded its original bounded deadline");return;}
         if(!c->brushReady())return;auto *canvas=item("photoCanvas"),*overlay=item("brushCanvasOverlay");
         if(!canvas||!overlay||!canvas->property("brushDisplayReady").toBool())return;
@@ -237,8 +240,8 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             const int visibleDelta=delta(color,erasing?s->paintedColor:s->baseline);if(visibleDelta<3)return;
             if(erasing&&delta(color,s->baseline)>2)return;
             s->liveCurrent=s->liveCurrent&&live->property("source").toUrl()==QUrl(c->brushPreviewUrl());
-            if(erasing){s->liveErase=true;s->liveEraseDelta=visibleDelta;}
-            else {s->livePaint=true;s->livePaintDelta=visibleDelta;}
+            if(erasing){s->liveErase=true;s->liveEraseDelta=visibleDelta;s->liveEraseColor=color;}
+            else {s->livePaint=true;s->livePaintDelta=visibleDelta;s->livePaintColor=color;}
             if(!capture(erasing?"live-erased":"live-painted",image)){finish("Cannot capture live brush controls");return;}
             key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,point(.7),Qt::LeftButton,Qt::NoButton);
             s->phase=erasing?43:41;s->settle=0;
@@ -253,6 +256,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             s->layer=doc.layers[0].id;s->phase=4;s->settle=0;
         }else if(s->phase==4) {
             const auto image=read(&s->paintedColor);if(image.isNull())return;s->paintDelta=delta(s->baseline,s->paintedColor);if(s->paintDelta<3)return;
+            s->liveCommitPaintDelta=delta(s->paintedColor,s->livePaintColor);if(s->liveCommitPaintDelta>2)return;
             if(!capture("painted",image)||!select(window,"brushModeSelector",1)){finish("Cannot capture Paint or select Erase");return;}
             s->nativeErase=true;s->phase=5;s->settle=0;
         }else if(s->phase==5) {
@@ -272,7 +276,8 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             if(!s->transient||!s->oneUndo){finish("Native Erase leaked transient state or is not one Undo");return;}s->phase=6;
         }else if(s->phase==6) {
             QColor color;const auto image=read(&color);if(image.isNull())return;s->eraseDelta=delta(color,s->paintedColor);
-            if(s->eraseDelta<3||delta(color,s->baseline)>2)return;s->display=true;
+            if(s->eraseDelta<3||delta(color,s->baseline)>2)return;
+            s->liveCommitEraseDelta=delta(color,s->liveEraseColor);if(s->liveCommitEraseDelta>2)return;s->display=true;
             if(!capture("erased",image)||!click(window,item("undoEditButton"))){finish("Cannot capture Erase or click Undo");return;}s->phase=7;
         }else if(s->phase==7) {
             QColor color;const auto image=read(&color);if(image.isNull())return;s->undoDelta=delta(color,s->paintedColor);if(s->undoDelta>2)return;
@@ -315,10 +320,17 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
                 &&exposed(window,stroke)&&masks(c)==s->erased&&history(c)==s->localeHistory;
             const bool active=gesture(true);s->loadedCancel=active&&!c->brushDrawing()&&masks(c)==s->erased&&history(c)==s->localeHistory;
             if(!s->selectedLocale||!s->loadedCancel){finish("Saved erase selection roundtrip or loaded Escape failed");return;}
-            // All RGB probes are complete: resize the owned view BEFORE waveform expansion.
+            // All RGB probes are complete. Settle the compact viewport before
+            // starting full-source waveform work, including on the pinned Sony.
+            // The final English checks still require current full-resolution scopes.
             if(!realSony){c->setLanguage("en_US");window->resize(1180,720);s->phase=22;}
-            else {if(!select(window,"scopeModeChoice",1)){finish("Cannot choose Sony waveform");return;}s->phase=14;}
+            else {c->setLanguage("en_US");window->resize(1180,720);s->phase=23;}
             s->settle=0;
+        }else if(s->phase==23) {
+            if(++s->settle<3)return;
+            if(c->language()!="en_US"||window->width()!=1180||window->height()!=720
+                ||masks(c)!=s->erased||history(c)!=s->localeHistory){finish("Compact Sony viewport did not settle without changing edits");return;}
+            if(!select(window,"scopeModeChoice",1)){finish("Cannot choose Sony waveform");return;}s->phase=14;s->settle=0;
         }else if(s->phase==22) {
             if(++s->settle<3)return;auto *panel=item("developRightPanel");if(!panel||panel->property("brushRevealPending").toBool())return;
             const auto g=exposureGeometry();
@@ -423,8 +435,12 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
     if(!realSony) {
         QImage image(size,QImage::Format_RGBA64);image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
         for(int y=0;y<size.height();++y)for(int x=0;x<size.width();++x)
-            reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(4000+x*17,6000+y*23,8000+(x+y)*9,65535);
+            reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(4000+x*17,6000+y*23,8000+(x+y)*9,transparent?42000:65535);
         if(!image.save(source)){finish("Cannot create owned eraser fixture");return;}
+        const QImage verified=QImage(source).convertToFormat(QImage::Format_RGBA64);
+        if(verified.isNull()){finish("Cannot decode owned eraser fixture");return;}
+        s->ownedAlpha=reinterpret_cast<const QRgba64 *>(verified.constScanLine(0))[0].alpha();
+        if(s->ownedAlpha!=(transparent?42000:65535)){finish("Owned alpha did not survive PNG encoding");return;}
     }
     s->sourceHash=hashFile(source);
     if(realSony&&(QFileInfo(source).suffix().compare("arw",Qt::CaseInsensitive)!=0||QFileInfo(source).size()!=69120000||s->sourceHash!="aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d")) {
@@ -437,4 +453,5 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
 }
 }
 void startBrushEraseCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QString &report) {startErase(c,window,{},report,false);}
+void startTransparentBrushEraseCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QString &report) {startErase(c,window,{},report,false,true);}
 void startSonyBrushEraseCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QString &source,const QString &report) {startErase(c,window,source,report,true);}

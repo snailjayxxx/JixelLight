@@ -331,9 +331,9 @@ bool GpuEngine::ensureDisplayColorResources() {
     return true;
 }
 
-bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
+bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha) {
     if (!ensureDisplayColorResources()) return false;
-    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount()) return true;
+    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount() && m_displayPremultipliedAlpha == premultipliedAlpha) return true;
     m_display.reset(); m_displayBindings.reset();
     if (!m_sampler) {
         m_sampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
@@ -360,12 +360,25 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
     m_display->setShaderResourceBindings(m_displayBindings.get());
     m_display->setRenderPassDescriptor(target->renderPassDescriptor());
     m_display->setSampleCount(target->sampleCount());
+    if(premultipliedAlpha) {
+        // Presentation only: Qt Quick consumes premultiplied device RGB.
+        // Keep processing/output texture and ordinary diagnostic draws straight.
+        QRhiGraphicsPipeline::TargetBlend blend;
+        blend.enable = true;
+        blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+        blend.dstColor = QRhiGraphicsPipeline::Zero;
+        blend.srcAlpha = QRhiGraphicsPipeline::One;
+        blend.dstAlpha = QRhiGraphicsPipeline::Zero;
+        m_display->setTargetBlends({blend});
+    }
     if (!m_display->create()) return fail(QStringLiteral("GPU display pipeline failed"));
-    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount();
+    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount(); m_displayPremultipliedAlpha=premultipliedAlpha;
     return true;
 }
-bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
-    if (!m_output || !createDisplay(target)) return false;
+bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,false);}
+bool GpuEngine::drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,true);}
+bool GpuEngine::drawImpl(QRhiCommandBuffer *cb, QRhiRenderTarget *target,bool premultipliedAlpha) {
+    if (!m_output || !createDisplay(target,premultipliedAlpha)) return false;
     QRhiResourceUpdateBatch *updates = nullptr;
     const auto ensureUpdates=[&]() {
         if (!updates) updates=m_rhi->nextResourceUpdateBatch();
@@ -393,7 +406,7 @@ bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
         PerformanceRecorder::count("display_monitor_lut_upload_bytes",m_displayColorLut.sizeInBytes());
         PerformanceRecorder::value("display_monitor_profile_gpu",m_displayColorProfileName);
     }
-    cb->beginPass(target, Qt::black, {1.0f,0}, updates);
+    cb->beginPass(target, premultipliedAlpha?Qt::transparent:Qt::black, {1.0f,0}, updates);
     cb->setGraphicsPipeline(m_display.get());
     cb->setShaderResources(m_displayBindings.get());
     cb->setViewport({0,0,float(target->pixelSize().width()),float(target->pixelSize().height())});

@@ -15,8 +15,8 @@ operation leases, including the result stored in an idle Qt future.
 The versioned image-provider slot reuses the existing monitor transform and
 retains leased processing pixels through display aliases. Monitor changes rekey
 presentation without editing processing pixels. The canvas uses one visible
-photo plane at a time, preserving alpha composition; the committed CPU/GPU view
-returns when the temporary image is cleared. The preview uses the current normal
+photo plane at a time, so temporary transparent pixels are composited once. The
+committed CPU/GPU view returns when the temporary image is cleared. The preview uses the current normal
 prepared source and normalized frame, with the existing admission and shared
 operation budget. This does not add a process RSS cap or a native GPU brush.
 
@@ -74,6 +74,29 @@ live-brush-legacy-gui/, live-brush-native-alias-refusal/,
 live-brush-local-post-audit.json and the full65 logs/XML. Local source stamps
 are preserved as the precommit c656b13 and require exact tested-source links to
 the eventual commit. The accepted C run and original DPI failure stay preserved.
+
+## Committed D run: failed Windows native deadline
+
+[D59dffd0 / CI40538315991](https://github.com/snailjayxxx/JixelLight/actions/runs/40538315991)
+passes65/65 on Linux1028.10s, Windows1781.39s and macOS1488.64s, with Core215
+and zero skips each. Linux/macOS native workflows and the actual macOS15-mode
+SDK-stripped package pass. Windows genuine Sony CPU eraser validation exceeds
+its unchanged60000ms deadline at60750ms/phase16. Live Paint/Erase, Esc,
+Undo/Redo, reopen and full32,947,264-pixel scopes pass before that failure;
+the final compact-English crop still shows scopes updating after resize.
+Remaining Sony eraser GPU, RAW-matrix and Windows package steps did not run.
+D remains failed as an original run; C is the last fully accepted aggregate.
+
+All four available original ZIPs and three full job logs are SHA/CRC checked
+and archived under evidence/ci-40538315991. The Windows package artifact was
+never produced. Each actual checkout is a1d47521250b0e0926a3a9adc156a45dd30378e7,
+whose treea0949e5535644482d1c58bf1f9866443c1659fdc equals the committed source.
+
+Additional native transformed-view testing found a committed GPU alpha-composition
+defect on owned transparent images, despite exact prepared processing pixels.
+The presentation correction, stable Sony full-scope QA ordering and their new
+native/numeric coverage are tracked in [E](F4_BRUSH_ALPHA_PRESENTATION_STAGE_M47E.md).
+E needs its own committed acceptance; these follow-ups do not change D's result.
 
 ## Publication gate
 

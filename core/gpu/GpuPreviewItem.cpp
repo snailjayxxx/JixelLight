@@ -54,7 +54,7 @@ public:
         const bool processed=BrushMaskTileRaster::anyEnabled(m_plan.state.brushMasks)
             ?m_engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure,controller?controller->brushRenderBudget():nullptr)
             :m_engine->process(cb,m_source,m_plan,m_revision,histogram);
-        if (!processed || !m_engine->draw(cb,renderTarget())) {
+        if (!processed || !m_engine->drawForSceneGraph(cb,renderTarget())) {
             if(failure.isEmpty())failure=m_engine->error();
             diagnosticUnavailable(failure);
             m_failed=true;
@@ -114,7 +114,9 @@ private:
 };
 }
 GpuPreviewItem::GpuPreviewItem(QQuickItem *parent):QQuickRhiItem(parent) {
-    setAlphaBlending(false);
+    // QQuickRhiItem expects premultiplied content when compositing transparency.
+    // The renderer applies this after the monitor transform, at presentation.
+    setAlphaBlending(true);
     m_histogramRefresh.setInterval(90); m_histogramRefresh.setSingleShot(true);
     connect(&m_histogramRefresh,&QTimer::timeout,this,[this] { update(); });
     connect(this,&QQuickItem::windowChanged,this,[this](QQuickWindow *window) {

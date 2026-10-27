@@ -115,6 +115,10 @@ def main() -> int:
             erase_home.mkdir()
             results.append(validate_brush_erase(executable, environment, erase_home,
                 reports / ("brush-erase-" + mode + ".json"), mode))
+            transparent_home = Path(temp) / ("transparent-brush-erase-" + mode)
+            transparent_home.mkdir()
+            results.append(validate_brush_erase(executable, environment, transparent_home,
+                reports / ("transparent-brush-erase-" + mode + ".json"), mode, transparent=True))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()

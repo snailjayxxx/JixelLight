@@ -9,4 +9,5 @@ void startRelinkSmokeRun(PhotoController *controller, QQuickWindow *window, cons
 void startBrushCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath);
 void startSonyBrushCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &sourcePath,const QString &reportPath);
 void startBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath);
+void startTransparentBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath);
 void startSonyBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &sourcePath,const QString &reportPath);

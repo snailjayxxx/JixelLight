@@ -133,6 +133,8 @@ jobs:
           fi
           python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-cpu.json cpu
           python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py "$EXE" gui-transparent-brush-erase-cpu.json cpu --transparent
+          python tools/ValidateBrushErase.py "$EXE" gui-transparent-brush-erase-gpu.json gpu --transparent
           python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
           python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
       - name: Real RAW JPEG CPU GPU render matrix
@@ -365,6 +367,8 @@ jobs:
         run: |
           python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-cpu.json cpu
           xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-transparent-brush-erase-cpu.json cpu --transparent
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-transparent-brush-erase-gpu.json gpu --transparent
           python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
           xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
       - name: Real RAW JPEG CPU GPU render matrix

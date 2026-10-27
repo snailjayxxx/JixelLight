@@ -48,13 +48,14 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"brush-canvas-smoke-report", "Validate actual brush pointer gestures with owned images", "file"});
     arguments.addOption({"sony-brush-canvas-smoke-report", "Validate real Sony large-image brush input; private report/captures, requires one pinned ARW", "file"});
     arguments.addOption({"brush-erase-canvas-smoke-report", "Validate native Paint/Erase mode with an owned image and controls-only captures", "file"});
+    arguments.addOption({"transparent-brush-erase-canvas-smoke-report", "Validate transparent native Paint/Erase composition with an owned image", "file"});
     arguments.addOption({"sony-brush-erase-canvas-smoke-report", "Validate native Erase using exactly one pinned real Sony ARW; controls-only captures", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
     const int smokeModes=int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
-        +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"));
+        +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"));
     if(smokeModes>1)return 2;
     std::unique_ptr<QTemporaryDir> smokeSettings;
     if(smokeModes) {
@@ -150,6 +151,10 @@ int main(int argc, char *argv[]) {
     if (arguments.isSet("relink-smoke-report")) {
         if (!window || !photos.isEmpty()) return 2;
         startRelinkSmokeRun(&controller,window,arguments.value("relink-smoke-report"));
+    }
+    if(arguments.isSet("transparent-brush-erase-canvas-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        startTransparentBrushEraseCanvasSmokeRun(&controller,window,arguments.value("transparent-brush-erase-canvas-smoke-report"));
     }
     if(arguments.isSet("brush-erase-canvas-smoke-report")) {
         if(!window||!photos.isEmpty())return 2;

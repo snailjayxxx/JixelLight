@@ -3,6 +3,9 @@
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
 #include <QRgba64>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -22,6 +25,20 @@ QImage invertedDisplayLut() {
             row[x*4+2]=1.0f-float(b)/float(LutSize-1);
             row[x*4+3]=1.0f;
         }
+    }
+    return atlas;
+}
+
+QImage alphaDisplayLut(int mode) {
+    if(mode==1)return invertedDisplayLut();
+    QImage atlas(LutSize*LutSize,LutSize,QImage::Format_RGBA32FPx4);
+    for(int b=0;b<LutSize;++b)for(int g=0;g<LutSize;++g)for(int r=0;r<LutSize;++r) {
+        float *pixel=reinterpret_cast<float *>(atlas.scanLine(g))+(b*LutSize+r)*4;
+        const float rr=r/float(LutSize-1),gg=g/float(LutSize-1),bb=b/float(LutSize-1);
+        pixel[0]=mode==0?rr:1-bb;
+        pixel[1]=mode==0?gg:rr;
+        pixel[2]=mode==0?bb:1-gg;
+        pixel[3]=1;
     }
     return atlas;
 }
@@ -129,6 +146,77 @@ private slots:
             QVERIFY(std::abs(dst.green()-(255-src.green()))<=3);
             QVERIFY(std::abs(dst.blue()-(255-src.blue()))<=3);
         }
+    }
+
+    void sceneGraphPremultipliesAfterMonitorWithoutChangingWorkingPixels() {
+        QImage source(16,16,QImage::Format_RGBA32FPx4);
+        const float alpha[]{0.f,.25f,.64f,1.f};
+        for(int y=0;y<16;++y)for(int x=0;x<16;++x) {
+            float *p=reinterpret_cast<float *>(source.scanLine(y))+x*4;
+            p[0]=.04f+.45f*x/15;p[1]=.08f+.35f*y/15;
+            p[2]=.12f+.20f*(x+y)/30;p[3]=alpha[x%4];
+        }
+        QVERIFY2(process(source),qPrintable(engine->error()));
+        const QByteArray before=readOutput();
+        QCOMPARE(before.size(),16*16*4*int(sizeof(float)));
+        // Compute pixels follow the top-left source convention. Only the
+        // framebuffer readback below needs the backend's framebuffer Y flip.
+        const QImage reference=QImage(reinterpret_cast<const uchar *>(before.constData()),
+            16,16,16*4*int(sizeof(float)),QImage::Format_RGBA32FPx4).copy();
+
+        std::unique_ptr<QRhiTexture> color(rhi->newTexture(QRhiTexture::RGBA8,source.size(),1,
+            QRhiTexture::RenderTarget|QRhiTexture::UsedAsTransferSource));
+        QVERIFY(color->create());
+        std::unique_ptr<QRhiTextureRenderTarget> target(rhi->newTextureRenderTarget({QRhiColorAttachment(color.get())}));
+        std::unique_ptr<QRhiRenderPassDescriptor> pass(target->newCompatibleRenderPassDescriptor());
+        target->setRenderPassDescriptor(pass.get());QVERIFY(target->create());
+        const auto drawSameTarget=[&](bool premultiplied) -> QImage {
+            QRhiCommandBuffer *cb=nullptr;
+            if(rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess)return {};
+            const bool ok=premultiplied?engine->drawForSceneGraph(cb,target.get()):engine->draw(cb,target.get());
+            if(!ok){rhi->endOffscreenFrame();return {};}
+            QRhiReadbackResult pixels;bool done=false;pixels.completed=[&]{done=true;};
+            auto *updates=rhi->nextResourceUpdateBatch();
+            updates->readBackTexture(QRhiReadbackDescription(color.get()),&pixels);cb->resourceUpdate(updates);
+            rhi->endOffscreenFrame();rhi->finish();
+            if(!done||pixels.data.size()!=16*16*4)return {};
+            QImage actual(reinterpret_cast<const uchar *>(pixels.data.constData()),16,16,16*4,QImage::Format_RGBA8888);
+            return rhi->isYUpInFramebuffer()?actual.mirrored():actual.copy();
+        };
+        int maximum=0,draws=0;QJsonArray cases;
+        for(int mode=0;mode<3;++mode) {
+            engine->setDisplayColorLut(alphaDisplayLut(mode),QStringLiteral("alpha-%1").arg(mode),
+                QStringLiteral("independent analytic monitor LUT"));
+            // Exercise pipeline-cache changes on one stable target/pass,
+            // including consecutive uses of the same premultiplied pipeline.
+            for(bool premultiplied:{false,true,false,true,true,false}) {
+                const QImage actual=drawSameTarget(premultiplied);
+                QVERIFY2(!actual.isNull(),qPrintable(engine->error()));int error=0;
+                for(int y=0;y<16;++y)for(int x=0;x<16;++x) {
+                    const float *p=reinterpret_cast<const float *>(reference.constScanLine(y))+x*4;
+                    QVERIFY(std::abs(p[3]-alpha[x%4])<.000001f);
+                    const float r=std::clamp(p[0],0.f,1.f),g=std::clamp(p[1],0.f,1.f),b=std::clamp(p[2],0.f,1.f);
+                    const float rgb[]{mode==0?r:mode==1?1-r:1-b,mode==0?g:mode==1?1-g:r,mode==0?b:mode==1?1-b:1-g};
+                    const auto c=actual.pixelColor(x,y);const int got[]{c.red(),c.green(),c.blue(),c.alpha()};
+                    for(int k=0;k<4;++k) {
+                        const float expected=k==3?p[3]:rgb[k]*(premultiplied?p[3]:1.f);
+                        error=std::max(error,std::abs(got[k]-int(std::lround(expected*255))));
+                    }
+                }
+                QCOMPARE(readOutput(),before);
+                QVERIFY2(error<=1,qPrintable(QStringLiteral("LUT %1, premultiplied %2: %3/255").arg(mode).arg(premultiplied).arg(error)));
+                maximum=std::max(maximum,error);++draws;
+                cases.append(QJsonObject{{"lut",mode},{"premultiplied",premultiplied},{"max_channel_error_255",error}});
+            }
+        }
+        const QJsonObject evidence{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+            {"draws_same_target",draws},{"pixels_each",256},{"alpha_levels",QJsonArray{0,.25,.64,1}},
+            {"analytic_monitor_luts",3},{"max_channel_error_255",maximum},{"error_limit_255",1},
+            {"working_output_bytes_unchanged",true},{"straight_draw_unchanged",true},
+            {"monitor_transform_before_premultiplication",true},{"same_target_pipeline_switch",true},
+            {"hidden_rgb_preserved_in_straight_draw",true},{"transparent_device_rgb_zero",true},
+            {"opaque_device_rgb_unchanged",true},{"cases",cases}};
+        qInfo().noquote()<<"DISPLAY_ALPHA_EVIDENCE"<<QJsonDocument(evidence).toJson(QJsonDocument::Compact);
     }
 };
 

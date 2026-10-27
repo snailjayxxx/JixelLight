@@ -26,9 +26,11 @@ def sha256(path: Path) -> str:
 
 
 def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
-                         report: Path, mode: str, raw: Path | None = None) -> dict:
+                         report: Path, mode: str, raw: Path | None = None, *, transparent: bool = False) -> dict:
     if mode not in ("cpu", "gpu"):
         raise ValueError("Unknown rendering mode")
+    if transparent and raw is not None:
+        raise ValueError("Transparent owned fixture and pinned Sony source are mutually exclusive")
     binary, report = binary.resolve(), report.resolve()
     if raw is not None:
         raw = raw.resolve()
@@ -65,7 +67,7 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
             env["QT_QPA_PLATFORM"] = "offscreen"
     report.parent.mkdir(parents=True, exist_ok=True)
     command = [str(binary), "--sony-brush-erase-canvas-smoke-report" if raw else
-               "--brush-erase-canvas-smoke-report", str(report)]
+               ("--transparent-brush-erase-canvas-smoke-report" if transparent else "--brush-erase-canvas-smoke-report"), str(report)]
     if raw is not None:
         command.append(str(raw))
     deadline = 60_000 if raw else 45_000
@@ -146,6 +148,10 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
                            and re.fullmatch(r"[0-9a-f]{64}", str(data.get("source_sha256", ""))) is not None,
         "pinned_sony": raw is None or (data.get("source_bytes") == SONY_BYTES
                                       and data.get("source_sha256") == SONY_SHA256 and sha256(raw) == SONY_SHA256),
+        "fixture_alpha": data.get("transparent_fixture") is transparent
+                         and data.get("owned_alpha_u16") == (0 if raw else 42000 if transparent else 65535),
+        "live_commit_composition": 0 <= data.get("live_to_committed_paint_rgb_delta", 999) <= 2
+                                   and 0 <= data.get("live_to_committed_erase_rgb_delta", 999) <= 2,
         "visible_pixels": data.get("paint_rgb_delta", 0) >= 3 and data.get("erase_rgb_delta", 0) >= 3
                           and 0 <= data.get("undo_rgb_delta", 999) <= 2
                           and 0 <= data.get("redo_rgb_delta", 999) <= 2,
@@ -162,7 +168,7 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
         "producer_contract": data.get("producer") == "cpu-reference" and data.get("native_gpu_brush") is False
                              and data.get("native_float_raw_decoder") is False and data.get("photographs_published") is False,
     }
-    result = {"mode": ("sony-" if raw else "") + "brush-erase-" + mode,
+    result = {"mode": ("sony-" if raw else "transparent-" if transparent else "") + "brush-erase-" + mode,
               "passed": all(checks.values()), "returncode": code, "checks": checks,
               "source_commit": data.get("source_commit"), "qml_errors": errors,
               "controls_captures_verified": bool(valid_captures), "report": data}
@@ -176,13 +182,15 @@ def main() -> int:
     parser.add_argument("binary", type=Path)
     parser.add_argument("report", type=Path)
     parser.add_argument("mode", nargs="?", choices=("cpu", "gpu"), default="cpu")
-    parser.add_argument("--sony", type=Path)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--sony", type=Path)
+    source.add_argument("--transparent", action="store_true")
     arguments = parser.parse_args()
     if not arguments.binary.is_file():
         parser.error("Missing desktop executable")
     with tempfile.TemporaryDirectory(prefix="jixel-brush-erase-") as folder:
         result = validate_brush_erase(arguments.binary, os.environ.copy(), Path(folder),
-                                      arguments.report, arguments.mode, arguments.sony)
+                                      arguments.report, arguments.mode, arguments.sony, transparent=arguments.transparent)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0 if result["passed"] else 1
 
