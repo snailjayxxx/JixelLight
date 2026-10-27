@@ -4483,12 +4483,34 @@ private slots:
         ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> saved; QVERIFY(db.readSnapshot(c.projectPath(),&saved));
         int looks=0; for (const auto &photo : saved) if (photo.adjustments.look.code=="FL") ++looks;
         QCOMPARE(looks,2); // Source + virtual copy; target B is at its pre-sync undo cursor.
-        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath()))); reopened.selectPhoto(1);
+
+        const auto catalog=c.library();
+        const auto sourceKey=catalog[0].toMap()["id"].toString();
+        const auto targetKey=catalog[1].toMap()["id"].toString();
+        const auto unselectedKey=catalog[2].toMap()["id"].toString();
+        const auto copyKey=catalog[3].toMap()["id"].toString();
+        QVERIFY(!sourceKey.isEmpty()&&!targetKey.isEmpty()&&!copyKey.isEmpty());
+        bool targetSaved=false;
+        for(const auto &record:saved)if(record.path==targetKey){targetSaved=true;QCOMPARE(record.adjustments.exposure,-1.0);QVERIFY(record.history.canRedo());}
+        QVERIFY(targetSaved);
+        {
+            auto order=QSqlDatabase::addDatabase("QSQLITE","sync-reopen-order-fixture");
+            order.setDatabaseName(QDir(c.projectPath()).filePath("Project.db"));QVERIFY(order.open());
+            QSqlQuery query(order);query.prepare("UPDATE photos SET imported_at=CASE WHEN path=? THEN '1999-01-01 00:00:00' ELSE '2000-01-01 00:00:00' END");
+            query.addBindValue(targetKey);QVERIFY(query.exec());order.close();
+        }
+        QSqlDatabase::removeDatabase("sync-reopen-order-fixture");
+
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        // Catalog positions may change after saving; target the saved version identity.
+        const auto reopenedRows=reopened.library();QCOMPARE(reopenedRows[0].toMap()["id"].toString(),targetKey);
+        const auto selectKey=[&](const QString &key){const auto rows=reopened.library();for(int i=0;i<rows.size();++i)if(rows[i].toMap()["id"].toString()==key){reopened.selectPhoto(i);return true;}return false;};
+        QVERIFY(selectKey(targetKey));
         QCOMPARE(reopened.exposure(),-1.0); QVERIFY(reopened.canRedo()); reopened.redo(); QCOMPARE(reopened.exposure(),1.25);
-        reopened.selectPhoto(3); QCOMPARE(reopened.exposure(),1.25); QCOMPARE(reopened.geometry()["straighten"].toDouble(),9.0);
+        QVERIFY(selectKey(copyKey)); QCOMPARE(reopened.exposure(),1.25); QCOMPARE(reopened.geometry()["straighten"].toDouble(),9.0);
         reopened.undo(); QCOMPARE(reopened.exposure(),-2.0); QCOMPARE(reopened.geometry()["straighten"].toDouble(),9.0);
-        reopened.selectPhoto(0); QCOMPARE(reopened.syncAdjustmentGroups({"exposure"},false),2); // B already matches.
-        reopened.selectPhoto(2); QCOMPARE(reopened.exposure(),1.25); QVERIFY(reopened.canUndo());
+        QVERIFY(selectKey(sourceKey)); QCOMPARE(reopened.syncAdjustmentGroups({"exposure"},false),2); // B already matches.
+        QVERIFY(selectKey(unselectedKey)); QCOMPARE(reopened.exposure(),1.25); QVERIFY(reopened.canUndo());
     }
     void selectiveSyncDatabaseFailureRollsBackBatchAndCanRetry() {
         QTemporaryDir dir; QImage image(12,8,QImage::Format_RGB32); image.fill(Qt::gray); PhotoController c(nullptr); c.setGpuEnabled(false);

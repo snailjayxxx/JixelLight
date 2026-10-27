@@ -1,6 +1,7 @@
 # F4 M4.7A: ordered brush erasing
 
-Status: local product candidate. The last fully accepted checkpoint is M4.6M at
+Status: committed N run failed its Linux sync/reopen regression; not accepted.
+The last fully accepted checkpoint is M4.6M at
 `1f4b26e55ec7c3e4fe3dca2386eef924c31b354c`,
 [CI40477576605](https://github.com/snailjayxxx/JixelLight/actions/runs/40477576605).
 This feature requires its own committed **62-test, three-platform and both
@@ -103,6 +104,29 @@ they are not relabeled as new committed or deployed results.
 
 Both workflows invoke four new owned/Sony CPU/GPU eraser checks, and actual
 SDK-stripped package validation now requires15 modes including all prior11.
-Own committed CI/artifacts/source-tree verification is pending. Pressure-device
+Committed N source/artifacts are audited below; its Linux failure remains.
+M4.7B applies a targeted version-identity test repair with its own acceptance. Pressure-device
 input, continuous drag color, native GPU brush and remaining F0–F6 work stay
 unfinished. Main and PR15 remain untouched.
+
+## Committed outcome: failed Linux sync/reopen regression
+
+N a53d201 /[CI40493231189](https://github.com/snailjayxxx/JixelLight/actions/runs/40493231189) is not accepted. Linux61/62 in869.85s fails only the unchanged selective-sync/reopen Core case (214/1/0, exposure1.25 rather than−1 at the assumed ordinal). New17eraser shards/threeCoremethods and all18admittedGPUrows max0/40 pass; laterLinuxGUIsteps do not run. Windows62/62 in1216.39s/macOS62/62 in1361.58s andboth actual15-mode packages pass withalloldgates.
+
+| Actual package CPU / GPU ms | RAW | Owned brush | Sony brush | Owned eraser | Sony eraser |
+| --- | --- | --- | --- | --- | --- |
+| Windows | 46984 / 29483 | 28549 / 16968 | 30319 / 23876 | 13007 / 6277 | 31372 / 25179 |
+| macOS | 34112 / 30453 | 23902 / 23011 | 22845 / 16357 | 7039 / 6441 | 17388 / 22325 |
+
+Each eraser retainsninecontrols/English/fullsource/SHA/shared3GiB/owned45s-orSony60s, priorRAW23/allUI/full10340960/60s andallotherpreviousmodes remain. All5original ZIP/full3logs andactual all3ebabc2d/treeequalHEAD verified. A targeted stable-version-ID test repair is prepared in M4.7B; N's failure remains its original outcome, andM1f4b26e remains lastfullyaccepted. The controlledreorder proves the unsafe ordinal assumption withB's undo intact; it is not called a natural replay oftheCI failure.
+
+Original validation archive receipts (also copied byte-for-byte to the physical
+build parent at `evidence/ci-40493231189/`, without redownloading):
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| validation-Linux | 362016 | `3c52956f4fca3e4dbee69ae5241402eedc1e9636d4290c47e6ab88e7dfc580bf` |
+| validation-Windows | 31340486 | `914afb99bbfd6441e0b7fce31301f9d4abe95a06feaf629fb62bf72b795d8959` |
+| package-validation-Windows | 18114922 | `d8029bf058ff693533d91f8ff536d73476f0d0181f627f92d277f810a782933c` |
+| validation-macOS | 34294086 | `e79ffd8631f2d641e4807a4ed907aacc097ed501355c843ca25ff8e34101c43b` |
+| package-validation-macOS | 24000003 | `2a7e2050943d742dc8e37a396f22e1020936d9484fd5501789e67ee80d88f4e3` |
