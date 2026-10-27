@@ -1677,6 +1677,9 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    // The QML engine owns the image provider and may already have destroyed it.
+    // Join transient workers without dereferencing that external provider here.
+    m_brushPreviewRetryTimer.stop();m_brushGesture.reset();m_brushPreviewJob.reset();
     m_budgetRetryTimer.stop();
     m_relinkJob.reset(); m_identityJob.reset();
     m_importNameDatesJob.reset();
@@ -1691,6 +1694,7 @@ PhotoController::~PhotoController() {
 }
 
 void PhotoController::initializeJobs() {
+    initializeBrushPreview();
     m_importNameDatesJob=std::make_unique<LatestJob<ImportNameDateRequest,QHash<QString,QString>>>(
         [](const ImportNameDateRequest &request,const CancelToken &cancel) {
             QHash<QString,QString> result;

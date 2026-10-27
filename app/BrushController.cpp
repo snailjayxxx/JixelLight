@@ -1,10 +1,12 @@
 #include "app/PhotoController.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/pipeline/BrushRenderRequest.h"
+#include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QUuid>
+#include <limits>
 
 namespace {
 enum class BrushPaintRefusal { None, Invalid, Missing, Disabled, Layers, Strokes, Dabs };
@@ -92,13 +94,75 @@ bool PhotoController::brushGestureCurrent() const {
 }
 bool PhotoController::brushGestureCurrent(const BrushGesture &g) const {
     if(!hasImage()||!currentSourceAvailable()||m_closing||m_loading||!m_sourceIsFull)return false;
-    return g.photoKey==m_photos[m_currentIndex].storageKey()&&g.epoch==m_photoEpoch
+    return g.catalog==m_catalogEpoch&&g.photoKey==m_photos[m_currentIndex].storageKey()&&g.epoch==m_photoEpoch
         &&g.generation==m_prepareGeneration&&g.revision==m_requestedRevision
         &&g.sourceKey==m_fullSource.cacheKey()&&!m_preparing&&!m_cropEditing
         &&g.geometry==m_photos[m_currentIndex].state.geometry.toJson();
 }
 void PhotoController::cancelBrushStroke() {
-    if(!m_brushGesture)return;m_brushGesture.reset();emit brushDrawingChanged();
+    const bool drawing=bool(m_brushGesture);m_brushGesture.reset();clearBrushPreview();
+    if(drawing)emit brushDrawingChanged();
+}
+void PhotoController::initializeBrushPreview() {
+    m_brushPreviewRetryTimer.setSingleShot(true);m_brushPreviewRetryTimer.setInterval(40);
+    connect(&m_brushPreviewRetryTimer,&QTimer::timeout,this,&PhotoController::requestBrushPreview);
+    const auto budget=m_brushBudget;
+    m_brushPreviewJob=std::make_unique<LatestFrameJob<BrushPreviewRequest,RenderedFrame>>(
+        [budget](const BrushPreviewRequest &request,const CancelToken &cancel) {
+            RenderedFrame result;BrushAdmissionFailure reason=BrushAdmissionFailure::None;
+            auto admitted=BrushRenderRequest::createPrepared(request.source,request.plan,
+                BrushRenderRequest::Layout::Whole,cancel,&result.error,budget,&reason);
+            if(admitted){auto lease=admitted->render(cancel,&result.error);if(lease)result.image=lease.sharedImage();}
+            result.retryableBudget=reason==BrushAdmissionFailure::BudgetUnavailable;return result;
+        },[this](const BrushPreviewRequest &request,RenderedFrame result) {
+            if(!brushGestureCurrent()||request.gesture!=m_brushGesture->gesture
+                ||request.sample>m_brushGesture->sample||request.sample<=m_brushPreviewSample)return;
+            if(result.image.isNull()) {
+                // Keep the last compatible frame. Retry only bounded admission
+                // contention; new pointer samples reset the retry allowance.
+                if(result.retryableBudget&&++m_brushPreviewRetries<=61&&!m_brushPreviewRetryTimer.isActive())
+                    m_brushPreviewRetryTimer.start();
+                return;
+            }
+            const auto id=QStringLiteral("brush-live/%1").arg(++m_brushPreviewSerial);
+            if(!m_provider||!m_provider->setBrushPreview(id,result.image))return;
+            m_brushPreviewRetries=0;m_brushPreviewRetryTimer.stop();
+            m_brushPreviewSample=request.sample;m_brushPreviewId=id;emit brushPreviewChanged();
+        });
+}
+void PhotoController::clearBrushPreview() {
+    m_brushPreviewRetryTimer.stop();m_brushPreviewRetries=0;
+    if(m_brushPreviewJob)m_brushPreviewJob->cancel();
+    if(m_provider)m_provider->clearBrushPreview();
+    const bool changed=!m_brushPreviewId.isEmpty();m_brushPreviewId.clear();m_brushPreviewSample=0;
+    if(changed)emit brushPreviewChanged();
+}
+bool PhotoController::brushCandidate(const BrushGesture &g,BrushMaskGeometry::Stroke stroke,AdjustmentState *candidate) const {
+    if(!candidate)return false;*candidate=g.initial;
+    if(g.layer.isEmpty())candidate->brushMasks.layers.push_back({g.newLayer,true,g.exposure,{std::move(stroke)}});
+    else {
+        auto &layers=candidate->brushMasks.layers;
+        auto found=std::find_if(layers.begin(),layers.end(),[&](const auto &l){return l.id==g.layer;});
+        if(found==layers.end()||!found->enabled)return false;
+        found->strokes.push_back(std::move(stroke));
+    }
+    return BrushMaskDocument::validDocument(candidate->brushMasks);
+}
+void PhotoController::requestBrushPreview() {
+    if(!m_provider||!m_brushPreviewJob||!brushGestureCurrent()||m_previewSource.isNull()
+        ||m_brushPreviewSample==m_brushGesture->sample)return;
+    try {
+        // Completing a copy includes its current tail without consuming the
+        // live sampler or changing the final stroke's event spacing.
+        auto copy=*m_brushGesture->builder;auto stroke=copy.finish();if(!stroke)return;
+        AdjustmentState candidate;if(!brushCandidate(*m_brushGesture,std::move(*stroke),&candidate))return;
+        const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
+        auto plan=ProcessingPlan::compile(resolved,ImagePipeline::InputEncoding::LinearProPhoto,
+            ColorManagement::OutputSpace::SRgb,currentIsRaw(),rawBaseExposureStops());
+        QString error;if(!BrushRenderRequest::preflightGesture(m_fullSource.size(),plan,&error))return;
+        plan.setFrameRect(m_previewFrameRect);
+        m_brushPreviewJob->submit({m_previewSource,std::move(plan),m_brushGesture->gesture,m_brushGesture->sample});
+    }catch(...){/* A refused preview never changes or commits a gesture. */}
 }
 bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure) {
     return beginBrushStrokeMode(layer,x,y,radius,hardness,opacity,exposure,QStringLiteral("paint"));
@@ -125,36 +189,32 @@ bool PhotoController::beginBrushStrokeMode(const QString &layer,double x,double 
     }
     try {
         auto g=std::make_unique<BrushGesture>();g->photoKey=m_photos[m_currentIndex].storageKey();g->epoch=m_photoEpoch;
+        g->catalog=m_catalogEpoch;g->gesture=++m_brushGestureSerial;g->sample=1;g->initial=m_photos[m_currentIndex].state;
+        if(layer.isEmpty())g->newLayer="brush_"+QUuid::createUuid().toString(QUuid::WithoutBraces);
         g->generation=m_prepareGeneration;g->revision=m_requestedRevision;g->sourceKey=m_fullSource.cacheKey();
         g->layer=layer;g->frame=brushFrameSize();g->geometry=m_photos[m_currentIndex].state.geometry.toJson();g->exposure=exposure;
         g->mode=strokeMode;
         g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
         if(!g->builder->append({{x,y},1}))return false;
-        m_brushGesture=std::move(g);emit brushDrawingChanged();return brushGestureCurrent();
+        m_brushGesture=std::move(g);emit brushDrawingChanged();requestBrushPreview();return brushGestureCurrent();
     }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
 }
 bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
     if(!brushGestureCurrent()){cancelBrushStroke();return false;}
-    try {if(m_brushGesture->builder->append({{x,y},pressure}))return true;}catch(...){}
+    try {if(m_brushGesture->sample<std::numeric_limits<quint64>::max()&&m_brushGesture->builder->append({{x,y},pressure})) {
+        ++m_brushGesture->sample;m_brushPreviewRetries=0;requestBrushPreview();return true;
+    }}catch(...){}
     cancelBrushStroke();setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
 }
 QString PhotoController::endBrushStroke() {
     if(!brushGestureCurrent()){cancelBrushStroke();return {};}
-    auto g=std::move(m_brushGesture);emit brushDrawingChanged();
+    auto g=std::move(m_brushGesture);clearBrushPreview();emit brushDrawingChanged();
     if(!brushGestureCurrent(*g))return {};
     AdjustmentState candidate;
     try {
         auto stroke=g->builder->finish();if(!stroke)return {};
-        candidate=m_photos[m_currentIndex].state;
-        if(g->layer.isEmpty()) {
-            g->layer="brush_"+QUuid::createUuid().toString(QUuid::WithoutBraces);
-            candidate.brushMasks.layers.push_back({g->layer,true,g->exposure,{std::move(*stroke)}});
-        }else {
-            auto found=std::find_if(candidate.brushMasks.layers.begin(),candidate.brushMasks.layers.end(),[&](const auto &l){return l.id==g->layer;});
-            if(found==candidate.brushMasks.layers.end()||!found->enabled)return {};
-            found->strokes.push_back(std::move(*stroke));
-        }
-        if(!BrushMaskDocument::validDocument(candidate.brushMasks)){setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};}
+        if(!brushCandidate(*g,std::move(*stroke),&candidate)){setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};}
+        if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
         const auto plan=ProcessingPlan::compile(resolved,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,currentIsRaw(),rawBaseExposureStops());
         QString error;PerformanceSpan timing("brush_gesture_preflight");

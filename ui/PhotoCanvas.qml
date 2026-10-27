@@ -10,6 +10,8 @@ Item {
     property var brushEditor: null
     readonly property bool brushDisplayReady: controller && (controller.gpuActive ||
         (processedImage.status === Image.Ready && String(processedImage.source) === String(controller.previewUrl)))
+    readonly property bool brushLiveDisplayReady: controller && controller.brushDrawing && controller.brushPreviewUrl !== "" &&
+        brushLiveImage.status === Image.Ready && String(brushLiveImage.source) === String(controller.brushPreviewUrl)
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
@@ -103,7 +105,7 @@ Item {
             source: controller.previewUrl
             cache: false; asynchronous: true; smooth: root.zoom === 0
             z: 1
-            visible: !controller.gpuActive
+            visible: !controller.gpuActive && !root.brushLiveDisplayReady
             fillMode: Image.Stretch
         }
         // Do not instantiate an RHI item in explicit CPU/software mode. An
@@ -115,6 +117,18 @@ Item {
                 GpuPreview { controller: root.controller }
             }
             z: 0
+            visible: !root.brushLiveDisplayReady
+        }
+        Image {
+            id: brushLiveImage
+            objectName: "brushLivePreviewImage"
+            anchors.fill: parent; z: 2
+            source: controller.brushPreviewUrl
+            // The provider already owns display-managed pixels. A synchronous
+            // read only shares that bounded frame and avoids stale async URLs.
+            cache: false; asynchronous: false; smooth: root.zoom === 0
+            visible: root.brushLiveDisplayReady
+            fillMode: Image.Stretch
         }
         MaskCanvasOverlay {
             id: maskOverlay

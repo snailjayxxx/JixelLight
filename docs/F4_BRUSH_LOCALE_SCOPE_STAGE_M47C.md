@@ -73,7 +73,40 @@ Local evidence is in the physical build parent's `locale-scope-native-v6/`,
 Windows package remain preserved. Private setup/receipt-writer errors are
 separately retained and are not product or CI failures.
 
-C still requires its own committed62/all3/both actual15-mode packages and
-original ZIP/full-job-log/actual-checkout source proof. This is local compiled
-UI verification, not aggregate C acceptance. Native GPU brush, native FP32 RAW
-and remaining F0–F6 stay unfinished. PR16 remains Draft; main/PR15 are unchanged.
+## Committed aggregate acceptance
+
+Commit `c656b13304d55d8f8b3044f6bcf41ee0ff0b791d` is accepted by
+[CI40516789733](https://github.com/snailjayxxx/JixelLight/actions/runs/40516789733).
+Every platform passes62/62 with zero failures/skips and Core215/0/0:
+
+| Committed platform | CTest seconds | Native genuineSony Erase CPU/GPU ms |
+| --- | ---: | ---: |
+| Linux | 698.30 | 14002 / 15841 |
+| Windows | 1921.82 | 54268 / 48524 |
+| macOS | 1378.66 | 24114 / 24481 |
+
+Both actual SDK-stripped desktop packages pass all15 modes, including original
+RAW, diagnostics, owned brush/erase, genuineSony brush/erase, relinking and CLI.
+Packaged Sony Erase CPU/GPU passes55127/48387ms on Windows and24894/23963ms on
+macOS, under the unchanged60000ms gate. All ten new controls-only captures and
+selected-locale behavior pass; owned compact/manual geometry is checked while
+Sony's extra owned-only layout flags remain explicitly not applicable. Actual
+macOS package crops show English Erase stroke2 selected and visible compact EV.
+Full32,947,264-pixel Sony statistics, histogram/waveform, exports, previous RAW23
+captures and every source/precision/admission gate remain verified. Maximum
+operation reservation observed across the committed eraser/native-package
+reports is3,217,822,624 bytes under3,221,225,472; this is not a process RSS limit.
+
+All five original ZIPs have matching API size/SHA, valid CRC and safe extraction.
+All three full original job logs prove actual checkout
+`5580f0c18a2b5252df8ab4289ddb8194487e1ae0`, whose tree
+`fd59710a2c88018b4ee2ad3a0d8542b1ed1222f4` equals the verified commit's tree.
+The physical build parent's `ci-40516789733-summary.json` is accepted, and all
+original ZIP/log bytes plus receipts are archived under `evidence/ci-40516789733/`.
+The original B Windows cancellation and N Linux failure remain historical failed
+runs; their repairs are now covered by C's successful aggregate evidence.
+
+C accepts this guarded brush/eraser, stored-version identity and locale/scope
+slice. Continuous drag color feedback, pressure-device input, native GPU brush,
+native FP32 RAW and remaining F0–F6 stay unfinished. PR16 remains Draft;
+main/PR15 are unchanged.

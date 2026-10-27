@@ -96,3 +96,13 @@ budget to75 minutes while retaining every individual gate.
 | validation-Windows | 12736504312 | 31334144 | d5cde10f22ea60a31365da2168bc34763f22b8d8801631959ddc87d23b3e1a75 |
 | package-validation-macOS | 12737990510 | 24254812 | bd45e9e1e830f380165d0e489b6babbc9125f46a026ebfed6186156d7d96a918 |
 | package-validation-Windows | 12738285573 | 17483005 | 8796e2082364eb8ad76fe0bbf4e3d9294c9aaaa44366f9a543ac19ec10a8a701 |
+
+## Subsequent aggregate repair verified
+
+C `c656b13304d55d8f8b3044f6bcf41ee0ff0b791d` /
+[CI40516789733](https://github.com/snailjayxxx/JixelLight/actions/runs/40516789733)
+passes62/62 and Core215/0/0 on all three platforms plus both actual15-mode
+SDK-stripped packages, with original ZIP/full-log/actual-checkout tree proof.
+The 75-minute desktop totals accommodate the complete sequence without changing
+any individual45/60/120s or numerical gate. This closes the aggregate blocker;
+B's original Windows cancellation remains a failed historical run.

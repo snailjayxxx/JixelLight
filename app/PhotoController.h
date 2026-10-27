@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include "core/preview/PreviewTasks.h"
+#include "core/async/LatestFrameJob.h"
 #include "core/export/ExportQueue.h"
 #include "core/import/CopyImportQueue.h"
 #include "core/look/CameraReference.h"
@@ -103,6 +104,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap brushCapacity READ brushCapacity NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool brushDrawing READ brushDrawing NOTIFY brushDrawingChanged)
+    Q_PROPERTY(QString brushPreviewUrl READ brushPreviewUrl NOTIFY brushPreviewChanged)
     Q_PROPERTY(bool brushReady READ brushReady NOTIFY activityChanged)
     Q_PROPERTY(QString brushStatus READ brushStatus NOTIFY activityChanged)
     Q_PROPERTY(QSize brushFrameSize READ brushFrameSize NOTIFY previewGeometryChanged)
@@ -306,6 +308,7 @@ public:
     QVariantList brushLayers() const;
     QVariantMap brushCapacity() const;
     bool brushDrawing() const { return bool(m_brushGesture); }
+    QString brushPreviewUrl() const {return m_brushPreviewId.isEmpty()?QString{}:QStringLiteral("image://processed/")+m_brushPreviewId;}
     bool brushReady() const;
     QString brushStatus() const;
     QSize brushFrameSize() const;
@@ -419,6 +422,7 @@ public:
 
 signals:
     void brushDrawingChanged();
+    void brushPreviewChanged();
     void relinkChanged();
     void diagnosticChanged();
     void diagnosticFinished(const QString &path);
@@ -574,19 +578,31 @@ private:
     void deferBudgetJob(int job,quint64 revision);
     void retryBudgetJobs(bool afterExport=false);
     friend class BrushScopeRoutingTests;
+    friend class BrushLivePreviewTests;
     struct BrushGesture {
-        QString photoKey,layer;
-        quint64 epoch=0,generation=0,revision=0;
+        QString photoKey,layer,newLayer;
+        quint64 catalog=0,epoch=0,generation=0,revision=0,gesture=0,sample=0;
         qint64 sourceKey=0;
         QSize frame;
         QJsonObject geometry;
         double exposure=1;
         BrushMaskGeometry::StrokeMode mode=BrushMaskGeometry::StrokeMode::Paint;
+        AdjustmentState initial;
         std::unique_ptr<BrushMaskGeometry::StrokeBuilder> builder;
     };
     std::unique_ptr<BrushGesture> m_brushGesture;
     bool brushGestureCurrent() const;
     bool brushGestureCurrent(const BrushGesture &gesture) const;
+    struct BrushPreviewRequest {QImage source;ProcessingPlan plan;quint64 gesture=0,sample=0;};
+    std::unique_ptr<LatestFrameJob<BrushPreviewRequest,RenderedFrame>> m_brushPreviewJob;
+    quint64 m_brushGestureSerial=0,m_brushPreviewSerial=0,m_brushPreviewSample=0;
+    QString m_brushPreviewId;
+    QTimer m_brushPreviewRetryTimer;
+    int m_brushPreviewRetries=0;
+    void initializeBrushPreview();
+    void requestBrushPreview();
+    void clearBrushPreview();
+    bool brushCandidate(const BrushGesture &gesture,BrushMaskGeometry::Stroke stroke,AdjustmentState *candidate) const;
     void requestScopePlot();
 
     bool m_showReference=false, m_referenceBusy=false, m_calibrationBusy=false;

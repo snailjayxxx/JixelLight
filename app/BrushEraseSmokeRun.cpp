@@ -101,7 +101,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             ||std::filesystem::equivalent(nativePath(source),nativePath(output),pathError);
     };
     bool aliases=aliasesSource(report);
-    for(const auto *label:{"before","painted","erased","undo","selected","deleted","reopen","locale-selected","final","english","failure"})
+    for(const auto *label:{"before","live-painted","painted","live-erased","erased","undo","selected","deleted","reopen","locale-selected","final","english","failure"})
         aliases=aliases||aliasesSource(report+"."+label+"-controls.png");
     if(aliases) {
         // Refuse before any report/capture write, including symlink aliases.
@@ -114,6 +114,9 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         bool done=false,noLayer=false,nativePaint=false,nativeErase=false,transient=false,escape=false,oneUndo=false,display=false;
         bool undoRedo=false,selectedDelete=false,reopen=false,loadedCancel=false,scopeControls=false,scopes=false,english=false;
         bool compactScopeReflow=false,selectedLocale=false,scopeLayoutChecked=false,automaticScope=false,manualScope=false,scopeReentry=false;
+        bool livePaint=false,liveErase=false,liveCancelPaint=false,liveCancelErase=false,livePointer=true,liveRevision=true,liveCurrent=true;
+        int livePaintDelta=0,liveEraseDelta=0,liveCancelPaintDelta=999,liveCancelEraseDelta=999,liveMoves=0,livePhaseMoves=0;
+        quint64 liveCommittedRevision=0;
         QString layer,project;QByteArray sourceHash;QJsonObject initial,painted,erased,captures,compactScopeGeometry;QJsonArray scopeGeometry;QColor baseline,paintedColor;
     };
     auto s=std::make_shared<State>();s->clock.start();auto *timer=new QTimer(c);timer->setInterval(50);
@@ -141,6 +144,7 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         const bool controls=exposed(window,item("brushModeSelector"))&&exposed(window,item("brushExposureSlider"));
         const bool required=s->noLayer&&s->nativePaint&&s->nativeErase&&s->transient&&s->escape&&s->oneUndo&&s->display
             &&s->undoRedo&&s->selectedDelete&&s->reopen&&s->loadedCancel&&s->scopeControls&&s->scopes&&s->english&&s->selectedLocale
+            &&s->livePaint&&s->liveErase&&s->liveCancelPaint&&s->liveCancelErase&&s->livePointer&&s->liveRevision&&s->liveCurrent&&s->liveMoves>=4
             &&(realSony|| (s->compactScopeReflow&&s->scopeLayoutChecked&&s->automaticScope&&s->manualScope&&s->scopeReentry));
         const bool passed=error.isEmpty()&&required&&isolated&&unchanged&&shape&&admitted&&controls&&s->clock.elapsed()<deadline
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
@@ -153,6 +157,9 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             {"source_is_raw",c->currentIsRaw()},{"source_unchanged",unchanged},{"settings_isolated",isolated},
             {"erase_no_layer_refusal",s->noLayer},{"native_paint",s->nativePaint},{"native_erase_mode",s->nativeErase},
             {"live_uncommitted",s->transient},{"escape_cancel",s->escape},{"one_undo",s->oneUndo},{"display_changed",s->display},
+            {"live_color_paint",s->livePaint},{"live_color_erase",s->liveErase},{"live_cancel_paint",s->liveCancelPaint},{"live_cancel_erase",s->liveCancelErase},
+            {"live_pointer_held",s->livePointer},{"live_committed_revision_unchanged",s->liveRevision},{"live_display_current",s->liveCurrent},{"live_input_moves",s->liveMoves},
+            {"live_paint_rgb_delta",s->livePaintDelta},{"live_erase_rgb_delta",s->liveEraseDelta},{"live_cancel_paint_rgb_delta",s->liveCancelPaintDelta},{"live_cancel_erase_rgb_delta",s->liveCancelEraseDelta},
             {"paint_rgb_delta",s->paintDelta},{"erase_rgb_delta",s->eraseDelta},{"undo_rgb_delta",s->undoDelta},{"redo_rgb_delta",s->redoDelta},
             {"undo_redo",s->undoRedo},{"selected_erase_delete",s->selectedDelete},{"project_reopen",s->reopen},
             {"compact_scope_reflow_checked",s->compactScopeReflow},{"compact_scope_reflow_geometry",s->compactScopeGeometry},
@@ -177,7 +184,10 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
         if(c->brushFrameSize()!=size||c->currentIsRaw()!=realSony){finish("Source is not at required full native dimensions/type");return;}
         const auto point=[&](double x){return overlay->mapToScene({overlay->width()*x,overlay->height()*.6});};
         const auto read=[&](QColor *color) {
-            const auto image=window->grabWindow();*color=SmokeCaptureCoordinates::sample(image,point(.5),window->effectiveDevicePixelRatio());
+            // Keep the RGB probe within the brush's hard center but away from
+            // the guide line/cursor, which must never count as painted pixels.
+            const auto probe=point(.5)+QPointF(0,overlay->property("radiusY").toDouble()*.5);
+            const auto image=window->grabWindow();*color=SmokeCaptureCoordinates::sample(image,probe,window->effectiveDevicePixelRatio());
             return color->isValid()?image:QImage{};
         };
         const auto gesture=[&](bool cancel) {
@@ -210,9 +220,35 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             if(++s->settle<3)return;const auto image=read(&s->baseline);if(image.isNull())return;
             const int maximum=std::max({s->baseline.red(),s->baseline.green(),s->baseline.blue()});
             if(maximum<30||maximum>245||!capture("before",image)){finish("Native baseline probe/capture unavailable");return;}
-            const bool active=gesture(true);s->escape=active&&!c->brushDrawing()&&masks(c)==s->initial&&history(c)==s->initialHistory;
+            mouse(window,QEvent::MouseButtonPress,point(.3),Qt::LeftButton,Qt::LeftButton);
+            for(int i=1;i<=8;++i)mouse(window,QEvent::MouseMove,point(.3+.4*i/8),Qt::NoButton,Qt::LeftButton);
+            s->liveCommittedRevision=c->renderRevision();s->livePhaseMoves=0;s->phase=40;
+        }else if(s->phase==40||s->phase==42) {
+            const bool erasing=s->phase==42;
+            mouse(window,QEvent::MouseMove,point(.3+.4*((s->livePhaseMoves%8)+1)/8),Qt::NoButton,Qt::LeftButton);
+            ++s->livePhaseMoves;++s->liveMoves;auto *pointer=item("brushPointerArea");
+            s->livePointer=s->livePointer&&pointer&&pointer->property("pressed").toBool()&&c->brushDrawing();
+            s->liveRevision=s->liveRevision&&c->renderRevision()==s->liveCommittedRevision
+                &&masks(c)==(erasing?s->painted:s->initial)&&history(c)==s->initialHistory+(erasing?1:0);
+            if(!s->livePointer||!s->liveRevision){finish("Live brush changed committed state or lost native pointer ownership");return;}
+            auto *live=item("brushLivePreviewImage");if(!live||live->property("status").toInt()!=1||c->brushPreviewUrl().isEmpty()
+                ||live->property("source").toUrl()!=QUrl(c->brushPreviewUrl())||!live->isVisible())return;
+            QColor color;const auto image=read(&color);if(image.isNull()||s->livePhaseMoves<2)return;
+            const int visibleDelta=delta(color,erasing?s->paintedColor:s->baseline);if(visibleDelta<3)return;
+            if(erasing&&delta(color,s->baseline)>2)return;
+            s->liveCurrent=s->liveCurrent&&live->property("source").toUrl()==QUrl(c->brushPreviewUrl());
+            if(erasing){s->liveErase=true;s->liveEraseDelta=visibleDelta;}
+            else {s->livePaint=true;s->livePaintDelta=visibleDelta;}
+            if(!capture(erasing?"live-erased":"live-painted",image)){finish("Cannot capture live brush controls");return;}
+            key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,point(.7),Qt::LeftButton,Qt::NoButton);
+            s->phase=erasing?43:41;s->settle=0;
+        }else if(s->phase==41) {
+            if(++s->settle<2)return;QColor color;const auto image=read(&color);if(image.isNull())return;
+            s->liveCancelPaintDelta=delta(color,s->baseline);if(s->liveCancelPaintDelta>2)return;
+            s->liveCancelPaint=!c->brushDrawing()&&c->brushPreviewUrl().isEmpty()&&masks(c)==s->initial&&history(c)==s->initialHistory;
+            s->escape=s->liveCancelPaint;if(!s->liveCancelPaint){finish("Esc did not discard live Paint");return;}
             s->nativePaint=gesture(false);s->painted=masks(c);const auto doc=c->gpuPlan(true).state.brushMasks;
-            if(!s->escape||!s->nativePaint||history(c)!=s->initialHistory+1||doc.layers.size()!=1||doc.layers[0].strokes.size()!=1
+            if(!s->nativePaint||history(c)!=s->initialHistory+1||doc.layers.size()!=1||doc.layers[0].strokes.size()!=1
                 ||doc.layers[0].strokes[0].mode!=BrushMaskGeometry::StrokeMode::Paint){finish("Native Paint is not a single guarded gesture");return;}
             s->layer=doc.layers[0].id;s->phase=4;s->settle=0;
         }else if(s->phase==4) {
@@ -223,7 +259,13 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             if(++s->settle<3)return;mouse(window,QEvent::MouseButtonPress,point(.3),Qt::LeftButton,Qt::LeftButton);
             for(int i=1;i<=8;++i)mouse(window,QEvent::MouseMove,point(.3+.4*i/8),Qt::NoButton,Qt::LeftButton);
             s->transient=c->brushDrawing()&&masks(c)==s->painted&&history(c)==s->initialHistory+1;
-            mouse(window,QEvent::MouseButtonRelease,point(.7),Qt::LeftButton,Qt::NoButton);s->erased=masks(c);
+            s->liveCommittedRevision=c->renderRevision();s->livePhaseMoves=0;s->phase=42;
+        }else if(s->phase==43) {
+            if(++s->settle<2)return;QColor color;const auto image=read(&color);if(image.isNull())return;
+            s->liveCancelEraseDelta=delta(color,s->paintedColor);if(s->liveCancelEraseDelta>2)return;
+            s->liveCancelErase=!c->brushDrawing()&&c->brushPreviewUrl().isEmpty()&&masks(c)==s->painted&&history(c)==s->initialHistory+1;
+            s->escape=s->escape&&s->liveCancelErase;if(!s->liveCancelErase){finish("Esc did not discard live Erase");return;}
+            if(!gesture(false)){finish("Cannot commit Erase after live cancellation");return;}s->erased=masks(c);
             const auto doc=c->gpuPlan(true).state.brushMasks;s->oneUndo=history(c)==s->initialHistory+2&&doc.layers.size()==1
                 &&doc.layers[0].id==s->layer&&doc.layers[0].strokes.size()==2&&doc.layers[0].strokes[1].mode==BrushMaskGeometry::StrokeMode::Erase
                 &&s->erased["schema"].toInt()==2;

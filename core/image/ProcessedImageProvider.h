@@ -16,6 +16,11 @@ public:
     // images are retained unchanged so a monitor change can regenerate display
     // copies without touching processing/scopes/export pixels.
     void setDisplayColorLut(const QImage &atlas, const QString &key);
+    // Independent, versioned presentation slot. Committed images, scopes and
+    // reference pixels never receive a transient brush document or frame.
+    bool setBrushPreview(const QString &id,const QImage &leasedImage);
+    bool renameBrushPreview(const QString &id);
+    void clearBrushPreview();
 
 private:
     static QImage displayCopy(const QImage &source, const QImage &atlas, const QString &key);
@@ -25,4 +30,7 @@ private:
     QImage m_scopePlot;
     QImage m_displayLut;
     QString m_displayLutKey = QStringLiteral("identity-srgb");
+    QImage m_brushSource,m_brushImage;
+    QString m_brushId;
+    quint64 m_brushEpoch=0;
 };

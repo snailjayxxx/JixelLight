@@ -14,7 +14,7 @@ import tempfile
 
 SONY_BYTES = 69_120_000
 SONY_SHA256 = "aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d"
-CAPTURES = ("before", "painted", "erased", "undo", "selected", "deleted", "reopen", "locale-selected", "final", "english")
+CAPTURES = ("before", "live-painted", "painted", "live-erased", "erased", "undo", "selected", "deleted", "reopen", "locale-selected", "final", "english")
 
 
 def sha256(path: Path) -> str:
@@ -88,7 +88,9 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
     required = ("erase_no_layer_refusal", "native_paint", "native_erase_mode", "live_uncommitted",
                 "escape_cancel", "one_undo", "display_changed", "undo_redo", "selected_erase_delete",
                 "project_reopen", "selected_locale_preserved", "loaded_layer_cancel", "scope_controls", "full_scopes",
-                "controls_visible", "english_controls_visible", "source_unchanged", "settings_isolated", "budget_admitted")
+                "controls_visible", "english_controls_visible", "source_unchanged", "settings_isolated", "budget_admitted",
+                "live_color_paint", "live_color_erase", "live_cancel_paint", "live_cancel_erase",
+                "live_pointer_held", "live_committed_revision_unchanged", "live_display_current")
     width, height = (7028, 4688) if raw else (2203, 1207)
     pixels = width * height
     captures = data.get("captures", {})
@@ -147,6 +149,10 @@ def validate_brush_erase(binary: Path, environment: dict[str, str], home: Path,
         "visible_pixels": data.get("paint_rgb_delta", 0) >= 3 and data.get("erase_rgb_delta", 0) >= 3
                           and 0 <= data.get("undo_rgb_delta", 999) <= 2
                           and 0 <= data.get("redo_rgb_delta", 999) <= 2,
+        "live_visible_pixels": data.get("live_paint_rgb_delta", 0) >= 3 and data.get("live_erase_rgb_delta", 0) >= 3
+                               and 0 <= data.get("live_cancel_paint_rgb_delta", 999) <= 2
+                               and 0 <= data.get("live_cancel_erase_rgb_delta", 999) <= 2
+                               and isinstance(data.get("live_input_moves"), int) and data["live_input_moves"] >= 4,
         "full_scopes": data.get("scope_pixels") == pixels and data.get("scope_plot_pixels") == pixels
                        and data.get("scope_display_ink_samples", 0) >= 64,
         "shared_budget": data.get("operation_budget_bytes") == budget
