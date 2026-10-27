@@ -2034,10 +2034,12 @@ private slots:
               && helperWait.elapsed()<5000)QTest::qWait(1);
         const bool helpersActive=workerPool.activeThreadCount()>0;
         const bool pending=!work[2].isFinished();
+        // Cancel immediately after observing this request's active helpers.
+        // Starting unrelated futures first lets it complete before cancellation.
+        cancel->store(true,std::memory_order_relaxed);
         work[0]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,goodPlan,{},true);});
         work[1]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,badPlan,independentToken,true);});
         work[3]=QtConcurrent::run([&] {return ImagePipeline::processWithPlan(source,secondPlan,{},true);});
-        cancel->store(true,std::memory_order_relaxed);
         for(auto &future:work)future.waitForFinished();
         QVERIFY(helpersActive);QVERIFY(pending);QVERIFY(work[2].result().isNull());
         QVERIFY(work[1].result().isNull());QVERIFY(!independentToken->load());
