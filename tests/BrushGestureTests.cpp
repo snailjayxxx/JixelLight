@@ -41,6 +41,47 @@ class BrushGestureTests final:public QObject {
     Q_OBJECT
 private slots:
     void initTestCase(){QStandardPaths::setTestModeEnabled(true);}
+    void capacityReadsTargetLimitsAndRefusesFullDocumentBeforeDrawing() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("capacity.png"),other=dir.filePath("other.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));const auto hash=hashFile(path);image.setPixelColor(0,0,Qt::white);QVERIFY(image.save(other));
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(!c.brushCapacity()["new_layer_allowed"].toBool());
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};
+        const auto install=[&](const BrushMaskDocument::Document &doc){QJsonObject json;return BrushMaskDocument::toJson(doc,&json)&&c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}});};
+        BrushMaskDocument::Document layers;
+        for(std::size_t n=0;n<BrushMaskDocument::MaxLayers;++n)layers.layers.push_back({QString("cap_%1").arg(n),true,0,{one}});
+        QVERIFY(install(layers));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto before=state(c);const int history=cursor(c);QSignalSpy reads(&c,&PhotoController::adjustmentsChanged);
+        const auto cap=c.brushCapacity();const auto rows=c.brushLayers();
+        QCOMPARE(cap["layer_limit"].toInt(),16);QCOMPARE(cap["stroke_limit"].toInt(),64);QCOMPARE(cap["dab_limit"].toInt(),16384);
+        QCOMPARE(cap["layers"].toInt(),16);QCOMPARE(cap["dabs"].toInt(),16);QVERIFY(!cap["new_layer_allowed"].toBool());QCOMPARE(cap["new_layer_block"].toString(),QString("layers"));
+        QVERIFY(rows[0].toMap()["append_allowed"].toBool());QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);QCOMPARE(reads.count(),0);
+        QVERIFY(!c.beginBrushStroke("",.3,.5,.002,.6,1,1));QVERIFY(c.beginBrushStroke("cap_0",.3,.5,.002,.6,1,1));c.cancelBrushStroke();QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);
+        BrushMaskDocument::Document strokes{{{"full",true,0,{}}}};
+        strokes.layers[0].strokes.resize(BrushMaskGeometry::MaxStrokes,one);QVERIFY(install(strokes));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.brushCapacity()["new_layer_allowed"].toBool());QVERIFY(!c.brushLayers()[0].toMap()["append_allowed"].toBool());QCOMPARE(c.brushLayers()[0].toMap()["paint_block"].toString(),QString("strokes"));
+        QVERIFY(!c.beginBrushStroke("full",.3,.5,.002,.6,1,1));QVERIFY(c.beginBrushStroke("",.3,.5,.002,.6,1,1));c.cancelBrushStroke();
+        BrushMaskGeometry::Stroke longStroke=one;longStroke.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document full{{{"full",true,0,{}}}};
+        for(std::size_t n=0;n<BrushMaskDocument::MaxTotalDabs/BrushMaskGeometry::MaxDabsPerStroke;++n)full.layers[0].strokes.push_back(longStroke);
+        QVERIFY(install(full));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto fullState=state(c);const int fullHistory=cursor(c);QSignalSpy drawing(&c,&PhotoController::brushDrawingChanged);
+        QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);QCOMPARE(c.brushCapacity()["new_layer_block"].toString(),QString("dabs"));QCOMPARE(c.brushLayers()[0].toMap()["paint_block"].toString(),QString("dabs"));
+        QVERIFY(!c.beginBrushStroke("",.3,.5,.002,.6,1,1));QVERIFY(!c.beginBrushStroke("full",.3,.5,.002,.6,1,1));QVERIFY(!c.beginBrushStroke("missing",.3,.5,.002,.6,1,1));
+        QVERIFY(!c.brushDrawing());QCOMPARE(drawing.count(),0);QCOMPARE(state(c),fullState);QCOMPARE(cursor(c),fullHistory);
+        QVERIFY(c.setBrushLayerEnabled("full",false));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);QCOMPARE(c.brushLayers()[0].toMap()["paint_block"].toString(),QString("disabled"));
+        QVERIFY(!c.beginBrushStroke("full",.3,.5,.002,.6,1,1));QVERIFY(!c.beginBrushStroke("",.3,.5,.002,.6,1,1));
+        full.layers[0].strokes.back().dabs.pop_back();QVERIFY(install(full));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);
+        QVERIFY(c.brushCapacity()["new_layer_allowed"].toBool());QVERIFY(c.brushLayers()[0].toMap()["append_allowed"].toBool());
+        const int oneSlotHistory=cursor(c);QVERIFY(c.beginBrushStroke("full",.3,.5,.002,.6,1,1));QCOMPARE(c.endBrushStroke(),QString("full"));QCOMPARE(cursor(c),oneSlotHistory+1);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
+        c.undo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);c.redo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
+        QVERIFY(c.removeLastBrushStroke("full"));QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);c.undo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);c.redo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);c.undo();
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"BrushCapacity"));QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);
+        QCOMPARE(reopened.brushCapacity()["dabs"].toInt(),16384);QVERIFY(!reopened.brushCapacity()["new_layer_allowed"].toBool());QVERIFY(!reopened.brushLayers()[0].toMap()["append_allowed"].toBool());
+        const auto old=state(c);QSignalSpy sourceNotice(&c,&PhotoController::adjustmentsChanged);QVERIFY(c.importFile(QUrl::fromLocalFile(other)));c.selectPhoto(1);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QVERIFY(sourceNotice.count()>0);QCOMPARE(c.brushCapacity()["dabs"].toInt(),0);QVERIFY(c.brushCapacity()["new_layer_allowed"].toBool());
+        QVERIFY(c.beginBrushStroke("",.3,.5,.002,.6,1,1));c.cancelBrushStroke();c.selectPhoto(0);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(state(c),old);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);QCOMPARE(hashFile(path),hash);
+    }
     void clippedNativeCaptureSamplesTheVisibleStrokeAtDeviceScale() {
         // macOS CI captured1180x720 from an1180x800 request. The old height
         // ratio read y315 (unchanged), while the visible brush was at y350.

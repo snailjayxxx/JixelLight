@@ -1,6 +1,6 @@
 # F4 M4.6H — preserve brush controls across language changes
 
-Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Committed H `21cd3d87029fadca196a12fd3684976ca87ea464` is **not accepted**: macOS packaged owned Metal failed its phase31 reveal-completion assertion. All three44/44 suites and the actual Windows11-mode package passed. Linux language reflow is verified; the [M4.6I follow-up](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) addresses the observed native-test synchronization failure. E24ac54d remains the last fully accepted checkpoint.
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. Committed H `21cd3d87029fadca196a12fd3684976ca87ea464` is **not accepted**: macOS packaged owned Metal failed its phase31 reveal-completion assertion. All three44/44 suites and the actual Windows11-mode package passed. Linux language reflow is verified; the [M4.6I follow-up](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) addresses the observed native-test synchronization failure. At this failed H checkpoint, E24ac54d was the last fully accepted source; the later I acceptance is recorded below.
 
 ## Committed outcome
 
@@ -69,4 +69,4 @@ G's original five ZIPs, three full logs, actual merge/tree proof and Linux RED r
 
 ## Remaining acceptance
 
-H's committed outcome is complete and failed as recorded above; none of the local results is substituted for the missing packaged Metal criteria. [M4.6I](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) retains H's production code and observes bounded reveal completion in the native scenario. Its own committed44/all three and both complete11-mode packages are required. Capacity feedback stays deferred until this observed acceptance gap closes. Eraser, pressure-device input, live-drag color, native GPU brush, native FP32 RAW and overall F0–F6 completion remain outside this slice.
+H's committed outcome is complete and failed as recorded above; none of the local results is substituted for the missing packaged Metal criteria. [M4.6I](F4_BRUSH_REVEAL_WAIT_STAGE_M46I.md) retains H's production code and observes bounded reveal completion in the native scenario. I `8ed006a` subsequently passes its own44/all three and both complete11-mode packages, including an actual pending wait in packaged Metal. H itself remains failed. Capacity feedback is the next scoped follow-up. Eraser, pressure-device input, live-drag color, native GPU brush, native FP32 RAW and overall F0–F6 completion remain outside this slice.

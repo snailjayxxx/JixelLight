@@ -101,6 +101,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantMap brushCapacity READ brushCapacity NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool brushDrawing READ brushDrawing NOTIFY brushDrawingChanged)
     Q_PROPERTY(bool brushReady READ brushReady NOTIFY activityChanged)
     Q_PROPERTY(QString brushStatus READ brushStatus NOTIFY activityChanged)
@@ -303,6 +304,7 @@ public:
     // the command registry or the guarded pointer-gesture API below.
     bool replaceBrushMaskDraft(const QJsonObject &document);
     QVariantList brushLayers() const;
+    QVariantMap brushCapacity() const;
     bool brushDrawing() const { return bool(m_brushGesture); }
     bool brushReady() const;
     QString brushStatus() const;

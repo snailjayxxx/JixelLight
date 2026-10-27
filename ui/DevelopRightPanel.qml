@@ -710,6 +710,13 @@ Rectangle {
                         objectName: "brushLayerSelector"; Layout.fillWidth: true; model: root.brushOptions; textRole: "label"
                         currentIndex: { if (!root.brushEditor) return 0; for(let i=0;i<root.brushOptions.length;++i)if(root.brushOptions[i].id===root.brushEditor.layerId)return i; return 0 }
                         onActivated: function(index) { root.brushEditor.layerId=root.brushOptions[index].id }
+                        ToolTip.visible: hovered
+                        ToolTip.text: {
+                            const cap=root.controller.brushCapacity
+                            return root.t("图层 ","Layers ")+cap.layers+"/"+cap.layer_limit
+                                +root.t(" · 文档落点 "," · Document dabs ")+cap.dabs+"/"+cap.dab_limit
+                                +(root.currentBrush ? root.t(" · 本图层笔触 "," · Layer strokes ")+root.currentBrush.strokes+"/"+cap.stroke_limit : "")
+                        }
                     }
                     RowLayout {
                         Layout.fillWidth: true

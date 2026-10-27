@@ -17,6 +17,15 @@ Item {
     property string maskTool: ""
     onMaskToolChanged: if (brushEditor && brushEditor.active !== (maskTool === "brush")) brushEditor.active = maskTool === "brush"
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
+    function brushBlockHint(reason) {
+        if (reason === "disabled") return root.t("请先启用所选笔刷图层。", "Enable the selected brush layer first.")
+        if (reason === "layers") return root.t("已达笔刷图层上限，请删除图层后再新建。", "Brush layer limit reached. Remove a layer to create another.")
+        if (reason === "strokes") return root.t("该图层已达笔触上限，请删除一笔后继续。", "Stroke limit reached for this layer. Remove a stroke to continue.")
+        if (reason === "dabs") return root.t("笔刷文档已满，请删除笔触或图层后继续。", "Brush document full. Remove a stroke or layer to continue.")
+        if (reason === "missing") return root.t("请重新选择笔刷图层。", "Select a brush layer again.")
+        if (reason === "invalid") return root.t("笔刷文档不可用，暂不能绘制。", "The brush document is unavailable for painting.")
+        return root.controller ? root.controller.brushStatus : ""
+    }
     function refresh() {
         if (controller && width>0 && height>0)
             controller.setViewport(width,height,Screen.devicePixelRatio,zoom,centerX,centerY)
@@ -189,7 +198,7 @@ Item {
             }
             Button {
                 objectName: "newBrushLayerCanvas"
-                visible: root.maskTool === "brush"; enabled: controller.brushReady
+                visible: root.maskTool === "brush"; enabled: controller.brushReady && controller.brushCapacity.new_layer_allowed
                 text: root.t("新图层", "New layer")
                 onClicked: if (root.brushEditor) { root.brushEditor.layerId=""; root.brushEditor.exposure=1 }
             }
@@ -201,7 +210,7 @@ Item {
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
         text: root.maskTool === "brush" ? (!brushOverlay.layerPaintable
-              ? root.t("请先启用所选笔刷图层。", "Enable the selected brush layer first.") : root.controller.brushReady && !root.brushDisplayReady
+              ? root.brushBlockHint(brushOverlay.paintBlock) : root.controller.brushReady && !root.brushDisplayReady
               ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushStatus) : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")

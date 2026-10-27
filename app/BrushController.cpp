@@ -6,12 +6,62 @@
 #include <QJsonDocument>
 #include <QUuid>
 
+namespace {
+enum class BrushPaintRefusal { None, Invalid, Missing, Disabled, Layers, Strokes, Dabs };
+struct BrushCapacityFacts {
+    bool valid=false;
+    int dabs=0;
+};
+BrushCapacityFacts capacityFacts(const BrushMaskDocument::Document &document) {
+    BrushCapacityFacts result;result.valid=BrushMaskDocument::validDocument(document);
+    if(result.valid)for(const auto &layer:document.layers)for(const auto &stroke:layer.strokes)result.dabs+=int(stroke.dabs.size());
+    return result;
+}
+BrushPaintRefusal paintRefusal(const BrushMaskDocument::Document &document,const BrushCapacityFacts &facts,const QString &id) {
+    if(!facts.valid)return BrushPaintRefusal::Invalid;
+    if(id.isEmpty()) {
+        if(document.layers.size()>=BrushMaskDocument::MaxLayers)return BrushPaintRefusal::Layers;
+    }else {
+        const auto layer=std::find_if(document.layers.begin(),document.layers.end(),[&](const auto &layer){return layer.id==id;});
+        if(layer==document.layers.end())return BrushPaintRefusal::Missing;
+        if(!layer->enabled)return BrushPaintRefusal::Disabled;
+        if(layer->strokes.size()>=BrushMaskGeometry::MaxStrokes)return BrushPaintRefusal::Strokes;
+    }
+    if(std::size_t(facts.dabs)>=BrushMaskDocument::MaxTotalDabs)return BrushPaintRefusal::Dabs;
+    return BrushPaintRefusal::None;
+}
+QString refusalKey(BrushPaintRefusal reason) {
+    switch(reason) {
+    case BrushPaintRefusal::Invalid:return QStringLiteral("invalid");
+    case BrushPaintRefusal::Missing:return QStringLiteral("missing");
+    case BrushPaintRefusal::Disabled:return QStringLiteral("disabled");
+    case BrushPaintRefusal::Layers:return QStringLiteral("layers");
+    case BrushPaintRefusal::Strokes:return QStringLiteral("strokes");
+    case BrushPaintRefusal::Dabs:return QStringLiteral("dabs");
+    case BrushPaintRefusal::None:return {};
+    }
+    return QStringLiteral("invalid");
+}
+}
+QVariantMap PhotoController::brushCapacity() const {
+    const BrushMaskDocument::Document empty;
+    const auto &document=hasImage()?m_photos[m_currentIndex].state.brushMasks:empty;
+    const auto facts=capacityFacts(document);const auto reason=paintRefusal(document,facts,{});
+    // Count availability is separate from source/display readiness and work admission.
+    return {{"layers",int(document.layers.size())},{"dabs",facts.dabs},
+        {"layer_limit",int(BrushMaskDocument::MaxLayers)},{"stroke_limit",int(BrushMaskGeometry::MaxStrokes)},
+        {"dab_limit",int(BrushMaskDocument::MaxTotalDabs)},{"new_layer_allowed",hasImage()&&reason==BrushPaintRefusal::None},
+        {"new_layer_block",hasImage()?refusalKey(reason):QStringLiteral("unavailable")}};
+}
 QVariantList PhotoController::brushLayers() const {
     QVariantList result;if(!hasImage())return result;
-    for(const auto &layer:m_photos[m_currentIndex].state.brushMasks.layers) {
+    const auto &document=m_photos[m_currentIndex].state.brushMasks;const auto facts=capacityFacts(document);
+    for(const auto &layer:document.layers) {
         int dabs=0;for(const auto &stroke:layer.strokes)dabs+=int(stroke.dabs.size());
+        const auto reason=paintRefusal(document,facts,layer.id);
         result.append(QVariantMap{{"id",layer.id},{"enabled",layer.enabled},{"exposure",layer.exposureEv},
-            {"strokes",int(layer.strokes.size())},{"dabs",dabs}});
+            {"strokes",int(layer.strokes.size())},{"dabs",dabs},
+            {"append_allowed",reason==BrushPaintRefusal::None},{"paint_block",refusalKey(reason)}});
     }
     return result;
 }
@@ -53,14 +103,13 @@ bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,do
     if(!BrushMaskGeometry::validStyle(style)||!BrushMaskGeometry::validPoint({x,y})
         ||!std::isfinite(exposure)||exposure<-3||exposure>3)return false;
     const auto &doc=m_photos[m_currentIndex].state.brushMasks;
-    if(!BrushMaskDocument::validDocument(doc))return false;
-    if(layer.isEmpty()) {
-        if(doc.layers.size()>=BrushMaskDocument::MaxLayers){setStatus(uiText("已达笔刷图层上限。","Brush layer limit reached."));return false;}
-    }else {
-        const auto found=std::find_if(doc.layers.begin(),doc.layers.end(),[&](const auto &l){return l.id==layer;});
-        if(found==doc.layers.end())return false;
-        if(!found->enabled){setStatus(uiText("请先启用所选笔刷图层。","Enable the selected brush layer first."));return false;}
-        if(found->strokes.size()>=BrushMaskGeometry::MaxStrokes){setStatus(uiText("该图层已达笔触上限。","Stroke limit reached for this layer."));return false;}
+    switch(paintRefusal(doc,capacityFacts(doc),layer)) {
+    case BrushPaintRefusal::Invalid:case BrushPaintRefusal::Missing:return false;
+    case BrushPaintRefusal::Disabled:setStatus(uiText("请先启用所选笔刷图层。","Enable the selected brush layer first."));return false;
+    case BrushPaintRefusal::Layers:setStatus(uiText("已达笔刷图层上限。","Brush layer limit reached."));return false;
+    case BrushPaintRefusal::Strokes:setStatus(uiText("该图层已达笔触上限。","Stroke limit reached for this layer."));return false;
+    case BrushPaintRefusal::Dabs:setStatus(uiText("笔刷文档已满，请删除笔触或图层后继续。","Brush document full. Remove a stroke or layer to continue."));return false;
+    case BrushPaintRefusal::None:break;
     }
     try {
         auto g=std::make_unique<BrushGesture>();g->photoKey=m_photos[m_currentIndex].storageKey();g->epoch=m_photoEpoch;

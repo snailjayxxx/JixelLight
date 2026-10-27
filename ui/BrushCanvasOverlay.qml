@@ -4,13 +4,14 @@ Item {
     id: root
     required property var controller
     property var editor: null
-    readonly property bool layerPaintable: {
-        if (!controller || !editor) return false
-        if (editor.layerId === "") return true
+    readonly property string paintBlock: {
+        if (!controller || !editor) return "unavailable"
+        if (editor.layerId === "") return controller.brushCapacity.new_layer_block
         for (const layer of controller.brushLayers)
-            if (layer.id === editor.layerId) return layer.enabled
-        return false
+            if (layer.id === editor.layerId) return layer.paint_block
+        return "missing"
     }
+    readonly property bool layerPaintable: paintBlock === ""
     property bool drawing: false
     property var points: []
     readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []

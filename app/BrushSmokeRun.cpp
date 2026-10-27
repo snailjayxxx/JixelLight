@@ -138,6 +138,8 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
         bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
         bool revealed=false,manualScroll=false,manualLocale=false,localeRequest=false;int revealHistory=0,revealWaitTicks=0;QJsonObject revealMasks;QRectF revealFrame;
+        bool capacity=false,capacityRecovery=false,capacityTargets=false,capacityExisting=false;int capacityHistory=0;
+        QJsonObject capacityProbe,capacityFull,capacityRemoved;QJsonArray capacityCases,capacityReadyCases;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -147,7 +149,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
             &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
-            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
+            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->capacity&&s->capacityRecovery&&s->capacityTargets&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
@@ -167,6 +169,9 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"brush_controls_reveal",s->revealed},{"manual_scroll_respected",s->manualScroll},{"brush_controls",brushControls(window)},
             {"manual_locale_scroll_preserved",s->manualLocale},{"language_reveal_requested",s->localeRequest},
             {"reveal_wait_ticks",s->revealWaitTicks},
+            {"capacity_guard",s->capacity&&s->capacityRecovery&&s->capacityTargets},{"capacity_probe",s->capacityProbe},
+            {"capacity_target_specific",s->capacityTargets},{"capacity_recovery",s->capacityRecovery},
+            {"capacity_cases",s->capacityCases},{"capacity_ready_cases",s->capacityReadyCases},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -189,6 +194,37 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             mouse(window,QEvent::MouseMove,point(.6,.4),Qt::NoButton,Qt::LeftButton);mouse(window,QEvent::MouseButtonRelease,point(.6,.4),Qt::LeftButton,Qt::NoButton);
             s->disabledInput=!transient&&!c->brushDrawing()&&masks(c)==before&&cursor(c)==history&&c->previewFrameRect()==frame;
             return s->disabledInput&&s->disabledHint==s->expectedDisabledHint&&s->disabledCursor==int(Qt::ForbiddenCursor);
+        };
+        const auto capacityBlocked=[&](const QString &tag,const QString &expected,int expectedDabs,bool newAllowed,bool capture=false) {
+            auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea"),*add=child(window->contentItem(),"newBrushLayerCanvas");
+            const auto before=masks(c);const auto history=cursor(c);const auto frame=c->previewFrameRect();
+            int dabs=0;for(const auto &layer:c->brushLayers())dabs+=layer.toMap()["dabs"].toInt();
+            const auto message=hint?hint->property("text").toString():QString{};const int shape=pointer?pointer->property("cursorShape").toInt():-1;
+            const bool newEnabled=add&&add->isEnabled(),visible=exposed(window,hint);
+            mouse(window,QEvent::MouseButtonPress,point(.3,.4),Qt::LeftButton,Qt::LeftButton);const bool started=c->brushDrawing();
+            mouse(window,QEvent::MouseMove,point(.6,.4),Qt::NoButton,Qt::LeftButton);
+            const bool captured=!capture||window->grabWindow().save(reportPath+".capacity.png");
+            if(started)key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,point(.6,.4),Qt::LeftButton,Qt::NoButton);
+            const bool documentSame=masks(c)==before,historySame=cursor(c)==history,roiSame=c->previewFrameRect()==frame;
+            const bool ignored=!started&&!c->brushDrawing()&&documentSame&&historySame&&roiSame;
+            const QJsonObject record{{"case",tag},{"language",c->language()},{"dabs",dabs},{"layers",c->brushLayers().size()},{"cursor_shape",shape},
+                {"hint",message},{"hint_visible",visible},{"transient_started",started},{"input_ignored",ignored},
+                {"document_unchanged",documentSame},{"history_unchanged",historySame},{"roi_unchanged",roiSame},{"new_layer_enabled",newEnabled}};
+            s->capacityCases.append(record);if(capture)s->capacityProbe=record;
+            return captured&&visible&&dabs==expectedDabs&&shape==int(Qt::ForbiddenCursor)&&message==expected&&ignored&&add&&newEnabled==newAllowed;
+        };
+        const auto capacityReady=[&](const QString &tag,bool newAllowed) {
+            auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea"),*add=child(window->contentItem(),"newBrushLayerCanvas");
+            const auto before=masks(c);const auto history=cursor(c);const auto frame=c->previewFrameRect();
+            const bool cross=pointer&&pointer->property("cursorShape").toInt()==int(Qt::CrossCursor);
+            const bool message=hint&&hint->property("text").toString()==c->brushStatus()&&exposed(window,hint);
+            mouse(window,QEvent::MouseButtonPress,point(.3,.4),Qt::LeftButton,Qt::LeftButton);const bool started=c->brushDrawing();
+            mouse(window,QEvent::MouseMove,point(.6,.4),Qt::NoButton,Qt::LeftButton);
+            if(started)key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,point(.6,.4),Qt::LeftButton,Qt::NoButton);
+            const bool preserved=!c->brushDrawing()&&masks(c)==before&&cursor(c)==history&&c->previewFrameRect()==frame&&canvas->property("maskTool").toString()=="brush";
+            const bool newEnabled=add&&add->isEnabled();
+            s->capacityReadyCases.append(QJsonObject{{"case",tag},{"drawing_started",started},{"state_preserved",preserved},{"cross_cursor",cross},{"ready_hint",message},{"new_layer_enabled",newEnabled}});
+            return started&&preserved&&cross&&message&&add&&newEnabled==newAllowed;
         };
         if(s->phase==0) {
             if(!click(window,child(window->contentItem(),"editBrushMaskCanvas")))return;
@@ -432,7 +468,90 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
             const auto image=window->grabWindow();s->scopeInk=scopeInkSamples(image,window,plot);
             if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
-            if(!image.save(reportPath+".layers.png")){finish("Cannot retain re-enabled English layer controls");return;}finish({});
+            if(!image.save(reportPath+".layers.png")){finish("Cannot retain re-enabled English layer controls");return;}
+            BrushMaskGeometry::Stroke stroke{{.002,.6,1},{}};
+            stroke.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,{{.5,.5},1});
+            BrushMaskDocument::Document full{{{"capacity_full",true,0,{}}}};
+            for(std::size_t n=0;n<BrushMaskDocument::MaxTotalDabs/BrushMaskGeometry::MaxDabsPerStroke;++n)full.layers[0].strokes.push_back(stroke);
+            QJsonObject document;
+            if(!BrushMaskDocument::toJson(full,&document)||!c->executeEditCommand({{"command","mask.brush.replace"},{"document",document}})){finish("Cannot initialize a valid full-capacity owned document");return;}
+            s->capacityFull=masks(c);s->phase=40;s->settle=0;
+        }else if(s->phase==40) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            s->capacity=capacityBlocked("dabs-en","Brush document full. Remove a stroke or layer to continue.",int(BrushMaskDocument::MaxTotalDabs),false,true);
+            if(!s->capacity){finish("Full brush document still advertises or starts paint input");return;}
+            c->setLanguage("zh_CN");s->phase=42;s->settle=0;
+        }else if(s->phase==42) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            s->capacity=s->capacity&&capacityBlocked("dabs-zh",QStringLiteral("笔刷文档已满，请删除笔触或图层后继续。"),int(BrushMaskDocument::MaxTotalDabs),false);
+            if(!s->capacity||!selectFirstLayer(window)){finish("Chinese full-document hint or native layer selection failed");return;}
+            s->phase=43;s->settle=0;
+        }else if(s->phase==43) {
+            if(++s->settle<3)return;s->capacityHistory=cursor(c);
+            s->capacityRemoved=s->capacityFull;auto layers=s->capacityRemoved["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();
+            strokes.removeLast();layer["strokes"]=strokes;layers[0]=layer;s->capacityRemoved["layers"]=layers;
+            if(!click(window,child(window->contentItem(),"removeLastBrushStroke"))||masks(c)!=s->capacityRemoved||cursor(c)!=s->capacityHistory+1){finish("Native removal did not free exact document capacity");return;}
+            s->phase=44;s->settle=0;
+        }else if(s->phase==44) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            s->capacityRecovery=capacityReady("after-removal",true);
+            if(!s->capacityRecovery||!click(window,child(window->contentItem(),"undoEditButton"))||masks(c)!=s->capacityFull||cursor(c)!=s->capacityHistory){finish("Capacity removal/Undo did not preserve its exact intent");return;}
+            s->phase=45;s->settle=0;
+        }else if(s->phase==45) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(!capacityBlocked("undo-full-zh",QStringLiteral("笔刷文档已满，请删除笔触或图层后继续。"),int(BrushMaskDocument::MaxTotalDabs),false)
+                ||!click(window,child(window->contentItem(),"redoEditButton"))||masks(c)!=s->capacityRemoved||cursor(c)!=s->capacityHistory+1){finish("Undo did not restore the full-document input guard or Redo failed");return;}
+            s->phase=46;s->settle=0;
+        }else if(s->phase==46) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            s->capacityRecovery=s->capacityRecovery&&capacityReady("after-redo",true);
+            if(!s->capacityRecovery){finish("Redo did not restore native paint availability");return;}
+            const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};BrushMaskDocument::Document full;
+            for(std::size_t n=0;n<BrushMaskDocument::MaxLayers;++n)full.layers.push_back({QString("capacity_layer_%1").arg(n),true,0,{one}});
+            QJsonObject document;if(!BrushMaskDocument::toJson(full,&document)||!c->executeEditCommand({{"command","mask.brush.replace"},{"document",document}})){finish("Cannot initialize max-layer owned intent");return;}
+            s->phase=47;s->settle=0;
+        }else if(s->phase==47) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(!capacityBlocked("layers-zh",QStringLiteral("已达笔刷图层上限，请删除图层后再新建。"),int(BrushMaskDocument::MaxLayers),false)){finish("Chinese new-layer capacity feedback is incorrect");return;}
+            c->setLanguage("en_US");s->phase=48;s->settle=0;
+        }else if(s->phase==48) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            if(!capacityBlocked("layers-en","Brush layer limit reached. Remove a layer to create another.",int(BrushMaskDocument::MaxLayers),false)
+                ||!selectFirstLayer(window)){finish("English layer capacity feedback or existing target selection failed");return;}
+            s->phase=49;s->settle=0;
+        }else if(s->phase==49) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            s->capacityExisting=capacityReady("existing-at-layer-cap",false);
+            if(!s->capacityExisting){finish("Layer cap incorrectly blocks appending to an existing layer");return;}
+            const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};BrushMaskDocument::Document full{{{"capacity_strokes",true,0,{}}}};
+            full.layers[0].strokes.resize(BrushMaskGeometry::MaxStrokes,one);QJsonObject document;
+            if(!BrushMaskDocument::toJson(full,&document)||!c->executeEditCommand({{"command","mask.brush.replace"},{"document",document}})){finish("Cannot initialize max-stroke owned intent");return;}
+            s->phase=50;s->settle=0;
+        }else if(s->phase==50) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(!selectFirstLayer(window)){finish("Cannot select max-stroke target through the actual selector");return;}s->phase=51;s->settle=0;
+        }else if(s->phase==51) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(!capacityBlocked("strokes-en","Stroke limit reached for this layer. Remove a stroke to continue.",int(BrushMaskGeometry::MaxStrokes),true)){finish("English selected-stroke capacity feedback is incorrect");return;}
+            c->setLanguage("zh_CN");s->phase=52;s->settle=0;
+        }else if(s->phase==52) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            if(!capacityBlocked("strokes-zh",QStringLiteral("该图层已达笔触上限，请删除一笔后继续。"),int(BrushMaskGeometry::MaxStrokes),true)
+                ||!click(window,child(window->contentItem(),"newBrushLayerCanvas"))){finish("Chinese stroke limit or native new-layer action is incorrect");return;}
+            s->phase=53;s->settle=0;
+        }else if(s->phase==53) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            s->capacityTargets=s->capacityExisting&&capacityReady("new-at-stroke-cap",true);
+            if(!s->capacityTargets){finish("A full selected layer incorrectly blocks a new layer");return;}
+            if(!c->executeEditCommand({{"command","mask.brush.replace"},{"document",s->reduced}})){finish("Cannot restore owned brush intent after capacity checks");return;}
+            c->setLanguage("en_US");s->phase=41;s->settle=0;
+        }else if(s->phase==41) {
+            if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            auto *plot=child(window->contentItem(),"scopePlotImage");
+            if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
+            s->scopeInk=scopeInkSamples(window->grabWindow(),window,plot);
+            if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
+            if(masks(c)!=s->reduced||s->capacityCases.size()!=7||s->capacityReadyCases.size()!=4){finish("Capacity matrix changed original intent or left cases incomplete");return;}finish({});
         }
     });
     c->setLanguage("zh_CN");window->setProperty("workspaceIndex",1);window->resize(1180,800);window->requestActivate();
