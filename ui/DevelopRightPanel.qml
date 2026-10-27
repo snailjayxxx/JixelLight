@@ -671,6 +671,33 @@ Rectangle {
                         Button { objectName: "removeLastBrushStroke"; text: root.t("删除末笔","Remove last stroke"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeLastBrushStroke(root.currentBrush.id) }
                         Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ComboBox {
+                            objectName: "brushStrokeSelector"; Layout.fillWidth: true
+                            enabled: root.controller.currentSourceAvailable && root.currentBrush !== null
+                            model: {
+                                let options=[root.t("选择笔触以预览位置","Select stroke to preview")]
+                                for(let i=0;root.currentBrush && i<root.currentBrush.strokes;++i) options.push(root.t("笔触 ","Stroke ")+(i+1))
+                                return options
+                            }
+                            currentIndex: root.brushEditor && root.brushEditor.strokeSelection.token ? root.brushEditor.strokeSelection.index+1 : 0
+                            onActivated: function(index) {
+                                root.brushEditor.strokeSelection=index>0 && root.currentBrush ? root.controller.brushStrokeSelection(root.currentBrush.id,index-1) : ({})
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.text: root.t("黄色线条显示所选整笔的路径；删除后可撤销。","The yellow line shows the selected whole stroke's path. Deletion can be undone.")
+                        }
+                        Button {
+                            objectName: "removeSelectedBrushStroke"; text: root.t("删除所选笔触","Delete stroke")
+                            enabled: root.controller.currentSourceAvailable && root.currentBrush !== null && root.brushEditor && !!root.brushEditor.strokeSelection.token
+                            onClicked: {
+                                const selection=root.brushEditor.strokeSelection
+                                root.controller.removeBrushStroke(root.currentBrush.id,selection.index,selection.token)
+                                root.brushEditor.strokeSelection=({})
+                            }
+                        }
+                    }
                     AdjustmentSlider {
                         Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
                         value: root.currentBrush ? root.currentBrush.exposure : root.brushEditor ? root.brushEditor.exposure : 1

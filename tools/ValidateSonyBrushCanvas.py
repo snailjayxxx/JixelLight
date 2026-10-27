@@ -76,7 +76,7 @@ def validate_sony_brush(binary: Path, raw: Path, environment: dict[str, str],
     captures = data.get("captures", {})
     capture_checks = {}
     for label, record in captures.items():
-        if label not in ("before", "painted", "undo", "reopen", "final", "failure"):
+        if label not in ("before", "painted", "undo", "reopen", "final", "selected-stroke", "failure"):
             continue
         photo = Path(str(private_report) + "." + label + ".png")
         controls = Path(str(private_report) + "." + label + "-controls.png")
@@ -88,14 +88,14 @@ def validate_sony_brush(binary: Path, raw: Path, environment: dict[str, str],
             shutil.copyfile(controls, Path(str(report) + "." + label + "-controls.png"))
     required = ("settings_isolated", "source_is_raw", "source_unchanged", "live_uncommitted", "escape_cancel", "one_undo",
                 "display_changed", "undo_redo", "project_reopen", "loaded_layer_cancel", "scope_controls",
-                "full_scopes", "brush_pointer_ready", "budget_admitted")
+                "full_scopes", "brush_pointer_ready", "budget_admitted", "selected_stroke_delete")
     markers = ("TypeError:", "ReferenceError:", "Unable to assign [undefined]",
                "QQmlApplicationEngine failed", "Binding loop detected")
     qml_errors = [line for line in log.splitlines() if any(m in line for m in markers)]
     expected_backend = "Direct3D 11" if sys.platform == "win32" else "Metal" if sys.platform == "darwin" else "OpenGL Compute"
     passed = (code == 0 and data.get("passed") is True and not qml_errors
               and all(data.get(key) is True for key in required)
-              and all(capture_checks.get(label) is True for label in ("before", "painted", "undo", "reopen", "final"))
+              and all(capture_checks.get(label) is True for label in ("before", "painted", "undo", "reopen", "final", "selected-stroke"))
               and data.get("synthetic_fixture") is False and data.get("source_override") is False
               and data.get("source_sha256") == SONY_SHA256 and digest(raw) == SONY_SHA256
               and data.get("source_bytes") == 69120000
@@ -105,6 +105,7 @@ def validate_sony_brush(binary: Path, raw: Path, environment: dict[str, str],
               and data.get("display_rgb_delta", 0) >= 3
               and data.get("undo_rgb_delta", 999) <= 2 and data.get("redo_rgb_delta", 999) <= 2
               and data.get("scope_display_ink_samples", 0) >= 64
+              and data.get("selected_guide_new_ink_samples", 0) >= 16
               and data.get("operation_budget_bytes") == 3 * 1024 ** 3
               and 0 < data.get("operation_peak_reserved_bytes", 0) <= 3 * 1024 ** 3
               and data.get("gpu_active") is (mode == "gpu")

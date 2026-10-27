@@ -175,14 +175,18 @@ struct CommandRegistry {
         if(name=="mask.brush.reset") {
             if(!fields(command,{}))return fail();state.brushMasks={};return true;
         }
-        if(name=="mask.brush.remove"||name=="mask.brush.remove-last-stroke") {
-            if(!fields(command,{"layer"})||!command["layer"].isString()
+        if(name=="mask.brush.remove"||name=="mask.brush.remove-last-stroke"||name=="mask.brush.remove-stroke") {
+            const bool indexed=name=="mask.brush.remove-stroke";
+            if(!fields(command,indexed?QStringList{"layer","index"}:QStringList{"layer"})||!command["layer"].isString()
+                ||(indexed&&!integer(command,"index",0,BrushMaskGeometry::MaxStrokes-1))
                 ||!BrushMaskDocument::validDocument(state.brushMasks))return fail();
             auto &layers=state.brushMasks.layers;
             const auto found=std::find_if(layers.begin(),layers.end(),[&](const auto &layer){return layer.id==command["layer"].toString();});
             if(found==layers.end())return fail();
-            if(name=="mask.brush.remove-last-stroke") {
-                found->strokes.pop_back();
+            if(indexed||name=="mask.brush.remove-last-stroke") {
+                const auto index=indexed?std::size_t(command["index"].toInt()):found->strokes.size()-1;
+                if(index>=found->strokes.size())return fail();
+                found->strokes.erase(found->strokes.begin()+index);
                 if(!found->strokes.empty())return true;
             }
             layers.erase(found);return true; // Empty layers never become saved intent.
@@ -384,6 +388,9 @@ struct CommandRegistry {
                 {"identity","exact existing stable layer id"},{"operation","remove only the selected brush layer"}},
             QJsonObject{{"name","mask.brush.remove-last-stroke"},{"fields",QJsonArray{"layer"}},
                 {"identity","exact existing stable layer id"},{"operation","remove the selected layer's last stroke; remove its layer when empty"}},
+            QJsonObject{{"name","mask.brush.remove-stroke"},{"fields",QJsonArray{"layer","index"}},
+                {"identity","exact existing stable layer id"},{"index_base",0},{"index_policy","reject non-integer or missing stroke"},
+                {"operation","remove only the indexed whole stroke; remove its layer when empty"}},
             QJsonObject{{"name","mask.brush.reset"},{"fields",QJsonArray{}},
                 {"operation","remove brush layers only; preserve gradients and other edits"}},
             QJsonObject{{"name","mask.radial.enable"},{"fields",QJsonArray{"enabled"}},

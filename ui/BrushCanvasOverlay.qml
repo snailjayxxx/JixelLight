@@ -13,6 +13,7 @@ Item {
     }
     property bool drawing: false
     property var points: []
+    readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []
     property point cursorPoint: Qt.point(-1000, -1000)
     readonly property rect frame: controller ? controller.previewFrameRect : Qt.rect(0,0,1,1)
     readonly property size pixels: controller ? controller.brushFrameSize : Qt.size(0,0)
@@ -31,11 +32,13 @@ Item {
         if (next.length >= 1024) next=next.filter(function(p,i) { return i % 2 === 0 })
         next.push({x:x,y:y}); points=next; guide.requestPaint()
     }
-    onVisibleChanged: if (!visible) cancel()
+    onVisibleChanged: { if (!visible) cancel(); if (guide) guide.requestPaint() }
     onEnabledChanged: if (!enabled) cancel()
     onLayerPaintableChanged: { if (!layerPaintable) cancel(); if (guide) guide.requestPaint() }
     onRadiusXChanged: if (guide) guide.requestPaint()
     onRadiusYChanged: if (guide) guide.requestPaint()
+    onFrameChanged: if (guide) guide.requestPaint()
+    onSelectedStrokeChanged: if (guide) guide.requestPaint()
     Component.onDestruction: if (controller) controller.cancelBrushStroke()
     Connections {
         target: root.controller
@@ -43,7 +46,11 @@ Item {
     }
     Connections {
         target: root.editor
-        function onLayerIdChanged() { root.cancel() }
+        function onLayerIdChanged() { root.cancel(); root.editor.strokeSelection=({}) }
+        function onStrokeSelectionChanged() {
+            if (root.editor.strokeSelection.token) root.cancel()
+            guide.requestPaint()
+        }
         function onRadiusChanged() { root.cancel() }
         function onHardnessChanged() { root.cancel() }
         function onOpacityChanged() { root.cancel() }
@@ -57,6 +64,13 @@ Item {
             if (root.drawing && root.points.length > 0) {
                 c.beginPath(); c.moveTo(root.points[0].x,root.points[0].y)
                 for (let i=1;i<root.points.length;++i) c.lineTo(root.points[i].x,root.points[i].y)
+                c.stroke()
+            } else if (root.selectedStroke.length > 0 && root.frame.width > 0 && root.frame.height > 0) {
+                const p=root.selectedStroke
+                const x=(p[0].x-root.frame.x)/root.frame.width*width, y=(p[0].y-root.frame.y)/root.frame.height*height
+                c.beginPath(); c.moveTo(x,y)
+                if (p.length === 1) c.ellipse(x-3,y-3,6,6)
+                else for (let i=1;i<p.length;++i) c.lineTo((p[i].x-root.frame.x)/root.frame.width*width,(p[i].y-root.frame.y)/root.frame.height*height)
                 c.stroke()
             }
             if (pointer.containsMouse || root.drawing) {
@@ -74,6 +88,7 @@ Item {
             root.forceActiveFocus()
             const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
             if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStroke(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure)) return
+            root.editor.strokeSelection=({})
             root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
         }
         onPositionChanged: function(mouse) {

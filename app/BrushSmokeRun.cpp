@@ -48,6 +48,12 @@ bool selectFirstLayer(QQuickWindow *window) {
     key(window,Qt::Key_Home);key(window,Qt::Key_Down);key(window,Qt::Key_Return);
     return selector->property("currentIndex").toInt()==1;
 }
+bool selectFirstStroke(QQuickWindow *window) {
+    auto *selector=child(window->contentItem(),"brushStrokeSelector");
+    if(!exposed(window,selector)||!click(window,selector))return false;
+    key(window,Qt::Key_Home);key(window,Qt::Key_Down);key(window,Qt::Key_Return);
+    return selector->property("currentIndex").toInt()==1;
+}
 QJsonObject firstLayerProperty(QJsonObject document,const QString &name,const QJsonValue &value) {
     auto layers=document["layers"].toArray();auto layer=layers[0].toObject();layer[name]=value;layers[0]=layer;document["layers"]=layers;return document;
 }
@@ -74,6 +80,26 @@ int scopeInkSamples(const QImage &image,QQuickWindow *window,QQuickItem *plot) {
         }
     return count; // Visibility of this known waveform, not a color-precision gate.
 }
+QPointF imagePoint(PhotoController *c,QQuickItem *overlay,double x,double y) {
+    const auto frame=c->previewFrameRect();
+    return overlay->mapToScene({(x-frame.x())/frame.width()*overlay->width(),(y-frame.y())/frame.height()*overlay->height()});
+}
+int selectedGuideInk(const QImage &image,QQuickWindow *window,PhotoController *c,QQuickItem *overlay) {
+    const auto layers=c->brushLayers();if(layers.isEmpty())return 0;
+    const auto selection=c->brushStrokeSelection(layers[0].toMap()["id"].toString(),0);int count=0;
+    for(const auto &entry:selection["points"].toList()) {
+        const auto p=entry.toMap();const auto scene=imagePoint(c,overlay,p["x"].toDouble(),p["y"].toDouble());
+        if(!overlay->contains(overlay->mapFromScene(scene)))continue;
+        bool yellow=false;
+        for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x) {
+            const auto color=sample(image,window,scene+QPointF(x,y));
+            yellow|=color.isValid()&&color.red()>=220&&color.green()>=190&&color.blue()>=100&&color.blue()<=180
+                &&color.red()>=color.green()+15&&color.green()>=color.blue()+35;
+        }
+        if(yellow)++count;
+    }
+    return count; // Actual selected centerline pixels, compared with the unselected window.
+}
 }
 void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QString &reportPath) {
     struct State {
@@ -83,6 +109,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool selected=false,evDrag=false,toggle=false,lastStroke=false,prune=false,deleteUndo=false,english=false;
         bool pointerReady=false;QString actualHint,expectedHint;
         bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
+        bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -92,7 +119,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
             &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
-            &&s->disabledZh&&s->disabledEn&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
+            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
@@ -108,6 +135,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"disabled_layer_guard",s->disabledZh&&s->disabledEn},{"disabled_layer_zh",s->disabledZh},{"disabled_layer_en",s->disabledEn},
             {"disabled_layer_input_ignored",s->disabledInput},{"disabled_layer_hint",s->disabledHint},{"expected_disabled_layer_hint",s->expectedDisabledHint},
             {"disabled_layer_cursor_shape",s->disabledCursor},
+            {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},{"selected_delete_rgb_delta",s->selectedDelta},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -233,7 +261,45 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->evDrag=cursor(c)==s->history+1&&masks(c)==s->edited&&std::abs(s->layerExposure-s->exposure)>.05;
             if(!s->evDrag||!click(window,child(window->contentItem(),"undoEditButton"))||masks(c)!=s->extended
                 ||!click(window,child(window->contentItem(),"redoEditButton"))||masks(c)!=s->edited){finish("Native layer EV drag is not one isolated Undo/Redo");return;}
-            s->phase=13;
+            // The original stroke can be outside a200% ROI on clipped720px
+            // windows. Fit via the visible control before selecting its path.
+            if(!click(window,child(window->contentItem(),"fitPreviewButton"))){finish("Cannot fit the source before selecting an earlier stroke");return;}
+            s->phase=22;s->settle=0;
+        }else if(s->phase==22) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            const auto image=window->grabWindow();if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
+            s->selectedBefore=sample(image,window,imagePoint(c,overlay,.5,.6));if(!s->selectedBefore.isValid())return;
+            s->guideBaseInk=selectedGuideInk(image,window,c,overlay);s->history=cursor(c);
+            if(!selectFirstStroke(window)){finish("Cannot select an earlier stored stroke through the native selector");return;}s->phase=23;s->settle=0;
+        }else if(s->phase==23) {
+            if(++s->settle<3)return;const auto image=window->grabWindow();
+            s->guideInk=selectedGuideInk(image,window,c,overlay)-s->guideBaseInk;if(s->guideInk<16)return;
+            if(masks(c)!=s->edited||cursor(c)!=s->history||!image.save(reportPath+".selected-stroke.png")){finish("Selecting a stored stroke changed edit intent or cannot be captured");return;}
+            auto layers=s->edited["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();strokes.removeFirst();layer["strokes"]=strokes;layers[0]=layer;
+            s->strokeReduced=s->edited;s->strokeReduced["layers"]=layers;
+            auto *button=child(window->contentItem(),"removeSelectedBrushStroke");
+            if(!exposed(window,button)||!click(window,button)||masks(c)!=s->strokeReduced||cursor(c)!=s->history+1){finish("Selected stroke deletion changed another stroke or is not one Undo");return;}
+            s->phase=24;s->settle=0;
+        }else if(s->phase==24) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=window->grabWindow();
+            if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
+            const auto color=sample(image,window,imagePoint(c,overlay,.5,.6));if(!color.isValid())return;
+            s->selectedDelta=std::max({std::abs(color.red()-s->selectedBefore.red()),std::abs(color.green()-s->selectedBefore.green()),std::abs(color.blue()-s->selectedBefore.blue())});
+            if(s->selectedDelta<3)return;
+            auto *selector=child(window->contentItem(),"brushStrokeSelector"),*button=child(window->contentItem(),"removeSelectedBrushStroke");
+            if(!selector||selector->property("currentIndex").toInt()!=0||!button||button->isEnabled()
+                ||!click(window,child(window->contentItem(),"undoEditButton"))||masks(c)!=s->edited){finish("Deleted selection did not clear or native Undo changed intent");return;}
+            s->phase=25;s->settle=0;
+        }else if(s->phase==25) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=window->grabWindow();
+            if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
+            const auto color=sample(image,window,imagePoint(c,overlay,.5,.6));if(!color.isValid())return;
+            if(std::max({std::abs(color.red()-s->selectedBefore.red()),std::abs(color.green()-s->selectedBefore.green()),std::abs(color.blue()-s->selectedBefore.blue())})>2)return;
+            if(!click(window,child(window->contentItem(),"redoEditButton"))||masks(c)!=s->strokeReduced||cursor(c)!=s->history+1){finish("Native selected-stroke Redo changed another edit");return;}
+            s->phase=26;
+        }else if(s->phase==26) {
+            s->selectedDelete=click(window,child(window->contentItem(),"undoEditButton"))&&masks(c)==s->edited&&cursor(c)==s->history;
+            if(!s->selectedDelete){finish("Cannot restore all strokes after selected-stroke acceptance");return;}s->phase=13;
         }else if(s->phase==13) {
             if(!click(window,child(window->contentItem(),"brushLayerEnabled"))||masks(c)!=firstLayerProperty(s->edited,"enabled",false)) {finish("Native layer disable changed other intent");return;}
             s->phase=14;
@@ -274,7 +340,8 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->scopeInk=scopeInkSamples(image,window,plot);
             if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
             s->english=c->language()=="en_US"&&exposed(window,child(window->contentItem(),"removeLastBrushStroke"))
-                &&exposed(window,child(window->contentItem(),"removeBrushLayer"))&&exposed(window,child(window->contentItem(),"brushExposureSlider"));
+                &&exposed(window,child(window->contentItem(),"removeBrushLayer"))&&exposed(window,child(window->contentItem(),"brushExposureSlider"))
+                &&exposed(window,child(window->contentItem(),"brushStrokeSelector"));
             if(!s->english){finish("English layer controls are clipped");return;}
             if(!click(window,child(window->contentItem(),"brushLayerEnabled"))){finish("Cannot disable the English brush layer");return;}s->phase=20;
         }else if(s->phase==20) {
@@ -312,6 +379,7 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
     struct State {
         QElapsedTimer clock;int phase=0,settle=0,history=0,delta=0,undoDelta=999,redoDelta=999,ink=0;
         bool done=false,transient=false,escape=false,oneUndo=false,display=false,undoRedo=false,reopen=false,loadedCancel=false,scopeControls=false,scopes=false,ready=false;
+        bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectionHistory=0;
         double exposure=0;QByteArray sourceHash;QJsonObject initial,painted,captures;QColor baseline,paintedColor;
     };
     auto s=std::make_shared<State>();s->clock.start();auto *timer=new QTimer(c);timer->setInterval(50);
@@ -334,7 +402,7 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
         const bool admitted=budget.limit==BrushRenderBudget::DefaultBytes&&budget.peak>0&&budget.peak<=budget.limit&&budget.charged<=budget.limit;
         const bool full=c->currentIsRaw()&&c->brushFrameSize()==QSize(7028,4688);
         const bool ok=error.isEmpty()&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->loadedCancel
-            &&s->scopeControls&&s->scopes&&s->ready&&admitted&&unchanged&&full&&s->clock.elapsed()<60000
+            &&s->scopeControls&&s->scopes&&s->ready&&s->selectedDelete&&admitted&&unchanged&&full&&s->clock.elapsed()<60000
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"deadline_ms",60000},{"phase",s->phase},{"error",error},{"synthetic_fixture",false},{"source_override",false},
@@ -344,6 +412,7 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
             {"source_is_raw",c->currentIsRaw()},{"source_unchanged",unchanged},{"live_uncommitted",s->transient},{"escape_cancel",s->escape},
             {"one_undo",s->oneUndo},{"display_changed",s->display},{"display_rgb_delta",s->delta},{"undo_redo",s->undoRedo},
             {"undo_rgb_delta",s->undoDelta},{"redo_rgb_delta",s->redoDelta},{"project_reopen",s->reopen},{"loaded_layer_cancel",s->loadedCancel},
+            {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},
             {"scope_controls",s->scopeControls},{"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},
             {"scope_plot_pixels",qint64(c->scopePlotPixels())},{"scope_display_ink_samples",s->ink},{"brush_pointer_ready",s->ready},
             {"layer_exposure",s->exposure},{"budget_admitted",admitted},{"operation_budget_bytes",budget.limit},
@@ -397,7 +466,24 @@ void startSonyBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const 
         }else if(s->phase==6) {
             QColor color;const auto image=readFrame(&color);if(image.isNull())return;s->redoDelta=difference(color,s->paintedColor);if(s->redoDelta>2)return;
             s->undoRedo=masks(c)==s->painted&&cursor(c)==s->history+1;
-            if(!s->undoRedo||!c->createProject(QUrl::fromLocalFile(output.absolutePath()),"SonyBrushCanvas")||!c->flushEdits()){finish("Cannot persist the real-source painted project");return;}
+            if(!s->undoRedo||!selectFirstLayer(window)){finish("Real-source Redo changed intent or cannot select its restored layer");return;}s->phase=12;
+        }else if(s->phase==12) {
+            QColor color;const auto image=readFrame(&color);if(image.isNull())return;
+            s->guideBaseInk=selectedGuideInk(image,window,c,overlay);s->selectionHistory=cursor(c);
+            if(!selectFirstStroke(window)){finish("Cannot select the stored stroke on the full Sony source");return;}s->phase=13;s->settle=0;
+        }else if(s->phase==13) {
+            if(++s->settle<3)return;QColor color;const auto image=readFrame(&color);if(image.isNull())return;
+            s->guideInk=selectedGuideInk(image,window,c,overlay)-s->guideBaseInk;if(s->guideInk<16)return;
+            if(masks(c)!=s->painted||cursor(c)!=s->selectionHistory||!capture("selected-stroke",image)){finish("Selecting the Sony stroke changed intent or cannot be captured");return;}
+            auto *button=child(window->contentItem(),"removeSelectedBrushStroke");
+            if(!exposed(window,button)||!click(window,button)||!masks(c).isEmpty()||cursor(c)!=s->selectionHistory+1){finish("Selected Sony stroke deletion did not prune its layer as one Undo");return;}s->phase=14;
+        }else if(s->phase==14) {
+            QColor color;const auto image=readFrame(&color);if(image.isNull()||difference(color,s->baseline)>2)return;
+            if(!click(window,child(window->contentItem(),"undoEditButton"))||masks(c)!=s->painted||cursor(c)!=s->selectionHistory){finish("Native Undo did not restore the selected Sony stroke");return;}s->phase=15;
+        }else if(s->phase==15) {
+            QColor color;const auto image=readFrame(&color);if(image.isNull()||difference(color,s->paintedColor)>2)return;
+            s->selectedDelete=masks(c)==s->painted&&cursor(c)==s->selectionHistory;
+            if(!s->selectedDelete||!c->createProject(QUrl::fromLocalFile(output.absolutePath()),"SonyBrushCanvas")||!c->flushEdits()){finish("Cannot persist the real-source painted project");return;}
             if(!c->openProject(QUrl::fromLocalFile(c->projectPath()))){finish("Cannot reopen the real-source painted project");return;}s->phase=7;
         }else if(s->phase==7) {
             QColor color;const auto image=readFrame(&color);if(image.isNull()||difference(color,s->paintedColor)>2)return;s->reopen=masks(c)==s->painted;

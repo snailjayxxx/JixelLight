@@ -63,10 +63,11 @@ Item {
         target: root.controller
         function onCurrentIndexChanged() {
             root.maskTool=""
-            if (root.brushEditor) root.brushEditor.layerId=""
+            if (root.brushEditor) { root.brushEditor.strokeSelection=({}); root.brushEditor.layerId="" }
             root.centerX=.5;root.centerY=.5;root.refresh()
         }
         function onAdjustmentsChanged() {
+            if (root.brushEditor) root.brushEditor.strokeSelection=({})
             if (!root.brushEditor || root.brushEditor.layerId === "") return
             const layers=root.controller.brushLayers
             for (const layer of layers) if (layer.id === root.brushEditor.layerId) return
@@ -156,7 +157,7 @@ Item {
         visible: !controller.cropEditing
         Row {
             spacing: 5
-            Button { text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
+            Button { objectName: "fitPreviewButton"; text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
             Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
             Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
         }

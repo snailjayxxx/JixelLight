@@ -164,6 +164,80 @@ private slots:
         qInfo().noquote()<<"BRUSH_LAYER_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"source_pixels",2659021},
             {"strict_commands",true},{"atomic_batch",true},{"one_undo",true},{"project_reopen",true},{"other_layers_preserved",true},{"exact_cli_png16_icc",true},{"source_unchanged",true}}).toJson(QJsonDocument::Compact);
     }
+    void selectedStrokeUsesFrozenIdentityAndPreservesRemainingIntent() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned.png");QVERIFY(scene().save(path));const auto hash=hashFile(path);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Style style{.025,.6,.7};
+        const BrushMaskGeometry::Stroke first{style,{{{.2,.3},1},{{.4,.3},1},{{.6,.3},1}}};
+        const BrushMaskGeometry::Stroke second{style,{{{.3,.5},1},{{.5,.5},1},{{.7,.5},1}}};
+        const BrushMaskGeometry::Stroke other{style,{{{.25,.7},1},{{.45,.7},1},{{.65,.7},1}}};
+        BrushMaskDocument::Document document{{{"a",true,.8,{first,second}},{"b",true,-.4,{other}}}};QJsonObject json;
+        QVERIFY(BrushMaskDocument::toJson(document,&json));
+        c.setExposure(.2);c.finishInteraction();QVERIFY(c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto before=c.gpuPlan(true).state;const auto history=cursor(c);
+        const auto selection=c.brushStrokeSelection("a",0);const auto token=selection["token"].toString();QVERIFY(!token.isEmpty());
+        const auto points=selection["points"].toList();QCOMPARE(points.size(),3);QCOMPARE(points[0].toMap()["x"].toDouble(),.2);QCOMPARE(points[2].toMap()["y"].toDouble(),.3);
+        QCOMPARE(state(c),before.toJson());QCOMPARE(cursor(c),history); // Selection is not an edit.
+        QVERIFY(c.brushStrokeSelection("missing",0).isEmpty());QVERIFY(c.brushStrokeSelection("a",-1).isEmpty());QVERIFY(c.brushStrokeSelection("a",2).isEmpty());
+        QVERIFY(!c.removeBrushStroke("a",0,{}));QVERIFY(!c.removeBrushStroke("a",0,"forged"));QVERIFY(!c.removeBrushStroke("b",0,token));QVERIFY(!c.removeBrushStroke("a",1,token));
+        QCOMPARE(state(c),before.toJson());QCOMPARE(cursor(c),history);
+        const QJsonObject command{{"command","mask.brush.remove-stroke"},{"layer","a"},{"index",0}};
+        for(const auto &value:QJsonArray{-1,2,64,.5,"0",true,QJsonValue{}}) {
+            auto bad=command;bad["index"]=value;auto staged=before;QVERIFY(!CommandRegistry::execute(staged,bad));QCOMPARE(staged.toJson(),before.toJson());
+        }
+        for(const auto &bad:QList<QJsonObject>{{{"command","mask.brush.remove-stroke"},{"layer","a"}},
+                {{"command","mask.brush.remove-stroke"},{"layer",1},{"index",0}},
+                {{"command","mask.brush.remove-stroke"},{"layer","missing"},{"index",0}},
+                {{"command","mask.brush.remove-stroke"},{"layer","a"},{"index",0},{"extra",true}}}) {
+            auto staged=before;QVERIFY(!CommandRegistry::execute(staged,bad));QCOMPARE(staged.toJson(),before.toJson());
+        }
+        auto malformed=before;malformed.brushMasks.layers[0].strokes.clear();QVERIFY(!CommandRegistry::execute(malformed,command));QCOMPARE(malformed.brushMasks.layers.size(),std::size_t(2));
+        auto staged=before;QVERIFY(!CommandRegistry::executeBatch(staged,{command,QJsonObject{{"command","mask.brush.remove-stroke"},{"layer","a"},{"index",1}}}));QCOMPARE(staged.toJson(),before.toJson());
+        auto remaining=before;remaining.brushMasks.layers[0].strokes.erase(remaining.brushMasks.layers[0].strokes.begin());
+        QVERIFY(c.removeBrushStroke("a",0,token));QCOMPARE(state(c),remaining.toJson());QCOMPARE(cursor(c),history+1);
+        QVERIFY(!c.removeBrushStroke("a",0,token));QCOMPARE(state(c),remaining.toJson());QCOMPARE(cursor(c),history+1); // Shifted index cannot be reused.
+        c.undo();QCOMPARE(state(c),before.toJson());c.redo();QCOMPARE(state(c),remaining.toJson());
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"SelectedStroke"));QVERIFY(c.flushEdits());
+        const auto staleOwner=c.brushStrokeSelection("a",0)["token"].toString();QVERIFY(!staleOwner.isEmpty());
+        QVERIFY(c.createVirtualCopy("Identical brush intent"));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QCOMPARE(state(c),remaining.toJson());const auto copyHistory=cursor(c);QVERIFY(!c.removeBrushStroke("a",0,staleOwner));QCOMPARE(cursor(c),copyHistory);
+        c.selectPhoto(0);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QVERIFY(!c.removeBrushStroke("a",0,staleOwner)); // A reloaded source has a new epoch.
+        const auto staleLayer=c.brushStrokeSelection("a",0)["token"].toString();QVERIFY(c.setBrushLayerEnabled("a",false));c.finishInteraction();
+        const auto disabled=c.gpuPlan(true).state;const auto disabledHistory=cursor(c);QVERIFY(!c.removeBrushStroke("a",0,staleLayer));QCOMPARE(cursor(c),disabledHistory);
+        const auto disabledToken=c.brushStrokeSelection("a",0)["token"].toString();QVERIFY(!disabledToken.isEmpty());QVERIFY(c.removeBrushStroke("a",0,disabledToken));
+        auto sole=disabled;sole.brushMasks.layers.erase(sole.brushMasks.layers.begin());QCOMPARE(state(c),sole.toJson());QCOMPARE(cursor(c),disabledHistory+1);
+        c.undo();QCOMPARE(state(c),disabled.toJson());c.redo();QCOMPARE(state(c),sole.toJson());QVERIFY(c.flushEdits());
+        PhotoController reopened(nullptr);reopened.setGpuEnabled(false);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));reopened.selectPhoto(0);
+        QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);QCOMPARE(state(reopened),sole.toJson());reopened.undo();QCOMPARE(state(reopened),disabled.toJson());reopened.redo();QCOMPARE(state(reopened),sole.toJson());
+        QVERIFY(!reopened.removeBrushStroke("a",0,disabledToken)); // Catalog/source ownership does not survive reopen.
+        // Worst-case stored path is downsampled for the guide, with exact endpoints.
+        BrushMaskGeometry::Stroke longStroke{{.002,.6,1},{}};
+        for(std::size_t i=0;i<BrushMaskGeometry::MaxDabsPerStroke;++i)longStroke.dabs.push_back({{double(i)/(BrushMaskGeometry::MaxDabsPerStroke-1),.4},1});
+        BrushMaskDocument::Document bounded{{{"bounded",false,1,{longStroke,longStroke}}}};QVERIFY(BrushMaskDocument::toJson(bounded,&json));
+        QVERIFY(reopened.executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));QTRY_VERIFY_WITH_TIMEOUT(reopened.brushReady(),15000);
+        const auto boundBefore=state(reopened);const auto boundHistory=cursor(reopened);const auto boundedSelection=reopened.brushStrokeSelection("bounded",0);
+        const auto boundedPoints=boundedSelection["points"].toList();QCOMPARE(boundedPoints.size(),1024);QCOMPARE(boundedPoints.front().toMap()["x"].toDouble(),0.);QCOMPARE(boundedPoints.back().toMap()["x"].toDouble(),1.);
+        QCOMPARE(state(reopened),boundBefore);QCOMPARE(cursor(reopened),boundHistory);
+        QVERIFY(reopened.removeBrushStroke("bounded",0,boundedSelection["token"].toString()));
+        QVERIFY(!reopened.removeBrushStroke("bounded",0,boundedSelection["token"].toString())); // Identical strokes still have positional identity.
+        const QJsonArray commands{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",before.exposure}},
+            QJsonObject{{"command","mask.brush.replace"},{"document",before.toJson()["brushMasks"]}},command};
+        const auto commandFile=dir.filePath("selected.json");QFile file(commandFile);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(commands).toJson());file.close();
+        auto binary=QDir(QCoreApplication::applicationDirPath()).filePath("JixelLightCli");
+#ifdef Q_OS_WIN
+        binary+=".exe";
+#endif
+        const auto output=dir.filePath("selected.png");QProcess process;process.start(binary,{"--commands",commandFile,path,output});QVERIFY(process.waitForStarted());QVERIFY(process.waitForFinished(30000));QVERIFY2(process.exitCode()==0,process.readAllStandardError().constData());
+        const auto source=loadSourceFresh(path,{});const auto expected=reference(source.image,ProcessingPlan::compile(remaining,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0));const QImage actual(output);
+        QVERIFY(!expected.isNull());QCOMPARE(actual.convertToFormat(QImage::Format_RGBA64),expected);QCOMPARE(actual.colorSpace(),expected.colorSpace());
+        auto bad=commands;bad.append(QJsonObject{{"command","mask.brush.remove-stroke"},{"layer","b"},{"index",1}});
+        QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write(QJsonDocument(bad).toJson());file.close();const auto rejected=dir.filePath("rejected.png");
+        QProcess failure;failure.start(binary,{"--commands",commandFile,path,rejected});QVERIFY(failure.waitForStarted());QVERIFY(failure.waitForFinished(30000));QVERIFY(failure.exitCode()!=0);QVERIFY(!QFile::exists(rejected));QCOMPARE(hashFile(path),hash);
+        qInfo().noquote()<<"BRUSH_STROKE_SELECTION_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+            {"strict_index_command",true},{"atomic_batch",true},{"bounded_guide_points",1024},{"read_only_selection",true},{"frozen_owner_layer_source",true},
+            {"earlier_stroke_only",true},{"other_layers_preserved",true},{"one_undo",true},{"disabled_layer_pruned_undo",true},{"project_reopen",true},
+            {"exact_cli_png16_icc",true},{"source_pixels",2659021},{"source_unchanged",true}}).toJson(QJsonDocument::Compact);
+    }
     void realSonyGestureProducesExactFullStatistics() {
         const auto fixtures=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
         if(fixtures.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required public Sony RAW unavailable");QSKIP("No public Sony fixture configured");}

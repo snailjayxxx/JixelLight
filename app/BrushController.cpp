@@ -2,6 +2,8 @@
 #include "core/commands/CommandRegistry.h"
 #include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
+#include <QCryptographicHash>
+#include <QJsonDocument>
 #include <QUuid>
 
 QVariantList PhotoController::brushLayers() const {
@@ -122,4 +124,34 @@ bool PhotoController::removeLastBrushStroke(const QString &id) {
     if(!CommandRegistry::execute(next,{{"command","mask.brush.remove-last-stroke"},{"layer",id}}))return false;
     m_photos[m_currentIndex].history.finish();*state=std::move(next);
     persistAndApply("brush_stroke_remove",{{"layer",id}});finishInteraction();return true;
+}
+QVariantMap PhotoController::brushStrokeSelection(const QString &id,int index) const {
+    if(!currentSourceAvailable()||!m_sourceIsFull||m_fullSource.isNull()||m_loading||m_closing||m_brushGesture||m_cropEditing)return {};
+    try {
+        const auto &photo=m_photos[m_currentIndex];const auto &document=photo.state.brushMasks;
+        if(!BrushMaskDocument::validDocument(document)||index<0)return {};
+        const auto found=std::find_if(document.layers.begin(),document.layers.end(),[&](const auto &layer){return layer.id==id;});
+        if(found==document.layers.end()||std::size_t(index)>=found->strokes.size())return {};
+        QJsonObject layer;
+        if(!BrushMaskDocument::toJson(BrushMaskDocument::Document{{*found}},&layer))return {};
+        // Bind transient selection to its catalog, photo, source and entire layer.
+        // A shifted index (including duplicate strokes) must never remove a new target.
+        const auto frozen=QJsonDocument(QJsonArray{QString::number(m_catalogEpoch),photo.storageKey(),QString::number(m_photoEpoch),
+            QString::number(m_fullSource.cacheKey()),photo.state.geometry.toJson(),index,layer}).toJson(QJsonDocument::Compact);
+        const auto token=QString::fromLatin1(QCryptographicHash::hash(frozen,QCryptographicHash::Sha256).toHex());
+        const auto &dabs=found->strokes[std::size_t(index)].dabs;
+        const auto count=std::min(dabs.size(),std::size_t(1024));QVariantList points;points.reserve(qsizetype(count));
+        for(std::size_t i=0;i<count;++i) {
+            const auto &p=dabs[count==1?0:i*(dabs.size()-1)/(count-1)].center;
+            points.append(QVariantMap{{"x",p.x},{"y",p.y}});
+        }
+        return {{"layer",id},{"index",index},{"token",token},{"points",points}};
+    }catch(...){return {};}
+}
+bool PhotoController::removeBrushStroke(const QString &id,int index,const QString &selectionToken) {
+    if(selectionToken.isEmpty()||brushStrokeSelection(id,index).value("token").toString()!=selectionToken)return false;
+    auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
+    if(!CommandRegistry::execute(next,{{"command","mask.brush.remove-stroke"},{"layer",id},{"index",index}}))return false;
+    m_photos[m_currentIndex].history.finish();*state=std::move(next);
+    persistAndApply("brush_stroke_selected_remove",{{"layer",id},{"index",index}});finishInteraction();return true;
 }

@@ -315,6 +315,8 @@ public:
     Q_INVOKABLE bool setBrushLayerEnabled(const QString &id,bool enabled);
     Q_INVOKABLE bool removeBrushLayer(const QString &id);
     Q_INVOKABLE bool removeLastBrushStroke(const QString &id);
+    Q_INVOKABLE QVariantMap brushStrokeSelection(const QString &id,int index) const;
+    Q_INVOKABLE bool removeBrushStroke(const QString &id,int index,const QString &selectionToken);
     void setBlackWhite(bool enabled);
     Q_INVOKABLE void setBlackWhiteMix(int band,double value);
     Q_INVOKABLE void resetBlackWhite();
