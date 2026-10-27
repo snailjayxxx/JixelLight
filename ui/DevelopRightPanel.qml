@@ -22,34 +22,46 @@ Rectangle {
         for (const layer of layers) if (layer.id === brushEditor.layerId) return layer
         return null
     }
+    property bool brushAutoPositionOwned: false
     property int brushRevealAttempts: 0
     property int brushRevealStableFrames: 0
     readonly property bool brushRevealPending: revealBrush.running
     readonly property Flickable brushToolFlick: toolScroll.contentItem as Flickable
+    function cancelBrushReveal() {
+        brushAutoPositionOwned=false; revealBrush.stop()
+    }
     function requestBrushReveal() {
+        brushAutoPositionOwned=true
         brushRevealAttempts=0; brushRevealStableFrames=0
         revealBrush.restart()
     }
-    onVisibleChanged: if (!visible) revealBrush.stop()
-    onBrushExpandedChanged: if (!brushExpanded) revealBrush.stop()
+    onVisibleChanged: if (!visible) cancelBrushReveal()
+    onBrushExpandedChanged: if (!brushExpanded) cancelBrushReveal()
     Connections {
         target: root.brushEditor
         function onActiveChanged() {
             if (root.brushEditor.active) { root.brushExpanded=true; root.requestBrushReveal() }
-            else revealBrush.stop()
+            else root.cancelBrushReveal()
+        }
+    }
+    Connections {
+        target: root.controller
+        function onLanguageChanged() {
+            if (root.brushAutoPositionOwned && root.visible && root.brushExpanded && root.brushEditor && root.brushEditor.active)
+                root.requestBrushReveal()
         }
     }
     Connections {
         target: root.brushToolFlick
         ignoreUnknownSignals: true
-        function onDraggingChanged() { if (root.brushToolFlick && root.brushToolFlick.dragging) revealBrush.stop() }
-        function onFlickingChanged() { if (root.brushToolFlick && root.brushToolFlick.flicking) revealBrush.stop() }
+        function onDraggingChanged() { if (root.brushToolFlick && root.brushToolFlick.dragging) root.cancelBrushReveal() }
+        function onFlickingChanged() { if (root.brushToolFlick && root.brushToolFlick.flicking) root.cancelBrushReveal() }
     }
     Timer {
         id: revealBrush; interval: 16; repeat: true
         onTriggered: {
             if (++root.brushRevealAttempts>60 || !root.visible || !root.brushExpanded || !root.brushEditor || !root.brushEditor.active) {
-                stop(); return
+                root.cancelBrushReveal(); return
             }
             const flick=root.brushToolFlick
             if (!flick || !flick.contentItem || flick.height<=0) return
@@ -207,7 +219,7 @@ Rectangle {
             id: toolScroll; objectName: "developToolScroll"
             WheelHandler {
                 target: null; blocking: false
-                onWheel: function(event) { revealBrush.stop(); event.accepted=false }
+                onWheel: function(event) { root.cancelBrushReveal(); event.accepted=false }
             }
             Layout.fillWidth: true
             Layout.fillHeight: true

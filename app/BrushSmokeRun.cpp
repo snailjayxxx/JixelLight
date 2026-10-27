@@ -63,6 +63,7 @@ QJsonObject brushControls(QQuickWindow *window) {
     auto *panel=child(window->contentItem(),"developRightPanel"),*flick=toolFlick(window);
     auto *header=child(window->contentItem(),"brushPanelToggle"),*slider=child(window->contentItem(),"brushExposureSlider");
     return {{"pending",panel&&panel->property("brushRevealPending").toBool()},
+        {"automatic_owner",panel&&panel->property("brushAutoPositionOwned").toBool()},
         {"attempts",panel?panel->property("brushRevealAttempts").toInt():-1},
         {"content_y",flick?flick->property("contentY").toDouble():-1},
         {"content_height",flick?flick->property("contentHeight").toDouble():-1},
@@ -136,7 +137,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool pointerReady=false;QString actualHint,expectedHint;
         bool disabledZh=false,disabledEn=false,disabledInput=false;int disabledCursor=-1;QString disabledHint,expectedDisabledHint;
         bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
-        bool revealed=false,manualScroll=false;int revealHistory=0;QJsonObject revealMasks;QRectF revealFrame;
+        bool revealed=false,manualScroll=false,manualLocale=false,localeRequest=false;int revealHistory=0;QJsonObject revealMasks;QRectF revealFrame;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -146,7 +147,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
             &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
-            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
+            &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
         const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
@@ -164,6 +165,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"disabled_layer_cursor_shape",s->disabledCursor},
             {"selected_stroke_delete",s->selectedDelete},{"selected_guide_new_ink_samples",s->guideInk},{"selected_delete_rgb_delta",s->selectedDelta},
             {"brush_controls_reveal",s->revealed},{"manual_scroll_respected",s->manualScroll},{"brush_controls",brushControls(window)},
+            {"manual_locale_scroll_preserved",s->manualLocale},{"language_reveal_requested",s->localeRequest},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -311,6 +313,17 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             const auto geometry=brushControls(window);
             s->manualScroll=!geometry["pending"].toBool()&&!geometry["critical_visible"].toBool()&&geometry["content_y"].toDouble()<=16;
             if(!s->manualScroll){finish("Pending brush reveal fought the user's manual scroll");return;}
+            c->setLanguage("en_US");s->phase=35;s->settle=0;
+        }else if(s->phase==35) {
+            if(++s->settle<3)return;const auto geometry=brushControls(window);
+            if(c->language()!="en_US"||geometry["automatic_owner"].toBool()||geometry["pending"].toBool()
+                ||geometry["critical_visible"].toBool()||geometry["content_y"].toDouble()>16){finish("English reflow overrode the user's manual scroll");return;}
+            c->setLanguage("zh_CN");s->phase=36;s->settle=0;
+        }else if(s->phase==36) {
+            if(++s->settle<3)return;const auto geometry=brushControls(window);
+            s->manualLocale=c->language()=="zh_CN"&&!geometry["automatic_owner"].toBool()&&!geometry["pending"].toBool()
+                &&!geometry["critical_visible"].toBool()&&geometry["content_y"].toDouble()<=16;
+            if(!s->manualLocale){finish("Chinese reflow overrode the user's manual scroll");return;}
             if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("Cannot restore the brush tool after canceling its reveal");return;}
             s->phase=33;s->settle=0;
         }else if(s->phase==33) {
@@ -380,7 +393,9 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
                 &&click(window,child(window->contentItem(),"undoEditButton"))&&masks(c)==s->reduced;
             if(!s->deleteUndo){finish("Native layer deletion/Undo changed an unrelated layer");return;}
             if(!selectFirstLayer(window)){finish("Cannot select final restored layer");return;}
-            c->setLanguage("en_US");s->phase=19;s->settle=0;
+            c->setLanguage("en_US");s->localeRequest=brushControls(window)["pending"].toBool();
+            if(!s->localeRequest){finish("Language reflow did not request a new brush reveal after automatic positioning");return;}
+            s->phase=19;s->settle=0;
         }else if(s->phase==19) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
             auto *plot=child(window->contentItem(),"scopePlotImage");

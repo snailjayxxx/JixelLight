@@ -58,6 +58,7 @@ def validate_brush(binary: Path, environment: dict[str, str], home: Path,
               and data.get("scope_display_ink_samples", 0) >= 64
               and data.get("selected_guide_new_ink_samples", 0) >= 16 and data.get("selected_delete_rgb_delta", 0) >= 3
               and data.get("manual_scroll_respected") is True
+              and data.get("manual_locale_scroll_preserved") is True and data.get("language_reveal_requested") is True
               and data.get("native_gpu_brush") is False and data.get("native_float_raw_decoder") is False)
     result = {"mode": "brush-" + mode, "passed": passed, "returncode": code,
               "source_commit": data.get("source_commit"), "qml_errors": errors,
