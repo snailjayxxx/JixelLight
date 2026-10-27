@@ -2194,6 +2194,16 @@ void PhotoController::setScopeMode(const QString &mode) {
 }
 void PhotoController::requestScopePlot() {
     if (m_closing || m_scopeMode=="histogram" || !hasImage() || m_preparing || m_rendering) return;
+    // Exact histograms publish the same pre-monitor pixels into the analysis
+    // cache. Give that scheduled/running producer a chance to finish before
+    // plots take a second full-source render reservation. Only the GUI timer
+    // defers: no worker waits on another job or borrows its cancellation token.
+    // Failed/uncacheable histograms still allow the ordinary streamed fallback.
+    if (m_exactScopes && (m_exactTimer.isActive() || m_fullScopeJob->busy())) {
+        PerformanceRecorder::count("scope_plot_deferred_for_full_histogram");
+        m_plotTimer.start();
+        return;
+    }
     ScopePlotRequest request;
     request.source=m_exactScopes ? m_fullSource : m_previewSource;
     if (request.source.isNull()) return;

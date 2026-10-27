@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QScopeGuard>
+#include <QSemaphore>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -72,6 +73,77 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void controllerDefersExactPlotsWithoutBlockingFallback_data() {
+        QTest::addColumn<int>("completion");
+        QTest::newRow("completed-frame-reuse")<<0;
+        QTest::newRow("uncached-streamed-fallback")<<1;
+        QTest::newRow("failed-histogram-fallback")<<2;
+        QTest::newRow("cancelled-exact-preview")<<3;
+    }
+    void controllerDefersExactPlotsWithoutBlockingFallback() {
+        QFETCH(int,completion);
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("scheduled-scopes.png");
+        const auto image=sourceImage().scaled(321,197);QVERIFY(image.save(path));const auto hash=fileHash(path);
+        QSemaphore entered,release;
+        ProcessedImageProvider provider;PhotoController controller(&provider);controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.brushReady()&&controller.m_sourceIsFull,15000);
+        QVERIFY(controller.flushEdits());controller.m_saveTimer.stop();controller.m_saveMaxTimer.stop();controller.m_refineTimer.stop();
+        const auto saved=controller.m_photos[controller.m_currentIndex].state;
+        const auto restore=qScopeGuard([&]{
+            release.release();controller.m_photos[controller.m_currentIndex].state=saved;
+            controller.m_saveTimer.stop();controller.m_saveMaxTimer.stop();controller.m_exactTimer.stop();controller.m_plotTimer.stop();
+        });
+        controller.m_photos[controller.m_currentIndex].state=painted();++controller.m_requestedRevision;controller.m_scopesRank=-1;
+        const auto intent=controller.gpuPlan(true).state.toJson();const auto history=controller.editHistory();
+        const auto frames=completion==0?controller.m_analysisFrameCache:std::shared_ptr<AnalysisFrameCache>{};
+        const auto histograms=std::make_shared<FullScopesCache>(4*1024*1024,frames,controller.m_brushBudget);
+        controller.m_fullScopeJob=std::make_unique<LatestJob<ScopeRequest,ScopesResult>>(
+            [&,histograms](const ScopeRequest &request,const CancelToken &cancel) {
+                entered.release();
+                while(!release.tryAcquire(1,20))if(cancelled(cancel))return ScopesResult{};
+                if(completion==2){ScopesResult failed;failed.error="Controlled histogram failure";return failed;}
+                return histograms->analyze(request,cancel);
+            },[&](const ScopeRequest &request,ScopesResult result){controller.acceptScopes(request.revision,result,1,"Full-resolution statistics");});
+        const auto deferred=counter("scope_plot_deferred_for_full_histogram"),encoded=counter("scope_plot_encoded_passes");
+        controller.m_exactScopes=true;controller.m_exactTimer.start();controller.setScopeMode("waveform");
+        const auto pendingSequence=controller.m_plotJob->sequence();controller.requestScopePlot();
+        QCOMPARE(controller.m_plotJob->sequence(),pendingSequence);QVERIFY(!controller.m_plotJob->busy());QVERIFY(controller.m_plotTimer.isActive());
+        QCOMPARE(counter("scope_plot_deferred_for_full_histogram"),deferred+1);
+        controller.m_exactTimer.stop();controller.m_exactScopes=false;controller.setExactScopes(true);
+        QTRY_VERIFY_WITH_TIMEOUT(entered.available()>0,5000);entered.acquire();
+        const auto activeSequence=controller.m_plotJob->sequence();controller.requestScopePlot();
+        QCOMPARE(controller.m_plotJob->sequence(),activeSequence);QVERIFY(!controller.m_plotJob->busy());QVERIFY(!controller.scopePlotCurrent());
+        QVERIFY(counter("scope_plot_deferred_for_full_histogram")>=deferred+2);
+        // A GUI turn runs while the producer is held; this is submission
+        // ordering, never a blocking wait inside the controller or plot worker.
+        bool responsive=false;QTimer::singleShot(0,&controller,[&]{responsive=true;});QTRY_VERIFY_WITH_TIMEOUT(responsive,1000);
+        if(completion==3)controller.setExactScopes(false);
+        release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.m_fullScopeJob->busy()&&controller.scopePlotCurrent(),15000);
+        const auto source=completion==3?controller.m_previewSource:controller.m_fullSource;
+        const auto expected=reference(source,controller.gpuPlan(completion!=3),completion==3?GeometryState{}:controller.previewGeometry());
+        QVERIFY(!expected.isNull());const auto plot=renderEncodedScopePlot(expected,"waveform");
+        QCOMPARE(provider.requestImage("scopes/current",nullptr,{}),plot.image);QCOMPARE(controller.scopePlotPixels(),plot.pixels);
+        QCOMPARE(controller.m_plotFull,completion!=3);
+        if(completion==0) {
+            QVERIFY(sameHistogram(controller.m_scopes,ScopesEngine::analyze(expected)));
+            QCOMPARE(counter("scope_plot_encoded_passes"),encoded+1);
+            QVERIFY(controller.m_analysisFrameCache->snapshot()["hits"].toInteger()>=1);
+        }else if(completion==2)QVERIFY(controller.scopesStatus().contains("Controlled histogram failure"));
+        for(const auto &mode:{"parade","vectorscope"}) {
+            controller.setScopeMode(mode);QTRY_VERIFY_WITH_TIMEOUT(controller.scopePlotCurrent(),10000);
+            QCOMPARE(provider.requestImage("scopes/current",nullptr,{}),renderEncodedScopePlot(expected,mode).image);
+        }
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),intent);QCOMPARE(controller.editHistory(),history);QCOMPARE(fileHash(path),hash);
+        qInfo().noquote()<<"BRUSH_SCOPE_SCHEDULING_EVIDENCE "<<QJsonDocument(QJsonObject{
+            {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case",QString::fromLatin1(QTest::currentDataTag())},
+            {"deferred_while_scheduled",true},{"deferred_while_running",true},{"gui_responsive",responsive},
+            {"exact_plot_modes",3},{"completed_frame_reused",completion==0},{"preview_after_cancel",completion==3},
+            {"source_pixels",qint64(plot.pixels)},{"source_unchanged",true},{"intent_and_history_unchanged",true}
+        }).toJson(QJsonDocument::Compact);
+    }
     void originalGeometryAndCompletedFrameReuse() {
         const auto source=sourceImage(true);const auto before=StageGraph::outputFingerprint(source);
         auto state=painted();state.geometry.crop={.1,.08,.53,.61};state.geometry.straighten=.7;state.geometry.quarterTurns=1;

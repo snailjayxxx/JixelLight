@@ -92,13 +92,34 @@ alpha-presentation-legacy-gui/, alpha-presentation-native-alias-refusal/,
 alpha-presentation-local-post-audit.json and full65 log/XML. Local source stamps
 remain59dffd0 and require exact tested-source links to the eventual commit.
 
+## Original committed E result: failed Windows native deadline
+
+[E4d7281b / CI40551927782](https://github.com/snailjayxxx/JixelLight/actions/runs/40551927782)
+remains failed. All65/all3 pass with zero skips/Core215: Linux1022.03s,
+Windows1773.20s, macOS1420.46s. Linux/macOS native runs and the actual macOS17-mode
+SDK-stripped package pass; Sony eraser package CPU25820ms/GPU27409ms retains60000ms.
+Windows genuine Sony CPU eraser finishes60880ms over60000ms despite all behavior
+predicates/full32,947,264-pixel waveform/compact English controls passing. Final
+waveform capture is59000ms; English capture60384ms. The final capture/source hash
+and validation overrun the original gate, with no explicit error string in E.
+Remaining Sony eraserGPU/RAW-matrix/Windows package do not run. No Windows
+package manifest/validation ZIP exists.
+
+Four available original ZIPs, three full original job logs and actualall3
+checkout1c850c27835e35ea6fc43251405c83c3a95197cd/tree3d0c9f9fa502597232649095722b118da1cad9e4
+equalE source are audited and archived under evidence/ci-40551927782/ in the
+physical build parent. Alpha/numerical/local proof remains valid, but the E
+aggregate is not accepted. Settling the viewport alone did not establish a
+Windows timing repair. [F scheduling work](F4_BRUSH_SCOPE_SCHEDULING_STAGE_M47F.md)
+coordinates the actual histogram/plot producers without changing the deadline.
+
 ## Publication gate
 
-E requires its own committed65/all3/Core215/display-ICC4 and analytic alpha
-evidence, both actual17-mode SDK-stripped packages, five original ZIPs, three
-full job logs and actual checkout/tree proof. C remains the last fully accepted
-aggregate until a newer run satisfies all gates. Local native success does not
-establish Windows deadline success or complete F4/F0-F6.
+E required committed65/all3/Core215/display-ICC4 and analytic-alpha evidence,
+both actual17-mode packages and original-byte/actual-source proof. Its Windows
+native failure prevents aggregate acceptance. F retains those gates, adds its
+new scheduling shard for66 total, and needs its own committed aggregate. C remains
+the last fully accepted checkpoint; local success does not complete F4/F0-F6.
 
 Source32Mi/shared3GiB, research2Mi/tile8Mi/work96Mi, all color precision,
 owned45000ms/RAW-Sony60000ms and performance120s gates remain. Pressure-device

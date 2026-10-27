@@ -2,6 +2,7 @@
 #include "app/PhotoController.h"
 #include "app/SmokeCaptureCoordinates.h"
 #include "core/pipeline/BrushRenderRequest.h"
+#include "diagnostics/PerformanceRecorder.h"
 #include <QQuickWindow>
 #include <QCoreApplication>
 #include <QQuickItem>
@@ -147,10 +148,17 @@ void startErase(PhotoController *c,QQuickWindow *window,const QString &requested
             &&s->undoRedo&&s->selectedDelete&&s->reopen&&s->loadedCancel&&s->scopeControls&&s->scopes&&s->english&&s->selectedLocale
             &&s->livePaint&&s->liveErase&&s->liveCancelPaint&&s->liveCancelErase&&s->livePointer&&s->liveRevision&&s->liveCurrent&&s->liveMoves>=4&&s->liveCommitPaintDelta<=2&&s->liveCommitEraseDelta<=2
             &&(realSony|| (s->compactScopeReflow&&s->scopeLayoutChecked&&s->automaticScope&&s->manualScope&&s->scopeReentry));
-        const bool passed=error.isEmpty()&&required&&isolated&&unchanged&&shape&&admitted&&controls&&s->clock.elapsed()<deadline
+        const auto performance=PerformanceRecorder::snapshot();const auto counters=performance["counters"].toObject();
+        const QJsonObject scheduling{
+            {"deferred_for_full_histogram",counters["scope_plot_deferred_for_full_histogram"].toInteger()},
+            {"completed_frame_plot_passes",counters["scope_plot_encoded_passes"].toInteger()},
+            {"analysis_frame_cache",performance["values"].toObject()["analysis_frame_cache"]}};
+        const auto elapsed=s->clock.elapsed();
+        const auto failure=error.isEmpty()&&elapsed>=deadline?QString("Native eraser GUI exceeded its original bounded deadline during final validation"):error;
+        const bool passed=failure.isEmpty()&&required&&isolated&&unchanged&&shape&&admitted&&controls&&elapsed<deadline
             &&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject data{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
-            {"elapsed_ms",s->clock.elapsed()},{"deadline_ms",deadline},{"phase",s->phase},{"error",error},{"phase_trace",s->phaseTrace},
+            {"elapsed_ms",elapsed},{"deadline_ms",deadline},{"phase",s->phase},{"error",failure},{"phase_trace",s->phaseTrace},{"scope_scheduling",scheduling},
             {"synthetic_fixture",!realSony},{"source_override",false},{"transparent_fixture",transparent},{"owned_alpha_u16",s->ownedAlpha},{"source_kind",realSony?"public-sony-arw":"owned-rgba64-png"},
             {"source_pixels",qint64(c->brushFrameSize().width())*c->brushFrameSize().height()},
             {"source_width",c->brushFrameSize().width()},{"source_height",c->brushFrameSize().height()},{"expected_source_pixels",pixels},
