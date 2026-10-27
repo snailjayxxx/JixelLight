@@ -1,4 +1,5 @@
 #include <QApplication>
+#include "app/BrushTabletInput.h"
 #include <QFileInfo>
 #include <QDir>
 #include <QQmlApplicationEngine>
@@ -50,9 +51,12 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"brush-erase-canvas-smoke-report", "Validate native Paint/Erase mode with an owned image and controls-only captures", "file"});
     arguments.addOption({"transparent-brush-erase-canvas-smoke-report", "Validate transparent native Paint/Erase composition with an owned image", "file"});
     arguments.addOption({"sony-brush-erase-canvas-smoke-report", "Validate native Erase using exactly one pinned real Sony ARW; controls-only captures", "file"});
+    arguments.addOption({"brush-pressure-canvas-smoke-report", "Validate controlled pressure and input ownership on an owned photo", "file"});
+    arguments.addOption({"transparent-brush-pressure-canvas-smoke-report", "Validate controlled pressure on transparent owned pixels", "file"});
+    arguments.addOption({"sony-brush-pressure-canvas-smoke-report", "Validate pinned real Sony pressure and exact export; controls-only captures", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"));
@@ -76,6 +80,7 @@ int main(int argc, char *argv[]) {
     qInfo() << "JixelLight" << JIXELLIGHT_VERSION << "commit" << JIXELLIGHT_GIT_COMMIT;
 
     qmlRegisterType<GpuPreviewItem>("JixelLight.Native", 1, 0, "GpuPreview");
+    qmlRegisterType<BrushTabletInput>("JixelLight.Native",1,0,"BrushTabletInput");
     auto *provider = new ProcessedImageProvider;
     PhotoController controller(provider);
     QQmlApplicationEngine engine;
@@ -125,6 +130,11 @@ int main(int argc, char *argv[]) {
 
     QVariantList photos;
     for (const QString &path:arguments.positionalArguments()) photos.push_back(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+    if(arguments.isSet("sony-brush-pressure-canvas-smoke-report")) {
+        if(!window||photos.size()!=1)return 2;
+        startSonyBrushPressureCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-pressure-canvas-smoke-report"));
+        return app.exec();
+    }
     if(arguments.isSet("sony-brush-erase-canvas-smoke-report")) {
         if(!window||photos.size()!=1)return 2;
         startSonyBrushEraseCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-erase-canvas-smoke-report"));
@@ -133,6 +143,12 @@ int main(int argc, char *argv[]) {
     if(arguments.isSet("sony-brush-canvas-smoke-report")) {
         if(!window||photos.size()!=1)return 2;
         startSonyBrushCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-canvas-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("brush-pressure-canvas-smoke-report")||arguments.isSet("transparent-brush-pressure-canvas-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        const bool transparent=arguments.isSet("transparent-brush-pressure-canvas-smoke-report");
+        startBrushPressureCanvasSmokeRun(&controller,window,arguments.value(transparent?"transparent-brush-pressure-canvas-smoke-report":"brush-pressure-canvas-smoke-report"),transparent);
         return app.exec();
     }
     if (!photos.isEmpty()) controller.importFiles(photos);

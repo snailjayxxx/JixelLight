@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <limits>
 #include <QColorSpace>
 #include <QCryptographicHash>
 #include <QDir>
@@ -41,6 +42,42 @@ class BrushGestureTests final:public QObject {
     Q_OBJECT
 private slots:
     void initTestCase(){QStandardPaths::setTestModeEnabled(true);}
+    void pressureStartRejectsInvalidAndKeepsExactZeroWithoutHistoryLeak() {
+        namespace BM=BrushMaskGeometry;
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("pressure-api.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));const auto hash=hashFile(path);PhotoController c(nullptr);c.setGpuEnabled(false);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto initial=state(c);const auto before=cursor(c);
+        const double epsilon=std::numeric_limits<double>::epsilon();int rejected=0;
+        for(double pressure:{std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity(),-std::numeric_limits<double>::infinity(),-.01,1.01,-epsilon,1+epsilon}) {
+            QVERIFY(!c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"paint",pressure));
+            QVERIFY(!c.brushDrawing());QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);++rejected;
+        }
+        QVERIFY(!c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"erase",.5));
+        QVERIFY(c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"paint",0));
+        QVERIFY(!c.beginBrushStrokeModePressure("",.6,.5,.12,1,.8,1,"paint",.5));QVERIFY(c.brushDrawing());
+        QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);QVERIFY(c.appendBrushStroke(.6,.5,.8));
+        const auto id=c.endBrushStroke();QVERIFY(!id.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto painted=state(c);QCOMPARE(cursor(c),before+1);const auto doc=c.gpuPlan(true).state.brushMasks;
+        QCOMPARE(doc.layers.size(),size_t(1));QCOMPARE(doc.layers[0].strokes.size(),size_t(1));
+        const auto &actual=doc.layers[0].strokes[0];QCOMPARE(actual.dabs.front().pressure,0.0);
+        BM::StrokeBuilder builder(160,96,{.12,1,.8});QVERIFY(builder.append({{.3,.5},0}));QVERIFY(builder.append({{.6,.5},.8}));
+        const auto expected=builder.finish();QVERIFY(expected);QCOMPARE(actual.dabs.size(),expected->dabs.size());
+        for(size_t i=0;i<actual.dabs.size();++i){QCOMPARE(actual.dabs[i].center.x,expected->dabs[i].center.x);QCOMPARE(actual.dabs[i].center.y,expected->dabs[i].center.y);QCOMPARE(actual.dabs[i].pressure,expected->dabs[i].pressure);}
+        c.undo();QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);c.redo();QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.beginBrushStrokeModePressure(id,.4,.5,.12,1,.8,1,"erase",.25));
+        QVERIFY(!c.appendBrushStroke(.5,.5,std::numeric_limits<double>::quiet_NaN()));
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);QCOMPARE(hashFile(path),hash);
+        qInfo().noquote()<<"PRIVATE_PRESSURE_API_EVIDENCE "<<QJsonDocument(QJsonObject{
+            {"private_only",true},{"product_UI_acceptance",false},{"physical_tablet_verified",false},
+            {"invalid_initial_values_rejected",rejected},{"zero_initial_retained",true},{"independent_sampler_exact",true},
+            {"second_owner_refused_without_cancel",true},{"single_undo_redo",true},{"invalid_append_cancels_without_commit",true},{"source_unchanged",true}
+        }).toJson(QJsonDocument::Compact);
+    }
+
     void eraserGestureFreezesModeIsOneUndoAndPersistsExactPng() {
         namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("eraser-owned.png");

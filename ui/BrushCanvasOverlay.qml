@@ -1,4 +1,5 @@
 import QtQuick
+import JixelLight.Native 1.0
 
 Item {
     id: root
@@ -14,6 +15,7 @@ Item {
     }
     readonly property bool layerPaintable: paintBlock === ""
     readonly property bool erasing: editor && editor.mode === "erase"
+    property real currentPressure: 1
     property bool drawing: false
     property var points: []
     readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []
@@ -28,8 +30,8 @@ Item {
     function imagePoint(x,y) {
         return controller.maskCanvasPoint(Math.max(0,Math.min(width,x)),Math.max(0,Math.min(height,y)),width,height)
     }
-    function clearGuide() { drawing=false; points=[]; if (guide) guide.requestPaint() }
-    function cancel() { if (controller) controller.cancelBrushStroke(); clearGuide() }
+    function clearGuide() { drawing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
+    function cancel() { if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
     function addGuide(x,y) {
         let next=points.slice()
         if (next.length >= 1024) next=next.filter(function(p,i) { return i % 2 === 0 })
@@ -80,9 +82,37 @@ Item {
             }
             if (pointer.containsMouse || root.drawing) {
                 c.strokeStyle=root.erasing ? "#ffa99a" : "#bce7f2"; c.lineWidth=1
-                c.beginPath(); c.ellipse(root.cursorPoint.x-root.radiusX,root.cursorPoint.y-root.radiusY,root.radiusX*2,root.radiusY*2); c.stroke()
+                c.beginPath(); const pressure=root.drawing ? root.currentPressure : 1
+                c.ellipse(root.cursorPoint.x-root.radiusX*pressure,root.cursorPoint.y-root.radiusY*pressure,root.radiusX*2*pressure,root.radiusY*2*pressure); c.stroke()
             }
         }
+    }
+    BrushTabletInput {
+        id: tabletInput; objectName: "brushTabletInput"
+        target: root; blocked: pointer.pressed
+        onBegan: function(x,y,pressure) {
+            root.forceActiveFocus()
+            const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y)
+            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode,pressure)) return
+            root.editor.strokeSelection=({})
+            root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
+        }
+        onMoved: function(x,y,pressure) {
+            if (!root.drawing) return
+            const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y);root.currentPressure=pressure
+            if (!root.controller.appendBrushStroke(p.x,p.y,pressure)) { root.clearGuide();return }
+            root.addGuide(x,y)
+        }
+        onEnded: function(x,y,pressure) {
+            if (!root.drawing) return
+            const p=root.imagePoint(x,y)
+            if (root.controller.appendBrushStroke(p.x,p.y,pressure)) {
+                const layer=root.controller.endBrushStroke()
+                if (layer!=="" && root.editor) root.editor.layerId=layer
+            }
+            root.clearGuide()
+        }
+        onCanceled: root.cancel()
     }
     MouseArea {
         id: pointer; objectName: "brushPointerArea"

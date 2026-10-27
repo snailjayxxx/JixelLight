@@ -13,6 +13,7 @@ from ValidateRelink import validate_relink
 from ValidateBrushCanvas import validate_brush
 from ValidateSonyBrushCanvas import validate_sony_brush
 from ValidateBrushErase import validate_brush_erase
+from ValidateBrushPressure import validate_brush_pressure
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -28,11 +29,15 @@ def main() -> int:
     parser.add_argument('--sony-probe', type=Path)
     parser.add_argument('--cli', type=Path)
     parser.add_argument('--sony-brush-raw', type=Path)
+    parser.add_argument('--pressure-export-verifier', type=Path, required=True)
     parser.add_argument('--reports', type=Path, default=Path('package-validation'))
     args = parser.parse_args()
     executable, raw = args.executable.resolve(), args.raw.resolve()
     if not executable.is_file() or not raw.is_file():
         parser.error('Deployed executable and RAW fixture must exist')
+    pressure_verifier = args.pressure_export_verifier.resolve()
+    if not pressure_verifier.is_file():
+        parser.error('Deployed pressure export verifier must exist')
     reports = args.reports.resolve()
     reports.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
@@ -119,6 +124,12 @@ def main() -> int:
             transparent_home.mkdir()
             results.append(validate_brush_erase(executable, environment, transparent_home,
                 reports / ("transparent-brush-erase-" + mode + ".json"), mode, transparent=True))
+            pressure_home = Path(temp) / ("brush-pressure-" + mode)
+            results.append(validate_brush_pressure(executable, environment, pressure_home,
+                reports / ("brush-pressure-" + mode + ".json"), mode))
+            pressure_alpha_home = Path(temp) / ("transparent-brush-pressure-" + mode)
+            results.append(validate_brush_pressure(executable, environment, pressure_alpha_home,
+                reports / ("transparent-brush-pressure-" + mode + ".json"), mode, transparent=True))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()
@@ -128,6 +139,10 @@ def main() -> int:
                 sony_erase_home.mkdir()
                 results.append(validate_brush_erase(executable, environment, sony_erase_home,
                     reports / ("sony-brush-erase-" + mode + ".json"), mode, args.sony_brush_raw.resolve()))
+                pressure_sony_home = Path(temp) / ("sony-brush-pressure-" + mode)
+                results.append(validate_brush_pressure(executable, environment, pressure_sony_home,
+                    reports / ("sony-brush-pressure-" + mode + ".json"), mode,
+                    args.sony_brush_raw.resolve(), pressure_verifier))
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))

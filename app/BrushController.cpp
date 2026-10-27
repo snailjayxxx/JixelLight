@@ -168,7 +168,10 @@ bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,do
     return beginBrushStrokeMode(layer,x,y,radius,hardness,opacity,exposure,QStringLiteral("paint"));
 }
 bool PhotoController::beginBrushStrokeMode(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode) {
-    if(mode!="paint"&&mode!="erase")return false;
+    return beginBrushStrokeModePressure(layer,x,y,radius,hardness,opacity,exposure,mode,1);
+}
+bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure) {
+    if(!std::isfinite(pressure)||pressure<0||pressure>1|| (mode!="paint"&&mode!="erase"))return false;
     const auto strokeMode=mode=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
     if(m_brushGesture)return false;
     if(!brushReady()){setStatus(brushStatus());return false;}
@@ -195,7 +198,7 @@ bool PhotoController::beginBrushStrokeMode(const QString &layer,double x,double 
         g->layer=layer;g->frame=brushFrameSize();g->geometry=m_photos[m_currentIndex].state.geometry.toJson();g->exposure=exposure;
         g->mode=strokeMode;
         g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
-        if(!g->builder->append({{x,y},1}))return false;
+        if(!g->builder->append({{x,y},pressure}))return false;
         m_brushGesture=std::move(g);emit brushDrawingChanged();requestBrushPreview();return brushGestureCurrent();
     }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
 }

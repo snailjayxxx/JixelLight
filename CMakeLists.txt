@@ -108,8 +108,14 @@ target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Q
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
+target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(JixelLight PRIVATE app/GuiSmokeActivity.mm)
+    target_link_libraries(JixelLight PRIVATE "-framework Foundation")
+endif()
 set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/BrushCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
@@ -175,6 +181,8 @@ qt_add_executable(JixelLightBrushGestureTests tests/BrushGestureTests.cpp)
 target_link_libraries(JixelLightBrushGestureTests PRIVATE JixelLightCore Qt6::Test)
 set_target_properties(JixelLightBrushGestureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME brush-gesture COMMAND JixelLightBrushGestureTests completedStrokeIsOneUndoAndProducesAllExportsAfterReopen geometryViewportCancellationAndSourceGuards invalidLongAndOverBudgetGesturesNeverPublishPartialState -o brush-gesture-results.txt,txt -o -,txt)
+add_test(NAME brush-pressure-gesture COMMAND JixelLightBrushGestureTests pressureStartRejectsInvalidAndKeepsExactZeroWithoutHistoryLeak -o brush-pressure-gesture-results.txt,txt -o -,txt)
+set_tests_properties(brush-pressure-gesture PROPERTIES TIMEOUT 120)
 add_test(NAME brush-gesture-sony COMMAND JixelLightBrushGestureTests realSonyGestureProducesExactFullStatistics -o brush-gesture-sony-results.txt,txt -o -,txt)
 add_test(NAME brush-layer COMMAND JixelLightBrushGestureTests layerRemovalCommandsPreserveOtherLayersAndRoundTrip -o brush-layer-results.txt,txt -o -,txt)
 add_test(NAME brush-capture COMMAND JixelLightBrushGestureTests clippedNativeCaptureSamplesTheVisibleStrokeAtDeviceScale -o brush-capture-results.txt,txt -o -,txt)
@@ -315,3 +323,22 @@ add_test(NAME cli-schema COMMAND JixelLightCli --schema)
 add_test(NAME cli-export-safety COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/ValidateCli.py $<TARGET_FILE:JixelLightCli>)
 set_tests_properties(cli-schema cli-export-safety PROPERTIES TIMEOUT 120)
+
+# Controlled Qt input fixture; actual photo UI and device hardware have separate gates.
+qt_add_executable(JixelLightBrushInputProbe tests/BrushPressureInputProbe.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h)
+target_include_directories(JixelLightBrushInputProbe PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(JixelLightBrushInputProbe PRIVATE Qt6::Quick Qt6::Qml Qt6::GuiPrivate)
+target_compile_definitions(JixelLightBrushInputProbe PRIVATE JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+set_target_properties(JixelLightBrushInputProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-pressure-input COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateBrushPressureInput.py
+    --probe $<TARGET_FILE:JixelLightBrushInputProbe>
+    --fixture ${CMAKE_SOURCE_DIR}/tests/qml/BrushPressureInputFixture.qml
+    --output-dir ${CMAKE_BINARY_DIR}/brush-pressure-input
+    --result-file ${CMAKE_BINARY_DIR}/brush-pressure-input-results.txt
+    --expected-source-commit ${JIXELLIGHT_GIT_COMMIT})
+set_tests_properties(brush-pressure-input PROPERTIES TIMEOUT 120)
+
+qt_add_executable(JixelLightBrushPressureExportVerifier tools/BrushPressureExportVerifier.cpp)
+target_link_libraries(JixelLightBrushPressureExportVerifier PRIVATE JixelLightCore)
+set_target_properties(JixelLightBrushPressureExportVerifier PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
