@@ -78,6 +78,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     for(int y=0;y<size.height();++y)for(int x=0;x<size.width();++x)reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(9000+x*20,11000+y*20,16000+x*10,alpha);
     if(!owned->isValid()||!image.save(source)){QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;}
     struct State {
+        int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
         int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
@@ -89,10 +90,11 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     s->pen=std::make_shared<QPointingDevice>("Controlled photo pressure pen",987654329,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
     QWindowSystemInterface::registerInputDevice(s->pen.get());auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return find(window->contentItem(),name);};
-    const auto capture=[=](const QString &label){const auto shot=window->grabWindow();const auto path=report+"."+label+"-owned.png";if(shot.isNull()||!shot.save(path))return false;
+    const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
+    const auto capture=[=](const QString &label,const QImage &shot){const auto path=report+"."+label+"-owned.png";if(shot.isNull()||!shot.save(path))return false;
         s->captures.append(QJsonObject{{"label",label},{"path",path},{"width",shot.width()},{"height",shot.height()},{"dpr",window->effectiveDevicePixelRatio()},{"sha256",QString::fromLatin1(hash(path))}});return true;};
     const auto finish=[=](const QString &error){
-        if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure");
+        if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
         const bool passed=error.isEmpty()&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
@@ -103,7 +105,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             {"pressure_paint_reference",s->pressurePaint},{"pressure_erase_reference",s->pressureErase},{"cancel_paint",s->cancelPaint},{"cancel_erase",s->cancelErase},{"one_undo",s->oneUndo},{"undo_redo",s->undoRedo},{"project_reopen",s->reopened},{"held_intent_history_revision_unchanged",s->transient},
             {"live_paint_delta",s->livePaintDelta},{"live_erase_delta",s->liveEraseDelta},{"live_to_commit_paint_delta",s->commitPaintDelta},{"live_to_commit_erase_delta",s->commitEraseDelta},
             {"export_exact_pixels_and_ICC",s->exactExport},{"gpu_active",c->gpuActive()},{"backend",c->processingBackend()},{"dpr",window->effectiveDevicePixelRatio()},
-            {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"captures",s->captures},{"phases",s->phases}};
+            {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},{"captures",s->captures},{"phases",s->phases}};
         QSaveFile f(report);const auto bytes=QJsonDocument(d).toJson(QJsonDocument::Indented);const bool saved=f.open(QIODevice::WriteOnly)&&f.write(bytes)==bytes.size()&&f.commit();
         QTimer::singleShot(0,c,[passed,saved]{QCoreApplication::exit(passed&&saved?0:1);});
     };
@@ -115,7 +117,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         if(!c->brushReady())return;auto *canvas=item("photoCanvas"),*overlay=item("brushCanvasOverlay");if(!canvas||!overlay||!canvas->property("brushDisplayReady").toBool())return;
         const auto raw=overlay->property("editor");QObject *editor=raw.value<QObject *>();if(!editor&&raw.canConvert<QJSValue>())editor=raw.value<QJSValue>().toQObject();if(!editor){finish("Actual brush editor unavailable");return;}
         const auto point=[&](double x){return overlay->mapToScene({overlay->width()*x,overlay->height()*.6});};
-        const auto read=[&]{const auto probe=point(.6)+QPointF(0,overlay->property("radiusY").toDouble()*.2);return SmokeCaptureCoordinates::sample(window->grabWindow(),probe,window->effectiveDevicePixelRatio());};
+        const auto read=[&](QColor *color){const auto shot=grab();const auto probe=point(.6)+QPointF(0,overlay->property("radiusY").toDouble()*.2);*color=SmokeCaptureCoordinates::sample(shot,probe,window->effectiveDevicePixelRatio());return color->isValid()?shot:QImage{};};
         const auto packet=[&](double x,double pressure,bool held){const auto local=point(x),global=window->mapToGlobal(local);
             if(s->mouse){const auto type=held?(s->mouseHeld?QEvent::MouseMove:QEvent::MouseButtonPress):QEvent::MouseButtonRelease;
                 QMouseEvent event(type,local,local,global,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,held?Qt::LeftButton:Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&event);s->mouseHeld=held;return;}
@@ -145,19 +147,20 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             s->initial=masks(c);s->initialHistory=history(c);if(!s->initial.isEmpty()||!click(window,item("editBrushMaskCanvas"))){finish("Cannot enter actual photo brush tool");return;}
             editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);c->setLanguage("en_US");s->phase=1;s->settle=0;
         }else if(s->phase==1){
-            if(++s->settle<4)return;s->baseline=read();if(!s->baseline.isValid()||!capture("before")||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
+            if(++s->settle<4)return;const auto shot=read(&s->baseline);if(shot.isNull()||!capture("before",shot)||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
         }else if(s->phase==2||s->phase==4||s->phase==9||s->phase==11){
             const bool erase=s->phase>=9,cancel=s->phase==2||s->phase==9;if(!advance())return;
             const auto doc=erase?s->painted:s->initial;const auto cursor=s->initialHistory+(erase?1:0);s->transient=s->transient&&frozen(doc,cursor);
-            const auto color=read();if(!color.isValid()||delta(color,erase?s->paintColor:s->baseline)<3||c->brushPreviewUrl().isEmpty())return;
-            s->liveColor=color;if(!s->transient||!capture(cancel?(erase?"cancel-erase-held":"cancel-paint-held"):(erase?"erase-held":"paint-held"))){finish("Held pressure input leaked intent/history/revision or capture failed");return;}
+            QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)<3||c->brushPreviewUrl().isEmpty())return;
+            // Save the exact UI frame whose RGB passed; no input changes precede this capture.
+            s->liveColor=color;if(!s->transient||!capture(cancel?(erase?"cancel-erase-held":"cancel-paint-held"):(erase?"erase-held":"paint-held"),shot)){finish("Held pressure input leaked intent/history/revision or capture failed");return;}
             if(cancel){key(window,Qt::Key_Escape);s->cancelStep=0;s->phase=erase?21:20;}
             else{if(erase){s->liveEraseDelta=delta(color,s->paintColor);s->expectedErase=expected(BM::StrokeMode::Erase);}else{s->livePaintDelta=delta(color,s->baseline);s->expectedPaint=expected(BM::StrokeMode::Paint);}packet(.75,0,false);s->phase=erase?12:5;}
         }else if(s->phase==20||s->phase==21){
             const bool erase=s->phase==21;const auto doc=erase?s->painted:s->initial;const int cursor=s->initialHistory+(erase?1:0);
             const auto unchanged=[&]{return !c->brushDrawing()&&frozen(doc,cursor);};
             if(!unchanged()){finish("Cancelled photo stroke resurrected before primary lift");return;}
-            const auto color=read();if(!color.isValid()||delta(color,erase?s->paintColor:s->baseline)>2)return;
+            QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)>2)return;
             if(s->cancelStep==0)buttons(.6,.9,Qt::LeftButton|Qt::RightButton);
             else if(s->cancelStep==1)buttons(.65,.9,Qt::LeftButton);
             else if(s->cancelStep==2)packet(.7,.9,true);
@@ -167,36 +170,36 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             }else packet(.75,0,false);
             if(!unchanged()){finish("Cancelled photo stroke resurrected before primary lift");return;}
             if(s->cancelStep++==4){
-                if(!capture(erase?"cancel-erase-guarded":"cancel-paint-guarded")){finish("Cannot inspect cancelled held-owner picture");return;}
+                if(!capture(erase?"cancel-erase-guarded":"cancel-paint-guarded",grab())){finish("Cannot inspect cancelled held-owner picture");return;}
                 if(erase)s->cancelledBarrelErase=true;else s->cancelledBarrelPaint=true;s->phase=erase?10:3;
             }
         }else if(s->phase==3||s->phase==10){
-            const bool erase=s->phase==10;const auto color=read();if(!color.isValid()||delta(color,erase?s->paintColor:s->baseline)>2)return;
+            const bool erase=s->phase==10;QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)>2)return;
             const bool cancel=!c->brushDrawing()&&masks(c)==(erase?s->painted:s->initial)&&history(c)==s->initialHistory+(erase?1:0);
             if(!cancel||!start()){finish("Pressure Esc failed to restore the committed picture or restart");return;}if(erase)s->cancelErase=true;else s->cancelPaint=true;s->phase=erase?11:4;
         }else if(s->phase==5||s->phase==12){
-            const bool erase=s->phase==12;const auto doc=c->gpuPlan(true).state.brushMasks;const auto color=read();if(!color.isValid())return;
+            const bool erase=s->phase==12;const auto doc=c->gpuPlan(true).state.brushMasks;QColor color;const auto shot=read(&color);if(shot.isNull())return;
             const auto expectedStroke=erase?s->expectedErase:s->expectedPaint;
             const bool exact=expectedStroke&&doc.layers.size()==1&&doc.layers[0].strokes.size()==size_t(erase?2:1)&&sameStroke(doc.layers[0].strokes.back(),*expectedStroke)&&std::abs(doc.layers[0].strokes.back().dabs.front().pressure-s->initialPressure)<1e-9;
             const int composition=delta(color,s->liveColor);if(composition>2)return;
             s->oneUndo=history(c)==s->initialHistory+(erase?2:1);if(!exact||!s->oneUndo||c->brushDrawing()){finish("Pressure sequence was duplicated, flattened or committed as multiple history edits");return;}
             if(erase){s->pressureErase=true;s->erased=masks(c);s->commitEraseDelta=composition;}else{s->pressurePaint=true;s->painted=masks(c);s->paintColor=color;s->commitPaintDelta=composition;}
-            if(!capture(erase?"erased":"painted")||!click(window,item("undoEditButton"))){finish("Cannot inspect committed pressure picture or click Undo");return;}s->phase=erase?13:6;
+            if(!capture(erase?"erased":"painted",shot)||!click(window,item("undoEditButton"))){finish("Cannot inspect committed pressure picture or click Undo");return;}s->phase=erase?13:6;
         }else if(s->phase==6||s->phase==13){
-            const bool erase=s->phase==13;const auto color=read();if(!color.isValid()||delta(color,erase?s->paintColor:s->baseline)>2)return;
+            const bool erase=s->phase==13;QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)>2)return;
             if(masks(c)!=(erase?s->painted:s->initial)||history(c)!=s->initialHistory+(erase?1:0)||!click(window,item("redoEditButton"))){finish("Actual pressure Undo failed");return;}s->phase=erase?14:7;
         }else if(s->phase==7||s->phase==14){
-            const bool erase=s->phase==14;const auto color=read();if(!color.isValid()||delta(color,erase?s->liveColor:s->paintColor)>2)return;
+            const bool erase=s->phase==14;QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->liveColor:s->paintColor)>2)return;
             if(masks(c)!=(erase?s->erased:s->painted)||history(c)!=s->initialHistory+(erase?2:1)||!c->flushEdits()||!c->openProject(QUrl::fromLocalFile(s->project))){finish("Actual pressure Redo/persistence failed");return;}s->undoRedo=true;s->phase=erase?15:8;s->settle=0;
         }else if(s->phase==8){
             if(++s->settle<4)return;if(masks(c)!=s->painted||!click(window,item("editBrushMaskCanvas"))||!select(window,"brushLayerSelector",1)||!select(window,"brushModeSelector",1)){finish("Pressure project reopen/actual Erase selection failed");return;}
-            if(!capture("reopened-paint")||!start()){finish("Cannot start reopened pressure Erase");return;}s->phase=9;
+            if(!capture("reopened-paint",grab())||!start()){finish("Cannot start reopened pressure Erase");return;}s->phase=9;
         }else if(s->phase==15){
             if(++s->settle<4)return;if(masks(c)!=s->erased){finish("Reopened pressure Erase intent differs");return;}s->reopened=true;
             const auto loaded=loadSourceFresh(source,{});s->expected=reference(loaded.image,c->gpuPlan(true));if(s->expected.isNull()||!c->exportCurrent(QUrl::fromLocalFile(output),"srgb",100)){finish("Cannot independently render/export the reopened pressure edit");return;}s->phase=16;
         }else if(s->phase==16){
             if(!s->exportDone)return;const QImage actual(output);const bool exact=actual.colorSpace()==s->expected.colorSpace()&&actual.convertToFormat(QImage::Format_RGBA64)==s->expected;
-            if(!exact||!capture("final")){finish("Pressure PNG16 pixels/ICC differ from independent CPU reference");return;}s->exactExport=true;finish({});
+            if(!exact||!capture("final",grab())){finish("Pressure PNG16 pixels/ICC differ from independent CPU reference");return;}s->exactExport=true;finish({});
         }
     });
     window->setProperty("workspaceIndex",1);window->resize(1540,920);window->requestActivate();

@@ -128,7 +128,53 @@ a5bcecf45c10fcb17b28658391414e075609b578 equal to that documentation head.
 Original D/E failures remain failed; the accepted F implementation remains
 [5178b83 / CI40564889527](https://github.com/snailjayxxx/JixelLight/actions/runs/40564889527).
 
-## Committed acceptance remains pending
+## Original committed G run failed
+
+[e241cd4 / CI40593963118](https://github.com/snailjayxxx/JixelLight/actions/runs/40593963118) finishes all three standalone68-test suites without failures/skips: Linux1105.10s, Windows1783.93s and macOS1384.08s. Linux/macOS native controlled pressure and the actual23-mode SDK-stripped macOS package pass. GenuineSony CPU/GPU GUI ms are17416/19995 on Linux and20496/20718 on macOS; combined export/reference ms are63750.013/64040.022 and51638.011/48354.126, respectively.
+
+Windows passes all older mouse/Erase workflows and four owned/transparent pressure modes, then fails genuineSony CPU pressure atphase18:60082ms exceeds the original60000ms. Paint/Erase, held ownership, oneUndo, Undo/Redo and reopen have passed; histogram count is32,947,264 but the full waveform has not published (plot pixels0). SonyGPU pressure, remaining RAW/stage validation and Windows package23 do not run. This original native report stays failed. The latest fully accepted checkpoint remains e8062ca/F5178b83.
+
+All four available originalZIPs and three full original job logs are SHA256/CRC/source-audited and physically archived at evidence/ci-40593963118/terminal-failed-v1/receipt.json. Each actual job checks out37e3bbaf4bd4ae1252884c0922eff25a0c98a10a/tree5f723e56305371e69b573a1f6b67ba1f2615c85e equalG. No Windows package was produced.
+
+## G.1: save the inspected UI frame
+
+The pressure helpers previously grabbed the window once to inspect RGB, then immediately grabbed it again for the paired evidence image. They now save the exact actual UI frame whose RGB passed, as the existing mouse Erase helper already does. This removes seven redundant grabs per completed flow: baseline, four held Paint/Erase poses and two committed poses. Cancellation-owner packets, project/tool reentry, final scope/export and failure captures still take fresh frames after intervening input. All eleven captures and existing pressure/held RGB/ownership/Undo/persistence/export assertions remain. Grab call/total/max timing diagnostics are recorded without changing the45/60/120s gates.
+
+This changes only the two controlled-pressure QA helpers; controller rendering, scope scheduling, input routing, RAW decoding, brush arithmetic, shaders, serialization and numerical limits are unchanged. A local result cannot establish a Windows deadline repair. The follow-up commit requires its own68/all3 and both actual23-mode package validation.
+
+The final compiled App and the unchanged production wrapper pass all twelve affected
+CPU/Metal, actual1x/2x, opaque/transparent/pinnedSony flows. One original SonyCPU1x
+pass is retained from before the interruption; the remaining eleven run after
+Gen8 reconnects. All210 non-documentation source hashes and both binary hashes
+match before resumption. No completed case is restarted. Original preflight
+fresh-report refusal and interrupted partial evidence remain separate.
+
+| Genuine Sony capture follow-up | CPU1x | Metal1x | CPU2x | Metal2x |
+| --- | ---: | ---: | ---: | ---: |
+| Complete GUI, ms | 15464 | 11094 | 11456 | 11476 |
+| Combined export/exit/independent reference, ms | 49237.704 | 34761.526 | 33728.245 | 45692.051 |
+
+Every case retains all11 captures and the existing pressure, held/cancelled owner,
+RGB, oneUndo/Redo, project reopen and exact export checks. The four Sony outputs
+still share the original182eab83ab8b58a533c1a9bd7b59ceb6d21f3f61873cf26fe05fe888fc326baf
+PNG SHA256. Maximum live-to-commit difference is1/255 against the unchanged2/255
+limit; peak request reservation1,742,914,816 bytes stays below3GiB. Source ARW and
+daily preferences remain byte-identical. The new timing counters record27 actual
+window grabs per completed flow; these macOS measurements do not establish
+Windows grab latency or prove its deadline repair.
+
+An independent audit rechecks all existing native/export predicates, captures,
+source210/binary pins, full Sony counts and source/preference hashes. All217
+original reports/crops/scripts/source/binary records are physically archived at
+evidence/pressure-frame-reuse-local-v1/receipt.json, including original-partial-v2/
+and resumed-v3/ as distinct groups. Local reports retain the e241cd4 build stamp;
+publication links them through exact source hashes without retagging reports.
+Own committed three-platform68/68, both actual23-mode packages and original
+job-checkout/artifact receipts remain required. The original G CI stays failed.
+
+
+
+## Follow-up committed acceptance remains pending
 
 CI retains every earlier gate and adds the 42-row input fixture, controller
 pressure regression and six actual controlled-pressure photo workflows. Windows
