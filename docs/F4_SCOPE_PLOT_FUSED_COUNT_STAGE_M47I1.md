@@ -4,7 +4,8 @@ The original I Windows run reaches the full Sony waveform but completes GUI
 validation at60371ms, exceeding the original60000ms limit. Its failed report
 and complete source-proven CI evidence remain unchanged. The final statistics
 stage includes12.13s for the full histogram and6.59s for the three encoded scope
-plots. H `de2cfd9` / CI40688164562 remains the latest fully accepted checkpoint.
+plots. At that original failure, H `de2cfd9` / CI40688164562 was the latest fully
+accepted checkpoint; I.1 acceptance is recorded below.
 
 `renderEncodedScopePlots` now reads an immutable completed RGBA64 frame once
 while updating the existing waveform, parade and vectorscope counts. Integer
@@ -80,14 +81,38 @@ An independent strict audit exits0 and archives the original12 native reports,
 and targeted diagnostic repetitions remain separately preserved. Fresh passes
 do not explain the original phase12 failure.
 
-## Committed acceptance pending
+## Committed acceptance at6bdf94e
 
-This follow-up still requires its own68-test Linux/Windows/macOS run, all six
-native pressure flows, both actual23-mode SDK-stripped packages, original ZIPs
-and full logs proving actual job checkout trees. In particular, local Mac
-timings do not establish a Windows deadline repair. The original45000ms owned
-GUI,60000ms Sony GUI and combined120000ms export/reference limits are unchanged.
+[CI40721028761](https://github.com/snailjayxxx/JixelLight/actions/runs/40721028761)
+accepts implementation `6bdf94ef5bc74a39a35373373becc5612cf36715`: all68 tests
+pass with zero failures/skips on Linux684.99s, Windows1768.13s and macOS1542.83s.
+All six native pressure flows and both actual23-mode SDK-stripped packages pass.
+Every owned pressure flow retains10 key cases,6 held/cancelled-owner guards,
+3 radius captions,6 statistics-language records and17 captures. Genuine Sony
+retains11 controls-only crops and independent exact PNG16/ICC verification.
+
+| Accepted Sony GUI, ms | Native CPU | Native GPU | Packaged CPU | Packaged GPU |
+| --- | ---: | ---: | ---: | ---: |
+| Linux | 10009 | 10903 | — | — |
+| Windows | 53337 | 30071 | 54299 | 30131 |
+| macOS | 22077 | 21224 | 20884 | 19626 |
+
+Windows combined export/reference takes80288.643/80064.438ms natively and
+80092.091/79784.450ms packaged. macOS takes57821.119/55053.559ms natively and
+55906.272/54330.797ms packaged. The original45000ms owned GUI,60000ms Sony GUI,
+combined120000ms export/reference,32Mi source and shared3GiB limits remain.
+The original I run's60371ms failure stays failed; the accepted follow-up fits
+both native and packaged Windows deadlines. These are measured workloads,
+not a universal latency guarantee.
+
+Five original validation ZIPs and three full original job logs are SHA/CRC/path/
+extracted-file verified. All actual job checkouts are
+`19f4b8e8950d0048f2be076c78a1dc61b45d4d9c`, tree
+`afd79461d2a263200c9fd2989dd11612084d6692`, equal to implementation6bdf94e.
+The independent strict finalizer exits0. The immutable acceptance archive is
+`evidence/ci-40721028761/terminal-accepted-v1/receipt.json`.
 
 The original I failure and the unexplained local Erase predicate failure remain
-visible. Physical tablet validation, native GPU brushes, native FP32 RAW and
-remaining F0–F6 are unfinished. PR16 stays Draft; main and PR15 are unchanged.
+visible. Passing CI does not reconstruct that local failure. Physical tablet
+validation, native GPU brushes, native FP32 RAW and remaining F0–F6 are unfinished.
+PR16 stays Draft; main and PR15 are unchanged.

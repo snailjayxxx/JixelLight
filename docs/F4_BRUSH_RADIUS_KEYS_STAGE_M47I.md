@@ -114,19 +114,23 @@ checks and the unchanged failed report are retained at
 remain platform evidence. A [completed-frame counting follow-up](F4_SCOPE_PLOT_FUSED_COUNT_STAGE_M47I1.md)
 keeps this failure and the original45/60/120-second gates.
 
-The latest fully accepted checkpoint is H `de2cfd9` /
-[CI40688164562](https://github.com/snailjayxxx/JixelLight/actions/runs/40688164562):
-all68/all3/bothactual23, five original ZIPs and three full job logs proving
-actual0ae1139/tree17e18 equal H. Its immutable terminal receipt remains in
-`evidence/ci-40688164562/terminal-accepted-v1/receipt.json`.
+The focused radius workflow is now accepted as part of I.1 implementation
+`6bdf94ef5bc74a39a35373373becc5612cf36715` /
+[CI40721028761](https://github.com/snailjayxxx/JixelLight/actions/runs/40721028761).
+All68 tests pass on all three platforms, all six native pressure flows and both
+actual23-mode SDK-stripped packages pass, and five original validation ZIPs plus
+three full source-proven logs match the implementation tree. Native/packaged
+Windows Sony CPU GUI53337/54299ms fit the unchanged60000ms limit. The strict
+finalizer exits0; original I e0405de remains failed. Complete evidence is in
+`evidence/ci-40721028761/terminal-accepted-v1/receipt.json` and the
+[I.1 acceptance record](F4_SCOPE_PLOT_FUSED_COUNT_STAGE_M47I1.md).
 
-I requires its own unchanged68-test suites on all three platforms and both
-actual23-mode SDK-stripped packages, all older numeric/input/alpha/source/budget/
-export gates and actual job-checkout evidence. The strict wrapper now requires
-all10 key cases,6 held/cancelled pen guards and3 actual bilingual radius captions
-for each owned pressure flow. A geometry-only
+The strict wrapper retains all10 key cases,6 held/cancelled pen guards and3
+actual bilingual radius captions for each owned pressure flow. A geometry-only
 `JIXELLIGHT_BRUSH_PRESSURE_COMPACT_QA` switch selects1180×720 for local QA; it
-cannot bypass source identity or any assertion/deadline.
+cannot bypass source identity or any assertion/deadline. The first I.1 local
+transparentCPU2x canonical-stroke failure remains unexplained and preserved;
+its diagnostic and fresh passing matrices do not retag that original failure.
 
 Physical tablet validation, native GPU brushes, native FP32 RAW and remaining
 F0–F6 are unfinished. PR16 stays Draft; main and PR15 are unchanged.
