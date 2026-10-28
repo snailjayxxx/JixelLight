@@ -27,7 +27,9 @@ jobs:
           - os: macos-15
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static
-            job_timeout: 75
+            # Run301 completed native validation before the 75-minute aggregate
+            # limit interrupted packaging. Individual validation limits stay fixed.
+            job_timeout: 90
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     env:

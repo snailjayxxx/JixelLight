@@ -53,8 +53,10 @@ Item {
     Shortcut {
         sequence: "Escape"
         enabled: root.visible && root.maskTool !== "" && !controller.cropEditing
+                 && !(root.maskTool === "brush" && brushOverlay.activeFocus)
         onActivated: {
-            if (root.maskTool === "brush" && controller.brushDrawing) controller.cancelBrushStroke()
+            if (root.maskTool === "brush" && brushOverlay.navigationActive) brushOverlay.cancelNavigation()
+            else if (root.maskTool === "brush" && controller.brushDrawing) controller.cancelBrushStroke()
             else root.maskTool = ""
         }
     }
@@ -150,8 +152,9 @@ Item {
             objectName: "brushCanvasOverlay"
             anchors.fill: parent; z: 5
             controller: root.controller; editor: root.brushEditor
+            navigationAllowed: root.zoom > 0 && root.Window.active && !controller.loading && controller.currentSourceAvailable
             visible: root.maskTool === "brush" && !controller.cropEditing && controller.previewReady
-            enabled: visible && controller.brushReady && root.brushDisplayReady
+            enabled: visible && (navigationActive || (controller.brushReady && root.brushDisplayReady))
         }
         CropOverlay {
             id: cropOverlay
@@ -162,21 +165,48 @@ Item {
         }
     }
     MouseArea {
+        id: panPointer
+        objectName: "canvasPanPointer"
         anchors.fill: parent
-        enabled: root.zoom>0 && controller.previewReady && !controller.cropEditing && root.maskTool === ""
+        enabled: root.visible && root.zoom>0 && controller.previewReady && !controller.loading && !controller.cropEditing
+                 && (root.maskTool === "" || (root.maskTool === "brush" && brushOverlay.navigationActive))
+        acceptedButtons: Qt.LeftButton; preventStealing: true
+        property bool brushNavigation: false
         property real oldX: 0
         property real oldY: 0
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-        onPressed: function(mouse) { oldX=mouse.x;oldY=mouse.y }
-        onPositionChanged: function(mouse) {
-            if (!pressed) return
-            const w=Number(controller.currentMetadata.pixelWidth || 1)
-            const h=Number(controller.currentMetadata.pixelHeight || 1)
-            root.centerX=Math.max(0,Math.min(1,root.centerX-(mouse.x-oldX)*Screen.devicePixelRatio/(w*root.zoom)))
-            root.centerY=Math.max(0,Math.min(1,root.centerY-(mouse.y-oldY)*Screen.devicePixelRatio/(h*root.zoom)))
+        onPressed: function(mouse) {
+            brushNavigation = root.maskTool === "brush"
+            if (brushNavigation) {
+                brushOverlay.forceActiveFocus()
+                brushOverlay.navigationDragging = true
+            }
             oldX=mouse.x;oldY=mouse.y
         }
-        onReleased: controller.finishInteraction()
+        onPositionChanged: function(mouse) {
+            if (!pressed || (brushNavigation && !brushOverlay.navigationDragging)) return
+            // Use exact post-geometry dimensions. Ordinary navigation keeps its
+            // metadata fallback for frames outside the brush geometry domain.
+            const size=controller.brushFrameSize
+            const w=size.width>0 ? size.width : root.maskTool === "" ? Number(controller.currentMetadata.pixelWidth || 1) : 0
+            const h=size.height>0 ? size.height : root.maskTool === "" ? Number(controller.currentMetadata.pixelHeight || 1) : 0
+            if (w <= 0 || h <= 0) return
+            if (controller.previewFrameRect.width < 1)
+                root.centerX=Math.max(0,Math.min(1,root.centerX-(mouse.x-oldX)*Screen.devicePixelRatio/(w*root.zoom)))
+            if (controller.previewFrameRect.height < 1)
+                root.centerY=Math.max(0,Math.min(1,root.centerY-(mouse.y-oldY)*Screen.devicePixelRatio/(h*root.zoom)))
+            oldX=mouse.x;oldY=mouse.y
+        }
+        onReleased: {
+            if (brushNavigation) brushOverlay.navigationDragging = false
+            brushNavigation = false
+            controller.finishInteraction()
+        }
+        onCanceled: {
+            if (brushNavigation) brushOverlay.navigationDragging = false
+            brushNavigation = false
+            controller.finishInteraction()
+        }
     }
     // Keep the two mask tools in their own row. A long one-row toolbar
     // overflowed narrow canvas layouts and left the Oval button outside
@@ -246,7 +276,8 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: maskToolHint.top
         anchors.bottomMargin: 5; z: 6
         visible: root.maskTool === "brush" && brushOverlay.layerPaintable && root.controller.brushReady && root.brushDisplayReady
-        text: root.t("半径 ", "Radius ") + (root.brushEditor ? (root.brushEditor.radius*100).toFixed(1) : "") + "% · [ / ]"
+        text: (root.zoom > 0 ? root.t("空格＋拖动平移 · ", "Space + drag to pan · ") : "")
+              + root.t("半径 ", "Radius ") + (root.brushEditor ? (root.brushEditor.radius*100).toFixed(1) : "") + "% · [ / ]"
         width: Math.min(implicitWidth, Math.max(1,parent.width-16)); wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignHCenter; font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }

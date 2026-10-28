@@ -5,6 +5,10 @@ Item {
     id: root
     required property var controller
     property var editor: null
+    property bool navigationAllowed: false
+    property bool navigationHeld: false
+    property bool navigationDragging: false
+    readonly property bool navigationActive: navigationHeld || navigationDragging
     readonly property string paintBlock: {
         if (!controller || !editor) return "unavailable"
         if (editor.mode !== "paint" && editor.mode !== "erase") return "invalid"
@@ -27,26 +31,53 @@ Item {
     readonly property real radiusY: pixels.height > 0 && frame.height > 0 ? radius * Math.min(pixels.width,pixels.height) / pixels.height * height / frame.height : 0
     clip: true
     Keys.onEscapePressed: function(event) {
+        if (root.navigationActive) {
+            root.cancelNavigation()
+            event.accepted = true
+            return
+        }
         const held = root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed
         root.cancel()
         if (!held && root.editor) root.editor.active = false
         event.accepted = true
     }
     Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Space && event.modifiers === Qt.NoModifier) {
+            if (!root.editor || !root.visible || !root.enabled) return
+            event.accepted = true
+            if (!event.isAutoRepeat && root.navigationAllowed && !root.drawing && !root.controller.brushDrawing && !pointer.pressed && !tabletInput.pressed)
+                root.navigationHeld = true
+            return
+        }
         if (event.modifiers !== Qt.NoModifier || (event.key !== Qt.Key_BracketLeft && event.key !== Qt.Key_BracketRight)) return
         if (!root.editor || !root.visible || !root.enabled) return
         event.accepted = true
         // Keep the held stroke's style and ownership intact until primary lift.
-        if (root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed) return
+        if (root.navigationActive || root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed) return
         const factor = event.key === Qt.Key_BracketRight ? 1.25 : 0.8
         root.editor.radius = Math.max(0.002, Math.min(0.5, root.editor.radius * factor))
+    }
+    Keys.onReleased: function(event) {
+        if (event.key === Qt.Key_Space && !event.isAutoRepeat) {
+            root.navigationHeld = false
+            event.accepted = true
+        }
+    }
+
+    function cancelNavigation() { navigationHeld = false; navigationDragging = false }
+    onNavigationAllowedChanged: if (!navigationAllowed) cancelNavigation()
+    onNavigationActiveChanged: if (guide) guide.requestPaint()
+    onActiveFocusChanged: if (!activeFocus) cancelNavigation()
+    Connections {
+        target: root.Window.window
+        function onActiveChanged() { if (!root.Window.active) root.cancelNavigation() }
     }
 
     function imagePoint(x,y) {
         return controller.maskCanvasPoint(Math.max(0,Math.min(width,x)),Math.max(0,Math.min(height,y)),width,height)
     }
     function clearGuide() { drawing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
-    function cancel() { if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
+    function cancel() { cancelNavigation(); if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
     function addGuide(x,y) {
         let next=points.slice()
         if (next.length >= 1024) next=next.filter(function(p,i) { return i % 2 === 0 })
@@ -95,7 +126,7 @@ Item {
                 else for (let i=1;i<p.length;++i) c.lineTo((p[i].x-root.frame.x)/root.frame.width*width,(p[i].y-root.frame.y)/root.frame.height*height)
                 c.stroke()
             }
-            if (pointer.containsMouse || root.drawing) {
+            if (!root.navigationActive && (pointer.containsMouse || root.drawing)) {
                 c.strokeStyle=root.erasing ? "#ffa99a" : "#bce7f2"; c.lineWidth=1
                 c.beginPath(); const pressure=root.drawing ? root.currentPressure : 1
                 c.ellipse(root.cursorPoint.x-root.radiusX*pressure,root.cursorPoint.y-root.radiusY*pressure,root.radiusX*2*pressure,root.radiusY*2*pressure); c.stroke()
@@ -104,11 +135,11 @@ Item {
     }
     BrushTabletInput {
         id: tabletInput; objectName: "brushTabletInput"
-        target: root; blocked: pointer.pressed
+        target: root; blocked: pointer.pressed || root.navigationActive
         onBegan: function(x,y,pressure) {
             root.forceActiveFocus()
             const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y)
-            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode,pressure)) return
+            if (root.navigationActive || !root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode,pressure)) return
             root.editor.strokeSelection=({})
             root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
         }
@@ -137,7 +168,7 @@ Item {
         onPressed: function(mouse) {
             root.forceActiveFocus()
             const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
-            if (!root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeMode(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode)) return
+            if (root.navigationActive || !root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeMode(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode)) return
             root.editor.strokeSelection=({})
             root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
         }

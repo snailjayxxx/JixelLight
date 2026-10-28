@@ -17,6 +17,9 @@
 #include <QRgba64>
 #include <QDir>
 #include <QFileInfo>
+#include <QPointingDevice>
+#include <qpa/qwindowsysteminterface.h>
+#include <private/qhighdpiscaling_p.h>
 #include "core/pipeline/BrushRenderRequest.h"
 
 namespace {
@@ -130,6 +133,13 @@ int selectedGuideInk(const QImage &image,QQuickWindow *window,PhotoController *c
 }
 void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QString &reportPath) {
     struct State {
+        bool panChecked=false,panReadonly=false,panMapping=false,panStartedBrush=false;
+        int panHistory=0;QJsonObject panState;QRectF beforePan;QPointF panCenter;QJsonObject panRecord;
+        bool panGuardsChecked=false,panGeometryChecked=false,panSwitchCancelled=false;QJsonArray panGuards,panViews,panHints;
+        int panOriginalIndex=-1;
+        QJsonObject panViewState,panWindowCheck;int panViewHistory=0;QPointF panViewStart,panViewExpected,panAfterBasic;QRectF panViewFrame;
+        QSize panViewSize;double panViewZoom=0;QString panViewTag,panViewMask;bool panViewOwnership=false;ulong panStamp=1000;int focusBootstrapCount=0;
+        std::shared_ptr<QPointingDevice> panPen;
         QElapsedTimer clock;int phase=0,settle=0,history=0,delta=0,scopeInk=0;bool finished=false;
         bool transient=false,escape=false,oneUndo=false,display=false,undoRedo=false,reopen=false,zoom=false,scopes=false;
         bool settings=false,photoReady=false;double exposure=1;QJsonObject painted;QColor baseline,lastColor;QRectF frame;QByteArray sourceHash;
@@ -143,15 +153,17 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
+    s->panPen=std::make_shared<QPointingDevice>("Controlled pan ownership pen",987654330,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+    QWindowSystemInterface::registerInputDevice(s->panPen.get());
     auto *timer=new QTimer(c);timer->setInterval(50);const auto source=dir->filePath("owned-brush.png");
     const auto finish=[=](const QString &error) {
         if(s->finished)return;s->finished=true;timer->stop();const bool unchanged=fileHash(source)==s->sourceHash;
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool ok=error.isEmpty()&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
+        const bool ok=error.isEmpty()&&s->panChecked&&s->panReadonly&&s->panMapping&&s->panGuardsChecked&&s->panGeometryChecked&&s->panGuards.size()==14&&s->panViews.size()==3&&s->panHints.size()==2&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
             &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
             &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->capacity&&s->capacityRecovery&&s->capacityTargets&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
-        const QJsonObject report{{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
+        const QJsonObject report{{"pan_protocol_version",1},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
             {"live_uncommitted",s->transient},{"escape_cancel",s->escape},{"one_undo",s->oneUndo},{"display_changed",s->display},
             {"display_rgb_delta",s->delta},{"undo_redo",s->undoRedo},{"project_reopen",s->reopen},{"zoom_roi",s->zoom},
@@ -179,11 +191,51 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
     };
     QObject::connect(timer,&QTimer::timeout,c,[=] {
         if(s->clock.elapsed()>=45000){finish("Brush pointer integration timed out");return;}
+        if(!window->isActive()) {
+            // Controlled platform focus, like the tablet packets below. This
+            // exercises actual QQuickWindow/QML state, not OS activation policy.
+            QWindowSystemInterface::handleFocusWindowChanged(window);
+            QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+            ++s->focusBootstrapCount;s->settle=0;return;
+        }
         if(!c->brushReady()){s->settle=0;return;}
         if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")&&!c->gpuActive())return;
         auto *canvas=child(window->contentItem(),"photoCanvas"),*overlay=child(window->contentItem(),"brushCanvasOverlay");
         if(!canvas||!overlay)return;
         const auto point=[&](double x,double y){return overlay->mapToScene({overlay->width()*x,overlay->height()*y});};
+        const auto space=[&](QEvent::Type type,Qt::KeyboardModifiers mods=Qt::NoModifier,bool repeat=false) {
+            QKeyEvent event(type,Qt::Key_Space,mods,QStringLiteral(" "),repeat,1);QCoreApplication::sendEvent(window,&event);
+        };
+        const auto navigation=[&]{return overlay->property("navigationActive").toBool();};
+        const auto pen=[&](QPointF local,Qt::MouseButtons buttons) {
+            QWindowSystemInterface::handleTabletEvent(window,s->panStamp+=20,s->panPen.get(),QHighDpi::toNativePixels(local,window),QHighDpi::toNativePixels(window->mapToGlobal(local),window),buttons,buttons.testFlag(Qt::LeftButton)?.4:0,0,0,0,0,0);
+            QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+        };
+        const auto beginViewPan=[&](QString tag,QPointF delta,bool brush=true) {
+            s->panViewTag=tag;s->panViewState=c->gpuPlan(true).state.toJson();s->panViewHistory=cursor(c);
+            s->panViewMask=brush?"brush":"";s->panViewOwnership=false;
+            s->panViewStart={canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble()};
+            s->panViewFrame=c->previewFrameRect();s->panViewSize=c->brushFrameSize();s->panViewZoom=canvas->property("zoom").toDouble();
+            const double dpr=window->effectiveDevicePixelRatio();
+            s->panViewExpected=s->panViewStart+QPointF(s->panViewFrame.width()<1?-delta.x()*dpr/(s->panViewSize.width()*s->panViewZoom):0,s->panViewFrame.height()<1?-delta.y()*dpr/(s->panViewSize.height()*s->panViewZoom):0);
+            if(brush){overlay->forceActiveFocus();space(QEvent::KeyPress);}const auto from=point(.5,.6);
+            mouse(window,QEvent::MouseButtonPress,from,Qt::LeftButton,Qt::LeftButton);
+            auto *pan=child(window->contentItem(),"canvasPanPointer");
+            s->panViewOwnership=pan&&pan->isEnabled()&&pan->property("pressed").toBool()&&pan->property("cursorShape").toInt()==int(Qt::ClosedHandCursor)
+                &&canvas->property("maskTool").toString()==s->panViewMask&&!c->brushDrawing()&&navigation()==brush;
+            mouse(window,QEvent::MouseMove,from+delta,Qt::NoButton,Qt::LeftButton);
+            mouse(window,QEvent::MouseButtonRelease,from+delta,Qt::LeftButton,Qt::NoButton);if(brush)space(QEvent::KeyRelease);
+        };
+        const auto completeViewPan=[&] {
+            const QPointF actual(canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble());
+            const bool same=!c->brushDrawing()&&!navigation()&&c->gpuPlan(true).state.toJson()==s->panViewState&&cursor(c)==s->panViewHistory&&canvas->property("maskTool").toString()==s->panViewMask;
+            const bool mapping=std::abs(actual.x()-s->panViewExpected.x())<1e-9&&std::abs(actual.y()-s->panViewExpected.y())<1e-9&&c->previewFrameRect()!=s->panViewFrame;
+            auto *hint=child(window->contentItem(),"brushRadiusHint");const QString expected=c->language()=="zh_CN"?QStringLiteral("空格＋拖动平移"):QStringLiteral("Space + drag to pan");
+            const bool visibleCaption=hint&&exposed(window,hint)&&hint->property("text").toString().startsWith(expected)&&hint->width()<=canvas->width()-15;
+            const bool caption=s->panViewMask=="brush"?visibleCaption:(hint&&!hint->isVisible());
+            s->panViews.append(QJsonObject{{"case",s->panViewTag},{"mask_tool",s->panViewMask},{"pointer_owned_closed_hand",s->panViewOwnership},{"document_history_unchanged",same},{"mapping_exact",mapping},{"center_before",QJsonArray{s->panViewStart.x(),s->panViewStart.y()}},{"frame_before",QJsonArray{s->panViewFrame.x(),s->panViewFrame.y(),s->panViewFrame.width(),s->panViewFrame.height()}},{"actual_center",QJsonArray{actual.x(),actual.y()}},{"expected_center",QJsonArray{s->panViewExpected.x(),s->panViewExpected.y()}},{"output_size",QJsonArray{s->panViewSize.width(),s->panViewSize.height()}},{"zoom",s->panViewZoom},{"dpr",window->effectiveDevicePixelRatio()},{"hint_visible_bounded",visibleCaption},{"hint_policy_correct",caption},{"hint",hint?hint->property("text").toString():QString{}}});
+            return same&&mapping&&caption&&s->panViewOwnership&&window->grabWindow().save(reportPath+".pan-"+s->panViewTag+".png");
+        };
         const auto disabledGuard=[&] {
             auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");
             s->disabledHint=hint?hint->property("text").toString():QString{};
@@ -292,6 +344,20 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             canvas->setProperty("zoom",2.0);s->phase=7;s->settle=0;
         }else if(s->phase==7) {
             s->frame=c->previewFrameRect();if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||s->frame.width()>=.98||++s->settle<3)return;
+            if(!s->panChecked) {
+                s->panState=c->gpuPlan(true).state.toJson();s->panHistory=cursor(c);s->beforePan=c->previewFrameRect();
+                s->panCenter={canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble()};
+                overlay->forceActiveFocus();
+                QKeyEvent down(QEvent::KeyPress,Qt::Key_Space,Qt::NoModifier);QCoreApplication::sendEvent(window,&down);
+                const auto from=point(.5,.6);mouse(window,QEvent::MouseButtonPress,from,Qt::LeftButton,Qt::LeftButton);
+                s->panStartedBrush=c->brushDrawing();
+                if(s->panStartedBrush){key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,from,Qt::LeftButton,Qt::NoButton);finish("Space-drag navigation started an actual brush stroke");return;}
+                mouse(window,QEvent::MouseMove,from+QPointF(24,-12),Qt::NoButton,Qt::LeftButton);
+                QKeyEvent up(QEvent::KeyRelease,Qt::Key_Space,Qt::NoModifier);QCoreApplication::sendEvent(window,&up);
+                mouse(window,QEvent::MouseMove,from+QPointF(48,-24),Qt::NoButton,Qt::LeftButton);
+                mouse(window,QEvent::MouseButtonRelease,from+QPointF(48,-24),Qt::LeftButton,Qt::NoButton);
+                s->phase=901;s->settle=0;return;
+            }
             mouse(window,QEvent::MouseButtonPress,point(.25,.6),Qt::LeftButton,Qt::LeftButton);
             mouse(window,QEvent::MouseMove,point(.75,.6),Qt::NoButton,Qt::LeftButton);mouse(window,QEvent::MouseButtonRelease,point(.75,.6),Qt::LeftButton,Qt::NoButton);
             const auto doc=c->gpuPlan(true).state.brushMasks;
@@ -301,6 +367,125 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
                 &&std::abs(dabs.back().center.x-(s->frame.x()+.75*s->frame.width()))<1e-6
                 &&std::abs(dabs.front().center.y-(s->frame.y()+.6*s->frame.height()))<1e-6;
             s->phase=8;s->settle=0;
+        }else if(s->phase==901) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||++s->settle<3)return;
+            const double dpr=window->effectiveDevicePixelRatio();
+            const QPointF wanted=s->panCenter+QPointF(-48*dpr/(2203*2.0),24*dpr/(1207*2.0));
+            const QPointF actual(canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble());
+            s->panReadonly=!c->brushDrawing()&&c->gpuPlan(true).state.toJson()==s->panState&&cursor(c)==s->panHistory&&canvas->property("maskTool").toString()=="brush";
+            s->panMapping=std::abs(actual.x()-wanted.x())<1e-9&&std::abs(actual.y()-wanted.y())<1e-9&&c->previewFrameRect()!=s->beforePan;
+            s->panRecord={{"actual_center",QJsonArray{actual.x(),actual.y()}},{"expected_center",QJsonArray{wanted.x(),wanted.y()}},{"dpr",dpr},{"source_width",2203},{"source_height",1207},{"zoom",2},{"space_released_before_mouse_lift",true},{"document_history_unchanged",s->panReadonly},{"view_mapping_exact",s->panMapping}};
+            if(!s->panReadonly||!s->panMapping||!window->grabWindow().save(reportPath+".pan.png")){finish("Space-drag navigation changed intent/history or viewport mapping differs");return;}
+            s->panChecked=true;s->panAfterBasic=actual;s->phase=920;s->settle=0;
+        }else if(s->phase==920) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
+            const auto snapshot=c->gpuPlan(true).state.toJson();const int history=cursor(c);const auto center=QPointF(canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble());
+            auto *editor=canvas->property("brushEditor").value<QObject*>();if(!editor){finish("PAN_EDITOR_MISSING");return;}
+            const double radius=editor->property("radius").toDouble();
+            const auto stable=[&]{return !c->brushDrawing()&&c->gpuPlan(true).state.toJson()==snapshot&&cursor(c)==history&&QPointF(canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble())==center&&canvas->property("maskTool").toString()=="brush";};
+            const auto guard=[&](QString tag,bool passed){s->panGuards.append(QJsonObject{{"case",tag},{"passed",passed},{"navigation",navigation()},{"drawing",c->brushDrawing()},{"document_history_unchanged",c->gpuPlan(true).state.toJson()==snapshot&&cursor(c)==history}});return passed;};
+            overlay->forceActiveFocus();bool modifiers=true;
+            for(const auto mod:{Qt::ShiftModifier,Qt::ControlModifier,Qt::AltModifier,Qt::MetaModifier}){space(QEvent::KeyPress,mod);modifiers&=!navigation();space(QEvent::KeyRelease,mod);}
+            if(!guard("modifiers-ignored",modifiers&&stable())){finish("PAN_MODIFIERS_CAPTURED");return;}
+            space(QEvent::KeyPress,Qt::NoModifier,true);
+            if(!guard("orphan-repeat-ignored",!navigation()&&stable())){finish("PAN_REPEAT_CAPTURED");return;}
+            space(QEvent::KeyPress);space(QEvent::KeyRelease,Qt::NoModifier,true);
+            if(!guard("repeat-release-retains-navigation",navigation()&&stable())){finish("PAN_REPEAT_RELEASE_LOST_OWNER");return;}
+            key(window,Qt::Key_BracketRight);key(window,Qt::Key_BracketLeft);
+            if(!guard("radius-held-during-navigation",navigation()&&editor->property("radius").toDouble()==radius&&stable())){finish("PAN_RADIUS_CHANGED");return;}
+            key(window,Qt::Key_Escape);space(QEvent::KeyRelease);
+            if(!guard("escape-keeps-brush-mode",!navigation()&&stable())){finish("PAN_ESCAPE_EXITED_BRUSH");return;}
+            space(QEvent::KeyPress);
+            const auto findInput=[&](auto&& self,QQuickItem *parent)->QQuickItem* {if(parent->property("placeholderText").toString()=="新预设名称"||parent->property("placeholderText").toString()=="New preset name")return parent;for(auto *child:parent->childItems())if(auto *found=self(self,child))return found;return nullptr;};
+            auto *input=findInput(findInput,window->contentItem());if(!input||!click(window,input)){finish("PAN_TEXT_INPUT_MISSING");return;}
+            space(QEvent::KeyRelease);const auto text=input->property("text").toString();space(QEvent::KeyPress);space(QEvent::KeyRelease);
+            const bool textOwned=input->hasActiveFocus()&&input->property("text").toString()==text+" "&&!navigation()&&stable();input->setProperty("text",text);
+            if(!guard("textfield-owns-space-focus-loss",textOwned)){finish("PAN_TEXTFIELD_INTERCEPTED");return;}
+            overlay->forceActiveFocus();const auto from=point(.35,.4);
+            mouse(window,QEvent::MouseButtonPress,from,Qt::LeftButton,Qt::LeftButton);const bool mouseStarted=c->brushDrawing();space(QEvent::KeyPress);bool mouseHeld=c->brushDrawing()&&!navigation();
+            key(window,Qt::Key_Escape);space(QEvent::KeyPress);mouseHeld&=!navigation()&&!c->brushDrawing();mouse(window,QEvent::MouseButtonRelease,from,Qt::LeftButton,Qt::NoButton);space(QEvent::KeyPress,Qt::NoModifier,true);mouseHeld&=!navigation();space(QEvent::KeyRelease);
+            if(!guard("mouse-held-and-cancelled-until-lift",mouseStarted&&mouseHeld&&stable())){finish("PAN_MOUSE_OWNER_LOST");return;}
+            pen(from,Qt::LeftButton);const bool penStarted=c->brushDrawing();space(QEvent::KeyPress);bool penHeld=c->brushDrawing()&&!navigation();key(window,Qt::Key_Escape);
+            pen(from,Qt::LeftButton|Qt::RightButton);space(QEvent::KeyPress);penHeld&=!navigation()&&!c->brushDrawing();pen(from,Qt::LeftButton);pen(from,Qt::NoButton);space(QEvent::KeyPress,Qt::NoModifier,true);penHeld&=!navigation();space(QEvent::KeyRelease);
+            if(!guard("pen-held-and-cancelled-primary-lift",penStarted&&penHeld&&stable())){finish("PAN_PEN_OWNER_LOST");return;}
+            space(QEvent::KeyPress);pen(from,Qt::LeftButton);const bool blocked=navigation()&&!c->brushDrawing();space(QEvent::KeyRelease);pen(from+QPointF(12,0),Qt::LeftButton);bool ignored=!navigation()&&!c->brushDrawing();pen(from,Qt::NoButton);pen(from,Qt::LeftButton);const bool fresh=c->brushDrawing();key(window,Qt::Key_Escape);pen(from,Qt::NoButton);
+            if(!guard("pen-during-pan-ignored-until-lift-fresh-press",blocked&&ignored&&fresh&&stable())){finish("PAN_IGNORED_PEN_RESURRECTED");return;}
+            space(QEvent::KeyPress);mouse(window,QEvent::MouseButtonPress,from,Qt::LeftButton,Qt::LeftButton);
+            s->panWindowCheck={{"active_before",window->isActive()},{"navigation_before",navigation()},{"center_before",QJsonArray{center.x(),center.y()}},{"overlay_focus_before",overlay->hasActiveFocus()}};
+            QWindowSystemInterface::handleFocusWindowChanged(nullptr);QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+            s->panWindowCheck["active_after_deactivation"]=window->isActive();s->panWindowCheck["navigation_after_deactivation"]=navigation();
+            const bool deactivated=!window->isActive()&&!navigation();mouse(window,QEvent::MouseMove,from+QPointF(30,0),Qt::NoButton,Qt::LeftButton);mouse(window,QEvent::MouseButtonRelease,from+QPointF(30,0),Qt::LeftButton,Qt::NoButton);
+            QWindowSystemInterface::handleFocusWindowChanged(window);QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);space(QEvent::KeyRelease);
+            s->panWindowCheck["active_after_reactivation"]=window->isActive();s->panWindowCheck["center_after"]=QJsonArray{canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble()};s->panWindowCheck["stable"]=stable();
+            if(!guard("window-deactivation-cancels-held-pan",s->panWindowCheck["active_before"].toBool()&&deactivated&&stable())){finish("PAN_WINDOW_DEACTIVATION_LEAKED");return;}
+            overlay->forceActiveFocus();space(QEvent::KeyPress);canvas->setProperty("maskTool",QString{});const bool modeCancelled=!navigation();canvas->setProperty("maskTool","brush");overlay->forceActiveFocus();space(QEvent::KeyRelease);
+            if(!guard("mode-exit-cancels-space",modeCancelled&&stable())){finish("PAN_MODE_EXIT_LEAKED");return;}
+            space(QEvent::KeyPress);const bool cropStarted=c->beginCrop();const bool cropCancelled=cropStarted&&!navigation()&&canvas->property("maskTool").toString().isEmpty();c->cancelCrop();canvas->setProperty("maskTool","brush");space(QEvent::KeyRelease);
+            if(!guard("crop-entry-cancels-space",cropCancelled&&c->gpuPlan(true).state.toJson()==snapshot&&cursor(c)==history)){finish("PAN_CROP_ENTRY_LEAKED");return;}
+            s->phase=921;s->settle=0;
+        }else if(s->phase==921) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
+            overlay->forceActiveFocus();space(QEvent::KeyPress);const bool ignored=!navigation()&&canvas->property("zoom").toDouble()==0;space(QEvent::KeyRelease);
+            s->panGuards.append(QJsonObject{{"case","fit-ignores-space"},{"passed",ignored},{"navigation",navigation()},{"drawing",c->brushDrawing()},{"document_history_unchanged",c->gpuPlan(true).state.toJson()==s->panState&&cursor(c)==s->panHistory}});
+            if(!ignored||s->panGuards.size()!=13){finish("PAN_FIT_OR_GUARD_COUNT");return;}
+            canvas->setProperty("zoom",1.0);s->phase=922;s->settle=0;
+        }else if(s->phase==922) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
+            beginViewPan("100-percent",{12,-8});s->phase=923;s->settle=0;
+        }else if(s->phase==923) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||++s->settle<3)return;
+            if(!completeViewPan()){finish("PAN_100_PERCENT_MAPPING");return;}
+            c->rotatePhoto(1);c->setCrop(.1,.12,.75,.7);canvas->setProperty("zoom",2.0);s->phase=924;s->settle=0;
+        }else if(s->phase==924) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(c->brushFrameSize()==QSize(2203,1207)){finish("PAN_GEOMETRY_OUTPUT_NOT_CHANGED");return;}
+            beginViewPan("rotated-cropped",{26,-16});s->phase=925;s->settle=0;
+        }else if(s->phase==925) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||++s->settle<3)return;
+            if(!completeViewPan()){finish("PAN_GEOMETRY_OUTPUT_MAPPING");return;}
+            if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))||!canvas->property("maskTool").toString().isEmpty()){finish("PAN_PLAIN_MODE_NOT_ENTERED");return;}
+            beginViewPan("plain-rotated-cropped",{18,-10},false);s->phase=9251;s->settle=0;
+        }else if(s->phase==9251) {
+            if(!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||++s->settle<3)return;
+            if(!completeViewPan()){finish("PAN_PLAIN_GEOMETRY_OUTPUT_MAPPING");return;}
+            if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("PAN_PLAIN_BRUSH_REENTRY_FAILED");return;}
+            c->undo();c->undo();canvas->setProperty("centerX",s->panAfterBasic.x());canvas->setProperty("centerY",s->panAfterBasic.y());s->phase=926;s->settle=0;
+        }else if(s->phase==926) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
+            if(c->gpuPlan(true).state.toJson()!=s->panState||cursor(c)!=s->panHistory){finish("PAN_GEOMETRY_UNDO_NOT_RESTORED");return;}
+            c->setLanguage("en_US");s->phase=927;s->settle=0;
+        }else if(s->phase==927||s->phase==928) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
+            auto *hint=child(window->contentItem(),"brushRadiusHint");const QString language=s->phase==927?"en_US":"zh_CN";
+            const QString expected=language=="en_US"?QStringLiteral("Space + drag to pan"):QStringLiteral("空格＋拖动平移");
+            const bool visible=c->language()==language&&hint&&exposed(window,hint)&&hint->property("text").toString().startsWith(expected)&&hint->width()<=canvas->width()-15;
+            s->panHints.append(QJsonObject{{"language",language},{"text",hint?hint->property("text").toString():QString{}},{"visible_bounded",visible},{"width",hint?hint->width():-1},{"canvas_width",canvas->width()}});
+            if(!visible||!window->grabWindow().save(reportPath+".pan-hint-"+language+".png")){finish("PAN_BILINGUAL_HINT_MISSING_OR_CLIPPED");return;}
+            if(s->phase==927){c->setLanguage("zh_CN");s->phase=928;s->settle=0;return;}
+            QImage secondary(64,48,QImage::Format_RGBA64);secondary.fill(QColor(80,90,100));secondary.setColorSpace(QColorSpace(QColorSpace::SRgb));
+            const auto path=dir->filePath("owned-pan-source-switch.png");if(!secondary.save(path)){finish("PAN_SOURCE_FIXTURE_FAILED");return;}
+            s->panOriginalIndex=c->currentIndex();overlay->forceActiveFocus();space(QEvent::KeyPress);const auto from=point(.5,.6);mouse(window,QEvent::MouseButtonPress,from,Qt::LeftButton,Qt::LeftButton);
+            const bool started=navigation()&&!c->brushDrawing();const bool imported=c->importFile(QUrl::fromLocalFile(path));
+            // Import preserves an existing selection. Select the owned second
+            // photo explicitly so this probes an actual source transition.
+            if(imported)c->selectPhoto(1);
+            s->panSwitchCancelled=started&&imported&&c->currentIndex()!=s->panOriginalIndex&&!navigation()&&!c->brushDrawing()&&canvas->property("maskTool").toString().isEmpty();
+            mouse(window,QEvent::MouseMove,from+QPointF(30,0),Qt::NoButton,Qt::LeftButton);mouse(window,QEvent::MouseButtonRelease,from+QPointF(30,0),Qt::LeftButton,Qt::NoButton);space(QEvent::KeyRelease);
+            if(!s->panSwitchCancelled){finish("PAN_SOURCE_SWITCH_RETAINED_OWNER");return;}
+            s->phase=929;s->settle=0;
+        }else if(s->phase==929) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            if(c->currentFile()!=dir->filePath("owned-pan-source-switch.png")||navigation()||c->brushDrawing()){finish("PAN_SOURCE_SWITCH_RESURRECTED");return;}
+            c->selectPhoto(s->panOriginalIndex);s->phase=930;s->settle=0;
+        }else if(s->phase==930) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;
+            const bool preserved=s->panSwitchCancelled&&c->currentFile()==source&&c->gpuPlan(true).state.toJson()==s->panState&&cursor(c)==s->panHistory&&!navigation()&&!c->brushDrawing();
+            s->panGuards.append(QJsonObject{{"case","source-switch-cancels-held-pan-original-preserved"},{"passed",preserved},{"navigation",navigation()},{"drawing",c->brushDrawing()},{"document_history_unchanged",preserved}});
+            if(!preserved||!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("PAN_SOURCE_REENTRY_CHANGED_ORIGINAL");return;}
+            canvas->setProperty("centerX",s->panAfterBasic.x());canvas->setProperty("centerY",s->panAfterBasic.y());s->phase=931;s->settle=0;
+        }else if(s->phase==931) {
+            if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
+            s->panGuardsChecked=true;s->panGeometryChecked=true;s->phase=7;s->settle=0;
         }else if(s->phase==8) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
             if(!window->grabWindow().save(reportPath+".zoom.png")){finish("Cannot save zoomed brush UI");return;}

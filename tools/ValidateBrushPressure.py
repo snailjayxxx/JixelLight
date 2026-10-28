@@ -175,6 +175,10 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert data["operation_budget_bytes"] == 3 * 1024**3
             assert 0 < data["operation_peak_reserved_bytes"] <= 3 * 1024**3
         else:
+            assert data["window_focus_injection"] == "Qt-QPA-controlled-window-focus"
+            assert data["window_focus_ready"] is True and data["physical_OS_activation_verified"] is False
+            assert type(data["initial_window_active"]) is bool
+            assert type(data["focus_bootstrap_count"]) is int and data["focus_bootstrap_count"] >= 0
             assert data["passed"] and data["export_exact_pixels_and_ICC"]
             assert data["deadline_ms"] == 45000 and 0 < data["elapsed_ms"] < 45000
             assert data["source_kind"] == "owned-rgba64-png"
