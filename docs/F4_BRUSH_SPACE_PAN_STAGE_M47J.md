@@ -76,7 +76,44 @@ reports, tested binaries and all 210 code-source fingerprints at
 `evidence/brush-pan-J-root-local-v2/receipt.json`. Reports retain their original
 `6f2ac31` build stamps; publication uses exact source fingerprints, without
 retagging. This is bounded local UI evidence; its own committed three-platform
-and both actual 23-mode package acceptance is pending.
+and both actual 23-mode package acceptance is recorded below.
+
+## Committed acceptance
+
+Implementation `f0f86dfba3d39edc26956d65049178e226a16550` completes
+[CI 302 / 40760820251](https://github.com/snailjayxxx/JixelLight/actions/runs/40760820251).
+Linux, Windows and macOS each pass **68/68 tests with zero failures/skips**, in
+**1,085.16 / 1,500.31 / 1,580.23 s** respectively. Both actual SDK-stripped
+Windows and macOS packages pass all **23 modes**, including the six controlled
+pressure-photo flows. All prior numeric, 42 controlled-input, alpha, genuine RAW,
+full-source scope, cancellation/refund and exact export assertions remain.
+
+| Committed validation, ms | Windows native | Windows package | macOS native | macOS package |
+| --- | ---: | ---: | ---: | ---: |
+| Owned canvas CPU | 44378 | 44640 | 36767 | 36645 |
+| Owned canvas GPU | 26865 | 27060 | 36654 | 35181 |
+| Genuine Sony pressure GUI CPU | 49151 | 49048 | 18935 | 18607 |
+| Genuine Sony pressure GUI GPU | 25440 | 25614 | 20805 | 22627 |
+| Sony combined export/reference CPU | 70872.652 | 70711.393 | 53236.114 | 46672.337 |
+| Sony combined export/reference GPU | 70969.627 | 71165.669 | 48377.515 | 54419.392 |
+
+The Windows canvas CPU cases pass with narrow headroom under the original
+45,000 ms gate. Sony GUI remains under 60,000 ms and each combined
+export/reference slice stays under 120,000 ms. Each Sony flow checks the full
+32,947,264 pixels and a fresh-source exact PNG16/ICC reference. Request
+reservations remain below the shared 3 GiB budget; these are not RSS limits.
+The native Sony report deliberately retains its partial result until the separate
+verifier finishes; the wrapper requires that independent verification to pass.
+
+Five original validation ZIPs and three complete runtime logs prove all three
+jobs actually checked out `99633f669d6ee18d49f6041eddb44964b9c8d953`.
+Its tree `4f4b6edc7939388f4450593b2ad1136b88b49730` equals the implementation
+tree. SHA256, ZIP CRC, safe extraction and extracted bytes are checked. The
+strict platform/package auditors and finalizer exit 0. The immutable archive
+`evidence/ci-40760820251/terminal-accepted-v1/receipt.json` preserves those
+originals, auditors, final summary and all 210 tested code sources. Local report
+stamps remain unchanged. This accepts this navigation slice and preserves the
+unfinished capabilities listed below.
 
 ## Preserved failures and separate boundaries
 
@@ -112,9 +149,10 @@ source-proven runtime logs are retained at
 `evidence/ci-40734277346/terminal-failed-v1/receipt.json`. Only the macOS aggregate
 job budget changes 75→90 minutes. All individual assertions/deadlines remain.
 
-The latest fully accepted implementation remains
-[6bdf94e /CI40721028761](https://github.com/snailjayxxx/JixelLight/actions/runs/40721028761)
-until this slice completes its own CI. The original I Windows 60,371 ms failure,
+The latest fully accepted implementation is now
+[f0f86df / CI40760820251](https://github.com/snailjayxxx/JixelLight/actions/runs/40760820251).
+The earlier accepted I.1 implementation `6bdf94e` retains its own evidence.
+The original I Windows 60,371 ms failure,
 unexplained I.1 local phase 12 Erase failure and earlier private pan failures stay
 preserved. This work does not claim native GPU brushes, native FP32 RAW, physical
 tablet validation or completion of all F4/F0–F6. PR16 stays Draft.
