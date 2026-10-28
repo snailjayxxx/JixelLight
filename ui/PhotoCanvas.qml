@@ -17,7 +17,12 @@ Item {
     property real centerY: .5
     // Edit-mode state is UI-only, never persisted in a photo or a project.
     property string maskTool: ""
-    onMaskToolChanged: if (brushEditor && brushEditor.active !== (maskTool === "brush")) brushEditor.active = maskTool === "brush"
+    onMaskToolChanged: {
+        if (brushEditor && brushEditor.active !== (maskTool === "brush")) brushEditor.active = maskTool === "brush"
+        if (maskTool === "brush") Qt.callLater(function() {
+            if (root.maskTool === "brush" && brushOverlay.visible) brushOverlay.forceActiveFocus()
+        })
+    }
     function t(zh,en) { return controller.language === "zh_CN" ? zh : en }
     function brushBlockHint(reason) {
         if (reason === "erase-layer") return root.t("请先选择要擦除的已有笔刷图层。", "Select an existing brush layer to erase first.")
@@ -220,6 +225,7 @@ Item {
         }
     }
     Label {
+        id: maskToolHint
         objectName: "maskToolHint"
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
@@ -233,6 +239,16 @@ Item {
               : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",
                        "Yellow: center/radius · Blue: rotate · Two green grips: feather · Shift: fine")
         font.pixelSize: 11; color: "#e5edf5"
+        background: Rectangle { color: "#dd101820"; radius: 4 }
+    }
+    Label {
+        objectName: "brushRadiusHint"
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: maskToolHint.top
+        anchors.bottomMargin: 5; z: 6
+        visible: root.maskTool === "brush" && brushOverlay.layerPaintable && root.controller.brushReady && root.brushDisplayReady
+        text: root.t("半径 ", "Radius ") + (root.brushEditor ? (root.brushEditor.radius*100).toFixed(1) : "") + "% · [ / ]"
+        width: Math.min(implicitWidth, Math.max(1,parent.width-16)); wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter; font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }
     }
     Row {

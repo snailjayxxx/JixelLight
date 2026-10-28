@@ -79,7 +79,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     if(!owned->isValid()||!image.save(source)){QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;}
     struct State {
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
-        int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
+        bool radiusProbeDone=false;int heldRadiusGuards=0;QJsonArray radiusRecords,radiusHintRecords;int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
         QJsonObject initial,painted,erased;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
@@ -97,8 +97,8 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
-        const bool passed=error.isEmpty()&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
-        const QJsonObject d{{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
+        const bool passed=error.isEmpty()&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const QJsonObject d{{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
@@ -132,6 +132,11 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         const auto advance=[&]{
             if(s->moves>=5)return true;
             if(!c->brushDrawing()){finish("Side button prematurely ended an actual held photo stroke");return false;}
+            if(s->moves==0) {
+                const auto radius=editor->property("radius").toDouble();key(window,Qt::Key_BracketRight);key(window,Qt::Key_BracketLeft);
+                if(editor->property("radius").toDouble()!=radius||!c->brushDrawing()){finish("RADIUS_CHANGED_DURING_HELD_PEN");return false;}
+                ++s->heldRadiusGuards;
+            }
             if(s->moves==0)packet(.4,.4,true);
             else if(s->moves==1)buttons(.5,.95,Qt::LeftButton|Qt::RightButton);
             else if(s->moves==2)buttons(.55,.1,Qt::LeftButton);
@@ -142,7 +147,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             ++s->moves;return false;
         };
         const auto frozen=[&](const QJsonObject &doc,int cursor){return masks(c)==doc&&history(c)==cursor&&c->renderRevision()==s->revision;};
-        const auto expected=[&](BM::StrokeMode mode){BM::StrokeBuilder builder(512,320,{.08,1,.8},mode);for(auto v:std::array<BM::Dab,5>{{{{.25,.6},s->initialPressure},{{.4,.6},.4},{{.6,.6},.8},{{.75,.6},.6},{{.75,.6},0}}}){if(s->mouse)v.pressure=1;if(!builder.append(v))return std::optional<BM::Stroke>{};}return builder.finish();};
+        const auto expected=[&](BM::StrokeMode mode){BM::StrokeBuilder builder(512,320,{.1,1,.8},mode);for(auto v:std::array<BM::Dab,5>{{{{.25,.6},s->initialPressure},{{.4,.6},.4},{{.6,.6},.8},{{.75,.6},.6},{{.75,.6},0}}}){if(s->mouse)v.pressure=1;if(!builder.append(v))return std::optional<BM::Stroke>{};}return builder.finish();};
         const auto checkLocale=[&](bool full)->QString {
             const auto pixelCount=c->scopesPixelCount();const auto revision=c->renderRevision();
             const auto intent=c->gpuPlan(true).state.toJson();const int cursor=history(c);
@@ -161,17 +166,87 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
                 s->localeUnchanged=s->localeUnchanged&&stable;
                 s->localeRecords.append(QJsonObject{{"full",full},{"language",language},{"controller",controllerText},{"UI",ui},{"expected",expected},{"stable",stable},{"pixels",qint64(pixelCount)},{"revision",qint64(revision)}});
                 if(controllerText!=expected||ui!=expected||!stable)return QString("SCOPE_LOCALE_MISMATCH expected=%1 controller=%2 UI=%3 stable=%4").arg(expected,controllerText,ui).arg(stable);
+                if(!full) {
+                    auto *hint=item("brushRadiusHint");const QString expectedHint=(english?QStringLiteral("Radius "):QStringLiteral("半径 "))+QStringLiteral("10.0% · [ / ]");
+                    if(!hint||!hint->isVisible()||!hint->property("text").toString().endsWith(expectedHint)||hint->width()>canvas->width()-15)return "RADIUS_CANVAS_HINT_MISSING_OR_CLIPPED";
+                    s->radiusHintRecords.append(QJsonObject{{"language",language},{"UI",hint->property("text").toString()},{"expected_suffix",expectedHint},{"width",hint->width()},{"canvas_width",canvas->width()},{"visible",true}});
+                }
                 ++s->localeChecks;if(!capture(QString("locale-%1-%2").arg(full?"full":"preview").arg(s->localeChecks),grab()))return "SCOPE_LOCALE_CAPTURE_FAILED";
             }
             return {};
         };
         if(s->phase==0){
+            if(!window->isActive()){window->requestActivate();return;}
             s->initial=masks(c);s->initialHistory=history(c);if(!s->initial.isEmpty()||!click(window,item("editBrushMaskCanvas"))){finish("Cannot enter actual photo brush tool");return;}
             editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);c->setLanguage("en_US");s->phase=1;s->settle=0;
         }else if(s->phase==1){
             if(++s->settle<4||!c->scopesPixelCount())return;
+            if(!s->radiusProbeDone) {
+                const auto snapshot=c->gpuPlan(true).state.toJson();const int cursor=history(c);const auto revision=c->renderRevision();
+                auto *slider=item("brushRadiusSlider");if(!slider){finish("RADIUS_MISSING_SLIDER");return;}
+                const auto radiusKey=[&](int code,Qt::KeyboardModifiers mods=Qt::NoModifier,bool repeat=false){
+                    const QString text=code==Qt::Key_BracketLeft?QStringLiteral("["):QStringLiteral("]");
+                    QKeyEvent down(QEvent::KeyPress,code,mods,text,repeat,1),up(QEvent::KeyRelease,code,mods,text,false,1);
+                    QCoreApplication::sendEvent(window,&down);QCoreApplication::sendEvent(window,&up);
+                };
+                const auto observed=[&](QString label,double expected){
+                    const double value=editor->property("radius").toDouble(),ui=slider->property("value").toDouble();
+                    const bool stable=c->gpuPlan(true).state.toJson()==snapshot&&history(c)==cursor&&c->renderRevision()==revision&&!c->brushDrawing();
+                    const bool good=std::abs(value-expected)<1e-10&&std::abs(ui-expected)<1e-10&&stable;
+                    s->radiusRecords.append(QJsonObject{{"case",label},{"expected",expected},{"radius",value},{"slider",ui},{"focus",overlay->hasActiveFocus()},{"window_active",window->isActive()},{"item_focus",overlay->hasFocus()},{"item_enabled",overlay->isEnabled()},{"state_unchanged",stable},{"passed",good}});return good;
+                };
+                const double ring=overlay->property("radiusX").toDouble();
+                radiusKey(Qt::Key_BracketRight);
+                const bool grown=observed("activate-grow",.1);if(!overlay->hasActiveFocus()||!grown){finish("RADIUS_ACTUAL_ACTIVATION_OR_GROW_FAILED");return;}
+                if(std::abs(overlay->property("radiusX").toDouble()-ring*1.25)>1e-8){finish("RADIUS_VISIBLE_RING_GEOMETRY_FAILED");return;}
+                radiusKey(Qt::Key_BracketLeft);if(!observed("shrink",.08)){finish("RADIUS_SHRINK_FAILED");return;}
+                for(const auto mod:{Qt::ShiftModifier,Qt::ControlModifier,Qt::AltModifier,Qt::MetaModifier})radiusKey(Qt::Key_BracketRight,mod);
+                if(!observed("modifiers-ignored",.08)){finish("RADIUS_MODIFIER_INTERCEPTION");return;}
+                for(int i=0;i<40;++i)radiusKey(Qt::Key_BracketRight,Qt::NoModifier,i>0);
+                if(!observed("repeat-max",.5)){finish("RADIUS_MAX_FAILED");return;}
+                for(int i=0;i<40;++i)radiusKey(Qt::Key_BracketLeft,Qt::NoModifier,i>0);
+                if(!observed("repeat-min",.002)){finish("RADIUS_MIN_FAILED");return;}
+                editor->setProperty("radius",.08);
+                const auto findInput=[&](auto &&self,QQuickItem *parent)->QQuickItem* {
+                    if(parent->property("placeholderText").toString()=="New preset name")return parent;
+                    for(auto *child:parent->childItems())if(auto *found=self(self,child))return found;return nullptr;
+                };
+                auto *input=findInput(findInput,window->contentItem());
+                if(!input||!click(window,input)||!input->hasActiveFocus()){finish("RADIUS_ACTUAL_TEXT_FOCUS_FAILED");return;}
+                const auto original=input->property("text").toString();radiusKey(Qt::Key_BracketLeft);radiusKey(Qt::Key_BracketRight);
+                if(input->property("text").toString()!=original+"[]"||!observed("text-input-isolated",.08)){finish("RADIUS_TEXT_INPUT_INTERCEPTED");return;}
+                input->setProperty("text",original);
+                if(!click(window,item("editBrushMaskCanvas"))||!click(window,item("editBrushMaskCanvas"))){finish("RADIUS_REENTER_FAILED");return;}
+                // Focus handoff is deferred to the next event turn by the product.
+                s->radiusProbeDone=true;s->phase=30;return;
+            }
             const auto localeError=checkLocale(false);if(!localeError.isEmpty()){finish(localeError);return;}
             const auto shot=read(&s->baseline);if(shot.isNull()||!capture("before",shot)||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
+        }else if(s->phase==30){
+            if(!overlay->hasActiveFocus()||std::abs(editor->property("radius").toDouble()-.08)>1e-10){finish("RADIUS_REENTRY_FOCUS_FAILED");return;}
+            s->radiusRecords.append(QJsonObject{{"case","reentry-focus"},{"passed",true},{"radius",.08},{"focus",true}});
+            const auto doc=masks(c);const int cursor=history(c);const auto revision=c->renderRevision();
+            key(window,Qt::Key_Escape);key(window,Qt::Key_BracketRight);
+            const bool inactive=canvas->property("maskTool").toString().isEmpty()&&!overlay->isVisible()&&std::abs(editor->property("radius").toDouble()-.08)<1e-10&&masks(c)==doc&&history(c)==cursor&&c->renderRevision()==revision;
+            s->radiusRecords.append(QJsonObject{{"case","idle-exit-inactive"},{"radius",editor->property("radius").toDouble()},{"passed",inactive},{"state_unchanged",inactive}});
+            if(!inactive||!click(window,item("editBrushMaskCanvas"))){finish("RADIUS_IDLE_ESCAPE_OR_INACTIVE_KEY_FAILED");return;}
+            s->phase=31;return;
+        }else if(s->phase==31){
+            if(!overlay->hasActiveFocus()){finish("RADIUS_IDLE_ESCAPE_REACTIVATION_FOCUS_FAILED");return;}
+            const auto doc=masks(c);const int cursor=history(c);const auto revision=c->renderRevision();
+            const auto local=point(.2);QMouseEvent press(QEvent::MouseButtonPress,local,local,window->mapToGlobal(local),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&press);
+            if(!c->brushDrawing()){finish("RADIUS_MOUSE_HELD_NOT_STARTED");return;}
+            key(window,Qt::Key_BracketRight);key(window,Qt::Key_BracketLeft);
+            const bool held=c->brushDrawing()&&std::abs(editor->property("radius").toDouble()-.08)<1e-10;
+            key(window,Qt::Key_Escape);QMouseEvent release(QEvent::MouseButtonRelease,local,local,window->mapToGlobal(local),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&release);
+            const bool stable=!c->brushDrawing()&&masks(c)==doc&&history(c)==cursor&&c->renderRevision()==revision;
+            s->radiusRecords.append(QJsonObject{{"case","mouse-held"},{"radius",editor->property("radius").toDouble()},{"passed",held&&stable},{"state_unchanged",stable}});
+            if(!held||!stable){finish("RADIUS_MOUSE_HELD_CHANGED_OR_COMMITTED");return;}
+            key(window,Qt::Key_BracketRight);
+            const bool next=std::abs(editor->property("radius").toDouble()-.1)<1e-10&&std::abs(item("brushRadiusSlider")->property("value").toDouble()-.1)<1e-10&&history(c)==cursor&&c->renderRevision()==revision;
+            s->radiusRecords.append(QJsonObject{{"case","next-stroke-radius"},{"radius",editor->property("radius").toDouble()},{"slider",item("brushRadiusSlider")->property("value").toDouble()},{"passed",next},{"state_unchanged",true}});
+            if(!next){finish("RADIUS_NEXT_STROKE_STYLE_NOT_SELECTED");return;}
+            s->phase=1;s->settle=0;
         }else if(s->phase==2||s->phase==4||s->phase==9||s->phase==11){
             const bool erase=s->phase>=9,cancel=s->phase==2||s->phase==9;if(!advance())return;
             const auto doc=erase?s->painted:s->initial;const auto cursor=s->initialHistory+(erase?1:0);s->transient=s->transient&&frozen(doc,cursor);
@@ -185,6 +260,11 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             const auto unchanged=[&]{return !c->brushDrawing()&&frozen(doc,cursor);};
             if(!unchanged()){finish("Cancelled photo stroke resurrected before primary lift");return;}
             QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)>2)return;
+            if(s->cancelStep==0) {
+                const auto radius=editor->property("radius").toDouble();key(window,Qt::Key_BracketRight);key(window,Qt::Key_BracketLeft);
+                if(editor->property("radius").toDouble()!=radius||!unchanged()){finish("RADIUS_CHANGED_BEFORE_CANCELLED_TIP_LIFT");return;}
+                ++s->heldRadiusGuards;
+            }
             if(s->cancelStep==0)buttons(.6,.9,Qt::LeftButton|Qt::RightButton);
             else if(s->cancelStep==1)buttons(.65,.9,Qt::LeftButton);
             else if(s->cancelStep==2)packet(.7,.9,true);
@@ -229,7 +309,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             if(!exact||!capture("final",grab())){finish("Pressure PNG16 pixels/ICC differ from independent CPU reference");return;}s->exactExport=true;finish({});
         }
     });
-    window->setProperty("workspaceIndex",1);window->resize(1540,920);window->requestActivate();
+    window->setProperty("workspaceIndex",1);if(qEnvironmentVariableIsSet("JIXELLIGHT_BRUSH_PRESSURE_COMPACT_QA"))window->resize(1180,720);else window->resize(1540,920);window->requestActivate();
     if(!c->importFile(QUrl::fromLocalFile(source))||!c->createProject(QUrl::fromLocalFile(owned->path()),"PressureOwnershipNative")){finish("Cannot import/create isolated owned pressure project");return;}
     s->project=c->projectPath();timer->start();
 }

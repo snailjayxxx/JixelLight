@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -49,6 +50,34 @@ def validate_scope_locale(data: dict, mode: str) -> None:
         assert row["UI"] == row["controller"] == row["expected"] == expected
         assert row["stable"] and row["pixels"] == source_pixels
     assert all(row["revision"] == rows[start]["revision"] for start in (0, 3) for row in rows[start:start + 3])
+
+
+def validate_brush_radius(data: dict) -> None:
+    expected = {"activate-grow": .1, "shrink": .08, "modifiers-ignored": .08,
+                "repeat-max": .5, "repeat-min": .002, "text-input-isolated": .08,
+                "reentry-focus": .08, "idle-exit-inactive": .08,
+                "mouse-held": .08, "next-stroke-radius": .1}
+    assert data["radius_probe_done"] is True and data["radius_held_guards"] == 6
+    rows = data["radius_key_records"]
+    assert len(rows) == 10 and [row["case"] for row in rows] == list(expected)
+    for row in rows:
+        name, value = row["case"], row["radius"]
+        assert row["passed"] is True and math.isfinite(value) and abs(value - expected[name]) < 1e-10
+        if name == "reentry-focus":
+            assert row["focus"] is True
+        else:
+            assert row["state_unchanged"] is True
+        if name in tuple(expected)[:6] or name == "next-stroke-radius":
+            assert math.isfinite(row["slider"]) and abs(row["slider"] - expected[name]) < 1e-10
+        if name in tuple(expected)[:6]:
+            assert row["focus"] is (name != "text-input-isolated")
+    hints = data["radius_hint_records"]
+    assert len(hints) == 3 and [row["language"] for row in hints] == ["en_US", "zh_CN", "en_US"]
+    for row in hints:
+        suffix = ("半径 " if row["language"] == "zh_CN" else "Radius ") + "10.0% · [ / ]"
+        assert row["visible"] is True and row["expected_suffix"] == suffix and row["UI"].endswith(suffix)
+        assert math.isfinite(row["width"]) and math.isfinite(row["canvas_width"])
+        assert 0 < row["width"] <= row["canvas_width"] - 15
 
 
 def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Path,
@@ -151,6 +180,7 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert data["source_kind"] == "owned-rgba64-png"
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
             validate_scope_locale(data, mode)
+            validate_brush_radius(data)
         captures = CAPTURES if raw else OWNED_CAPTURES
         assert len(data["captures"]) == len(captures) and {c["label"] for c in data["captures"]} == captures
         copied = {}

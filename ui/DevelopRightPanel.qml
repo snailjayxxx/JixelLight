@@ -815,7 +815,7 @@ Rectangle {
                         Slider { objectName: "brushOpacitySlider"; Layout.fillWidth: true; from: 0; to: 1; value: root.brushEditor ? root.brushEditor.opacity : 1; onMoved: root.brushEditor.opacity=value }
                         Label { text: root.brushEditor ? Math.round(root.brushEditor.opacity*100)+"%" : ""; Layout.preferredWidth: 42 }
                     }
-                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"; text: root.t("选择画布上的“绘制笔刷”，再选绘制或擦除；擦除需选择已有图层。拖动后松开应用，每笔可撤销，Esc 取消。","Choose Paint brush on the canvas, then Paint or Erase. Erase needs an existing layer. Drag and release to apply; each stroke has one Undo step; Esc cancels it.") }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"; text: root.t("选择画布上的“绘制笔刷”，再选绘制或擦除；擦除需选择已有图层。拖动后松开应用，每笔可撤销，Esc 取消；画布中按 [ / ] 调整半径。","Choose Paint brush on the canvas, then Paint or Erase. Erase needs an existing layer. Drag and release to apply; each stroke has one Undo step; Esc cancels it. Use [ / ] on the canvas to change radius.") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

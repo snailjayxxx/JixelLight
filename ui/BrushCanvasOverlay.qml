@@ -26,7 +26,22 @@ Item {
     readonly property real radiusX: pixels.width > 0 && frame.width > 0 ? radius * Math.min(pixels.width,pixels.height) / pixels.width * width / frame.width : 0
     readonly property real radiusY: pixels.height > 0 && frame.height > 0 ? radius * Math.min(pixels.width,pixels.height) / pixels.height * height / frame.height : 0
     clip: true
-    Keys.onEscapePressed: function(event) { root.cancel(); event.accepted=true }
+    Keys.onEscapePressed: function(event) {
+        const held = root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed
+        root.cancel()
+        if (!held && root.editor) root.editor.active = false
+        event.accepted = true
+    }
+    Keys.onPressed: function(event) {
+        if (event.modifiers !== Qt.NoModifier || (event.key !== Qt.Key_BracketLeft && event.key !== Qt.Key_BracketRight)) return
+        if (!root.editor || !root.visible || !root.enabled) return
+        event.accepted = true
+        // Keep the held stroke's style and ownership intact until primary lift.
+        if (root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed) return
+        const factor = event.key === Qt.Key_BracketRight ? 1.25 : 0.8
+        root.editor.radius = Math.max(0.002, Math.min(0.5, root.editor.radius * factor))
+    }
+
     function imagePoint(x,y) {
         return controller.maskCanvasPoint(Math.max(0,Math.min(width,x)),Math.max(0,Math.min(height,y)),width,height)
     }

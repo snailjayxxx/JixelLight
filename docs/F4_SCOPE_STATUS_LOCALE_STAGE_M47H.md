@@ -23,7 +23,7 @@ of published G and changes only PhotoController.cpp, BrushPressureSmokeRun.cpp
 and ValidateBrushPressure.py. Its own consistent serial App build and8 actual
 production-entry-point cases also pass, with136 verified captures. Native reports
 retain their original unknown source stamp. These are private candidate results;
-Root production integration and committed acceptance are still pending.
+At that private checkpoint, Root integration and committed acceptance were still pending.
 
 Each run checks EN/ZH/EN in both preview and completed full-statistics views.
 The actual scopeStatusLabel text is compared with an independent Python language
@@ -86,17 +86,43 @@ passed but the original driver assertion failed; that failed requested1x result
 is preserved. A separate calibrated private8 then passed48 checks/136 captures.
 Neither is relabeled as Root acceptance or as a published wrapper pass.
 
-## Committed acceptance remains pending
+## Committed acceptance
 
-The underlying [G.1 / CI40675071304](https://github.com/snailjayxxx/JixelLight/actions/runs/40675071304)
-is strictly accepted: all68/all3, both actual23-mode SDK-stripped packages and
-all five original ZIPs/three full original job logs prove actual99c8fb0/treea59f0b0
-equal39bb07e. Its immutable terminal receipt is in evidence/ci-40675071304/.
-The original G60082ms Windows failure remains failed.
+H is accepted at `de2cfd9575fa5366385c58283c15d65fe238c025` through
+[CI40688164562](https://github.com/snailjayxxx/JixelLight/actions/runs/40688164562).
+Linux, Windows and macOS pass68/68 with zero failures/skips in1137.43s,
+1171.31s and1549.16s. Both actual23-mode SDK-stripped packages pass, including
+all older modes, the deployed independent Sony export verifier and the new
+17-capture owned language checks. Four owned native modes on each platform
+perform24 actual preview/full EN/ZH/EN label checks; the two packages repeat
+those checks with their deployed applications.
 
-H requires its own unchanged68-test suites on all3 platforms and both actual
-23-mode SDK-stripped packages, including the new17-capture owned locale checks,
-unchanged11-capture genuine Sony, precision/alpha/full-scope/budget/refund gates,
-original artifacts and actual job-checkout source proofs. Physical tablet,
-native GPU brush, native FP32 RAW and remaining F0–F6 are unfinished. PR16 stays
-Draft; main and PR15 are unchanged. No owner operation is required.
+| Genuine Sony controlled pressure | Linux native | Windows native | macOS native | Windows package | macOS package |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CPU complete GUI, ms | 17172 | 45901 | 21874 | 46052 | 21208 |
+| GPU display complete GUI, ms | 19725 | 22126 | 22858 | 21799 | 21104 |
+| CPU combined export/reference, ms | 63540.626 | 50637.922 | 52083.164 | 50661.186 | 52037.636 |
+| GPU display combined export/reference, ms | 63560.939 | 50336.140 | 53153.213 | 50720.657 | 53117.381 |
+
+Each retains11 controls-only crops, full32,947,264-pixel histogram/plots,
+exact independently checked PNG16 pixels/ICC, source32Mi/shared3GiB and the
+original60000ms GUI/combined120000ms export gates. All prior numerical,
+alpha1/255, GPU40/65535,42 input-row, source and reservation-refund checks
+remain mandatory. Cross-run wall-clock variation is not attributed to the
+status getter.
+
+Five original validation ZIPs and three complete original job logs are
+SHA/CRC/path verified. Every actual job proves checkout
+`0ae1139d62f9a351ace26c2088c0e3ef91e06e7c`, whose tree
+`17e18ec87ba12333c37480128b7d73a4e2720790` equals H. The strict finalizer exits0;
+immutable physical evidence is in
+`evidence/ci-40688164562/terminal-accepted-v1/receipt.json`.
+Earlier partial Linux/Windows receipts, private unknown-stamp candidates,
+the first requested1x/measured2x driver failure and the three original label
+failures remain separate originals. Original G60082ms Windows failure stays
+failed; accepted G.1 remains its bounded repair.
+
+This accepts the completed-statistics language fix and its existing guarded
+brush workflow. Physical tablet validation, native GPU brush computation,
+native FP32 RAW and remaining F0–F6 are unfinished. PR16 stays Draft; main and
+PR15 are unchanged. No owner operation is required.
