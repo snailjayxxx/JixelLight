@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QSaveFile>
+#include <QImageWriter>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -141,6 +142,8 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         QSize panViewSize;double panViewZoom=0;QString panViewTag,panViewMask;bool panViewOwnership=false;ulong panStamp=1000;int focusBootstrapCount=0;
         std::shared_ptr<QPointingDevice> panPen;
         QElapsedTimer clock;int phase=0,settle=0,history=0,delta=0,scopeInk=0;bool finished=false;
+        int windowGrabCalls=0,captureEncodeCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0,captureEncodeNs=0;
+        bool capacityPreviewStatistics=false,capacityExactStatistics=false,scopeControlsReadonly=true;
         bool transient=false,escape=false,oneUndo=false,display=false,undoRedo=false,reopen=false,zoom=false,scopes=false;
         bool settings=false,photoReady=false;double exposure=1;QJsonObject painted;QColor baseline,lastColor;QRectF frame;QByteArray sourceHash;
         bool selected=false,evDrag=false,toggle=false,lastStroke=false,prune=false,deleteUndo=false,english=false;
@@ -156,14 +159,28 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
     s->panPen=std::make_shared<QPointingDevice>("Controlled pan ownership pen",987654330,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
     QWindowSystemInterface::registerInputDevice(s->panPen.get());
     auto *timer=new QTimer(c);timer->setInterval(50);const auto source=dir->filePath("owned-brush.png");
+    const auto grab=[=] {
+        QElapsedTimer captureClock;captureClock.start();const auto image=window->grabWindow();const auto ns=captureClock.nsecsElapsed();
+        ++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return image;
+    };
+    const auto save=[=](const QImage &image,const QString &path) {
+        // Evidence stays lossless; default PNG compression needlessly consumes
+        // the same GUI budget that must cover actual input and full statistics.
+        QImageWriter writer(path,"PNG");writer.setCompression(1);QElapsedTimer encodeClock;encodeClock.start();
+        const bool written=writer.write(image);s->captureEncodeNs+=encodeClock.nsecsElapsed();++s->captureEncodeCalls;return written;
+    };
     const auto finish=[=](const QString &error) {
         if(s->finished)return;s->finished=true;timer->stop();const bool unchanged=fileHash(source)==s->sourceHash;
         const bool gpu=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool ok=error.isEmpty()&&s->panChecked&&s->panReadonly&&s->panMapping&&s->panGuardsChecked&&s->panGeometryChecked&&s->panGuards.size()==14&&s->panViews.size()==3&&s->panHints.size()==2&&s->settings&&s->transient&&s->escape&&s->oneUndo&&s->display&&s->undoRedo&&s->reopen&&s->zoom&&s->scopes
-            &&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
+            &&s->capacityPreviewStatistics&&s->capacityExactStatistics&&s->scopeControlsReadonly&&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
             &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->capacity&&s->capacityRecovery&&s->capacityTargets&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
-        if(!error.isEmpty())window->grabWindow().save(reportPath+".failure.png");
+        if(!error.isEmpty())save(grab(),reportPath+".failure.png");
         const QJsonObject report{{"pan_protocol_version",1},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
+            {"capture_png_compression",1},{"capture_encode_calls",s->captureEncodeCalls},{"capture_encode_total_ms",s->captureEncodeNs/1e6},
+            {"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},
+            {"capacity_preview_statistics",s->capacityPreviewStatistics},{"capacity_exact_statistics_restored",s->capacityExactStatistics},{"scope_controls_readonly",s->scopeControlsReadonly},
+            {"exact_scopes_requested",c->exactScopes()},{"scope_plot_current",c->scopePlotCurrent()},{"scope_plot_pixels",qint64(c->scopePlotPixels())},
             {"phase",s->phase},{"error",error},{"synthetic_fixture",true},{"source_pixels",2659021},{"source_unchanged",unchanged},
             {"live_uncommitted",s->transient},{"escape_cancel",s->escape},{"one_undo",s->oneUndo},{"display_changed",s->display},
             {"display_rgb_delta",s->delta},{"undo_redo",s->undoRedo},{"project_reopen",s->reopen},{"zoom_roi",s->zoom},
@@ -234,7 +251,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             const bool visibleCaption=hint&&exposed(window,hint)&&hint->property("text").toString().startsWith(expected)&&hint->width()<=canvas->width()-15;
             const bool caption=s->panViewMask=="brush"?visibleCaption:(hint&&!hint->isVisible());
             s->panViews.append(QJsonObject{{"case",s->panViewTag},{"mask_tool",s->panViewMask},{"pointer_owned_closed_hand",s->panViewOwnership},{"document_history_unchanged",same},{"mapping_exact",mapping},{"center_before",QJsonArray{s->panViewStart.x(),s->panViewStart.y()}},{"frame_before",QJsonArray{s->panViewFrame.x(),s->panViewFrame.y(),s->panViewFrame.width(),s->panViewFrame.height()}},{"actual_center",QJsonArray{actual.x(),actual.y()}},{"expected_center",QJsonArray{s->panViewExpected.x(),s->panViewExpected.y()}},{"output_size",QJsonArray{s->panViewSize.width(),s->panViewSize.height()}},{"zoom",s->panViewZoom},{"dpr",window->effectiveDevicePixelRatio()},{"hint_visible_bounded",visibleCaption},{"hint_policy_correct",caption},{"hint",hint?hint->property("text").toString():QString{}}});
-            return same&&mapping&&caption&&s->panViewOwnership&&window->grabWindow().save(reportPath+".pan-"+s->panViewTag+".png");
+            return same&&mapping&&caption&&s->panViewOwnership&&save(grab(),reportPath+".pan-"+s->panViewTag+".png");
         };
         const auto disabledGuard=[&] {
             auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");
@@ -255,7 +272,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             const bool newEnabled=add&&add->isEnabled(),visible=exposed(window,hint);
             mouse(window,QEvent::MouseButtonPress,point(.3,.4),Qt::LeftButton,Qt::LeftButton);const bool started=c->brushDrawing();
             mouse(window,QEvent::MouseMove,point(.6,.4),Qt::NoButton,Qt::LeftButton);
-            const bool captured=!capture||window->grabWindow().save(reportPath+".capacity.png");
+            const bool captured=!capture||save(grab(),reportPath+".capacity.png");
             if(started)key(window,Qt::Key_Escape);mouse(window,QEvent::MouseButtonRelease,point(.6,.4),Qt::LeftButton,Qt::NoButton);
             const bool documentSame=masks(c)==before,historySame=cursor(c)==history,roiSame=c->previewFrameRect()==frame;
             const bool ignored=!started&&!c->brushDrawing()&&documentSame&&historySame&&roiSame;
@@ -303,11 +320,11 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         }else if(s->phase==2) {
             if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
             const auto position=point(.5,.6);
-            const auto image=window->grabWindow();if(image.isNull()){finish("Cannot read baseline window");return;}
+            const auto image=grab();if(image.isNull()){finish("Cannot read baseline window");return;}
             if(!c->brushReady()||!previewDisplayedReady(c,window)||position!=point(.5,.6)){s->settle=0;return;}
             s->baseline=sample(image,window,position);if(!s->baseline.isValid())return;s->photoReady=std::max({s->baseline.red(),s->baseline.green(),s->baseline.blue()})>30;
             if(!s->photoReady){s->settle=0;return;} // Do not accept an unloaded black image as the baseline.
-            if(!image.save(reportPath+".before.png")){finish("Cannot save brush baseline");return;}
+            if(!save(image,reportPath+".before.png")){finish("Cannot save brush baseline");return;}
             mouse(window,QEvent::MouseButtonPress,point(.25,.6),Qt::LeftButton,Qt::LeftButton);
             for(int i=1;i<=5;++i)mouse(window,QEvent::MouseMove,point(.25+.5*i/5,.6),Qt::NoButton,Qt::LeftButton);
             mouse(window,QEvent::MouseButtonRelease,point(.75,.6),Qt::LeftButton,Qt::NoButton);
@@ -319,12 +336,12 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         }else if(s->phase==3) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||!previewDisplayedReady(c,window)||++s->settle<3)return;
             const auto position=point(.5,.6);
-            const auto image=window->grabWindow();if(image.isNull()){finish("Cannot read painted window");return;}
+            const auto image=grab();if(image.isNull()){finish("Cannot read painted window");return;}
             if(!c->brushReady()||!c->scopePlotCurrent()||!previewDisplayedReady(c,window)||position!=point(.5,.6)){s->settle=0;return;}
             const auto color=sample(image,window,position);if(!color.isValid())return;s->lastColor=color;s->delta=std::max({std::abs(color.red()-s->baseline.red()),std::abs(color.green()-s->baseline.green()),std::abs(color.blue()-s->baseline.blue())});
             s->display=s->delta>=3;s->scopes=true;
             if(!s->display){s->settle=0;return;} // The asynchronous item may still be presenting its previous texture.
-            if(!image.save(reportPath+".painted.png")){finish("Cannot save actual painted display");return;}
+            if(!save(image,reportPath+".painted.png")){finish("Cannot save actual painted display");return;}
             if(!click(window,child(window->contentItem(),"undoEditButton"))){finish("Cannot click Undo");return;}
             s->phase=4;
         }else if(s->phase==4) {
@@ -338,7 +355,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->phase=6;s->settle=0;
         }else if(s->phase==6) {
             if(++s->settle<3)return;s->reopen=masks(c)==s->painted;
-            if(!s->reopen||!window->grabWindow().save(reportPath+".reopen.png")){finish("Reopened UI lost painted intent");return;}
+            if(!s->reopen||!save(grab(),reportPath+".reopen.png")){finish("Reopened UI lost painted intent");return;}
             if(!click(window,child(window->contentItem(),"editBrushMaskCanvas"))){finish("Cannot re-enter brush tool");return;}
             c->setExactScopes(true);c->setScopeMode("waveform");
             canvas->setProperty("zoom",2.0);s->phase=7;s->settle=0;
@@ -375,7 +392,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->panReadonly=!c->brushDrawing()&&c->gpuPlan(true).state.toJson()==s->panState&&cursor(c)==s->panHistory&&canvas->property("maskTool").toString()=="brush";
             s->panMapping=std::abs(actual.x()-wanted.x())<1e-9&&std::abs(actual.y()-wanted.y())<1e-9&&c->previewFrameRect()!=s->beforePan;
             s->panRecord={{"actual_center",QJsonArray{actual.x(),actual.y()}},{"expected_center",QJsonArray{wanted.x(),wanted.y()}},{"dpr",dpr},{"source_width",2203},{"source_height",1207},{"zoom",2},{"space_released_before_mouse_lift",true},{"document_history_unchanged",s->panReadonly},{"view_mapping_exact",s->panMapping}};
-            if(!s->panReadonly||!s->panMapping||!window->grabWindow().save(reportPath+".pan.png")){finish("Space-drag navigation changed intent/history or viewport mapping differs");return;}
+            if(!s->panReadonly||!s->panMapping||!save(grab(),reportPath+".pan.png")){finish("Space-drag navigation changed intent/history or viewport mapping differs");return;}
             s->panChecked=true;s->panAfterBasic=actual;s->phase=920;s->settle=0;
         }else if(s->phase==920) {
             if(!overlay->isEnabled()||!previewDisplayedReady(c,window)||++s->settle<3)return;
@@ -460,7 +477,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             const QString expected=language=="en_US"?QStringLiteral("Space + drag to pan"):QStringLiteral("空格＋拖动平移");
             const bool visible=c->language()==language&&hint&&exposed(window,hint)&&hint->property("text").toString().startsWith(expected)&&hint->width()<=canvas->width()-15;
             s->panHints.append(QJsonObject{{"language",language},{"text",hint?hint->property("text").toString():QString{}},{"visible_bounded",visible},{"width",hint?hint->width():-1},{"canvas_width",canvas->width()}});
-            if(!visible||!window->grabWindow().save(reportPath+".pan-hint-"+language+".png")){finish("PAN_BILINGUAL_HINT_MISSING_OR_CLIPPED");return;}
+            if(!visible||!save(grab(),reportPath+".pan-hint-"+language+".png")){finish("PAN_BILINGUAL_HINT_MISSING_OR_CLIPPED");return;}
             if(s->phase==927){c->setLanguage("zh_CN");s->phase=928;s->settle=0;return;}
             QImage secondary(64,48,QImage::Format_RGBA64);secondary.fill(QColor(80,90,100));secondary.setColorSpace(QColorSpace(QColorSpace::SRgb));
             const auto path=dir->filePath("owned-pan-source-switch.png");if(!secondary.save(path)){finish("PAN_SOURCE_FIXTURE_FAILED");return;}
@@ -488,7 +505,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->panGuardsChecked=true;s->panGeometryChecked=true;s->phase=7;s->settle=0;
         }else if(s->phase==8) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
-            if(!window->grabWindow().save(reportPath+".zoom.png")){finish("Cannot save zoomed brush UI");return;}
+            if(!save(grab(),reportPath+".zoom.png")){finish("Cannot save zoomed brush UI");return;}
             s->layers=masks(c);
             if(!selectFirstLayer(window)){finish("Native layer selector did not choose the first saved layer");return;}
             s->phase=10;s->settle=0;
@@ -556,25 +573,25 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             if(geometry["pending"].toBool()){++s->revealWaitTicks;return;}
             s->revealed=geometry["critical_visible"].toBool()&&!geometry["pending"].toBool()&&masks(c)==s->revealMasks
                 &&cursor(c)==s->revealHistory&&c->previewFrameRect()==s->revealFrame;
-            if(!s->revealed||!window->grabWindow().save(reportPath+".reveal.png")){finish("Brush reveal changed edit/viewport state or did not restore controls");return;}
+            if(!s->revealed||!save(grab(),reportPath+".reveal.png")){finish("Brush reveal changed edit/viewport state or did not restore controls");return;}
             s->phase=22;s->settle=0;
         }else if(s->phase==22) {
             if(!previewDisplayedReady(c,window)||++s->settle<3)return;
-            const auto image=window->grabWindow();if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
+            const auto image=grab();if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
             s->selectedBefore=sample(image,window,imagePoint(c,overlay,.5,.6));if(!s->selectedBefore.isValid())return;
             s->guideBaseInk=selectedGuideInk(image,window,c,overlay);s->history=cursor(c);
             if(!selectFirstStroke(window)){finish("Cannot select an earlier stored stroke through the native selector");return;}s->phase=23;s->settle=0;
         }else if(s->phase==23) {
-            if(++s->settle<3)return;const auto image=window->grabWindow();
+            if(++s->settle<3)return;const auto image=grab();
             s->guideInk=selectedGuideInk(image,window,c,overlay)-s->guideBaseInk;if(s->guideInk<16)return;
-            if(masks(c)!=s->edited||cursor(c)!=s->history||!image.save(reportPath+".selected-stroke.png")){finish("Selecting a stored stroke changed edit intent or cannot be captured");return;}
+            if(masks(c)!=s->edited||cursor(c)!=s->history||!save(image,reportPath+".selected-stroke.png")){finish("Selecting a stored stroke changed edit intent or cannot be captured");return;}
             auto layers=s->edited["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();strokes.removeFirst();layer["strokes"]=strokes;layers[0]=layer;
             s->strokeReduced=s->edited;s->strokeReduced["layers"]=layers;
             auto *button=child(window->contentItem(),"removeSelectedBrushStroke");
             if(!exposed(window,button)||!click(window,button)||masks(c)!=s->strokeReduced||cursor(c)!=s->history+1){finish("Selected stroke deletion changed another stroke or is not one Undo");return;}
             s->phase=24;s->settle=0;
         }else if(s->phase==24) {
-            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=window->grabWindow();
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=grab();
             if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
             const auto color=sample(image,window,imagePoint(c,overlay,.5,.6));if(!color.isValid())return;
             s->selectedDelta=std::max({std::abs(color.red()-s->selectedBefore.red()),std::abs(color.green()-s->selectedBefore.green()),std::abs(color.blue()-s->selectedBefore.blue())});
@@ -584,7 +601,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
                 ||!click(window,child(window->contentItem(),"undoEditButton"))||masks(c)!=s->edited){finish("Deleted selection did not clear or native Undo changed intent");return;}
             s->phase=25;s->settle=0;
         }else if(s->phase==25) {
-            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=window->grabWindow();
+            if(!previewDisplayedReady(c,window)||++s->settle<3)return;const auto image=grab();
             if(image.isNull()||!c->brushReady()||!previewDisplayedReady(c,window))return;
             const auto color=sample(image,window,imagePoint(c,overlay,.5,.6));if(!color.isValid())return;
             if(std::max({std::abs(color.red()-s->selectedBefore.red()),std::abs(color.green()-s->selectedBefore.green()),std::abs(color.blue()-s->selectedBefore.blue())})>2)return;
@@ -630,7 +647,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             auto *hint=child(window->contentItem(),"maskToolHint");s->actualHint=hint?hint->property("text").toString():QString{};s->expectedHint=c->brushStatus();
             s->pointerReady=overlay->isEnabled()&&hint&&s->actualHint==s->expectedHint;
             if(!s->pointerReady){finish("Canvas brush availability did not refresh after completed processing");return;}
-            const auto image=window->grabWindow();
+            const auto image=grab();
             // A grab can process a late layout/viewport update. Require the
             // current complete plot and visible ink after the actual capture.
             s->scopeInk=scopeInkSamples(image,window,plot);
@@ -643,7 +660,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         }else if(s->phase==20) {
             s->disabledEn=c->language()=="en_US"&&disabledGuard();
             if(!s->disabledEn){finish("Disabled brush layer still advertises paint input in English");return;}
-            if(!window->grabWindow().save(reportPath+".disabled.png")||!click(window,child(window->contentItem(),"brushLayerEnabled"))){finish("Cannot capture or re-enable the disabled English brush layer");return;}s->phase=21;s->settle=0;
+            if(!save(grab(),reportPath+".disabled.png")||!click(window,child(window->contentItem(),"brushLayerEnabled"))){finish("Cannot capture or re-enable the disabled English brush layer");return;}s->phase=21;s->settle=0;
         }else if(s->phase==21) {
             if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||++s->settle<3)return;
             auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");
@@ -651,9 +668,16 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
                 ||!hint||hint->property("text").toString()!=c->brushStatus()){finish("Re-enabling the brush layer did not restore paint availability");return;}
             auto *plot=child(window->contentItem(),"scopePlotImage");
             if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
-            const auto image=window->grabWindow();s->scopeInk=scopeInkSamples(image,window,plot);
+            const auto image=grab();s->scopeInk=scopeInkSamples(image,window,plot);
             if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
-            if(!image.save(reportPath+".layers.png")){finish("Cannot retain re-enabled English layer controls");return;}
+            if(!save(image,reportPath+".layers.png")){finish("Cannot retain re-enabled English layer controls");return;}
+            // Capacity cases inspect admission/feedback and preserve edits;
+            // their repeated temporary documents do not need full-source plots.
+            // Retain the full checks above and restore exact statistics below.
+            const auto scopeMasks=masks(c);const auto scopeHistory=cursor(c);
+            if(!c->exactScopes()||!click(window,child(window->contentItem(),"exactScopesCheck"))||c->exactScopes()) {finish("Cannot select preview statistics for capacity checks");return;}
+            s->capacityPreviewStatistics=true;s->scopeControlsReadonly=masks(c)==scopeMasks&&cursor(c)==scopeHistory;
+            if(!s->scopeControlsReadonly){finish("Statistics choice changed brush intent/history");return;}
             BrushMaskGeometry::Stroke stroke{{.002,.6,1},{}};
             stroke.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,{{.5,.5},1});
             BrushMaskDocument::Document full{{{"capacity_full",true,0,{}}}};
@@ -729,12 +753,19 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->capacityTargets=s->capacityExisting&&capacityReady("new-at-stroke-cap",true);
             if(!s->capacityTargets){finish("A full selected layer incorrectly blocks a new layer");return;}
             if(!c->executeEditCommand({{"command","mask.brush.replace"},{"document",s->reduced}})){finish("Cannot restore owned brush intent after capacity checks");return;}
-            c->setLanguage("en_US");s->phase=41;s->settle=0;
+            c->setLanguage("en_US");s->phase=54;s->settle=0;
+        }else if(s->phase==54) {
+            if(!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            const auto scopeMasks=masks(c);const auto scopeHistory=cursor(c);
+            if(c->exactScopes()||!click(window,child(window->contentItem(),"exactScopesCheck"))||!c->exactScopes()){finish("Cannot restore full statistics after capacity checks");return;}
+            s->capacityExactStatistics=true;s->scopeControlsReadonly=s->scopeControlsReadonly&&masks(c)==scopeMasks&&cursor(c)==scopeHistory;
+            if(!s->scopeControlsReadonly){finish("Restoring full statistics changed brush intent/history");return;}
+            s->phase=41;s->settle=0;
         }else if(s->phase==41) {
-            if(!c->scopePlotCurrent()||c->scopesPixelCount()!=2659021||!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
+            if(!c->exactScopes()||!c->scopePlotCurrent()||c->scopePlotPixels()!=2659021||c->scopesPixelCount()!=2659021||!previewDisplayedReady(c,window)||++s->settle<3||brushControls(window)["pending"].toBool())return;
             auto *plot=child(window->contentItem(),"scopePlotImage");
             if(!plot||plot->property("status").toInt()!=1||plot->property("source").toUrl()!=QUrl(c->scopePlotUrl())){s->settle=0;return;}
-            s->scopeInk=scopeInkSamples(window->grabWindow(),window,plot);
+            s->scopeInk=scopeInkSamples(grab(),window,plot);
             if(!c->brushReady()||!c->scopePlotCurrent()||s->scopeInk<64){s->settle=0;return;}
             if(masks(c)!=s->reduced||s->capacityCases.size()!=7||s->capacityReadyCases.size()!=4){finish("Capacity matrix changed original intent or left cases incomplete");return;}finish({});
         }

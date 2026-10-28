@@ -136,7 +136,23 @@ def validate_brush(binary: Path, environment: dict[str, str], home: Path,
     screenshots = all(Path(str(report) + suffix).is_file()
                       for suffix in (".before.png", ".painted.png", ".reopen.png", ".zoom.png", ".layers.png", ".disabled.png", ".selected-stroke.png", ".reveal.png", ".capacity.png"))
     pan_checks = _pan_checks(data, report)
-    passed = (code == 0 and data.get("passed") is True and not errors and screenshots and all(pan_checks.values())
+    capacity_scope_checks = {
+        "preview_selected": data.get("capacity_preview_statistics") is True,
+        "full_restored": data.get("capacity_exact_statistics_restored") is True,
+        "controls_readonly": data.get("scope_controls_readonly") is True,
+        "final_full_current": (data.get("exact_scopes_requested") is True
+            and data.get("scope_plot_current") is True and data.get("scope_plot_pixels") == 2659021),
+        "lossless_capture_encoding": (data.get("capture_png_compression") == 1
+            and type(data.get("capture_encode_calls")) is int and data["capture_encode_calls"] >= 15),
+    }
+    try:
+        measurements = [data[k] for k in ("capture_encode_total_ms", "window_grab_total_ms", "window_grab_max_ms")]
+        capacity_scope_checks["capture_observability"] = (all(type(v) in (int,float) and math.isfinite(v) and v >= 0 for v in measurements)
+            and measurements[2] <= measurements[1] and type(data.get("window_grab_calls")) is int
+            and data["window_grab_calls"] >= data.get("capture_encode_calls", 15))
+    except (KeyError, TypeError):
+        capacity_scope_checks["capture_observability"] = False
+    passed = (all(capacity_scope_checks.values()) and code == 0 and data.get("passed") is True and not errors and screenshots and all(pan_checks.values())
               and all(data.get(key) is True for key in required)
               and data.get("synthetic_fixture") is True and data.get("scope_pixels") == 2659021
               and data.get("gpu_active") is (mode == "gpu") and data.get("elapsed_ms", 45000) < 45000
@@ -150,7 +166,7 @@ def validate_brush(binary: Path, environment: dict[str, str], home: Path,
               and data.get("native_gpu_brush") is False and data.get("native_float_raw_decoder") is False)
     result = {"mode": "brush-" + mode, "passed": passed, "returncode": code,
               "source_commit": data.get("source_commit"), "qml_errors": errors,
-              "screenshots_saved": screenshots, "pan_checks": pan_checks, "report": data}
+              "screenshots_saved": screenshots, "pan_checks": pan_checks, "capacity_scope_checks": capacity_scope_checks, "report": data}
     if not passed:
         print(log[-16000:], file=sys.stderr, flush=True)
     return result
