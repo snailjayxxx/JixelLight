@@ -5161,10 +5161,12 @@ private slots:
             const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,raw,0);
             const auto encoded=ImagePipeline::processWithPlan(state.geometry.apply(source),plan);
             ScopePlotRequest request{source,plan,state.geometry,"waveform",1,true}; const auto shared=renderScopePlots(request,{});
+            const auto completed=renderEncodedScopePlots(encoded);
             const QStringList modes{"waveform","parade","vectorscope"};
             for (int i=0;i<3;++i) {
                 ScopePlotCounts counts(modes[i]); QVERIFY(counts.add(encoded)); request.mode=modes[i];
                 const auto individual=renderScopePlot(request,{}); const auto actual=cache.render(request);
+                QCOMPARE(completed[i].image,counts.image()); QCOMPARE(completed[i].pixels,counts.pixels); QVERIFY(completed[i].error.isEmpty());
                 QCOMPARE(shared[i].image,individual.image); QCOMPARE(shared[i].image,counts.image()); QCOMPARE(actual.image,shared[i].image);
                 QCOMPARE(actual.pixels,quint64(encoded.width())*encoded.height()); QCOMPARE(actual.pixels,shared[i].pixels); QVERIFY(actual.error.isEmpty());
                 ++request.revision; const auto hit=cache.render(request); QCOMPARE(hit.image.cacheKey(),actual.image.cacheKey());
@@ -5174,6 +5176,25 @@ private slots:
         }
         QCOMPARE(cache.snapshot()["misses"].toInteger(),qint64(batches)); QCOMPARE(cache.snapshot()["hits"].toInteger(),qint64(batches*8));
         QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=cache.snapshot()["budget_bytes"].toInteger());
+        // Single columns, extreme channels and transparent hidden RGB still
+        // use every encoded sample, independent of the source row stride.
+        for (const QSize size : {QSize(1,1),QSize(1,259),QSize(513,3)}) {
+            const qsizetype stride=qsizetype(size.width()+5)*sizeof(QRgba64);
+            QByteArray storage(stride*size.height(),char(0xa5));
+            QImage padded(reinterpret_cast<uchar *>(storage.data()),size.width(),size.height(),stride,QImage::Format_RGBA64);
+            for (int y=0;y<size.height();++y) for (int x=0;x<size.width();++x) {
+                const quint16 value[]{0,1,63,64,32767,32768,65534,65535};
+                reinterpret_cast<QRgba64 *>(padded.scanLine(y))[x]=QRgba64::fromRgba64(value[(x+y)%8],value[(x*3+y*5)%8],value[(x*7+y*3)%8],value[(x+y*3)%8]);
+            }
+            const QByteArray before(storage.constData(),storage.size());const auto plots=renderEncodedScopePlots(padded);const QStringList modes{"waveform","parade","vectorscope"};
+            for (int i=0;i<3;++i) {
+                ScopePlotCounts truth(modes[i]);QVERIFY(truth.add(padded));
+                QCOMPARE(plots[i].image,truth.image());QCOMPARE(plots[i].pixels,truth.pixels);QVERIFY(plots[i].error.isEmpty());
+            }
+            QCOMPARE(storage,before);
+            const auto cancelledPlots=renderEncodedScopePlots(padded,std::make_shared<std::atomic_bool>(true));
+            for (const auto &plot:cancelledPlots) {QVERIFY(plot.image.isNull());QCOMPARE(plot.pixels,quint64(0));}
+        }
     }
     void scopePlotKeysCoverModeIndependentBatchesAndActualDependencies() {
         QImage source(12,9,QImage::Format_RGBA64); source.fill(Qt::gray);

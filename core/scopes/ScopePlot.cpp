@@ -94,8 +94,35 @@ std::array<ScopePlotResult,3> renderEncodedScopePlots(const QImage &encoded,cons
         if (encoded.isNull() || encoded.format()!=QImage::Format_RGBA64 || cancelled(cancel)) return {};
         PerformanceSpan timing("cpu_scope_plots_encoded",{{"pixels",qint64(encoded.width())*encoded.height()},{"modes",3}});
         std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
+        // All three plots consume the same immutable encoded frame. Read each
+        // pixel once, retaining the individual reference modes' exact integer
+        // levels, horizontal bins and floating-point chroma rounding.
+        auto *wave=counts[0].bins.data();
+        auto *parade=counts[1].bins.data();
+        auto *vector=counts[2].bins.data();
+        constexpr int columns=ScopePlotCounts::Columns, levels=ScopePlotCounts::Levels;
+        constexpr int chroma=ScopePlotCounts::ChromaSize;
+        for (int y=0;y<encoded.height();++y) {
+            if (cancelled(cancel)) return {};
+            const auto row=reinterpret_cast<const QRgba64 *>(encoded.constScanLine(y));
+            for (int x=0;x<encoded.width();++x) {
+                const quint32 r=row[x].red(), g=row[x].green(), b=row[x].blue();
+                const quint32 luma=(2126*r+7152*g+722*b+5000)/10000;
+                const int column=encoded.width()>1 ? int(qint64(x)*(columns-1)/(encoded.width()-1)) : columns/2;
+                ++wave[(levels-1-int(luma>>6))*columns+column];
+                ++parade[(levels-1-int(r>>6))*3*columns+column];
+                ++parade[(levels-1-int(g>>6))*3*columns+columns+column];
+                ++parade[(levels-1-int(b>>6))*3*columns+2*columns+column];
+                const double red=r/65535.0, green=g/65535.0, blue=b/65535.0;
+                const double yPrime=.2126*red+.7152*green+.0722*blue;
+                const auto cx=int(std::lround(std::clamp(.5+(blue-yPrime)/1.8556,0.0,1.0)*(chroma-1)));
+                const auto cy=int(std::lround(std::clamp(.5-(red-yPrime)/1.5748,0.0,1.0)*(chroma-1)));
+                ++vector[cy*chroma+cx];
+            }
+        }
+        for (auto &count:counts) count.pixels=quint64(encoded.width())*encoded.height();
         for (int i=0;i<3;++i) {
-            if (!counts[i].add(encoded,cancel) || cancelled(cancel)) return {};
+            if (cancelled(cancel)) return {};
             results[i]={counts[i].image(),counts[i].pixels,{}};
             if (results[i].image.isNull()) return fail("Scope plot image allocation failed");
         }

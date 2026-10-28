@@ -82,7 +82,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         bool radiusProbeDone=false;int heldRadiusGuards=0;QJsonArray radiusRecords,radiusHintRecords;int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
-        QJsonObject initial,painted,erased;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
+        QJsonObject initial,painted,erased,commitCheck;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
         std::shared_ptr<QPointingDevice> pen;std::optional<BM::Stroke> expectedPaint,expectedErase;
     };
     auto s=std::make_shared<State>();s->clock.start();s->sourceHash=hash(source);
@@ -98,7 +98,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
         const bool passed=error.isEmpty()&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
-        const QJsonObject d{{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
+        const QJsonObject d{{"commit_check",s->commitCheck},{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
@@ -286,7 +286,12 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             const auto expectedStroke=erase?s->expectedErase:s->expectedPaint;
             const bool exact=expectedStroke&&doc.layers.size()==1&&doc.layers[0].strokes.size()==size_t(erase?2:1)&&sameStroke(doc.layers[0].strokes.back(),*expectedStroke)&&std::abs(doc.layers[0].strokes.back().dabs.front().pressure-s->initialPressure)<1e-9;
             const int composition=delta(color,s->liveColor);if(composition>2)return;
-            s->oneUndo=history(c)==s->initialHistory+(erase?2:1);if(!exact||!s->oneUndo||c->brushDrawing()){finish("Pressure sequence was duplicated, flattened or committed as multiple history edits");return;}
+            s->oneUndo=history(c)==s->initialHistory+(erase?2:1);if(!exact||!s->oneUndo||c->brushDrawing()){
+                QJsonObject before,oracle;BrushMaskDocument::toJson(doc,&before);
+                if(expectedStroke){BrushMaskDocument::Document expectedDoc;expectedDoc.layers.push_back({"expected",true,1,{*expectedStroke}});BrushMaskDocument::toJson(expectedDoc,&oracle);}
+                s->commitCheck={{"exact",exact},{"one_undo",s->oneUndo},{"drawing",c->brushDrawing()},{"history",history(c)},{"expected_history",s->initialHistory+(erase?2:1)},{"before_grab",before},{"after_grab",masks(c)},{"oracle",oracle},{"editor_radius",editor->property("radius").toDouble()}};
+                finish("Pressure sequence was duplicated, flattened or committed as multiple history edits");return;
+            }
             if(erase){s->pressureErase=true;s->erased=masks(c);s->commitEraseDelta=composition;}else{s->pressurePaint=true;s->painted=masks(c);s->paintColor=color;s->commitPaintDelta=composition;}
             if(!capture(erase?"erased":"painted",shot)||!click(window,item("undoEditButton"))){finish("Cannot inspect committed pressure picture or click Undo");return;}s->phase=erase?13:6;
         }else if(s->phase==6||s->phase==13){

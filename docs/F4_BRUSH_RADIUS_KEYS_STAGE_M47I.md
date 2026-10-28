@@ -94,7 +94,25 @@ at `evidence/brush-radius-I-root-local-v2/receipt.json`. The earlier Root v1
 failure stays separate. Maximum live/commit display difference is1/255 within
 the original2/255 limit.
 
-## Committed acceptance pending
+## Original committed CI failed
+
+The committed I head `e0405de` runs in
+[CI40704878923](https://github.com/snailjayxxx/JixelLight/actions/runs/40704878923).
+Linux and macOS pass the strict68-test/native/numerical audits in1041.51s and
+1499.28s; the actual macOS23-mode SDK-stripped package also passes. Windows
+passes68 tests, the original pointer/Erase flows and all four owned pressure/
+radius modes, then genuine Sony CPU pressure GUI validation takes60371ms,
+exceeding the unchanged60000ms limit. The final full waveform is present;
+Sony CPU export, Sony GPU pressure and the Windows package do not complete.
+I is not accepted.
+
+Four original validation ZIPs and three full original job logs prove every
+actual checkout `d862db4f4d546eda15eddf109fe1593c4bce305b`, tree
+`3dabcb880e777b1ac20a8a74516fa831139dd840`, equal to I. SHA/CRC/extracted-file
+checks and the unchanged failed report are retained at
+`evidence/ci-40704878923/terminal-failed-v1/receipt.json`. Linux/macOS successes
+remain platform evidence. A [completed-frame counting follow-up](F4_SCOPE_PLOT_FUSED_COUNT_STAGE_M47I1.md)
+keeps this failure and the original45/60/120-second gates.
 
 The latest fully accepted checkpoint is H `de2cfd9` /
 [CI40688164562](https://github.com/snailjayxxx/JixelLight/actions/runs/40688164562):
