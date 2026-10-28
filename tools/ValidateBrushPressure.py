@@ -18,6 +18,8 @@ SONY_SHA256 = "aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d"
 CAPTURES = {"before", "cancel-paint-held", "cancel-paint-guarded", "paint-held",
             "painted", "reopened-paint", "cancel-erase-held", "cancel-erase-guarded",
             "erase-held", "erased", "final"}
+OWNED_CAPTURES = CAPTURES | {"locale-preview-1", "locale-preview-2", "locale-preview-3",
+                             "locale-full-4", "locale-full-5", "locale-full-6"}
 REQUIRED = ("settings_isolated", "source_unchanged", "actual_photo_app_UI",
             "pressure_paint_reference", "pressure_erase_reference", "cancel_paint",
             "cancel_erase", "one_undo", "undo_redo", "project_reopen",
@@ -31,6 +33,22 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def validate_scope_locale(data: dict, mode: str) -> None:
+    source_pixels = data["source_pixels"]
+    assert data["scope_locale_checks"] == 6 and data["scope_locale_unchanged"]
+    rows = data["scope_locale_records"]
+    assert len(rows) == 6 and [(r["full"], r["language"]) for r in rows] == [
+        (full, language) for full in (False, True) for language in ("en_US", "zh_CN", "en_US")]
+    for row in rows:
+        english = row["language"] == "en_US"
+        expected = (("Full-resolution statistics" if english else "全分辨率统计") if row["full"] else
+                    ("GPU preview statistics" if english else "GPU 预览统计") if mode == "gpu" else
+                    ("Preview statistics" if english else "预览统计"))
+        assert row["UI"] == row["controller"] == row["expected"] == expected
+        assert row["stable"] and row["pixels"] == source_pixels
+    assert all(row["revision"] == rows[start]["revision"] for start in (0, 3) for row in rows[start:start + 3])
 
 
 def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Path,
@@ -132,7 +150,9 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert data["deadline_ms"] == 45000 and 0 < data["elapsed_ms"] < 45000
             assert data["source_kind"] == "owned-rgba64-png"
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
-        assert len(data["captures"]) == 11 and {c["label"] for c in data["captures"]} == CAPTURES
+            validate_scope_locale(data, mode)
+        captures = CAPTURES if raw else OWNED_CAPTURES
+        assert len(data["captures"]) == len(captures) and {c["label"] for c in data["captures"]} == captures
         copied = {}
         for capture in data["captures"]:
             label = capture["label"]

@@ -79,7 +79,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     if(!owned->isValid()||!image.save(source)){QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;}
     struct State {
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
-        int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
+        int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
         QJsonObject initial,painted,erased;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
@@ -97,8 +97,8 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
-        const bool passed=error.isEmpty()&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
-        const QJsonObject d{{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
+        const bool passed=error.isEmpty()&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const QJsonObject d{{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
@@ -143,11 +143,35 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         };
         const auto frozen=[&](const QJsonObject &doc,int cursor){return masks(c)==doc&&history(c)==cursor&&c->renderRevision()==s->revision;};
         const auto expected=[&](BM::StrokeMode mode){BM::StrokeBuilder builder(512,320,{.08,1,.8},mode);for(auto v:std::array<BM::Dab,5>{{{{.25,.6},s->initialPressure},{{.4,.6},.4},{{.6,.6},.8},{{.75,.6},.6},{{.75,.6},0}}}){if(s->mouse)v.pressure=1;if(!builder.append(v))return std::optional<BM::Stroke>{};}return builder.finish();};
+        const auto checkLocale=[&](bool full)->QString {
+            const auto pixelCount=c->scopesPixelCount();const auto revision=c->renderRevision();
+            const auto intent=c->gpuPlan(true).state.toJson();const int cursor=history(c);
+            const auto red=c->redHistogram(),green=c->greenHistogram(),blue=c->blueHistogram(),luma=c->lumaHistogram();
+            const bool gpu=c->gpuActive();
+            auto *label=item("scopeStatusLabel");if(!label)return "SCOPE_LOCALE_MISSING_UI_LABEL";
+            for(const auto *language:{"en_US","zh_CN","en_US"}) {
+                c->setLanguage(language);
+                const bool english=QString::fromLatin1(language)=="en_US";
+                const QString expected=full?(english?QStringLiteral("Full-resolution statistics"):QStringLiteral("全分辨率统计")):
+                    gpu?(english?QStringLiteral("GPU preview statistics"):QStringLiteral("GPU 预览统计")):
+                    (english?QStringLiteral("Preview statistics"):QStringLiteral("预览统计"));
+                const auto controllerText=c->scopesStatus(),ui=label->property("text").toString();
+                const bool stable=c->scopesPixelCount()==pixelCount&&c->renderRevision()==revision&&c->gpuPlan(true).state.toJson()==intent&&history(c)==cursor
+                    &&c->redHistogram()==red&&c->greenHistogram()==green&&c->blueHistogram()==blue&&c->lumaHistogram()==luma&&c->gpuActive()==gpu;
+                s->localeUnchanged=s->localeUnchanged&&stable;
+                s->localeRecords.append(QJsonObject{{"full",full},{"language",language},{"controller",controllerText},{"UI",ui},{"expected",expected},{"stable",stable},{"pixels",qint64(pixelCount)},{"revision",qint64(revision)}});
+                if(controllerText!=expected||ui!=expected||!stable)return QString("SCOPE_LOCALE_MISMATCH expected=%1 controller=%2 UI=%3 stable=%4").arg(expected,controllerText,ui).arg(stable);
+                ++s->localeChecks;if(!capture(QString("locale-%1-%2").arg(full?"full":"preview").arg(s->localeChecks),grab()))return "SCOPE_LOCALE_CAPTURE_FAILED";
+            }
+            return {};
+        };
         if(s->phase==0){
             s->initial=masks(c);s->initialHistory=history(c);if(!s->initial.isEmpty()||!click(window,item("editBrushMaskCanvas"))){finish("Cannot enter actual photo brush tool");return;}
             editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);c->setLanguage("en_US");s->phase=1;s->settle=0;
         }else if(s->phase==1){
-            if(++s->settle<4)return;const auto shot=read(&s->baseline);if(shot.isNull()||!capture("before",shot)||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
+            if(++s->settle<4||!c->scopesPixelCount())return;
+            const auto localeError=checkLocale(false);if(!localeError.isEmpty()){finish(localeError);return;}
+            const auto shot=read(&s->baseline);if(shot.isNull()||!capture("before",shot)||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
         }else if(s->phase==2||s->phase==4||s->phase==9||s->phase==11){
             const bool erase=s->phase>=9,cancel=s->phase==2||s->phase==9;if(!advance())return;
             const auto doc=erase?s->painted:s->initial;const auto cursor=s->initialHistory+(erase?1:0);s->transient=s->transient&&frozen(doc,cursor);
@@ -195,7 +219,10 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             if(++s->settle<4)return;if(masks(c)!=s->painted||!click(window,item("editBrushMaskCanvas"))||!select(window,"brushLayerSelector",1)||!select(window,"brushModeSelector",1)){finish("Pressure project reopen/actual Erase selection failed");return;}
             if(!capture("reopened-paint",grab())||!start()){finish("Cannot start reopened pressure Erase");return;}s->phase=9;
         }else if(s->phase==15){
-            if(++s->settle<4)return;if(masks(c)!=s->erased){finish("Reopened pressure Erase intent differs");return;}s->reopened=true;
+            if(++s->settle<4)return;if(masks(c)!=s->erased){finish("Reopened pressure Erase intent differs");return;}s->reopened=true;c->setExactScopes(true);s->phase=17;
+        }else if(s->phase==17){
+            if(c->scopesPixelCount()!=512*320||!c->scopesStatus().contains("Full-resolution statistics"))return;
+            const auto localeError=checkLocale(true);if(!localeError.isEmpty()){finish(localeError);return;}
             const auto loaded=loadSourceFresh(source,{});s->expected=reference(loaded.image,c->gpuPlan(true));if(s->expected.isNull()||!c->exportCurrent(QUrl::fromLocalFile(output),"srgb",100)){finish("Cannot independently render/export the reopened pressure edit");return;}s->phase=16;
         }else if(s->phase==16){
             if(!s->exportDone)return;const QImage actual(output);const bool exact=actual.colorSpace()==s->expected.colorSpace()&&actual.convertToFormat(QImage::Format_RGBA64)==s->expected;

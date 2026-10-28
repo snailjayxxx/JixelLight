@@ -174,14 +174,37 @@ job-checkout/artifact receipts remain required. The original G CI stays failed.
 
 
 
-## Follow-up committed acceptance remains pending
+## G.1 committed acceptance at39bb07e
 
-CI retains every earlier gate and adds the 42-row input fixture, controller
-pressure regression and six actual controlled-pressure photo workflows. Windows
-and macOS packages deploy the export verifier and must pass all 23 modes after
-SDK paths are stripped, including the original 17. Three-platform 68/68, actual
-23-mode packages and original artifact/job-checkout receipts are required before
-this new committed stage can be accepted.
+[CI40675071304](https://github.com/snailjayxxx/JixelLight/actions/runs/40675071304)
+passes68/68 with zero failures/skips on Linux1042.85s, Windows1516.09s and
+macOS1404.94s. Core215/display-ICC4/schedulingQt6/42input rows, all18 alpha draws,
+all prior numerical/export/source-integrity/full-scope/refund checks and all six
+controlled-pressure photo modes pass. Both actual23-mode SDK-stripped packages
+pass, including their original17 modes and deployed independent export verifier.
+
+| Sony pressure acceptance | CPU GUI ms | GPU GUI ms | CPU combined ms | GPU combined ms |
+| --- | ---: | ---: | ---: | ---: |
+| Windows native | 52271 | 28046 | 70832.421 | 71060.061 |
+| Windows deployed package | 52658 | 28034 | 70877.302 | 71547.289 |
+| macOS native | 20586 | 21653 | 49129.904 | 48839.229 |
+| macOS deployed package | 22429 | 19968 | 47197.134 | 53011.522 |
+| Linux native | 16396 | 18907 | 62128.704 | 62322.570 |
+
+Every Sony case retains the original60000ms GUI, one combined120000ms
+export/exit/reference slice, full32,947,264 scope/plot pixels,11 controls-only
+crops and shared3GiB admission. Windows native CPU records27 window grabs,
+12485.492ms total and1022.776ms maximum; the original G did not record grab
+latency, so no previous grab timing is invented. This accepts this exact committed
+follow-up; the original G60082ms failure remains failed.
+
+All five original validation/package ZIPs have verified size/SHA256/CRC and safe
+extraction; all three full original job logs are preserved without line-ending
+normalization. Actual checkout99c8fb0b5deee8c5cc43bbafba5d3f63b1285a90 in every
+job has treea59f0b04bb28d0af5dbcb36d108a55cacbf64bb3 equal to39bb07e. Independent
+numeric/native/package/source audits and the immutable originals are physically
+archived at evidence/ci-40675071304/terminal-accepted-v1/receipt.json. Earlier
+Linux and Windows artifact-only snapshots remain separate historical partials.
 
 These tests inject controlled Qt-QPA stylus packets into the actual application.
 They do not verify a physical tablet driver, native GPU brush computation, native

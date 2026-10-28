@@ -22,6 +22,7 @@
 #include "diagnostics/ActionTrace.h"
 #include "diagnostics/DiagnosticBundle.h"
 
+#include <utility>
 #include <QDebug>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -2113,13 +2114,27 @@ void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes,
     emit scopesChanged();
 }
 QString PhotoController::scopesStatus() const {
+    // Completed scopes keep their producer label across a language switch.
+    // Translate the known labels when read, without restarting their producer.
+    const auto label = [this] {
+        const std::pair<const char *, const char *> known[] = {
+            {"视区预览统计", "Viewport preview"}, {"预览统计", "Preview statistics"},
+            {"全分辨率统计", "Full-resolution statistics"},
+            {"相机占位图：不参与统计", "Camera placeholder: no statistics"},
+            {"GPU 视区预览", "GPU viewport preview"}, {"GPU 预览统计", "GPU preview statistics"}
+        };
+        for (const auto &[zh, en] : known)
+            if (m_scopesLabel == QString::fromUtf8(zh) || m_scopesLabel == QString::fromUtf8(en))
+                return uiText(QString::fromUtf8(zh), QString::fromUtf8(en));
+        return m_scopesLabel;
+    }();
     if(m_scopesErrorRevision==m_requestedRevision&&!m_scopesError.isEmpty())
         return m_deferredBudgetJobs[std::size_t(m_scopesErrorRank==1?1:0)].pending
             ?uiText("统计暂不可用：图像内存正被其他任务使用。","Statistics unavailable: image memory is busy.")
             :uiText("统计计算失败：","Statistics failed: ")+m_scopesError;
-    if (m_previewSource.isNull()) return m_scopesLabel.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : m_scopesLabel;
+    if (m_previewSource.isNull()) return label.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : label;
     if (m_scopesRevision != m_requestedRevision) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
-    return m_scopesLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
+    return label + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
         + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
 }
 void PhotoController::setExactScopes(bool enabled) {
