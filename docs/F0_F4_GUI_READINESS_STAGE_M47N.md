@@ -102,7 +102,25 @@ sibling-helper import is preserved; correcting that observer required no native
 rerun or report/gate/source modification. Original local f8119ca stamps remain,
 requiring exact committed-source fingerprint proof rather than retagging.
 
-## Remaining acceptance
+## CI309 terminal result
+
+[CI309](https://github.com/snailjayxxx/JixelLight/actions/runs/40834405751) is
+**failed**. All68/all3 pass zero-fail/skip in Linux/Windows/macOS
+1,097.29/1,767.11/1,562.09s. Windows/macOS native flows and both actual24-mode
+packages pass strict audits. Linux owned CPU/GPU15,544/18,786ms and nativeguide14
+3,032ms pass, but the unchanged wrapper fails two original Library232 Dialog
+implicitHeight warnings. Overlay ownership with an Overlay-dependent width did
+not resolve actual Linux layout initialization. Linux later Sony GUI/basicGPU
+smoke are unreached, so its GPU wait is still unverified there.
+
+Five original validation ZIPs, three full actuale23df6a/tree8641e0f logs and
+source213 remain at `evidence/ci-40834405751/terminal-failed-v1/receipt.json`
+(2,151files). This failed run stays failed. The subsequent
+[M47O fixed-width slice](F0_VIRTUAL_COPY_OVERLAY_WIDTH_STAGE_M47O.md) adds a paired
+actual Window Overlay geometry reproduction and normal Root validation;
+actual Linux resolution still requires its own committed CI.
+
+## Acceptance limits retained at this checkpoint
 
 Own committed all68/all3, both actual24-mode packages,5 original validation ZIPs,
 3 complete runtime source logs and source213 publication matching remain required.

@@ -234,7 +234,8 @@ Rectangle {
         // The Loader's initial size can change while wrapped text is measured.
         parent: Overlay.overlay
         anchors.centerIn: parent
-        width: parent ? Math.min(parent.width-40,460) : 460
+        // Keep wrapped-text measurement stable while the Overlay initializes.
+        width: 460
         modal: true
         title: root.t("删除虚拟副本", "Delete virtual copy")
         property string targetId: ""
