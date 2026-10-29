@@ -15,6 +15,7 @@ from ValidateSonyBrushCanvas import validate_sony_brush
 from ValidateBrushErase import validate_brush_erase
 from ValidateBrushPressure import validate_brush_pressure
 from ValidateShortcutHelp import validate_shortcut_help
+from ValidateEditRecipe import run as validate_edit_recipe
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -145,6 +146,17 @@ def main() -> int:
                     reports / ("sony-brush-pressure-" + mode + ".json"), mode,
                     args.sony_brush_raw.resolve(), pressure_verifier))
         results.append(validate_shortcut_help(executable, environment, Path(temp) / "shortcut-help", reports / "shortcut-help.json"))
+        # Exercise the real packaged dialog with a fake in-memory clipboard.  Native
+        # clipboard writes are reserved for explicitly isolated CI runner tests.
+        recipe_qpa = 'windows' if sys.platform == 'win32' else ('cocoa' if sys.platform == 'darwin' else 'offscreen')
+        try:
+            recipe = validate_edit_recipe(executable, reports / 'edit-recipe',
+                results[0].get('source_commit') or '', recipe_qpa, 1, False, 'fake', environment)
+            recipe['sdk_paths_removed'] = True
+        except (OSError, ValueError) as error:
+            recipe = {'mode': 'edit-recipe-fake', 'passed': False, 'error': str(error),
+                      'production_accepted': False, 'sdk_paths_removed': True}
+        results.append(recipe)
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))

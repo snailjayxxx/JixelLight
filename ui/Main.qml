@@ -6,6 +6,8 @@ import QtCore
 
 ApplicationWindow {
     id: window
+    // Private candidate: production clipboard reader; tests may substitute a race proxy.
+    property var recipeClipboardAdapter: recipeClipboard
     visible: true
     width: 1540; height: 920; minimumWidth: 1180; minimumHeight: 720
     title: "JixelLight " + appVersion + (photoController.projectName ? " — " + photoController.projectName : "")
@@ -75,6 +77,175 @@ ApplicationWindow {
     function exportSpaceKey(index) {
         return ["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"][Math.max(0, Math.min(3, index))]
     }
+
+    Dialog {
+        id: editRecipeDialog
+        objectName: "editRecipeDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(window.width - 32, 720)
+        height: Math.min(window.height - 40, 560)
+        modal: true
+        focus: true
+        title: window.t("应用编辑配方", "Apply edit recipe")
+        closePolicy: Popup.CloseOnEscape
+        property bool targetCurrent: false
+        property string targetProject: ""
+        property string targetFile: ""
+        property string errorText: ""
+        // Private prototype: retain the exact clipboard snapshot separately from the read-only preview.
+        property string recipeText: ""
+        function previewText(value) {
+            let end = Math.min(value.length, 4096)
+            if (end < value.length && end > 0) {
+                const last = value.charCodeAt(end - 1), next = value.charCodeAt(end)
+                if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) --end
+            }
+            return value.slice(0, end).replace(/\u000d/g, "\\u000D").replace(/\u00a0/g, "\\u00A0").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")
+        }
+        function pasteRecipe() {
+            if (!window.recipeClipboardAdapter) {
+                errorText = window.t("剪贴板不可用。", "Clipboard unavailable.")
+                return
+            }
+            const result = window.recipeClipboardAdapter.snapshot()
+            if (result.status !== "ok") {
+                errorText = result.status === "too-long"
+                    ? window.t("配方文本过长。", "The recipe text is too long.")
+                    : window.t("剪贴板不可用。", "Clipboard unavailable.")
+                return
+            }
+            recipeText = result.text
+            errorText = ""
+        }
+        function applyRecipe() {
+            errorText = ""
+            if (!targetCurrent || !photoController.currentSourceAvailable) {
+                errorText = window.t("当前版本已变更，请重新打开此窗口。", "The current version changed. Reopen this dialog.")
+                return
+            }
+            if (recipeText.length > 1048576) {
+                errorText = window.t("配方文本过长。", "The recipe text is too long.")
+                return
+            }
+            let commands
+            try {
+                commands = JSON.parse(recipeText)
+            } catch (error) {
+                errorText = window.t("无法读取 JSON 配方：", "Cannot read the JSON recipe: ") + error.message
+                return
+            }
+            if (!Array.isArray(commands) || commands.length < 1 || commands.length > 10000) {
+                errorText = window.t("配方必须是包含 1 至 10000 条编辑命令的数组。", "Use an array of 1 to 10000 edit commands.")
+                return
+            }
+            if (!photoController.executeEditCommands(commands)) {
+                errorText = photoController.statusMessage
+                return
+            }
+            close()
+        }
+        onOpened: {
+            targetProject = photoController.projectPath
+            targetFile = photoController.currentFile
+            targetCurrent = photoController.currentSourceAvailable
+            errorText = ""
+            recipeText = ""
+            editRecipeText.forceActiveFocus()
+        }
+        Connections {
+            target: photoController
+            function onCurrentIndexChanged() { if (editRecipeDialog.visible) editRecipeDialog.targetCurrent = false }
+            function onProjectChanged() {
+                if (editRecipeDialog.visible && photoController.projectPath !== editRecipeDialog.targetProject)
+                    editRecipeDialog.targetCurrent = false
+            }
+        }
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: window.t("粘贴离线命令行使用的 JSON 编辑命令数组。所有命令成功后一次应用，可一步撤销。",
+                    "Paste a JSON edit-command array used by the offline CLI. All commands apply together and can be undone in one step.")
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                Layout.fillWidth: true
+                text: editRecipeDialog.targetFile
+                wrapMode: Text.WrapAnywhere
+                maximumLineCount: 2
+                elide: Text.ElideMiddle
+                color: "#a3b2c1"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    objectName: "editRecipePaste"
+                    text: window.t("粘贴配方", "Paste recipe")
+                    onClicked: editRecipeDialog.pasteRecipe()
+                }
+                Label {
+                    objectName: "editRecipePreviewNote"
+                    Layout.fillWidth: true
+                    text: editRecipeDialog.recipeText.length > 4096
+                        ? window.t("只读预览已截断；回车、不换行空格及 Unicode 行/段分隔符以转义形式显示。请在原处查看完整配方。", "Read-only preview truncated; carriage returns, non-breaking spaces, and Unicode line/paragraph separators are escaped. Review the full recipe in its source.")
+                        : window.t("只读预览；回车、不换行空格及 Unicode 行/段分隔符以转义形式显示。", "Read-only preview; carriage returns, non-breaking spaces, and Unicode line/paragraph separators are escaped.")
+                    wrapMode: Text.WordWrap
+                }
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                TextArea {
+                    id: editRecipeText
+                    objectName: "editRecipeText"
+                    readOnly: true
+                    text: editRecipeDialog.previewText(editRecipeDialog.recipeText)
+                    Keys.priority: Keys.BeforeItem
+                    Keys.onPressed: function(event) {
+                        if (event.matches(StandardKey.Paste)) {
+                            event.accepted = true
+                            editRecipeDialog.pasteRecipe()
+                        }
+                    }
+                    wrapMode: TextEdit.NoWrap
+                    selectByMouse: true
+                    placeholderText: '[{"command":"develop.set","parameter":"exposure","value":0.5}]'
+                    font.family: "monospace"
+                }
+            }
+            Label {
+                objectName: "editRecipeError"
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: !editRecipeDialog.targetCurrent
+                    ? window.t("当前版本已变更，请重新打开此窗口。", "The current version changed. Reopen this dialog.")
+                    : editRecipeDialog.errorText
+                wrapMode: Text.WrapAnywhere
+                color: "#ffb4a9"
+                Layout.maximumHeight: 100
+                elide: Text.ElideRight
+                maximumLineCount: 4
+            }
+        }
+        footer: DialogButtonBox {
+            Button {
+                objectName: "editRecipeCancel"
+                text: window.t("取消", "Cancel")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: editRecipeDialog.close()
+            }
+            Button {
+                objectName: "editRecipeApply"
+                text: window.t("应用配方", "Apply recipe")
+                enabled: editRecipeDialog.targetCurrent && photoController.currentSourceAvailable && editRecipeDialog.recipeText.trim().length > 0
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: editRecipeDialog.applyRecipe()
+            }
+        }
+    }
+
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.undo() }
     Dialog {
@@ -471,6 +642,7 @@ ApplicationWindow {
             MenuItem { text: window.t("打开已有项目", "Open Existing Project"); enabled: !photoController.copyImportBusy; onTriggered: openProjectFolder.open() }
             MenuSeparator {}
             MenuItem { text: window.t("导入 XMP 到当前版本…", "Import XMP into current version…"); enabled: photoController.hasImage; onTriggered: photoController.openXmpImportDialog() }
+            MenuItem { objectName: "editRecipeMenuAction"; text: window.t("应用编辑配方…", "Apply edit recipe…"); enabled: photoController.currentSourceAvailable && !photoController.cropEditing && !photoController.brushDrawing; onTriggered: editRecipeDialog.open() }
             MenuItem { objectName: "relinkSourceMenuAction"; text: window.t("重新关联源文件…", "Relink source…"); enabled: photoController.hasImage && photoController.projectPath.length > 0 && !photoController.relinkBusy && !photoController.exportBusy; onTriggered: window.chooseRelinkSource() }
         }
         Menu {
@@ -530,6 +702,7 @@ ApplicationWindow {
             }
             ToolSeparator {}
             ToolButton {
+                objectName: "projectMenuButton"
                 text: window.t("项目 ▾", "Project ▾")
                 onClicked: projectActions.popup()
             }

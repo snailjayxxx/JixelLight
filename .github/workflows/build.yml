@@ -118,6 +118,18 @@ jobs:
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-cpu.json cpu
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-gpu.json gpu
           python tools/ValidateShortcutHelp.py "$EXE" gui-shortcut-help.json
+      - name: Recipe dialog and isolated native clipboard
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            RECIPE_QPA=windows
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            RECIPE_QPA=cocoa
+          fi
+          test -f "$EXE"
+          python tools/ValidateEditRecipe.py "$EXE" build/edit-recipe-native --expected-stamp "$(git rev-parse --short HEAD)" --qpa "$RECIPE_QPA" --dpr 1 --isolated-ci-native
       - name: Real Sony full-source brush pointer and exact waveform
         shell: bash
         run: |
@@ -263,6 +275,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-pressure-input/
+            build/edit-recipe-native/
             build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/
@@ -381,6 +394,10 @@ jobs:
           python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-cpu.json cpu
           xvfb-run -a python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-gpu.json gpu
           python tools/ValidateShortcutHelp.py ./build/bin/JixelLight gui-shortcut-help.json
+      - name: Recipe dialog and isolated X11 clipboard
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a python tools/ValidateEditRecipe.py ./build/bin/JixelLight build/edit-recipe-native --expected-stamp "$(git rev-parse --short HEAD)" --qpa xcb --dpr 1 --isolated-ci-native
       - name: Real Sony full-source brush pointer and exact waveform
         env:
           QT_QPA_PLATFORM: offscreen
@@ -465,6 +482,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-pressure-input/
+            build/edit-recipe-native/
             build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/

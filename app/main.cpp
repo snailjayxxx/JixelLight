@@ -1,4 +1,5 @@
 #include "app/ShortcutLabels.h"
+#include "app/RecipeClipboardReader.h"
 #include <QApplication>
 #include "app/BrushTabletInput.h"
 #include <QFileInfo>
@@ -56,9 +57,11 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"transparent-brush-pressure-canvas-smoke-report", "Validate controlled pressure on transparent owned pixels", "file"});
     arguments.addOption({"sony-brush-pressure-canvas-smoke-report", "Validate pinned real Sony pressure and exact export; controls-only captures", "file"});
     arguments.addOption({"shortcut-help-smoke-report", "Validate the actual shortcut guide and modal input ownership with owned pixels", "file"});
+    arguments.addOption({"edit-recipe-smoke-report", "Validate the edit recipe dialog with an in-memory clipboard and owned pixels", "file"});
+    arguments.addOption({"edit-recipe-clipboard-smoke-report", "Validate recipe clipboard using offscreen or explicitly isolated CI clipboard", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"));
@@ -85,10 +88,13 @@ int main(int argc, char *argv[]) {
     qmlRegisterType<BrushTabletInput>("JixelLight.Native",1,0,"BrushTabletInput");
     auto *provider = new ProcessedImageProvider;
     PhotoController controller(provider);
+    RecipeClipboardReader recipeClipboard;
     QQmlApplicationEngine engine;
+    QQmlEngine::setObjectOwnership(&recipeClipboard,QQmlEngine::CppOwnership);
     engine.addImageProvider("processed", provider);
     engine.addImageProvider("thumbnails", new ThumbnailProvider);
     engine.rootContext()->setContextProperty("photoController", &controller);
+    engine.rootContext()->setContextProperty("recipeClipboard", &recipeClipboard);
     engine.rootContext()->setContextProperty("appVersion", QString(JIXELLIGHT_VERSION));
     engine.rootContext()->setContextProperty("standardShortcutLabels", nativeShortcutLabels());
 
@@ -133,6 +139,16 @@ int main(int argc, char *argv[]) {
 
     QVariantList photos;
     for (const QString &path:arguments.positionalArguments()) photos.push_back(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+    if(arguments.isSet("edit-recipe-clipboard-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        startEditRecipeClipboardSmokeRun(&controller,window,arguments.value("edit-recipe-clipboard-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("edit-recipe-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        startEditRecipeSmokeRun(&controller,window,arguments.value("edit-recipe-smoke-report"));
+        return app.exec();
+    }
     if(arguments.isSet("shortcut-help-smoke-report")) {
         if(!window||!photos.isEmpty())return 2;
         startShortcutHelpSmokeRun(&controller,window,arguments.value("shortcut-help-smoke-report"));
