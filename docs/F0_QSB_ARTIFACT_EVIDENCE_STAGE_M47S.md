@@ -65,3 +65,7 @@ on all three platforms, both actual 24-mode packages, five original validation
 ZIPs including the visible qsb bundle, three complete checkout logs, source pins
 and an independently sealed strict audit. Existing 45/60/120-second GUI/export,
 32 Mi-pixel, 3 GiB reservation and colour-accuracy limits remain unchanged.
+
+## CI314: qsb evidence retained, Windows aggregate timeout
+
+[CI314](https://github.com/snailjayxxx/JixelLight/actions/runs/40914418539) completed all 69 tests and strict native audits on Linux, Windows and macOS; all three uploaded actual qsb bundles are present and their SHA-256 matches their reports. The actual macOS SDK-stripped package passed all 24 modes. Windows reached its **75-minute total job limit** during the deployed CPU Sony export/reference check. Its GUI and export write completed under their original GUI limit, but the independent reference was interrupted and the final package manifest was not produced. The original Windows package audit fails on that missing manifest. Five original validation ZIPs, three full checkout logs, the GitHub timeout annotation and the failed audit are sealed at `evidence/ci-40914418539/terminal-failed-v1/receipt.json` (2,650 files; `accepted=false`). This is not full acceptance. The aggregate-only follow-up is documented in [M4.7T](F0_WINDOWS_CI_BUDGET_STAGE_M47T.md).
