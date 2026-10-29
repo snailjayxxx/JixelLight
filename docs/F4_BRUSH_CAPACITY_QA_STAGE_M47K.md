@@ -15,8 +15,8 @@ whose tree `ba28535b743e03164719953d59029bfd91ac8b6d` equals documentation
 head `10fc96a`. Four original validation ZIPs and the three complete logs are
 retained, with SHA256, ZIP CRC, safe extraction and byte checks, at
 `evidence/ci-40772451380/terminal-failed-v1/receipt.json`. That run stays failed.
-The latest fully accepted implementation remains `f0f86df` / CI302 until a
-separate committed replacement passes all three platforms and both packages.
+The earlier `f0f86df` / CI302 acceptance keeps its separate evidence. The
+committed replacement acceptance is recorded below.
 
 ## Validation change
 
@@ -82,9 +82,42 @@ kernels, persistence and export code remain identical. The original
 32 Mi source-pixel, shared 3 GiB reservation, 60,000 ms Sony GUI and 120,000 ms
 combined export/reference gates remain. Physical tablet drivers, native GPU
 brushes, native FP32 RAW and the remaining F4/F0–F6 capabilities stay unfinished.
-PR16 remains Draft. The shortcut-help candidate remains private and unapplied.
+PR16 remains Draft.
 
 ## Committed acceptance
 
-Own three-platform 68-test and both actual 23-mode package acceptance is pending.
-These local results alone do not resolve the Windows CI failure.
+Implementation `1fbfe715a929a5181b56d2d68a093e61f11ed3dd` passes
+[CI304 / 40783796319](https://github.com/snailjayxxx/JixelLight/actions/runs/40783796319).
+Linux, Windows and macOS each pass **68/68 with zero failures/skips**, in
+**932.19 / 1,567.46 / 1,436.47 s**. Both actual SDK-stripped Windows/macOS packages
+pass all **23 modes**, including all old controlled pressure, alpha, RAW, scope,
+cancellation/refund and independently checked export gates.
+
+| Committed GUI, ms | Windows native | Windows package | macOS native | macOS package |
+| --- | ---: | ---: | ---: | ---: |
+| Owned canvas CPU | 43,910 | 43,920 | 37,962 | 37,027 |
+| Owned canvas GPU | 26,596 | 26,511 | 38,454 | 36,735 |
+| Genuine Sony pressure CPU | 49,533 | 49,612 | 17,911 | 22,068 |
+| Genuine Sony pressure GPU | 25,650 | 25,717 | 18,115 | 19,692 |
+| Sony combined export/reference CPU | 70,617.761 | 72,309.140 | 48,788.336 | 50,213.511 |
+| Sony combined export/reference GPU | 73,323.318 | 71,236.126 | 46,188.883 | 48,288.233 |
+
+Windows owned CPU retains about 1.08 s headroom under the original 45 s gate.
+The completed histogram and plot both contain all 2,659,021 pixels. Every Sony
+flow retains all 32,947,264 pixels, a separate fresh-source exact PNG16/ICC
+reference and the shared 3 GiB reservation. PNG byte hashes are platform-local;
+the independent reader compares every pixel and ICC byte on each platform.
+This remains a QA scheduling/encoding change, with every original deadline and
+pixel assertion preserved. The original CI303 report stays failed.
+
+Five original validation ZIPs and three complete runtime logs prove actual
+checkout `64dbdc9e22a418bb5d685309d3e0a12b2a923ff6` on all three jobs. Its tree
+`afb02fb897dc8bcccd841e9ca7c1fd0fd5cdb085` equals the implementation tree. ZIP
+SHA256/CRC, safe extraction and extracted bytes are verified. All strict platform
+and package auditors, and the finalizer, exit 0. The immutable
+`evidence/ci-40783796319/terminal-accepted-v1/receipt.json` retains these originals,
+auditors, all 210 tested code sources, separate partial snapshots and the earlier
+derived-auditor driver failures. Those driver errors concern a log filename alias
+and optional owned-pressure summary fields; original traces remain and strict
+assertions are unchanged. Native workflows were not replayed for those repairs.
+The earlier accepted J / CI302 evidence and all original failed runs remain.

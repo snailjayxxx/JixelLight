@@ -115,6 +115,7 @@ jobs:
           python tools/ValidateRelink.py "$EXE" gui-source-relink.json
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-cpu.json cpu
           python tools/ValidateBrushCanvas.py "$EXE" gui-brush-gpu.json gpu
+          python tools/ValidateShortcutHelp.py "$EXE" gui-shortcut-help.json
       - name: Real Sony full-source brush pointer and exact waveform
         shell: bash
         run: |
@@ -376,6 +377,7 @@ jobs:
           python tools/ValidateRelink.py ./build/bin/JixelLight gui-source-relink.json
           python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-cpu.json cpu
           xvfb-run -a python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-gpu.json gpu
+          python tools/ValidateShortcutHelp.py ./build/bin/JixelLight gui-shortcut-help.json
       - name: Real Sony full-source brush pointer and exact waveform
         env:
           QT_QPA_PLATFORM: offscreen

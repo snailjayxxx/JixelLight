@@ -14,6 +14,7 @@ from ValidateBrushCanvas import validate_brush
 from ValidateSonyBrushCanvas import validate_sony_brush
 from ValidateBrushErase import validate_brush_erase
 from ValidateBrushPressure import validate_brush_pressure
+from ValidateShortcutHelp import validate_shortcut_help
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -143,6 +144,7 @@ def main() -> int:
                 results.append(validate_brush_pressure(executable, environment, pressure_sony_home,
                     reports / ("sony-brush-pressure-" + mode + ".json"), mode,
                     args.sony_brush_raw.resolve(), pressure_verifier))
+        results.append(validate_shortcut_help(executable, environment, Path(temp) / "shortcut-help", reports / "shortcut-help.json"))
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))

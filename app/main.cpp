@@ -1,3 +1,4 @@
+#include "app/ShortcutLabels.h"
 #include <QApplication>
 #include "app/BrushTabletInput.h"
 #include <QFileInfo>
@@ -54,9 +55,10 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"brush-pressure-canvas-smoke-report", "Validate controlled pressure and input ownership on an owned photo", "file"});
     arguments.addOption({"transparent-brush-pressure-canvas-smoke-report", "Validate controlled pressure on transparent owned pixels", "file"});
     arguments.addOption({"sony-brush-pressure-canvas-smoke-report", "Validate pinned real Sony pressure and exact export; controls-only captures", "file"});
+    arguments.addOption({"shortcut-help-smoke-report", "Validate the actual shortcut guide and modal input ownership with owned pixels", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"));
@@ -88,6 +90,7 @@ int main(int argc, char *argv[]) {
     engine.addImageProvider("thumbnails", new ThumbnailProvider);
     engine.rootContext()->setContextProperty("photoController", &controller);
     engine.rootContext()->setContextProperty("appVersion", QString(JIXELLIGHT_VERSION));
+    engine.rootContext()->setContextProperty("standardShortcutLabels", nativeShortcutLabels());
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, [] { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
     engine.loadFromModule("JixelLight", "Main");
@@ -130,6 +133,11 @@ int main(int argc, char *argv[]) {
 
     QVariantList photos;
     for (const QString &path:arguments.positionalArguments()) photos.push_back(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+    if(arguments.isSet("shortcut-help-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        startShortcutHelpSmokeRun(&controller,window,arguments.value("shortcut-help-smoke-report"));
+        return app.exec();
+    }
     if(arguments.isSet("sony-brush-pressure-canvas-smoke-report")) {
         if(!window||photos.size()!=1)return 2;
         startSonyBrushPressureCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-pressure-canvas-smoke-report"));

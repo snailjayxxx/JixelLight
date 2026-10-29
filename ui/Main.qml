@@ -77,6 +77,111 @@ ApplicationWindow {
     }
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.undo() }
+    Dialog {
+        id: shortcutHelpDialog
+        objectName: "keyboardShortcutsDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(window.width - 32, 680)
+        height: Math.min(window.height - 40, 620)
+        modal: true
+        focus: true
+        title: window.t("键盘快捷键", "Keyboard shortcuts")
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onOpened: shortcutGuide.forceActiveFocus()
+        contentItem: ScrollView {
+            id: shortcutGuide
+            objectName: "keyboardShortcutsGuide"
+            clip: true
+            focus: true
+            KeyNavigation.priority: KeyNavigation.BeforeItem
+            KeyNavigation.tab: shortcutHelpCloseButton
+            KeyNavigation.backtab: shortcutHelpCloseButton
+            contentWidth: availableWidth
+            contentHeight: shortcutGuideColumn.implicitHeight
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            // The modal guide owns keys even when the canvas has an active tool.
+            Keys.onShortcutOverride: function(event) { event.accepted = true }
+            ColumnLayout {
+                id: shortcutGuideColumn
+                width: shortcutGuide.availableWidth
+                spacing: 14
+                Label {
+                    Layout.fillWidth: true
+                    text: window.t("输入文字时，字母键和撤销/重做由输入框处理。画布快捷键需要先聚焦相应工具。", "While typing, letter keys and Undo/Redo belong to the text field. Canvas shortcuts require focus in the corresponding tool.")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: "#aebed0"
+                }
+                Repeater {
+                    model: [
+                        { title: window.t("页面与导入", "Workspace and import"), rows: [
+                            { keyText: "G", action: window.t("打开图库", "Open Library") },
+                            { keyText: "D", action: window.t("打开修改照片页面", "Open Develop") },
+                            { keyText: standardShortcutLabels.open.join(" / "), action: window.t("添加现有照片", "Add existing photos") }
+                        ] },
+                        { title: window.t("编辑历史", "Edit history"), rows: [
+                            { keyText: standardShortcutLabels.undo.join(" / "), action: window.t("撤销", "Undo") },
+                            { keyText: standardShortcutLabels.redo.join(" / "), action: window.t("重做", "Redo") }
+                        ] },
+                        { title: window.t("笔刷画布", "Brush canvas"), rows: [
+                            { keyText: "[ / ]", action: window.t("缩小/放大笔刷半径", "Decrease/increase brush radius") },
+                            { keyText: window.t("空格 + 拖动", "Space + drag"), action: window.t("在 100% / 200% 视图中平移；松开空格后可继续拖动到鼠标抬起。", "Pan a 100% / 200% view; dragging can continue after releasing Space until mouse lift.") },
+                            { keyText: "Esc", action: window.t("取消正在进行的笔触或平移；空闲时退出笔刷工具。", "Cancel an active stroke or pan; leave the brush tool when idle.") }
+                        ] },
+                        { title: window.t("裁剪画布", "Crop canvas"), rows: [
+                            { keyText: "Return", action: window.t("应用裁剪", "Apply crop") },
+                            { keyText: "Esc", action: window.t("取消裁剪", "Cancel crop") }
+                        ] }
+                    ]
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label { text: modelData.title; textFormat: Text.PlainText; font.bold: true; color: "#e0e8f2" }
+                        Repeater {
+                            model: modelData.rows
+                            delegate: GridLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                columns: 2
+                                columnSpacing: 18
+                                Label {
+                                    text: modelData.keyText
+                                    textFormat: Text.PlainText
+                                    Layout.preferredWidth: 160
+                                    Layout.alignment: Qt.AlignTop
+                                    wrapMode: Text.WrapAnywhere
+                                    color: "#c3d8ec"
+                                }
+                                Label {
+                                    text: modelData.action
+                                    textFormat: Text.PlainText
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    color: "#d7dde6"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        footer: DialogButtonBox {
+            Keys.onShortcutOverride: function(event) { event.accepted = true }
+            Button {
+                id: shortcutHelpCloseButton
+                KeyNavigation.priority: KeyNavigation.BeforeItem
+                KeyNavigation.tab: shortcutGuide
+                KeyNavigation.backtab: shortcutGuide
+                objectName: "keyboardShortcutsClose"
+                text: window.t("关闭", "Close")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            onRejected: shortcutHelpDialog.close()
+        }
+    }
+
     function chooseRelinkSource() {
         if (!photoController.hasImage || !photoController.projectPath) return
         relinkFilePicker.versionKey = photoController.library[photoController.currentIndex].id
@@ -485,6 +590,14 @@ ApplicationWindow {
                 onActivated: photoController.setLanguage(currentIndex === 0 ? "zh_CN" : "en_US")
             }
             ToolButton {
+                objectName: "keyboardShortcutsButton"
+                text: "?"
+                Accessible.name: window.t("键盘快捷键", "Keyboard shortcuts")
+                ToolTip.visible: hovered
+                ToolTip.text: window.t("键盘快捷键", "Keyboard shortcuts")
+                onClicked: shortcutHelpDialog.open()
+            }
+            ToolButton {
                 text: photoController.diagnosticBusy ? window.t("诊断中…", "Capturing…") : window.t("🐞 报告问题", "🐞 Report")
                 enabled: !photoController.diagnosticBusy
                 onClicked: photoController.reportBugWithDialog()
@@ -558,7 +671,7 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0
                         Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.t("当前 RAW / 编辑结果", "Current RAW / edit result"); color: "#aebccc" }
-                        PhotoCanvas { objectName: "photoCanvas"; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController; brushEditor: brushEditorState }
+                        PhotoCanvas { objectName: "photoCanvas"; enabled: !shortcutHelpDialog.visible; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController; brushEditor: brushEditorState }
                     }
                     CameraReferenceView { controller: photoController; visible: photoController.showCameraReference; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0 }
                 }

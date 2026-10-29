@@ -14,3 +14,5 @@ void startSonyBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow 
 
 void startBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,bool transparent=false);
 void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startShortcutHelpSmokeRun(PhotoController *,QQuickWindow *,const QString &);
