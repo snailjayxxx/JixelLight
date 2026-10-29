@@ -6522,12 +6522,16 @@ private slots:
         QVERIFY(controller.createVirtualCopy("Stats copy"));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.loading() && !controller.rendering(),10000);
         QTRY_VERIFY_WITH_TIMEOUT(PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger()>hits,10000);
+        // A worker cache hit precedes delivery on the GUI thread. Wait for
+        // the current full result before inspecting its published pixels.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.scopesStatus()==QString("全分辨率统计") || controller.scopesStatus()==QString("Full-resolution statistics"),10000);
         QCOMPARE(controller.scopesPixelCount(),qulonglong(96*80));
         const auto reused=PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger();
         QImage blackAtlas(33*33,33,QImage::Format_RGBA32FPx4); blackAtlas.fill(Qt::black);
         controller.setDisplayColorLut(blackAtlas,"stats-monitor");
         controller.selectPhoto(0);
         QTRY_VERIFY_WITH_TIMEOUT(PerformanceRecorder::snapshot().value("counters").toObject().value("full_scopes_cache_hit").toInteger()>reused,10000);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.scopesStatus()==QString("全分辨率统计") || controller.scopesStatus()==QString("Full-resolution statistics"),10000);
         QCOMPARE(controller.scopesPixelCount(),qulonglong(96*80));
         controller.setCrop(0,0,.5,1);
         QTRY_COMPARE_WITH_TIMEOUT(controller.scopesPixelCount(),qulonglong(48*80),10000);

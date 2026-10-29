@@ -73,6 +73,78 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void controllerStartsPendingExactAfterFinalFrame_data() {
+        QTest::addColumn<QString>("context");
+        for (const auto *name : {"final-current", "stale-frame", "interactive-frame",
+                                "preparing", "preview-statistics", "no-pending"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+    void controllerStartsPendingExactAfterFinalFrame() {
+        QFETCH(QString, context);
+        QStandardPaths::setTestModeEnabled(true); QTemporaryDir dir; QVERIFY(dir.isValid());
+        const auto path=dir.filePath("final-preview-scopes.png");
+        const auto image=sourceImage().scaled(321,197); QVERIFY(image.save(path)); const auto hash=fileHash(path);
+        QSemaphore entered,release;
+        ProcessedImageProvider provider; PhotoController controller(&provider); controller.setGpuEnabled(false);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.brushReady() && controller.m_sourceIsFull
+            && !controller.m_prepare->busy() && !controller.m_render->busy(),15000);
+        QVERIFY(controller.flushEdits());
+        controller.m_saveTimer.stop(); controller.m_saveMaxTimer.stop(); controller.m_refineTimer.stop();
+        controller.m_exactTimer.stop(); controller.setScopeMode("histogram");
+        const auto saved=controller.m_photos[controller.m_currentIndex].state;
+        const auto restore=qScopeGuard([&] {
+            release.release(); controller.m_fullScopeJob->cancel();
+            controller.m_photos[controller.m_currentIndex].state=saved;
+            controller.m_preparing=false; controller.m_interacting=false;
+            controller.m_saveTimer.stop(); controller.m_saveMaxTimer.stop();
+            controller.m_exactTimer.stop(); controller.m_plotTimer.stop();
+        });
+        controller.m_photos[controller.m_currentIndex].state=painted();
+        ++controller.m_requestedRevision; controller.m_scopesRank=-1;
+        const auto intent=controller.gpuPlan(true).state.toJson(); const auto history=QJsonArray::fromVariantList(controller.editHistory());
+        const auto histograms=std::make_shared<FullScopesCache>(4*1024*1024,controller.m_analysisFrameCache,controller.m_brushBudget);
+        controller.m_fullScopeJob=std::make_unique<LatestJob<ScopeRequest,ScopesResult>>(
+            [&,histograms](const ScopeRequest &request,const CancelToken &cancel) {
+                entered.release();
+                while (!release.tryAcquire(1,20)) if (cancelled(cancel)) return ScopesResult{};
+                return histograms->analyze(request,cancel);
+            },[&](const ScopeRequest &request,ScopesResult result) {
+                controller.acceptScopes(request.revision,result,1,"Full-resolution statistics");
+            });
+        controller.m_preparing=context=="preparing";
+        controller.m_interacting=context=="interactive-frame";
+        controller.m_exactScopes=context!="preview-statistics";
+        if (context!="no-pending") controller.m_exactTimer.start();
+        controller.m_rendering=true;
+        const auto sequence=controller.m_fullScopeJob->sequence();
+        controller.completeFrame(controller.m_requestedRevision-(context=="stale-frame" ? 1 : 0));
+        const bool starts=context=="final-current";
+        QCOMPARE(controller.m_fullScopeJob->sequence(),sequence+(starts ? 1 : 0));
+        QCOMPARE(controller.m_exactTimer.isActive(),!starts && context!="no-pending");
+        if (starts) {
+            // Repeated presentation of this revision cannot resubmit the work.
+            controller.completeFrame(controller.m_requestedRevision);
+            QCOMPARE(controller.m_fullScopeJob->sequence(),sequence+1);
+        }
+        controller.m_exactTimer.stop();
+        bool responsive=false; QTimer::singleShot(0,&controller,[&] {responsive=true;});
+        QTRY_VERIFY_WITH_TIMEOUT(responsive,1000);
+        if (starts) {
+            QTRY_VERIFY_WITH_TIMEOUT(entered.available()>0,5000); entered.acquire();
+            QVERIFY(controller.m_fullScopeJob->busy());
+            release.release();
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.m_fullScopeJob->busy(),15000);
+            const auto expected=reference(controller.m_fullSource,controller.gpuPlan(true),controller.previewGeometry());
+            QVERIFY(!expected.isNull()); QVERIFY(sameHistogram(controller.m_scopes,ScopesEngine::analyze(expected)));
+            QCOMPARE(controller.scopesPixelCount(),qulonglong(321*197));
+        } else {
+            QCOMPARE(entered.available(),0); QVERIFY(!controller.m_fullScopeJob->busy());
+        }
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),intent);
+        QCOMPARE(QJsonArray::fromVariantList(controller.editHistory()),history); QCOMPARE(fileHash(path),hash);
+    }
+
     void controllerDefersExactPlotsWithoutBlockingFallback_data() {
         QTest::addColumn<int>("completion");
         QTest::newRow("completed-frame-reuse")<<0;

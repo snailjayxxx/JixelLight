@@ -142,6 +142,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         QSize panViewSize;double panViewZoom=0;QString panViewTag,panViewMask;bool panViewOwnership=false;ulong panStamp=1000;int focusBootstrapCount=0;
         std::shared_ptr<QPointingDevice> panPen;
         QElapsedTimer clock;int phase=0,settle=0,history=0,delta=0,scopeInk=0;bool finished=false;
+        int observedPhase=-1;QJsonArray phaseTimes;
         int windowGrabCalls=0,captureEncodeCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0,captureEncodeNs=0;
         bool capacityPreviewStatistics=false,capacityExactStatistics=false,scopeControlsReadonly=true;
         bool transient=false,escape=false,oneUndo=false,display=false,undoRedo=false,reopen=false,zoom=false,scopes=false;
@@ -176,7 +177,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             &&s->capacityPreviewStatistics&&s->capacityExactStatistics&&s->scopeControlsReadonly&&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
             &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->capacity&&s->capacityRecovery&&s->capacityTargets&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())save(grab(),reportPath+".failure.png");
-        const QJsonObject report{{"pan_protocol_version",1},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
+        const QJsonObject report{{"phase_times",s->phaseTimes},{"pan_protocol_version",1},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"capture_png_compression",1},{"capture_encode_calls",s->captureEncodeCalls},{"capture_encode_total_ms",s->captureEncodeNs/1e6},
             {"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},
             {"capacity_preview_statistics",s->capacityPreviewStatistics},{"capacity_exact_statistics_restored",s->capacityExactStatistics},{"scope_controls_readonly",s->scopeControlsReadonly},
@@ -207,6 +208,13 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         const bool saved=output.open(QIODevice::WriteOnly)&&output.write(bytes)==bytes.size()&&output.commit();QCoreApplication::exit(ok&&saved?0:1);
     };
     QObject::connect(timer,&QTimer::timeout,c,[=] {
+        if(s->observedPhase!=s->phase) {
+            s->observedPhase=s->phase;
+            s->phaseTimes.append(QJsonObject{{"phase",s->phase},{"entry_ms",s->clock.elapsed()},
+                {"brush_ready",c->brushReady()},{"preview_ready",previewDisplayedReady(c,window)},
+                {"exact",c->exactScopes()},{"histogram_pixels",qint64(c->scopesPixelCount())},
+                {"plot_current",c->scopePlotCurrent()},{"plot_pixels",qint64(c->scopePlotPixels())}});
+        }
         if(s->clock.elapsed()>=45000){finish("Brush pointer integration timed out");return;}
         if(!window->isActive()) {
             // Controlled platform focus, like the tablet packets below. This

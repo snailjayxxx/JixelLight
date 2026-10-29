@@ -1999,6 +1999,13 @@ void PhotoController::completeFrame(quint64 revision) {
     if (revision != m_requestedRevision) return;
     if (m_renderClock.isValid()) PerformanceRecorder::sample("request_to_result_ms", m_renderClock.nsecsElapsed()/1e6, {{"backend", processingBackend()}, {"revision", qint64(revision)}});
     setBusy(false);
+    // The final current preview has completed. Start its pending exact
+    // statistics now; interactive frames keep their ordinary debounce.
+    if (!m_preparing && !m_interacting && m_exactScopes && m_exactTimer.isActive()) {
+        m_exactTimer.stop();
+        PerformanceRecorder::count("full_scopes_started_after_final_preview");
+        requestFullScopes();
+    }
     if (m_scopeMode!="histogram" && m_plotSubmittedRevision!=m_requestedRevision && !m_plotTimer.isActive()) m_plotTimer.start();
     emit scopePlotChanged();
 }

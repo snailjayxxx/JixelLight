@@ -135,3 +135,17 @@ partial archives remain unchanged. The focus correction requires its own
 committed68/all3 and both actual24-mode SDK-stripped packages. The prior
 [K / CI304](https://github.com/snailjayxxx/JixelLight/actions/runs/40783796319)
 acceptance and original evidence remain separate.
+
+Later [CI306](https://github.com/snailjayxxx/JixelLight/actions/runs/40806921358)
+on focus-corrected `531380d` remains **failed**. All68/all3 pass zero-fail/skip
+in1,169.22/1,772.75/1,419.27s. Linux/macOS pass14 native guide cases in3,059/7,016ms;
+macOS also passes its actual24-mode package. Windows's existing owned CPU canvas
+passes7 refusals/4 recoveries before45,074ms/phase41 exceeds45,000ms waiting for
+full waveform. Histogram2,659,021; plot0/is not current. Windows help/package are
+not reached, so Windows guide acceptance cannot be inferred. Encoding414.021ms;
+the original timeout cause remains unproven.
+
+All4 produced validation ZIPs,3 complete actual104dcc0/treea8a7c72 logs and
+source213 remain at `evidence/ci-40806921358/terminal-failed-v1/receipt.json`.
+[M4.7L](F4_EXACT_SCOPES_FINAL_PREVIEW_STAGE_M47L.md) advances final-preview
+statistics scheduling with separate local and committed acceptance.

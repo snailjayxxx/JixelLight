@@ -167,7 +167,7 @@ add_test(NAME brush-scopes-cache COMMAND JixelLightBrushScopeRoutingTests origin
 add_test(NAME brush-scopes-cancel COMMAND JixelLightBrushScopeRoutingTests admissionFailuresAndCollectorCancellation -o brush-scopes-cancel-results.txt,txt -o -,txt)
 add_test(NAME brush-scopes-native COMMAND JixelLightBrushScopeRoutingTests nativeSonyFullStatisticsReuse -o brush-scopes-native-results.txt,txt -o -,txt)
 add_test(NAME brush-scopes-controller COMMAND JixelLightBrushScopeRoutingTests controllerFailuresRetryAndDiagnostic -o brush-scopes-controller-results.txt,txt -o -,txt)
-add_test(NAME brush-scopes-scheduling COMMAND JixelLightBrushScopeRoutingTests controllerDefersExactPlotsWithoutBlockingFallback -o brush-scopes-scheduling-results.txt,txt -o -,txt)
+add_test(NAME brush-scopes-scheduling COMMAND JixelLightBrushScopeRoutingTests controllerDefersExactPlotsWithoutBlockingFallback controllerStartsPendingExactAfterFinalFrame -o brush-scopes-scheduling-results.txt,txt -o -,txt)
 set_tests_properties(brush-scopes-cache brush-scopes-cancel brush-scopes-native brush-scopes-controller brush-scopes-scheduling PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightBrushLivePreviewTests tests/BrushLivePreviewTests.cpp)
 target_link_libraries(JixelLightBrushLivePreviewTests PRIVATE JixelLightCore Qt6::Test)
