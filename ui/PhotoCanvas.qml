@@ -301,7 +301,9 @@ Item {
     Label {
         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
         elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter
-        text: controller.processingBackend
+        objectName: "processingBackendLabel"
+        // Locale changes refresh the caption without notifying GPU work.
+        text: controller.language ? controller.processingBackend : ""
         color: "#a9b5c4"; font.pixelSize: 10
         background: Rectangle { color: "#c011161c"; radius: 4 }
     }

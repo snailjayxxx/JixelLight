@@ -82,6 +82,7 @@ private:
     QTemporaryDir files;QPointingDevice pen;QTimer *timer=nullptr;QElapsedTimer clock;
     QJsonObject before,emptyLayout;QVariantList history;QJsonArray records,captures,keys;
     QByteArray sourceHash;int phase=-2,settle=0,focusBootstraps=0,applicationBootstraps=0;
+    int backendCaptionChecks=0;bool backendCaptionsCurrent=true;
     Qt::ApplicationState initialApplicationState=Qt::ApplicationInactive;
     ulong stamp=1000,tabletStamp=10000;bool snapshot=false,done=false;
     QQuickItem *find(const QString &name)const{return w?item(w->contentItem(),name):nullptr;}
@@ -128,6 +129,17 @@ private:
     }
     bool record(const QString &name,bool passed,QJsonObject details={}) {
         auto *canvas=find("photoCanvas"),*overlay=find("brushCanvasOverlay");
+        const bool captionApplicable=c->hasImage()&&w&&w->property("workspaceIndex").toInt()==1;
+        auto *backend=find("processingBackendLabel");
+        const auto actual=backend?backend->property("text").toString():QString{};
+        const bool captionCurrent=!captionApplicable||(backend&&backend->isVisible()&&actual==c->processingBackend());
+        if(captionApplicable)++backendCaptionChecks;
+        backendCaptionsCurrent=backendCaptionsCurrent&&captionCurrent;passed=passed&&captionCurrent;
+        details.insert("backend_caption_applicable",captionApplicable);
+        details.insert("backend_caption_current",captionCurrent);
+        details.insert("backend_caption_language",c->language());
+        details.insert("backend_caption_text",actual);
+        details.insert("backend_caption_expected",c->processingBackend());
         details.insert("case",name);details.insert("passed",passed);details.insert("document_history_source_unchanged",stable());
         details.insert("dialog_visible",visible());details.insert("crop_editing",c->cropEditing());
         details.insert("workspace",w?w->property("workspaceIndex").toInt():-1);
@@ -179,8 +191,8 @@ private:
     }
     void finish(const QString &error) {
         if(done)return;done=true;timer->stop();const bool captured=capture(error.isEmpty()?"final":"failure");
-        const bool passed=error.isEmpty()&&records.size()==14&&stable()&&captured&&captures.size()==5&&clock.elapsed()<60000;
-        const QJsonObject data{{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
+        const bool passed=error.isEmpty()&&records.size()==14&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==13&&backendCaptionsCurrent&&clock.elapsed()<60000;
+        const QJsonObject data{{"backend_caption_checks",backendCaptionChecks},{"backend_captions_current",backendCaptionsCurrent},{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
             {"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"test_fixture",true},{"product_UI_acceptance",false},
             {"actual_photo_app_UI",true},{"source_kind","owned-rgba64-png"},{"source_pixels",1024*768},

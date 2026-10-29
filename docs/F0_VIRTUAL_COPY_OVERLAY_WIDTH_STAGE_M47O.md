@@ -102,14 +102,36 @@ visually inspected. Daily preferences remain unchanged. Raw local d2b123f stamps
 are retained; exact213 committed-source fingerprint matching is required for the
 publication, rather than retagging local reports.
 
-## Remaining acceptance
+## CI310 committed acceptance
 
-Actual Linux resolution requires the next committed CI. All68/all3, both actual
-24-mode SDK-stripped packages, five original validation ZIPs, three complete
-runtime source logs, exact213 publication fingerprints and strict finalizer0
-remain mandatory. The native auditor and original seven-check guide helper are
-unchanged from CI309; the separate backend-caption proposal stays unapplied.
-Latest fully accepted implementation remains K/1fbfe71/CI304.
+M47O/644942a is fully accepted by
+[CI310](https://github.com/snailjayxxx/JixelLight/actions/runs/40845703559).
+All68/all3 pass zero-fail/skip in Linux703.52s, Windows1,762.98s and macOS1,398.51s.
+Both actual24-mode SDK-stripped packages and all native strict auditors pass.
+Guides14/checks7/captures5 pass2,940/7,194/7,414ms without QML errors. Linux's
+previous Library232 warning is absent; its later basicGPU flow passes15,910ms,
+actualGPUactive/full10,340,960/all original UI predicates under60s. Windows/Mac
+basicGPU pass34,325/27,915ms. All three report zero finalGPU wait ticks; the
+controlled notification-gap experiment remains separate evidence.
+
+Genuine Sony pressure GUI CPU/GPU is Linux10,224/11,442ms, Windows54,448/30,048ms
+and Mac19,072/18,943ms under60,000ms. Export/reference CPU/GPU partitions are
+41,887.385/41,833.430ms,80,349.798/79,981.497ms and52,835.203/52,553.966ms under
+120,000ms. Full32,947,264 source/histogram/plot, exact platform-local PNG16/ICC,
+shared3GiB and all original numeric/input/source/refund predicates pass.
+
+Five original ZIPs and three full logs prove all actual checkouts
+469329f74a6177ce21dde7bb91902d1bf3a9a9e7/tree4bbd2ad8658ab1f13ca850e7686d690ae42fed6a
+equal644942a, with213 publication fingerprints and strict finalizer0. Evidence is
+`evidence/ci-40845703559/terminal-accepted-v2/receipt.json` (2,415files).
+The original native auditor and seven-check guide helper are unchanged. The
+initial derived reporting label used GUI-plus-export-write elapsed as GUI; v2
+corrects only that metadata from original gui_elapsed_ms and combined export
+reference wall time. The first receipt, Mac CTest-summary reader mismatch and
+expired reference attempt remain preserved; original reports/gates/source are
+unchanged, with no native rerun. CI309 remains failed. The following
+[M47P caption slice](F0_BACKEND_CAPTION_LOCALE_STAGE_M47P.md) adds new caption
+coverage and needs its own committed acceptance.
 
 Original45s owned GUI,60s Sony/help/basic GUI,120s export-reference partitions,
 32Mi source pixels, shared3GiB and colour/precision gates remain; reservation is

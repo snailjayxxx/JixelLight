@@ -32,7 +32,7 @@ def _number(value):
 
 def _checks(data: dict, native: Path) -> dict[str, bool]:
     checks = dict.fromkeys(('protocol', 'readonly_contexts', 'native_labels',
-                           'compact_layout', 'modal_keys', 'held_pressure', 'captures'), False)
+                           'compact_layout', 'modal_keys', 'held_pressure', 'captures', 'backend_captions'), False)
     try:
         assert type(data['protocol_version']) is int and data['protocol_version'] == 2
         assert data['passed'] is True and data['error'] == ''
@@ -60,6 +60,14 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         assert rows[5]['mask_tool'] == rows[6]['mask_tool'] == 'brush'
         assert rows[4]['navigation_active'] is False and rows[6]['navigation_active'] is True
         checks['readonly_contexts'] = True
+        assert data['backend_caption_checks'] == 13 and data['backend_captions_current'] is True
+        assert rows[0]['backend_caption_applicable'] is False and rows[0]['backend_caption_current'] is True
+        for row in rows[1:]:
+            assert row['backend_caption_applicable'] is True and row['backend_caption_current'] is True
+            assert row['backend_caption_language'] in ('zh_CN', 'en_US')
+            expected = 'CPU 并行' if row['backend_caption_language'] == 'zh_CN' else 'CPU parallel'
+            assert row['backend_caption_text'] == row['backend_caption_expected'] == expected
+        checks['backend_captions'] = True
         for index, language in ((0, 'en_US'), (1, 'en_US'), (9, 'zh_CN'), (10, 'zh_CN')):
             row = rows[index]
             assert row['language'] == language
