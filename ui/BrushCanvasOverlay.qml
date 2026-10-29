@@ -18,7 +18,8 @@ Item {
         return "missing"
     }
     readonly property bool layerPaintable: paintBlock === ""
-    readonly property bool erasing: editor && editor.mode === "erase"
+    property bool strokeErasing: false
+    readonly property bool erasing: root.drawing ? root.strokeErasing : (editor && editor.mode === "erase")
     property real currentPressure: 1
     property bool drawing: false
     property var points: []
@@ -76,7 +77,7 @@ Item {
     function imagePoint(x,y) {
         return controller.maskCanvasPoint(Math.max(0,Math.min(width,x)),Math.max(0,Math.min(height,y)),width,height)
     }
-    function clearGuide() { drawing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
+    function clearGuide() { drawing=false; strokeErasing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
     function cancel() { cancelNavigation(); if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
     function addGuide(x,y) {
         let next=points.slice()
@@ -136,12 +137,17 @@ Item {
     BrushTabletInput {
         id: tabletInput; objectName: "brushTabletInput"
         target: root; blocked: pointer.pressed || root.navigationActive
-        onBegan: function(x,y,pressure) {
+        onBegan: function(x,y,pressure,eraserTip) {
             root.forceActiveFocus()
             const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y)
-            if (root.navigationActive || !root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode,pressure)) return
+            if (root.navigationActive || !root.editor) return
+            // A hardware eraser end only erases; an empty target is refused by
+            // the controller so it can explain that an existing layer is needed.
+            if (!root.layerPaintable && !(eraserTip && root.editor.layerId === "")) return
+            const mode=eraserTip ? "erase" : root.editor.mode
+            if (!root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)) return
             root.editor.strokeSelection=({})
-            root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
+            root.strokeErasing=(mode === "erase");root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
         }
         onMoved: function(x,y,pressure) {
             if (!root.drawing) return
@@ -170,7 +176,7 @@ Item {
             const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
             if (root.navigationActive || !root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeMode(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode)) return
             root.editor.strokeSelection=({})
-            root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
+            root.strokeErasing=(root.editor.mode === "erase");root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
         }
         onPositionChanged: function(mouse) {
             root.cursorPoint=Qt.point(mouse.x,mouse.y)

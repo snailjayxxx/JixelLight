@@ -104,12 +104,14 @@ void startSonyBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *windo
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
         QJsonObject initial,painted,erased;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
-        std::shared_ptr<QPointingDevice> pen;std::optional<BM::Stroke> expectedPaint,expectedErase;
+        QJsonObject eraserTipCommitted;bool useEraser=false,eraserTipStarted=false,eraserTipEmptyRefused=false,eraserTipExact=false,eraserTipUndo=false,eraserTipRedo=false,eraserTipRestored=false,eraserTipPanelStable=false,eraserTipHintLocalized=false,eraserTipHintRestored=false;QString eraserTipHintEnglish,eraserTipHintChinese,eraserTipHintAfterRelease;std::shared_ptr<QPointingDevice> pen,eraser;std::optional<BM::Stroke> expectedPaint,expectedErase;
     };
     auto s=std::make_shared<State>();s->clock.start();s->sourceHash=hash(source);
     s->mouse=false;s->ownership=true;s->initialPressure=.2;
     s->pen=std::make_shared<QPointingDevice>("Controlled photo pressure pen",987654329,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
-    QWindowSystemInterface::registerInputDevice(s->pen.get());auto *timer=new QTimer(c);timer->setInterval(50);
+    QWindowSystemInterface::registerInputDevice(s->pen.get());
+    s->eraser=std::make_shared<QPointingDevice>("Controlled eraser end",987654330,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Eraser,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+    QWindowSystemInterface::registerInputDevice(s->eraser.get());auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return find(window->contentItem(),name);};
     const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
     const auto capture=[=](const QString &label,const QImage &shot){auto *panel=item("developRightPanel");if(shot.isNull()||!panel)return false;
@@ -123,9 +125,9 @@ void startSonyBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *windo
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=s->guiSourceChecked; // Driver rehashes the original after this process exits.
         const auto budget=BrushRenderBudget::sharedDefault()->snapshot();const bool admitted=budget.limit==3LL*1024*1024*1024&&budget.peak>0&&budget.peak<=budget.limit&&budget.charged<=budget.limit;
-        const bool nativePassed=error.isEmpty()&&(!s->ownership||(s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase))&&isolated&&unchanged&&admitted&&s->guiSourceChecked&&c->currentIsRaw()&&c->brushFrameSize()==size&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->guiComplete&&s->fullScopes&&s->guiElapsed<60000&&s->exportClock.isValid()&&s->exportClock.elapsed()<120000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const bool nativePassed=error.isEmpty()&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&(!s->ownership||(s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase))&&isolated&&unchanged&&admitted&&s->guiSourceChecked&&c->currentIsRaw()&&c->brushFrameSize()==size&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->guiComplete&&s->fullScopes&&s->guiElapsed<60000&&s->exportClock.isValid()&&s->exportClock.elapsed()<120000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject d{{"passed",false},{"gui_and_export_write_passed",nativePassed},{"external_pixel_verification_pending",true},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"gui_elapsed_ms",s->guiElapsed},{"gui_deadline_ms",60000},{"export_elapsed_ms",s->exportClock.isValid()?s->exportClock.elapsed():0},{"export_deadline_ms",120000},
-            {"ownership_mode",s->ownership},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
+            {"eraser_tip_started",s->eraserTipStarted},{"eraser_tip_empty_refused",s->eraserTipEmptyRefused},{"eraser_tip_exact",s->eraserTipExact},{"eraser_tip_undo",s->eraserTipUndo},{"eraser_tip_redo",s->eraserTipRedo},{"eraser_tip_restored",s->eraserTipRestored},{"eraser_tip_panel_stable",s->eraserTipPanelStable},{"eraser_tip_hint_localized",s->eraserTipHintLocalized},{"eraser_tip_hint_restored",s->eraserTipHintRestored},{"eraser_tip_hint_english",s->eraserTipHintEnglish},{"eraser_tip_hint_chinese",s->eraserTipHintChinese},{"eraser_tip_hint_after_release",s->eraserTipHintAfterRelease},{"ownership_mode",s->ownership},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","public-sony-arw"},{"source_bytes",QFileInfo(source).size()},{"source_is_raw",c->currentIsRaw()},{"synthetic_fixture",false},{"source_override",false},{"full_scopes",s->fullScopes},{"source_unchanged_at_GUI_completion",s->guiSourceChecked},{"budget_admitted",admitted},{"scope_pixels",qint64(c->scopesPixelCount())},{"scope_plot_pixels",qint64(c->scopePlotPixels())},{"photographs_published",false},{"smoke_user_requested_export_activity",s->exportActivity},{"activity_lifetime","export-through-normal-process-teardown"},{"performance",PerformanceRecorder::snapshot()},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
             {"pressure_paint_reference",s->pressurePaint},{"pressure_erase_reference",s->pressureErase},{"cancel_paint",s->cancelPaint},{"cancel_erase",s->cancelErase},{"one_undo",s->oneUndo},{"undo_redo",s->undoRedo},{"project_reopen",s->reopened},{"held_intent_history_revision_unchanged",s->transient},
@@ -152,11 +154,11 @@ void startSonyBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *windo
         const auto packet=[&](double x,double pressure,bool held){const auto local=point(x),global=window->mapToGlobal(local);
             if(s->mouse){const auto type=held?(s->mouseHeld?QEvent::MouseMove:QEvent::MouseButtonPress):QEvent::MouseButtonRelease;
                 QMouseEvent event(type,local,local,global,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,held?Qt::LeftButton:Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&event);s->mouseHeld=held;return;}
-            QWindowSystemInterface::handleTabletEvent(window,s->stamp+=20,s->pen.get(),QHighDpi::toNativePixels(local,window),QHighDpi::toNativePixels(global,window),held?Qt::LeftButton:Qt::NoButton,pressure,0,0,0,0,0);
+            QWindowSystemInterface::handleTabletEvent(window,s->stamp+=20,s->useEraser?s->eraser.get():s->pen.get(),QHighDpi::toNativePixels(local,window),QHighDpi::toNativePixels(global,window),held?Qt::LeftButton:Qt::NoButton,pressure,0,0,0,0,0);
             QWindowSystemInterface::flushWindowSystemEvents();};
         const auto buttons=[&](double x,double pressure,Qt::MouseButtons held){
             const auto local=point(x),global=window->mapToGlobal(local);
-            QWindowSystemInterface::handleTabletEvent(window,s->stamp+=20,s->pen.get(),QHighDpi::toNativePixels(local,window),QHighDpi::toNativePixels(global,window),held,pressure,0,0,0,0,0);
+            QWindowSystemInterface::handleTabletEvent(window,s->stamp+=20,s->useEraser?s->eraser.get():s->pen.get(),QHighDpi::toNativePixels(local,window),QHighDpi::toNativePixels(global,window),held,pressure,0,0,0,0,0);
             QWindowSystemInterface::flushWindowSystemEvents();
         };
         const auto start=[&]{s->moves=0;s->revision=c->renderRevision();packet(.25,s->initialPressure,true);return c->brushDrawing();};
@@ -177,7 +179,17 @@ void startSonyBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *windo
         const auto expected=[&](BM::StrokeMode mode){BM::StrokeBuilder builder(7028,4688,{.08,1,.8},mode);for(auto v:std::array<BM::Dab,5>{{{{.25,.6},s->initialPressure},{{.4,.6},.4},{{.6,.6},.8},{{.75,.6},.6},{{.75,.6},0}}}){if(s->mouse)v.pressure=1;if(!builder.append(v))return std::optional<BM::Stroke>{};}return builder.finish();};
         if(s->phase==0){
             if(c->brushFrameSize()!=size||!c->currentIsRaw()){finish("Pinned Sony was not decoded at native full dimensions/type");return;}s->initial=masks(c);s->initialHistory=history(c);if(!s->initial.isEmpty()||!click(window,item("editBrushMaskCanvas"))){finish("Cannot enter actual photo brush tool");return;}
-            editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);c->setLanguage("en_US");s->phase=1;s->settle=0;
+            editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);c->setLanguage("en_US");s->phase=50;s->settle=0;
+        }else if(s->phase==50){
+            if(++s->settle<2)return;
+            if(!editor->property("layerId").toString().isEmpty()||editor->property("mode").toString()!="paint"){finish("Empty eraser baseline target changed");return;}
+            const auto before=masks(c);const int cursor=history(c);const auto revision=c->renderRevision();s->useEraser=true;
+            packet(.25,.2,true);
+            const bool rejected=!c->brushDrawing()&&masks(c)==before&&history(c)==cursor&&c->renderRevision()==revision&&c->statusMessage()==QStringLiteral("Select an existing brush layer to erase first.");
+            packet(.25,0,false);s->useEraser=false;
+            s->eraserTipEmptyRefused=rejected&&!c->brushDrawing()&&masks(c)==before&&history(c)==cursor&&c->renderRevision()==revision&&editor->property("mode").toString()=="paint";
+            if(!s->eraserTipEmptyRefused){finish("Empty eraser unexpectedly painted or lacked explicit feedback");return;}
+            s->phase=1;s->settle=0;
         }else if(s->phase==1){
             if(++s->settle<4)return;const auto shot=read(&s->baseline);if(shot.isNull()||!capture("before",shot)||!start()){finish("Pressure paint did not begin in actual canvas");return;}s->phase=2;
         }else if(s->phase==2||s->phase==4||s->phase==9||s->phase==11){
@@ -227,7 +239,42 @@ void startSonyBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *windo
             if(++s->settle<4)return;if(masks(c)!=s->painted||!click(window,item("editBrushMaskCanvas"))||!select(window,"brushLayerSelector",1)||!select(window,"brushModeSelector",1)){finish("Pressure project reopen/actual Erase selection failed");return;}
             if(!capture("reopened-paint",grab())||!start()){finish("Cannot start reopened pressure Erase");return;}s->phase=9;
         }else if(s->phase==15){
-            if(++s->settle<4)return;if(masks(c)!=s->erased){finish("Reopened Sony pressure Erase intent differs");return;}s->reopened=true;
+            if(++s->settle<4)return;if(masks(c)!=s->erased){finish("Reopened pressure Erase intent differs");return;}
+            // Preserve the original pen-mode Erase test, then add a separate eraser-end stroke.
+            if(!click(window,item("editBrushMaskCanvas"))||!select(window,"brushLayerSelector",1)||!select(window,"brushModeSelector",0)){finish("Cannot prepare eraser-end target");return;}
+            editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);editor->setProperty("exposure",1);
+            s->useEraser=true;packet(.25,.6,true);
+            s->eraserTipStarted=c->brushDrawing()&&editor->property("mode").toString()=="paint"&&overlay->property("erasing").toBool();
+            auto *hint=item("maskToolHint");
+            s->eraserTipHintEnglish=hint?hint->property("text").toString():QString();
+            c->setLanguage("zh_CN");s->eraserTipHintChinese=hint?hint->property("text").toString():QString();c->setLanguage("en_US");
+            s->eraserTipHintLocalized=s->eraserTipHintEnglish==QStringLiteral("Drag to erase the selected layer, release to apply · Esc cancels the stroke")&&s->eraserTipHintChinese==QStringLiteral("拖动擦除所选图层，松开应用 · Esc 取消当前笔触")&&c->brushDrawing()&&editor->property("mode").toString()=="paint";
+            packet(.25,0,false);s->useEraser=false;
+            s->eraserTipPanelStable=editor->property("mode").toString()=="paint";
+            if(!s->eraserTipStarted||!s->eraserTipPanelStable||!s->eraserTipHintLocalized){finish("Eraser tip mode, panel or localized hint mismatch");return;}
+            s->phase=51;
+        }else if(s->phase==51){
+            // This phase is reached only after brushReady and displayed preview are current.
+            // Keep the existing overall deadline while waiting for the post-commit refresh.
+            auto *hint=item("maskToolHint");s->eraserTipHintAfterRelease=hint?hint->property("text").toString():QString();
+            s->eraserTipHintRestored=s->eraserTipHintAfterRelease==QStringLiteral("Drag to paint, release to apply · Esc cancels the stroke")&&!c->brushDrawing()&&editor->property("mode").toString()=="paint";
+            if(!s->eraserTipHintRestored){finish("Eraser tip released but Paint hint not restored");return;}
+            BM::StrokeBuilder expected(size.width(),size.height(),{.08,1,.8},BM::StrokeMode::Erase);
+            if(!expected.append({{.25,.6},.6})||!expected.append({{.25,.6},0})){finish("Cannot build eraser-end reference");return;}
+            const auto stroke=expected.finish();const auto doc=c->gpuPlan(true).state.brushMasks;
+            s->eraserTipExact=stroke&&doc.layers.size()==1&&doc.layers[0].strokes.size()==3&&sameStroke(doc.layers[0].strokes.back(),*stroke)&&history(c)==s->initialHistory+3&&!c->brushDrawing();
+            if(!s->eraserTipExact){finish("Eraser-end stroke differs from reference or is not one history step");return;}
+            s->eraserTipCommitted=masks(c);if(!click(window,item("undoEditButton"))){finish("Cannot undo eraser-end stroke");return;}s->phase=52;
+        }else if(s->phase==52){
+            s->eraserTipUndo=masks(c)==s->erased&&history(c)==s->initialHistory+2;
+            if(!s->eraserTipUndo||!click(window,item("redoEditButton"))){finish("Eraser-end Undo failed");return;}s->phase=53;
+        }else if(s->phase==53){
+            s->eraserTipRedo=masks(c)==s->eraserTipCommitted&&history(c)==s->initialHistory+3;
+            if(!s->eraserTipRedo||!click(window,item("undoEditButton"))){finish("Eraser-end Redo failed");return;}s->phase=54;
+        }else if(s->phase==54){
+            s->eraserTipRestored=masks(c)==s->erased&&history(c)==s->initialHistory+2&&editor->property("mode").toString()=="paint";
+            if(!s->eraserTipRestored){finish("Eraser-end final Undo did not restore original intent");return;}
+            s->reopened=true;
             if(!select(window,"scopeModeChoice",1)){finish("Cannot choose actual Sony waveform control");return;}
             s->phase=17;s->settle=0;
         }else if(s->phase==17){

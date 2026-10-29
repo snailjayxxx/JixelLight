@@ -26,7 +26,7 @@ public:
     Q_INVOKABLE void cancelGesture();
 signals:
     void targetChanged();void enabledChanged();void blockedChanged();void pressedChanged();
-    void began(qreal x,qreal y,qreal pressure);
+    void began(qreal x,qreal y,qreal pressure,bool eraserTip);
     void moved(qreal x,qreal y,qreal pressure);
     void ended(qreal x,qreal y,qreal pressure);
     void canceled();

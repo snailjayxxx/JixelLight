@@ -76,7 +76,7 @@ bool BrushTabletInput::eventFilter(QObject *watched,QEvent *event) {
         m_ownerDestroyed=connect(device,&QObject::destroyed,this,[this,device]{
             if(m_owner!=device)return;const bool send=m_routing;clearOwner();if(send)emit canceled();
         });
-        const auto local=m_target->mapFromScene(pen->position());emit began(local.x(),local.y(),pressure);return handled();
+        const auto local=m_target->mapFromScene(pen->position());emit began(local.x(),local.y(),pressure,pointer==QPointingDevice::PointerType::Eraser);return handled();
     }
     if(!pressed())return false;
     if(!valid||!usable())cancelGesture();

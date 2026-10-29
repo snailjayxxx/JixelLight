@@ -264,7 +264,7 @@ Item {
         visible: root.maskTool !== ""
         text: root.maskTool === "brush" ? (!brushOverlay.layerPaintable
               ? root.brushBlockHint(brushOverlay.paintBlock) : root.controller.brushReady && !root.brushDisplayReady
-              ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushReady && root.brushEditor && root.brushEditor.mode === "erase"
+              ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushReady && brushOverlay.erasing
               ? root.t("拖动擦除所选图层，松开应用 · Esc 取消当前笔触", "Drag to erase the selected layer, release to apply · Esc cancels the stroke") : root.controller.brushStatus) : root.maskTool === "linear"
               ? root.t("黄色：移动 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动；曝光在右侧",
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")

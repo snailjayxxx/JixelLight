@@ -1,0 +1,17 @@
+# F4 M4.7V: respect the tablet eraser end
+
+When a tablet event identifies its pointer as an eraser end, the current stroke uses Erase even if the panel is set to Paint. The panel selection stays unchanged for the next ordinary pen or mouse stroke. The in-progress guide and canvas hint follow the actual stroke mode; once the preview is ready after release, the hint again reflects the panel selection. With no selected layer, the controller refuses the eraser stroke and explains that an existing layer is needed; disabled and missing layers retain their existing protections.
+
+This behavior covers Qt events that report `QPointingDevice::PointerType::Eraser`. It does not establish how a physical tablet or a particular driver reports its eraser end.
+
+## Local validation and limits
+
+The actual Root application, input probe and export verifier were built serially in 172,695 ms; all 221 tracked source files were checked before and after. The build used pre-commit source stamp `a2fe32e`. The original controlled input test passed 42 cases at 1× and 2× in 21,136.156 ms, within its 120-second limit.
+
+Actual Cocoa app tests used controlled Qt QPA events and retained the original pen Paint/Erase checks. New checks cover refusal with no target, an exact additional eraser stroke, one-step Undo/Redo and restoration, the unchanged panel selection, the Erase hint in English and Chinese while held, and the restored Paint hint after the preview refresh. Opaque CPU/Metal GUI runs at 1× took 4,991/5,007 ms and transparent runs 4,910/4,961 ms; at 2× they took 6,431/6,591 and 6,339/6,568 ms. Existing exact PNG16/ICC and locale checks and the 45,000 ms per-run limit remain in force. A separate 16-case QML probe confirmed disabled, missing and empty target guards using a fake controller; that probe is not full application or hardware evidence.
+
+With the pinned public Sony ARW, actual Root CPU and Metal runs preserved the original pen workflow and added the eraser and hint checks. GUI times were 10,217 and 9,958 ms; export plus independent exact pixel/ICC verification took 34,770.401 and 34,229.955 ms. Both checked all 32,947,264 source, histogram and waveform pixels. Peak reservations of 1,716,323,360 and 1,720,467,584 bytes stayed within the shared 3 GiB reservation budget, which is not a process-RSS limit. The respective limits remain 60,000 ms for GUI and 120,000 ms for export/reference. The settings and original Sony file were unchanged. An independent auditor checked all nine new fields, exact localized hint text and original report pairs; both Sony reports are the actual 1× runs, including in the 2× small-image audit group.
+
+The original private failure in which the eraser used Paint is retained at `evidence/F4-eraser-tip-private-v1/receipt.json`. The later bilingual hint failure and a test that expected Paint immediately after release while the preview was still processing are retained at `evidence/F4-eraser-hint-private-v1/receipt.json`. The restored-hint check now waits for the existing readiness/display conditions within the same deadline. Local source, binaries, reports and logs are collected at `evidence/F4-eraser-tip-root-local-v1/receipt.json`.
+
+This is local validation of controlled events, not physical-device verification or cross-platform/deployed-package acceptance. The committed change must pass its own full three-platform CI and actual Windows/macOS packages with all prior gates. Native GPU brush processing, native FP32 RAW decoding and full F4 completion are not claimed.

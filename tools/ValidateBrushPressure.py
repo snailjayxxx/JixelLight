@@ -25,7 +25,9 @@ REQUIRED = ("settings_isolated", "source_unchanged", "actual_photo_app_UI",
             "pressure_paint_reference", "pressure_erase_reference", "cancel_paint",
             "cancel_erase", "one_undo", "undo_redo", "project_reopen",
             "held_intent_history_revision_unchanged", "primary_lift_only",
-            "cancelled_barrel_paint", "cancelled_barrel_erase")
+            "cancelled_barrel_paint", "cancelled_barrel_erase",
+            "eraser_tip_started", "eraser_tip_empty_refused", "eraser_tip_exact",
+            "eraser_tip_undo", "eraser_tip_redo", "eraser_tip_restored", "eraser_tip_panel_stable", "eraser_tip_hint_localized", "eraser_tip_hint_restored")
 
 
 def sha256(path: Path) -> str:
