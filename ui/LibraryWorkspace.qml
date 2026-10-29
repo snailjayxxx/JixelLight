@@ -237,7 +237,16 @@ Rectangle {
         title: root.t("删除虚拟副本", "Delete virtual copy")
         property string targetId: ""
         property string copyName: ""
-        contentItem: Label { text: removeCopyDialog.copyName + "\n\n" + root.t("删除此副本及其调整和历史。原片和其他版本保留。", "Delete this copy, its adjustments and history. Keep the original and other versions."); wrapMode: Text.WordWrap }
+        // Measure wrapped text at the allocated width without feeding its size back into the popup.
+        contentItem: Item {
+            implicitHeight: copyMessage.implicitHeight
+            Label {
+                id: copyMessage
+                width: parent.width
+                text: removeCopyDialog.copyName + "\n\n" + root.t("删除此副本及其调整和历史。原片和其他版本保留。", "Delete this copy, its adjustments and history. Keep the original and other versions.")
+                wrapMode: Text.WordWrap
+            }
+        }
         footer: DialogButtonBox {
             Button { text: root.t("删除副本", "Delete copy"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
             Button { text: root.t("取消", "Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }

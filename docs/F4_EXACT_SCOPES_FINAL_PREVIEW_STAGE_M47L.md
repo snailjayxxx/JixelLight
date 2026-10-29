@@ -80,3 +80,17 @@ accepted implementation stays K/`1fbfe71`/CI304. The 32 Mi source admission,
 shared 3 GiB reservation and colour/precision gates remain; reservation is not RSS.
 Physical drivers/nativeOS/nativeGPU brush/nativeFP32 RAW and remainingF4/F0–F6
 stay unfinished. PR16 remains Draft.
+
+## Own CI307 result: still failed
+
+[CI307](https://github.com/snailjayxxx/JixelLight/actions/runs/40816071704) passes
+all68/all3 with zero failures/skips in713.19/1,768.10/1,360.28s. Linux/macOS strict
+native and actualMac24 package pass. Windows owned CPU/GPU now passes45s at
+41,985/24,073ms with full/current2,659,021 histogram/plot and all old guards.
+Its guide native14/checks7/PNGs5 completes7,140ms, but the strict wrapper fails
+on LibraryWorkspace's delete-copy Dialog implicitHeight binding loop. Windows
+Sony GUI/package are unreached. All4 produced ZIPs,3 full actual8468603/treef2f487b
+logs and source213 remain at `evidence/ci-40816071704/terminal-failed-v1/receipt.json`.
+The earlier CI306 waveform timeout remains separate and failed.
+[M4.7M](F0_VIRTUAL_COPY_DIALOG_LAYOUT_STAGE_M47M.md) carries a narrow dialog sizing
+change with scoped local validation and its own committed acceptance still required.

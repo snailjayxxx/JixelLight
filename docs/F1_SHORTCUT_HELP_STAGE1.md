@@ -149,3 +149,13 @@ All4 produced validation ZIPs,3 complete actual104dcc0/treea8a7c72 logs and
 source213 remain at `evidence/ci-40806921358/terminal-failed-v1/receipt.json`.
 [M4.7L](F4_EXACT_SCOPES_FINAL_PREVIEW_STAGE_M47L.md) advances final-preview
 statistics scheduling with separate local and committed acceptance.
+
+Later CI307 completes Windows's original14 guide contexts,7 checks and5 PNGs in
+7,140ms, with actual restored brush focus/navigation. Its wrapper correctly
+fails on the separate Library virtual-copy Dialog implicitHeight QML warning.
+Linux/macOS strict guides pass2,942/7,150ms and the actualMac24 package passes;
+Windows Sony GUI/package are unreached. Original4 ZIPs/3 full actual8468603 logs
+remain at `evidence/ci-40816071704/terminal-failed-v1/receipt.json`.
+[M4.7M's dialog measurement change](F0_VIRTUAL_COPY_DIALOG_LAYOUT_STAGE_M47M.md)
+keeps every guide case, capture, timer and QML error marker; Windows/all3/both24
+acceptance remains required.
