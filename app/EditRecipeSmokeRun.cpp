@@ -126,6 +126,22 @@ private:
         }
         return dialog->property("width").toDouble()<=w->width()-31&&dialog->property("height").toDouble()<=w->height()-39;
     }
+    bool modalButtonKeyCases(QJsonArray &checks) {
+        auto *area=find("editRecipeText");if(!area)return false;
+        const QString original=dialog->property("recipeText").toString();
+        dialog->setProperty("recipeText",QStringLiteral("[{\"command\":\"develop.set\",\"parameter\":\"exposure\",\"value\":0.5}]"));
+        bool all=true;
+        for(const auto *name:{"editRecipePaste","editRecipeApply","editRecipeCancel"}) {
+            auto *item=find(QString::fromLatin1(name));if(!item||!item->isVisible()||!item->isEnabled()){all=false;break;}
+            w->setProperty("workspaceIndex",1);item->forceActiveFocus();const bool focusG=item->hasActiveFocus();key(Qt::Key_G,"g");
+            const bool g=focusG&&w->property("workspaceIndex").toInt()==1&&unchanged()&&visible();
+            w->setProperty("workspaceIndex",0);item->forceActiveFocus();const bool focusD=item->hasActiveFocus();key(Qt::Key_D,"d");
+            const bool d=focusD&&w->property("workspaceIndex").toInt()==0&&unchanged()&&visible();
+            checks.append(QJsonObject{{"focus",QString::fromLatin1(name)},{"g_isolated",g},{"d_isolated",d},{"photo_and_history_unchanged",unchanged()},{"dialog_visible",visible()}});all=all&&g&&d;
+        }
+        w->setProperty("workspaceIndex",1);dialog->setProperty("recipeText",original);area->forceActiveFocus();
+        return all&&checks.size()==3&&area->hasActiveFocus()&&unchanged()&&visible();
+    }
     bool snapshotCases() {
         auto *area=find("editRecipeText");auto *clipboard=&fakeClipboard;if(!area||!clipboard){finish("Snapshot test setup unavailable");return false;}
         const auto bindings=QKeySequence::keyBindings(QKeySequence::Paste);if(bindings.isEmpty()){finish("Snapshot paste binding unavailable");return false;}const auto seq=bindings.first()[0];
@@ -208,8 +224,9 @@ private:
         if(phase==3) {if(!click(find("editRecipeMenuAction"))){finish("Real recipe menu action unavailable");return;}next(4);return;}
         if(phase==4) {
             if(!visible()||!layout()||!record("actual-menu-opens-bounded-english-recipe",unchanged())||!capture("english-compact"))return;
-            auto *text=find("editRecipeText");text->forceActiveFocus();key(Qt::Key_G,"g");key(Qt::Key_D,"d");key(Qt::Key_Space," ");key(Qt::Key_BracketLeft,"[");key(Qt::Key_BracketRight,"]");
-            if(!record("readonly-preview-owns-navigation-and-canvas-keys",unchanged()&&visible()&&w->property("workspaceIndex").toInt()==1&&text->property("text").toString().isEmpty()&&dialog->property("recipeText").toString().isEmpty()))return;
+            QJsonArray buttonChecks;const bool buttonsStable=modalButtonKeyCases(buttonChecks);
+            auto *text=find("editRecipeText");if(!text){finish("Recipe text unavailable");return;}text->forceActiveFocus();key(Qt::Key_G,"g");key(Qt::Key_D,"d");key(Qt::Key_Space," ");key(Qt::Key_BracketLeft,"[");key(Qt::Key_BracketRight,"]");
+            if(!record("readonly-preview-owns-navigation-and-canvas-keys",buttonsStable&&unchanged()&&visible()&&w->property("workspaceIndex").toInt()==1&&text->property("text").toString().isEmpty()&&dialog->property("recipeText").toString().isEmpty(),{{"modal_button_checks",buttonChecks}}))return;
             const auto seq=QKeySequence::keyBindings(QKeySequence::Undo).first()[0];key(seq.key(),{},seq.keyboardModifiers());
             if(!record("textfield-undo-preserves-photo-history",unchanged()&&visible()))return;
             if(!snapshotCases())return;
@@ -236,7 +253,13 @@ private:
         }
         if(phase==6) {
             setText(R"([{"command":"develop.set","parameter":"exposure","value":1.5}])");
-            if(!click(find("editRecipeCancel"))||!record("cancel-valid-recipe-is-readonly",unchanged()))return;open();next(7);return;
+            if(!click(find("editRecipeCancel"))){finish("Cancel control unavailable");return;}next(61);return;
+        }
+        if(phase==61) {
+            if(visible()||w->property("workspaceIndex").toInt()!=1){finish("Cancel did not close or restore Develop");return;}
+            key(Qt::Key_G,"g");const bool library=w->property("workspaceIndex").toInt()==0;
+            key(Qt::Key_D,"d");const bool develop=w->property("workspaceIndex").toInt()==1;
+            if(!record("cancel-valid-recipe-is-readonly",unchanged()&&library&&develop,{{"navigation_after_close",QJsonObject{{"g_to_library",library},{"d_to_develop",develop}}}}))return;open();next(7);return;
         }
         if(phase==7) {
             setText(R"([{"command":"develop.set","parameter":"exposure","value":1.5}])");key(Qt::Key_Escape);next(8);return;

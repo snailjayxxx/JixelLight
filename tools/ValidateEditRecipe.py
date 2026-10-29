@@ -91,6 +91,11 @@ def check_evidence(data, native, expected_stamp, qpa, dpr, mode="clipboard"):
         require(row['dialog_visible'] is True and row['history_size'] == 2 and row['state_exposure'] == .25, 'read-only baseline')
     for row in rows[23:25]:
         require(row['dialog_visible'] is False and row['history_size'] == 2 and row['state_exposure'] == .25, 'cancel baseline')
+    buttons=rows[1]['modal_button_checks']
+    require(type(buttons) is list and [r['focus'] for r in buttons] == ['editRecipePaste','editRecipeApply','editRecipeCancel'], 'modal button focus set')
+    require(all(r['g_isolated'] is True and r['d_isolated'] is True and r['photo_and_history_unchanged'] is True and r['dialog_visible'] is True for r in buttons), 'modal workspace shortcut isolation')
+    nav=rows[23]['navigation_after_close']
+    require(nav['g_to_library'] is True and nav['d_to_develop'] is True, 'workspace navigation after dialog closes')
     unicode_row=rows[7]
     require(unicode_row['snapshot'] == '雪😀\u00a0\u2028\u2029' and unicode_row['preview'] == r'雪😀\u00A0\u2028\u2029', 'unicode snapshot and preview')
     invalid=rows[13]
