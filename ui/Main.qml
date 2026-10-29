@@ -591,6 +591,8 @@ ApplicationWindow {
             }
             ToolButton {
                 objectName: "keyboardShortcutsButton"
+                // Keep editor focus when opening by mouse; remain reachable by Tab.
+                focusPolicy: Qt.TabFocus
                 text: "?"
                 Accessible.name: window.t("键盘快捷键", "Keyboard shortcuts")
                 ToolTip.visible: hovered

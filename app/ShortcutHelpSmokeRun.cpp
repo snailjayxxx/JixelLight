@@ -134,6 +134,11 @@ private:
         details.insert("mask_tool",canvas?canvas->property("maskTool").toString():QString{});
         details.insert("navigation_active",overlay&&overlay->property("navigationActive").toBool());
         details.insert("focus_class",w&&w->activeFocusItem()?QString::fromLatin1(w->activeFocusItem()->metaObject()->className()):QString{});
+        details.insert("focus_object_name",w&&w->activeFocusItem()?w->activeFocusItem()->objectName():QString{});
+        details.insert("brush_active_focus",overlay&&overlay->hasActiveFocus());
+        auto *help=find("keyboardShortcutsButton");
+        details.insert("help_button_focus_policy",help?help->property("focusPolicy").toInt():-1);
+        details.insert("help_button_active_focus",help&&help->hasActiveFocus());
         records.append(details);return passed;
     }
     std::pair<bool,QJsonObject> layout(const QString &language)const {
