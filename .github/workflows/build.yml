@@ -261,6 +261,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-pressure-input/
+            build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
@@ -462,6 +463,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-pressure-input/
+            build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/

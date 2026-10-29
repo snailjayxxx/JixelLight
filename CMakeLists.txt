@@ -124,7 +124,10 @@ endforeach()
 qt_add_qml_module(JixelLight URI JixelLight VERSION 1.0 QML_FILES ${QML_SOURCES})
 add_library(JixelLightGpu STATIC core/gpu/GpuEngine.cpp)
 target_link_libraries(JixelLightGpu PUBLIC JixelLightCore Qt6::GuiPrivate)
-qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
+set(JIXELLIGHT_SHADER_SOURCES
+    shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
+    shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
+qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightGpu)
 if(WIN32)
@@ -307,6 +310,15 @@ target_link_libraries(JixelLightOfflineRawProbe PRIVATE JixelLightCore)
 set_target_properties(JixelLightOfflineRawProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+include(cmake/QsbDepfile.cmake)
+jixellight_escape_qsb_depfiles(${JIXELLIGHT_SHADER_SOURCES})
+add_test(NAME qsb-depfile-spaces COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/tests/TestQsbDepfile.py"
+    --cmake "${CMAKE_COMMAND}" --qsb "$<TARGET_FILE:Qt6::qsb>"
+    --generator "${CMAKE_GENERATOR}" --make-program "${CMAKE_MAKE_PROGRAM}"
+    --report-directory "${CMAKE_BINARY_DIR}/qsb-depfile-test"
+    --results-file "${CMAKE_BINARY_DIR}/qsb-depfile-results.txt")
+set_tests_properties(qsb-depfile-spaces PROPERTIES TIMEOUT 120)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/ValidateSonyFixtures.py $<TARGET_FILE:JixelLightSonyValidation>
     ${CMAKE_SOURCE_DIR}/tests/fixtures/sony-real-manifest.json ${CMAKE_BINARY_DIR}/sony-real-reports)

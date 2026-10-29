@@ -89,9 +89,25 @@ original ZIPs, three full actual29dd8be/treee97a608 logs, source213 and strict
 finalizer0. Its2,426-file terminal archive remains immutable. Its guide has eight
 checks; the new ninth check is only for this M47Q publication.
 
-M47Q still needs its own all68/all3, both actual24 packages, five original ZIPs,
-three complete runtime-source logs, exact213 source proof and strict finalizer0.
-Local UI passes do not establish committed cross-platform/package acceptance.
+M47Q is now fully accepted by
+[CI312](https://github.com/snailjayxxx/JixelLight/actions/runs/40882457598).
+All68/all3 pass with zero failures/skips in Linux933.51s, Windows1,763.08s and
+macOS1,462.40s. All three native strict audits, both actual24-mode SDK-stripped
+packages and strict finalizer0 pass. Guide14/five original captures/eight old
+checks/13 captions plus four compact contexts/four captures/ninthcheck passes
+in3,591/12,231/9,076ms without QML errors.
+
+Genuine Sony pressure GUI CPU/GPU is13,071/14,693ms,53,462/29,967ms and
+19,941/20,229ms. Combined export/reference is57,548.081/57,471.623ms,
+80,150.321/79,509.542ms and52,816.463/52,906.210ms. These retain full32,947,264
+source/histogram/plot pixels, shared3GiB and exact platform PNG16/ICC. Native
+partial reports remain partial; use GUI time separately from export/reference.
+
+Five original validation ZIPs, three FULL actual3f5393f/treea830 runtime logs,
+all213 matching Git/FS source hashes, original reports/captures and closed
+collector/finalizer evidence are sealed at
+`evidence/ci-40882457598/terminal-accepted-v1/receipt.json` (2,458 files).
+The original failed clipping baseline and all earlier failed records remain.
 
 Original45s owned GUI,60s Sony/help/basic GUI,120s export/reference,32Mi source
 ceiling, shared3GiB reservation and colour/precision gates remain. Reservation
