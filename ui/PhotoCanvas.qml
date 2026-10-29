@@ -208,19 +208,20 @@ Item {
             controller.finishInteraction()
         }
     }
-    // Keep the two mask tools in their own row. A long one-row toolbar
-    // overflowed narrow canvas layouts and left the Oval button outside
-    // the clipped hit-test surface even when isVisible() returned true.
+    // Comparison views can be narrower than a complete group of controls.
+    // Wrap each group so every button stays inside the clipped hit-test area.
     Column {
-        anchors.left: parent.left; anchors.top: parent.top; spacing: 4; z: 6
+        anchors.left: parent.left; anchors.top: parent.top; width: parent.width; spacing: 4; z: 6
         visible: !controller.cropEditing
-        Row {
+        Flow {
+            width: parent.width
             spacing: 5
             Button { objectName: "fitPreviewButton"; text: root.t("适合", "Fit"); enabled: !controller.cropEditing; onClicked: root.zoom=0 }
             Button { text: "100%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=1 }
             Button { text: "200%"; enabled: controller.previewReady && !controller.cropEditing; onClicked: root.zoom=2 }
         }
-        Row {
+        Flow {
+            width: parent.width
             spacing: 5
             Button {
                 objectName: "editLinearMaskCanvas"
@@ -237,7 +238,8 @@ Item {
                 onClicked: root.maskTool = root.maskTool === "radial" ? "" : "radial"
             }
         }
-        Row {
+        Flow {
+            width: parent.width
             spacing: 5
             Button {
                 objectName: "editBrushMaskCanvas"
@@ -268,7 +270,8 @@ Item {
                        "Yellow: move · Blue: rotate · Two green grips: feather · Shift: fine; exposure in panel")
               : root.t("黄色：中心／半径 · 蓝色：旋转 · 两侧绿色：羽化 · Shift：精细拖动",
                        "Yellow: center/radius · Blue: rotate · Two green grips: feather · Shift: fine")
-        font.pixelSize: 11; color: "#e5edf5"
+        width: Math.min(implicitWidth, Math.max(1,parent.width-16)); wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter; font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }
     }
     Label {
@@ -282,17 +285,18 @@ Item {
         horizontalAlignment: Text.AlignHCenter; font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }
     }
-    Row {
+    Flow {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 24
+        width: Math.min(parent.width, cropAspect.width + cropFull.implicitWidth + cropCancel.implicitWidth + cropApply.implicitWidth + spacing*3)
         spacing: 4; visible: controller.cropEditing; z: 5
         ComboBox {
             id: cropAspect; width: 90
             model: [root.t("自由", "Free"),"1:1","3:2","4:3","16:9","2:3"]
             onActivated: cropOverlay.setAspect([0,1,1.5,4/3,16/9,2/3][currentIndex])
         }
-        Button { text: root.t("全图", "Full"); onClicked: { cropAspect.currentIndex=0; cropOverlay.aspectRatio=0; cropOverlay.selection=Qt.rect(0,0,1,1) } }
-        Button { text: root.t("取消", "Cancel"); onClicked: controller.cancelCrop() }
-        Button { objectName: "applyInteractiveCrop"; text: root.t("应用", "Apply"); enabled: !controller.rendering; onClicked: root.applyCrop() }
+        Button { id: cropFull; text: root.t("全图", "Full"); onClicked: { cropAspect.currentIndex=0; cropOverlay.aspectRatio=0; cropOverlay.selection=Qt.rect(0,0,1,1) } }
+        Button { id: cropCancel; text: root.t("取消", "Cancel"); onClicked: controller.cancelCrop() }
+        Button { id: cropApply; objectName: "applyInteractiveCrop"; text: root.t("应用", "Apply"); enabled: !controller.rendering; onClicked: root.applyCrop() }
     }
     BusyIndicator {
         anchors.right: parent.right; anchors.top: parent.top

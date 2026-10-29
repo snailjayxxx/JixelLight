@@ -43,14 +43,15 @@ inapplicable. A new eighth wrapper check independently requires literal
 `CPU parallel`/`CPU 并行` for the selected language; two equally wrong strings
 cannot satisfy it.
 
-The future CI helper adds only these caption requirements. Removing them projects
+The caption CI helper adds only these requirements. Removing them projects
 byte-for-byte to CI310's original seven-check helper. Twenty-four derived temporary
 negative controls reject stale English labels, a matching wrong getter, missing
 context, invalid language/count/applicability/current state and the original
 source/modal-key/PNG/deadline failures. All original JSON and PNGs remain intact.
 Unbound full auditors/finalizers refuse use. The template at
-`backend-caption-locale-ci-template-v4/receipt.json` is for the next publication;
-CI310's helper and reports remain immutable. No new package mode is added.
+`backend-caption-locale-ci-template-v4/receipt.json` was bound to CI311 after
+publication; CI310's helper and reports remain immutable. No new package mode
+is added.
 
 ## Normal Root validation
 
@@ -92,7 +93,7 @@ DPR2 English caption and English compact help captures were visually inspected.
 Daily preferences remain unchanged. Raw local644942a stamps are retained;
 publication requires exact213 committed-source fingerprint matching.
 
-## Accepted baseline and remaining acceptance
+## Committed acceptance
 
 M47O/644942a is fully accepted by
 [CI310](https://github.com/snailjayxxx/JixelLight/actions/runs/40845703559):
@@ -103,10 +104,31 @@ Its original seven-check guide did not check this newly reproduced caption
 mismatch. That acceptance remains historical under its actual predicates.
 Original CI309/308/307/306/305 and private baseline failures remain preserved.
 
-This M47P caption publication still requires its own all68/all3, both actual24
-packages, five original ZIPs, three complete runtime source logs, exact213 source
-proof and strict finalizer0 with the additive eighth check. Local passes do not
-establish current committed cross-platform/package acceptance.
+M47P/961fb57381526074452832597d419df7f09677da is now fully accepted by
+[CI311](https://github.com/snailjayxxx/JixelLight/actions/runs/40864413485):
+
+| Platform | CTest68, zero failures/skips | Guide14 / checks8 / captions13 / captures5 |
+| --- | ---: | ---: |
+| Linux | 932.86s | 2,957ms |
+| Windows | 1,497.67s | 7,080ms |
+| macOS | 1,792.29s | 6,915ms |
+
+All native strict audits and both actual24-mode SDK-stripped packages pass.
+Five original validation ZIPs pass SHA/size/CRC/safe-extraction and extracted-byte
+checks. Three complete job logs prove actualcheckout29dd8be807ee11832f83b9c2e0fef95dad4b5671,
+whose treee97a608cfb56cda53ca28e408bd39ab5aee124d3 equals the publication.
+All213 runtime Git blobs, committed sources and locally tested bytes match.
+Strict finalizer0 and the original artifacts/logs/captures are preserved at
+`evidence/ci-40864413485/terminal-accepted-v1/receipt.json` (2,426 files).
+
+Genuine Sony pressure GUI CPU/GPU passes12,600/14,482ms on Linux,
+49,144/25,299ms on Windows and19,247/18,416ms on macOS. Export/reference partitions
+pass57,310.462/57,480.630ms,70,593.262/71,042.186ms and52,788.654/45,403.369ms,
+respectively. Full32,947,264 source/histogram/plot pixels, shared3GiB and exact
+platform-local PNG16/ICC remain under the original60/120s gates. These GUI
+numbers use `gui_elapsed_ms`; native `elapsed_ms` also includes export writing.
+CI311's original eighth check is retained; subsequent ninth-check compact-canvas
+work has separate M47Q acceptance requirements.
 
 Original45s owned GUI,60s Sony/help/basic GUI,120s export-reference partitions,
 32Mi source pixels, shared3GiB and colour/precision gates remain. Reservation is

@@ -7,6 +7,9 @@
 #include <utility>
 #include <QQuickWindow>
 #include <QQuickItem>
+#include <QScreen>
+#include <QQmlProperty>
+#include <QQmlEngine>
 #include <QPointer>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -73,6 +76,8 @@ public:
             QTimer::singleShot(0,this,[this]{finish("Shortcut help fixture/UI setup failed");});return;
         }
         sourceHash=hash(source);QWindowSystemInterface::registerInputDevice(&pen);
+        w->setScreen(QGuiApplication::primaryScreen());
+        w->setPosition(QGuiApplication::primaryScreen()->availableGeometry().topLeft()+QPoint(20,20));
         w->resize(1180,720);w->setProperty("workspaceIndex",0);c->setLanguage("en_US");c->setExactScopes(false);
         initialApplicationState=qGuiApp->applicationState();
         connect(timer,&QTimer::timeout,this,[this]{tick();});timer->start();
@@ -83,6 +88,8 @@ private:
     QJsonObject before,emptyLayout;QVariantList history;QJsonArray records,captures,keys;
     QByteArray sourceHash;int phase=-2,settle=0,focusBootstraps=0,applicationBootstraps=0;
     int backendCaptionChecks=0;bool backendCaptionsCurrent=true;
+    QJsonArray compactRecords,compactCaptures;
+    bool compactOvalPointer=false,compactCancelPointer=false;
     Qt::ApplicationState initialApplicationState=Qt::ApplicationInactive;
     ulong stamp=1000,tabletStamp=10000;bool snapshot=false,done=false;
     QQuickItem *find(const QString &name)const{return w?item(w->contentItem(),name):nullptr;}
@@ -182,16 +189,49 @@ private:
             {"window_width",w->width()},{"window_height",w->height()},{"dialog_x",x},{"dialog_y",y},
             {"dialog_width",width},{"dialog_height",height}}};
     }
-    bool capture(const QString &label) {
+    bool canvasBounded(QQuickItem *target) const {
+        auto *canvas=find("photoCanvas");if(!canvas||!target||!target->isVisible()||target->width()<1||target->height()<1)return false;
+        const auto point=target->mapToItem(canvas,{0,0});
+        return point.x()>=-.5&&point.y()>=-.5&&point.x()+target->width()<=canvas->width()+.5&&point.y()+target->height()<=canvas->height()+.5;
+    }
+    void canvasControls(QQuickItem *root,QJsonArray &rows,bool &valid) const {
+        if(!root)return;
+        if(root->isVisible()&&root->metaObject()->indexOfProperty("down")>=0) {
+            const auto point=root->mapToItem(find("photoCanvas"),{0,0});const bool bounded=canvasBounded(root);valid=valid&&bounded;
+            rows.append(QJsonObject{{"name",root->objectName()},{"text",root->property("text").toString()},{"x",point.x()},{"y",point.y()},{"width",root->width()},{"height",root->height()},{"contained",bounded}});
+        }
+        for(auto *child:root->childItems())canvasControls(child,rows,valid);
+    }
+    QQuickItem *canvasButton(QQuickItem *root,const QString &text) const {
+        if(!root)return nullptr;
+        if(root->isVisible()&&root->metaObject()->indexOfProperty("down")>=0&&root->property("text").toString()==text)return root;
+        for(auto *child:root->childItems())if(auto *found=canvasButton(child,text))return found;return nullptr;
+    }
+    bool splitWidth(const QString &name,qreal value) {
+        auto *target=find(name);if(!target)return false;
+        QQmlProperty property(target,"SplitView.preferredWidth",qmlContext(target));return property.isValid()&&property.write(value);
+    }
+    bool compactRecord(const QString &name) {
+        auto *canvas=find("photoCanvas"),*hint=find("maskToolHint"),*backend=find("processingBackendLabel");
+        QJsonArray bounds;bool okay=canvas&&stable();canvasControls(canvas,bounds,okay);
+        const bool hintVisible=hint&&hint->isVisible();
+        const bool hintBounded=!hintVisible||(canvasBounded(hint)&&hint->property("paintedWidth").toDouble()<=hint->width()+1&&hint->property("paintedHeight").toDouble()<=hint->height()+1);
+        const auto text=backend?backend->property("text").toString():QString{};
+        okay=okay&&hintBounded&&backend&&backend->isVisible()&&text==c->processingBackend();
+        compactRecords.append(QJsonObject{{"case",name},{"passed",okay},{"language",c->language()},{"canvas_width",canvas?canvas->width():0},{"canvas_height",canvas?canvas->height():0},{"window_width",w->width()},{"window_height",w->height()},
+            {"reference_visible",c->showCameraReference()},{"mask_tool",canvas?canvas->property("maskTool").toString():QString{}},{"crop_editing",c->cropEditing()},{"controls",bounds},{"hint_visible",hintVisible},{"hint_bounded",hintBounded},{"hint_width",hint?hint->width():0},{"hint_height",hint?hint->height():0},{"hint_painted_width",hint?hint->property("paintedWidth").toDouble():0},{"hint_painted_height",hint?hint->property("paintedHeight").toDouble():0},{"backend_caption",text},{"backend_getter",c->processingBackend()},{"document_history_source_unchanged",stable()}});
+        return okay&&capture(name,&compactCaptures);
+    }
+    bool capture(const QString &label,QJsonArray *destination=nullptr) {
         if(!w)return false;const auto image=w->grabWindow();const auto path=report+"."+label+".png";
         if(image.isNull()||!image.save(path))return false;
-        captures.append(QJsonObject{{"label",label},{"path",path},{"width",image.width()},{"height",image.height()},
+        (destination?*destination:captures).append(QJsonObject{{"label",label},{"path",path},{"width",image.width()},{"height",image.height()},
             {"logical_width",w->width()},{"logical_height",w->height()},{"dpr",w->effectiveDevicePixelRatio()},
             {"sha256",QString::fromLatin1(hash(path))}});return true;
     }
     void finish(const QString &error) {
-        if(done)return;done=true;timer->stop();const bool captured=capture(error.isEmpty()?"final":"failure");
-        const bool passed=error.isEmpty()&&records.size()==14&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==13&&backendCaptionsCurrent&&clock.elapsed()<60000;
+        if(done)return;done=true;timer->stop();const bool captured=(error.isEmpty()&&captures.size()==5)||capture(error.isEmpty()?"final":"failure");
+        const bool passed=error.isEmpty()&&records.size()==14&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==13&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
         const QJsonObject data{{"backend_caption_checks",backendCaptionChecks},{"backend_captions_current",backendCaptionsCurrent},{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
             {"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"test_fixture",true},{"product_UI_acceptance",false},
@@ -205,6 +245,7 @@ private:
             {"physical_OS_activation_verified",false},{"physical_keyboard_driver_verified",false},{"physical_tablet_verified",false},
             {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"gpu_active",c->gpuActive()},
             {"crop_context_setup_internal_beginCrop",true},{"help_button_focus_setup_internal",true},
+            {"compact_canvas_protocol_version",1},{"compact_canvas_records",compactRecords},{"compact_canvas_captures",compactCaptures},{"compact_oval_pointer_activated",compactOvalPointer},{"compact_crop_cancel_pointer_activated",compactCancelPointer},{"compact_pose_setup_internal_splitter_reference",true},
             {"dpr",w?w->effectiveDevicePixelRatio():0},{"records",records},{"captures",captures}};
         QSaveFile file(report);const auto bytes=QJsonDocument(data).toJson();const bool saved=file.open(QIODevice::WriteOnly)
             &&file.write(bytes)==bytes.size()&&file.commit();QCoreApplication::exit(passed&&saved?0:1);
@@ -327,7 +368,31 @@ private:
             key(Qt::Key_Escape);packet(Qt::NoButton);advance(21);return;
         }
         if(phase==21) {
-            auto *input=tablet();if(!record("fresh-pressure-after-primary-lift-cancels-without-edit",!visible()&&!c->brushDrawing()&&input&&!input->pressed()&&stable())){finish("Fresh pressure cancellation changed edits/history");return;}finish({});
+            auto *input=tablet();if(!record("fresh-pressure-after-primary-lift-cancels-without-edit",!visible()&&!c->brushDrawing()&&input&&!input->pressed()&&stable())||!capture("final")){finish("Fresh pressure cancellation changed edits/history");return;}
+            c->setLanguage("en_US");w->resize(1180,720);c->setShowCameraReference(true);
+            if(!splitWidth("librarySidebar",390)||!splitWidth("developRightPanel",390)){finish("Compact splitter setup unavailable");return;}advance(22);return;
+        }
+        if(phase>=22&&phase<=25) {
+            if(c->loading()||c->rendering()||!c->previewReady()||(!c->cropEditing()&&!c->brushReady()))return;
+            if(++settle<3)return;
+        }
+        if(phase==22) {
+            if(!compactRecord("compare-brush-en")||!click(find("editRadialMaskCanvas"))){finish("Compact English canvas controls unavailable");return;}
+            compactOvalPointer=find("photoCanvas")->property("maskTool").toString()=="radial";
+            if(!compactOvalPointer){finish("Compact Oval pointer did not select radial handles");return;}c->setLanguage("zh_CN");advance(23);return;
+        }
+        if(phase==23) {
+            if(!compactRecord("compare-oval-zh")){finish("Compact Chinese canvas controls unavailable");return;}
+            c->setLanguage("en_US");if(!c->beginCrop()){finish("Compact crop setup unavailable");return;}advance(24);return;
+        }
+        if(phase==24) {
+            if(!compactRecord("compare-crop-en")||!click(canvasButton(find("photoCanvas"),"Cancel"))){finish("Compact crop controls unavailable");return;}
+            compactCancelPointer=!c->cropEditing()&&stable();if(!compactCancelPointer){finish("Compact crop Cancel changed edits/history");return;}
+            c->setShowCameraReference(false);w->resize(1540,920);
+            if(!splitWidth("librarySidebar",228)||!splitWidth("developRightPanel",390)){finish("Restored splitter setup unavailable");return;}advance(25);return;
+        }
+        if(phase==25) {
+            if(!compactRecord("restored-wide-en")){finish("Restored wide canvas controls unavailable");return;}finish({});
         }
     }
 };

@@ -30,6 +30,62 @@ def _number(value):
     return value
 
 
+COMPACT_CASES = ('compare-brush-en', 'compare-oval-zh', 'compare-crop-en', 'restored-wide-en')
+
+
+def _compact_canvas_check(data: dict, native: Path) -> bool:
+    try:
+        assert type(data['compact_canvas_protocol_version']) is int and data['compact_canvas_protocol_version'] == 1
+        assert all(data[k] is True for k in ('compact_oval_pointer_activated',
+            'compact_crop_cancel_pointer_activated', 'compact_pose_setup_internal_splitter_reference'))
+        rows = data['compact_canvas_records']
+        assert len(rows) == 4 and [r['case'] for r in rows] == list(COMPACT_CASES)
+        for index, row in enumerate(rows):
+            assert row['passed'] is True and row['document_history_source_unchanged'] is True
+            assert row['language'] == ('zh_CN' if index == 1 else 'en_US')
+            assert row['backend_caption'] == row['backend_getter'] == ('CPU 并行' if index == 1 else 'CPU parallel')
+            assert row['reference_visible'] is (index < 3) and row['crop_editing'] is (index == 2)
+            assert row['mask_tool'] == ('brush', 'radial', '', '')[index]
+            width, height = _number(row['canvas_width']), _number(row['canvas_height'])
+            assert width > 0 and height > 0
+            assert 0 < width <= 240 if index < 3 else width > 240
+            assert _number(row['window_width']) >= 1180 and _number(row['window_height']) >= 720
+            controls = row['controls']; assert len(controls) == (7, 6, 4, 6)[index]
+            for control in controls:
+                assert control['contained'] is True
+                x, y, cw, ch = [_number(control[k]) for k in ('x', 'y', 'width', 'height')]
+                assert x >= -.5 and y >= -.5 and cw > 0 and ch > 0 and x+cw <= width+.5 and y+ch <= height+.5
+            names = {c['name'] for c in controls}; texts = {c['text'] for c in controls}
+            if index == 2:
+                assert 'applyInteractiveCrop' in names and {'Full', 'Cancel', 'Apply'} <= texts
+            else:
+                assert {'fitPreviewButton', 'editLinearMaskCanvas', 'editRadialMaskCanvas', 'editBrushMaskCanvas'} <= names
+                assert {'100%', '200%'} <= texts
+            if index == 0:
+                assert 'newBrushLayerCanvas' in names
+            assert row['hint_visible'] is (index < 2) and row['hint_bounded'] is True
+            if index < 2:
+                assert 0 < _number(row['hint_width']) <= width-15 and _number(row['hint_height']) > 0
+                assert 0 < _number(row['hint_painted_width']) <= row['hint_width']+1
+                assert 0 < _number(row['hint_painted_height']) <= row['hint_height']+1
+        captures = data['compact_canvas_captures']
+        assert len(captures) == 4 and [c['label'] for c in captures] == list(COMPACT_CASES)
+        dpr = _number(data['dpr']); assert dpr > 0
+        for capture in captures:
+            assert _number(capture['dpr']) == dpr
+            path = Path(capture['path']).resolve()
+            assert path == Path(str(native)+'.'+capture['label']+'.png').resolve()
+            blob = path.read_bytes(); assert hashlib.sha256(blob).hexdigest() == capture['sha256']
+            assert blob[:8] == b'\x89PNG\r\n\x1a\n' and blob[12:16] == b'IHDR'
+            actual = struct.unpack('>II', blob[16:24]); assert actual == (capture['width'], capture['height'])
+            width, height = _number(capture['logical_width']), _number(capture['logical_height'])
+            assert actual[0] == math.floor(width*dpr+.5)
+            assert math.floor(720*dpr+.5) <= actual[1] <= math.floor(height*dpr+.5)
+        return True
+    except (AssertionError, KeyError, TypeError, ValueError, OSError, OverflowError, struct.error):
+        return False
+
+
 def _checks(data: dict, native: Path) -> dict[str, bool]:
     checks = dict.fromkeys(('protocol', 'readonly_contexts', 'native_labels',
                            'compact_layout', 'modal_keys', 'held_pressure', 'captures', 'backend_captions'), False)
@@ -119,6 +175,7 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         checks['captures'] = True
     except (AssertionError, KeyError, TypeError, ValueError, OSError, OverflowError, struct.error):
         pass
+    checks['compact_canvas_controls'] = _compact_canvas_check(data, native)
     return checks
 
 
