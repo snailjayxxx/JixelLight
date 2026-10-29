@@ -69,6 +69,11 @@ bad evidence cases. Unbound auditors/finalizers refuse execution.
 
 ## Accepted baseline and remaining acceptance
 
+CI313 later completed all three GitHub jobs, but the final scratch qsb bundle
+was absent from all three native validation ZIPs. Its preserved result is
+**incomplete**, not strict acceptance; the test-only evidence correction and
+actual CI313 results are documented in [M4.7S](F0_QSB_ARTIFACT_EVIDENCE_STAGE_M47S.md).
+
 Q/32ab617 is fully accepted by
 [CI312](https://github.com/snailjayxxx/JixelLight/actions/runs/40882457598):
 all68/all3 zero failure/skip, both actual24-mode SDK-stripped packages, five

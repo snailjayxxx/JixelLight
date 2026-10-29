@@ -171,6 +171,17 @@ add_custom_target(shader_only DEPENDS "${output}")
             if digest(repository/name) != expected:
                 raise RuntimeError('Production helper source changed during the test')
         result['checks']['production_helpers_unchanged'] = True
+        # Keep the actual final shader bundle in the uploaded evidence tree.
+        # The build output lives in a hidden .qsb directory, which artifact
+        # uploaders can omit even when the parent directory is included.
+        evidence_bundle = attempt/'fixture-final.qsb'
+        shutil.copyfile(bundle, evidence_bundle)
+        expected_bundle_sha = after_helper[0] if result['helper_workaround_active'] else after_include[0]
+        if evidence_bundle.stat().st_size <= 0 or digest(evidence_bundle) != expected_bundle_sha:
+            raise RuntimeError('Final shader evidence does not match the built bundle')
+        result['final_bundle'] = {'file': evidence_bundle.name,
+                                  'bytes': evidence_bundle.stat().st_size,
+                                  'sha256': expected_bundle_sha}
         result['passed'] = True
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'
