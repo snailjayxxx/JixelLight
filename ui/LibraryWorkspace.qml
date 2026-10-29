@@ -231,8 +231,10 @@ Rectangle {
     }
     Dialog {
         id: removeCopyDialog
+        // The Loader's initial size can change while wrapped text is measured.
+        parent: Overlay.overlay
         anchors.centerIn: parent
-        width: Math.min(root.width-40,460)
+        width: parent ? Math.min(parent.width-40,460) : 460
         modal: true
         title: root.t("删除虚拟副本", "Delete virtual copy")
         property string targetId: ""

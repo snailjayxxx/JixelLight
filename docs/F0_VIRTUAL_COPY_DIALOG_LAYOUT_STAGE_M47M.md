@@ -1,5 +1,14 @@
 # F0 M4.7M: measure virtual-copy confirmation text at its allocated width
 
+**Actual committed result:** CI308 remains failed. All68/all3 and the actual
+Mac24 package pass, but Windows still reports the same Library delete Dialog
+implicitHeight warning; Linux also fails its later basicGPU completion check.
+All produced validation originals and runtime source logs remain at
+`evidence/ci-40823773110/terminal-failed-v1/receipt.json`. The content wrapper
+alone did not resolve Windows. [M47N](F0_F4_GUI_READINESS_STAGE_M47N.md) adds paired
+actual-App reproductions, window Overlay ownership and required final GPU waiting;
+its own Linux/Windows and whole-stage acceptance remain pending.
+
 The virtual-copy delete confirmation now puts its wrapped Label inside an Item
 whose implicit height comes from that Label. The Label uses the allocated content
 width; its implicit width no longer participates in the popup's size calculation.

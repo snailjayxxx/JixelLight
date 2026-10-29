@@ -599,7 +599,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
     auto state=std::make_shared<State>();state->elapsed.start();
     const auto saveScreenshot=[window,state](const QString &path) {
         QElapsedTimer grabTimer;grabTimer.start();
@@ -1298,14 +1298,20 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto meta=controller->currentMetadata();
             const auto expected=meta.value("pixelWidth").toULongLong()*meta.value("pixelHeight").toULongLong();
             const bool scopesReady=expected>0 && controller->scopesPixelCount()==expected;
+            if(scopesReady&&qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")&&!controller->gpuActive()) {
+                if(state->firstFinalWithoutGpuMs<0)state->firstFinalWithoutGpuMs=state->elapsed.elapsed();
+                ++state->finalGpuWaitTicks;
+            }
             transferTrace->insert("final_scopes",scopesReady);
             complete=scopesReady && scopePlots->value("waveform").toBool() && scopePlots->value("parade").toBool() && scopePlots->value("vectorscope").toBool();
         }
         if(state->lookEnabled)
             complete=complete && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty();
+        const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
+        // CPU/scopes completion can precede the current GPU-present notification.
+        complete=SmokePhasePolicy::finalPresentationReady(complete,gpuRequired,controller->gpuActive());
         if(!complete && state->elapsed.elapsed()<60000) return;
         timer->stop();
-        const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
         const bool workspaceOk=state->gridVisited && state->filmstripPresent && state->presetActionsPresent && state->restoredDevelop && state->curationPassed && state->catalogPassed && state->catalogDatesPassed && state->copiesPassed && state->historyPassed && state->geometryPassed && state->interactiveCropPassed && state->straightenPassed;
         const bool copyOk=copyTrace->value("menu_opened").toBool() && copyTrace->value("menu_visible").toBool() && copyTrace->value("started").toBool()
             && copyTrace->value("prepared").toBool() && copyTrace->value("dialog_visible").toBool() && copyTrace->value("custom_clicked").toBool()
@@ -1369,6 +1375,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["smoke_final_image_ready"]=ready;
         report["smoke_final_loading"]=controller->loading();
         report["smoke_final_rendering"]=controller->rendering();
+        report["smoke_gpu_required"]=gpuRequired;
+        report["smoke_final_gpu_enabled"]=controller->gpuEnabled();
+        report["smoke_final_gpu_wait_ticks"]=state->finalGpuWaitTicks;
+        report["smoke_first_final_ready_without_gpu_ms"]=state->firstFinalWithoutGpuMs;
         report["ui_straighten_passed"]=state->straightenPassed;
         report["ui_straighten_degrees"]=state->straightenDegrees;
         report["ui_straighten_scope_pixels"]=qint64(state->straightenedScopePixels);

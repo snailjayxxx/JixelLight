@@ -15,4 +15,7 @@ constexpr bool isRenderIndependentExportUi(int phase) noexcept {
 constexpr bool canAdvance(int phase,bool imageReady) noexcept {
     return imageReady||isRenderIndependentExportUi(phase);
 }
+constexpr bool finalPresentationReady(bool imageAndScopesReady,bool gpuRequired,bool gpuActive) noexcept {
+    return imageAndScopesReady&&(!gpuRequired||gpuActive);
+}
 }

@@ -959,6 +959,11 @@ private slots:
             QVERIFY(!SmokePhasePolicy::canAdvance(phase,false));
             QVERIFY(SmokePhasePolicy::canAdvance(phase,true));
         }
+        // A cached CPU/scopes result may arrive before queued GPU presentation.
+        QVERIFY(!SmokePhasePolicy::finalPresentationReady(true,true,false));
+        QVERIFY(SmokePhasePolicy::finalPresentationReady(true,true,true));
+        QVERIFY(SmokePhasePolicy::finalPresentationReady(true,false,false));
+        QVERIFY(!SmokePhasePolicy::finalPresentationReady(false,true,true));
     }
 
     void gpuStagingPreservesEvery16BitChannelAtAllAlphaClasses() {
