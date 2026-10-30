@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include <rhi/qrhi.h>
 #include <QElapsedTimer>
 #include <QImage>
@@ -7,15 +8,28 @@
 #include <memory>
 
 // Render-thread-only engine. Source uploads are keyed independently of editing
-// revisions. Output stays on the GPU; only 16,400 histogram bytes are read back.
+// revisions. Normal interaction reads back only 16,400 histogram bytes. An
+// explicit diagnostic request can capture the pre-monitor working output.
 class GpuEngine final {
 public:
     using HistogramReady = std::function<void(quint64, QByteArray, quint64)>;
+    using FrameReady = std::function<void(QJsonObject)>;
     explicit GpuEngine(QRhi *rhi);
     ~GpuEngine();
     bool process(QRhiCommandBuffer *cb, const QImage &linearFloatSource, ProcessingPlan plan,
                  quint64 revision, const HistogramReady &histogramReady, bool forceHistogram = false);
+    // Explicit large prepared/viewport brush route. CPU-reference pixels are
+    // uploaded for GPU display/scopes; this does not enable native GPU brushes.
+    // Admission refusal leaves the engine usable and reports through error.
+    bool processAdmittedBrush(QRhiCommandBuffer *cb,const QImage &linearFloatSource,ProcessingPlan plan,
+        quint64 revision,const HistogramReady &histogramReady,bool forceHistogram=false,
+        QString *error=nullptr,std::shared_ptr<BrushRenderBudget> budget={});
     bool draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
+    // Qt Quick composites premultiplied monitor-device RGB. Keep draw() and
+    // the working output texture straight for diagnostic/scopes/export users.
+    bool drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
+    bool captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
+                             QString *error = nullptr, qint64 budget = 64 * 1024 * 1024);
     // Display color management is intentionally downstream of m_output so it
     // cannot alter image pixels used by scopes, export, fitting, or CPU/GPU
     // processing parity. The atlas is a 33^3 encoded-sRGB -> monitor-device LUT.
@@ -28,10 +42,13 @@ public:
     quint64 renderedRevision() const { return m_revision; }
     bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }
 private:
+    bool processImpl(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,quint64 revision,
+        const HistogramReady &histogramReady,bool forceHistogram,BrushRenderRequest *admitted);
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
     bool ensureDetail();
-    bool createDisplay(QRhiRenderTarget *target);
+    bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha);
+    bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha);
     bool ensureDisplayColorResources();
     bool buildCompute(std::unique_ptr<QRhiComputePipeline> &pipeline,
                       QRhiShaderResourceBindings *bindings, const QString &name);
@@ -44,6 +61,8 @@ private:
     int m_groups = 0;
     QElapsedTimer m_histogramClock;
     std::shared_ptr<ReadbackState> m_readback;
+    std::shared_ptr<ReadbackState> m_frameReadback;
+    ColorManagement::OutputSpace m_outputSpace = ColorManagement::OutputSpace::SRgb;
     std::unique_ptr<QRhiTexture> m_source, m_output, m_lutTexture, m_detailBase, m_horizontal, m_displayLutTexture;
     QString m_lutKey;
     std::unique_ptr<QRhiBuffer> m_uniform, m_partial, m_counts, m_vertices;
@@ -53,6 +72,7 @@ private:
     std::unique_ptr<QRhiGraphicsPipeline> m_display;
     QRhiRenderPassDescriptor *m_displayPass = nullptr;
     int m_displaySamples = 0;
+    bool m_displayPremultipliedAlpha = false;
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
     QImage m_displayColorLut;
@@ -60,5 +80,6 @@ private:
     QString m_uploadedDisplayColorLutKey;
     QString m_displayColorProfileName;
     // Keeps CPU safety-fallback upload bytes alive until the following frame.
+    // Admitted uploads carry a payload reservation in their QImage cleanup.
     QImage m_cpuFallbackFrame;
 };

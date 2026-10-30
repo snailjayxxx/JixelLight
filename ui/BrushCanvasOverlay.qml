@@ -1,0 +1,201 @@
+import QtQuick
+import JixelLight.Native 1.0
+
+Item {
+    id: root
+    required property var controller
+    property var editor: null
+    property bool navigationAllowed: false
+    property bool navigationHeld: false
+    property bool navigationDragging: false
+    readonly property bool navigationActive: navigationHeld || navigationDragging
+    readonly property string paintBlock: {
+        if (!controller || !editor) return "unavailable"
+        if (editor.mode !== "paint" && editor.mode !== "erase") return "invalid"
+        if (editor.layerId === "") return editor.mode === "erase" ? "erase-layer" : controller.brushCapacity.new_layer_block
+        for (const layer of controller.brushLayers)
+            if (layer.id === editor.layerId) return layer.paint_block
+        return "missing"
+    }
+    readonly property bool layerPaintable: paintBlock === ""
+    property bool strokeErasing: false
+    readonly property bool erasing: root.drawing ? root.strokeErasing : (editor && editor.mode === "erase")
+    property real currentPressure: 1
+    property bool drawing: false
+    property var points: []
+    readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []
+    property point cursorPoint: Qt.point(-1000, -1000)
+    readonly property rect frame: controller ? controller.previewFrameRect : Qt.rect(0,0,1,1)
+    readonly property size pixels: controller ? controller.brushFrameSize : Qt.size(0,0)
+    readonly property real radius: editor ? editor.radius : 0.05
+    readonly property real radiusX: pixels.width > 0 && frame.width > 0 ? radius * Math.min(pixels.width,pixels.height) / pixels.width * width / frame.width : 0
+    readonly property real radiusY: pixels.height > 0 && frame.height > 0 ? radius * Math.min(pixels.width,pixels.height) / pixels.height * height / frame.height : 0
+    clip: true
+    Keys.onEscapePressed: function(event) {
+        if (root.navigationActive) {
+            root.cancelNavigation()
+            event.accepted = true
+            return
+        }
+        const held = root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed
+        root.cancel()
+        if (!held && root.editor) root.editor.active = false
+        event.accepted = true
+    }
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Space && event.modifiers === Qt.NoModifier) {
+            if (!root.editor || !root.visible || !root.enabled) return
+            event.accepted = true
+            if (!event.isAutoRepeat && root.navigationAllowed && !root.drawing && !root.controller.brushDrawing && !pointer.pressed && !tabletInput.pressed)
+                root.navigationHeld = true
+            return
+        }
+        if (event.modifiers !== Qt.NoModifier || (event.key !== Qt.Key_BracketLeft && event.key !== Qt.Key_BracketRight)) return
+        if (!root.editor || !root.visible || !root.enabled) return
+        event.accepted = true
+        // Keep the held stroke's style and ownership intact until primary lift.
+        if (root.navigationActive || root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed) return
+        const factor = event.key === Qt.Key_BracketRight ? 1.25 : 0.8
+        root.editor.radius = Math.max(0.002, Math.min(0.5, root.editor.radius * factor))
+    }
+    Keys.onReleased: function(event) {
+        if (event.key === Qt.Key_Space && !event.isAutoRepeat) {
+            root.navigationHeld = false
+            event.accepted = true
+        }
+    }
+
+    function cancelNavigation() { navigationHeld = false; navigationDragging = false }
+    onNavigationAllowedChanged: if (!navigationAllowed) cancelNavigation()
+    onNavigationActiveChanged: if (guide) guide.requestPaint()
+    onActiveFocusChanged: if (!activeFocus) cancelNavigation()
+    Connections {
+        target: root.Window.window
+        function onActiveChanged() { if (!root.Window.active) root.cancelNavigation() }
+    }
+
+    function imagePoint(x,y) {
+        return controller.maskCanvasPoint(Math.max(0,Math.min(width,x)),Math.max(0,Math.min(height,y)),width,height)
+    }
+    function clearGuide() { drawing=false; strokeErasing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
+    function cancel() { cancelNavigation(); if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
+    function addGuide(x,y) {
+        let next=points.slice()
+        if (next.length >= 1024) next=next.filter(function(p,i) { return i % 2 === 0 })
+        next.push({x:x,y:y}); points=next; guide.requestPaint()
+    }
+    onVisibleChanged: { if (!visible) cancel(); if (guide) guide.requestPaint() }
+    onEnabledChanged: if (!enabled) cancel()
+    onLayerPaintableChanged: { if (!layerPaintable) cancel(); if (guide) guide.requestPaint() }
+    onRadiusXChanged: if (guide) guide.requestPaint()
+    onRadiusYChanged: if (guide) guide.requestPaint()
+    onFrameChanged: if (guide) guide.requestPaint()
+    onSelectedStrokeChanged: if (guide) guide.requestPaint()
+    Component.onDestruction: if (controller) controller.cancelBrushStroke()
+    Connections {
+        target: root.controller
+        function onBrushDrawingChanged() { if (!root.controller.brushDrawing) root.clearGuide() }
+    }
+    Connections {
+        target: root.editor
+        function onLayerIdChanged() { root.cancel(); root.editor.strokeSelection=({}) }
+        function onStrokeSelectionChanged() {
+            if (root.editor.strokeSelection.token) root.cancel()
+            guide.requestPaint()
+        }
+        function onModeChanged() { root.cancel(); root.editor.strokeSelection=({}); guide.requestPaint() }
+        function onRadiusChanged() { root.cancel() }
+        function onHardnessChanged() { root.cancel() }
+        function onOpacityChanged() { root.cancel() }
+        function onExposureChanged() { root.cancel() }
+    }
+    Canvas {
+        id: guide; anchors.fill: parent
+        onPaint: {
+            const c=getContext("2d"); c.clearRect(0,0,width,height)
+            const eraseGuide=root.drawing ? root.erasing : root.editor && root.editor.strokeSelection.mode === "erase"
+            c.strokeStyle=eraseGuide ? "#ffa99a" : "#f4d992"; c.lineWidth=2
+            if (root.drawing && root.points.length > 0) {
+                c.beginPath(); c.moveTo(root.points[0].x,root.points[0].y)
+                for (let i=1;i<root.points.length;++i) c.lineTo(root.points[i].x,root.points[i].y)
+                c.stroke()
+            } else if (root.selectedStroke.length > 0 && root.frame.width > 0 && root.frame.height > 0) {
+                const p=root.selectedStroke
+                const x=(p[0].x-root.frame.x)/root.frame.width*width, y=(p[0].y-root.frame.y)/root.frame.height*height
+                c.beginPath(); c.moveTo(x,y)
+                if (p.length === 1) c.ellipse(x-3,y-3,6,6)
+                else for (let i=1;i<p.length;++i) c.lineTo((p[i].x-root.frame.x)/root.frame.width*width,(p[i].y-root.frame.y)/root.frame.height*height)
+                c.stroke()
+            }
+            if (!root.navigationActive && (pointer.containsMouse || root.drawing)) {
+                c.strokeStyle=root.erasing ? "#ffa99a" : "#bce7f2"; c.lineWidth=1
+                c.beginPath(); const pressure=root.drawing ? root.currentPressure : 1
+                c.ellipse(root.cursorPoint.x-root.radiusX*pressure,root.cursorPoint.y-root.radiusY*pressure,root.radiusX*2*pressure,root.radiusY*2*pressure); c.stroke()
+            }
+        }
+    }
+    BrushTabletInput {
+        id: tabletInput; objectName: "brushTabletInput"
+        target: root; blocked: pointer.pressed || root.navigationActive
+        onBegan: function(x,y,pressure,eraserTip) {
+            root.forceActiveFocus()
+            const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y)
+            if (root.navigationActive || !root.editor) return
+            // A hardware eraser end only erases; an empty target is refused by
+            // the controller so it can explain that an existing layer is needed.
+            if (!root.layerPaintable && !(eraserTip && root.editor.layerId === "")) return
+            const mode=eraserTip ? "erase" : root.editor.mode
+            if (!root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)) return
+            root.editor.strokeSelection=({})
+            root.strokeErasing=(mode === "erase");root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
+        }
+        onMoved: function(x,y,pressure) {
+            if (!root.drawing) return
+            const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y);root.currentPressure=pressure
+            if (!root.controller.appendBrushStroke(p.x,p.y,pressure)) { root.clearGuide();return }
+            root.addGuide(x,y)
+        }
+        onEnded: function(x,y,pressure) {
+            if (!root.drawing) return
+            const p=root.imagePoint(x,y)
+            if (root.controller.appendBrushStroke(p.x,p.y,pressure)) {
+                const layer=root.controller.endBrushStroke()
+                if (layer!=="" && root.editor) root.editor.layerId=layer
+            }
+            root.clearGuide()
+        }
+        onCanceled: root.cancel()
+    }
+    MouseArea {
+        id: pointer; objectName: "brushPointerArea"
+        anchors.fill: parent; hoverEnabled: true; preventStealing: true; acceptedButtons: Qt.LeftButton
+        cursorShape: root.layerPaintable ? Qt.CrossCursor : Qt.ForbiddenCursor
+        onContainsMouseChanged: guide.requestPaint()
+        onPressed: function(mouse) {
+            root.forceActiveFocus()
+            const p=root.imagePoint(mouse.x,mouse.y);root.cursorPoint=Qt.point(mouse.x,mouse.y)
+            if (root.navigationActive || !root.layerPaintable || !root.editor || !root.controller.beginBrushStrokeMode(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,root.editor.mode)) return
+            root.editor.strokeSelection=({})
+            root.strokeErasing=(root.editor.mode === "erase");root.drawing=true;root.points=[];root.addGuide(mouse.x,mouse.y)
+        }
+        onPositionChanged: function(mouse) {
+            root.cursorPoint=Qt.point(mouse.x,mouse.y)
+            if (root.drawing) {
+                const p=root.imagePoint(mouse.x,mouse.y)
+                if (!root.controller.appendBrushStroke(p.x,p.y,1)) { root.clearGuide(); return }
+                root.addGuide(mouse.x,mouse.y)
+            }
+            guide.requestPaint()
+        }
+        onReleased: function(mouse) {
+            if (!root.drawing) return
+            const p=root.imagePoint(mouse.x,mouse.y)
+            if (root.controller.appendBrushStroke(p.x,p.y,1)) {
+                const layer=root.controller.endBrushStroke()
+                if (layer !== "" && root.editor) root.editor.layerId=layer
+            }
+            root.clearGuide()
+        }
+        onCanceled: root.cancel()
+    }
+}

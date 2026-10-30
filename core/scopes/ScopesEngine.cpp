@@ -1,4 +1,5 @@
 #include "core/scopes/ScopesEngine.h"
+#include "core/pipeline/BrushRenderRequest.h"
 #include "core/async/ParallelRows.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QRgba64>
@@ -59,16 +60,32 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins, const CancelTo
     for (const auto &part:partials) total.add(part);
     return result(total,bins);
 }
-ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
+ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token,
+                                     const RenderedStripObserver &completedStrip) {
     if (source.isNull()) return {};
+    if (!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,token)) return {};
     PerformanceSpan timing("full_resolution_scopes",{{"pixels",qint64(source.width())*source.height()}});
-    const QImage input=source.format()==QImage::Format_RGBA64 ? source : source.convertToFormat(QImage::Format_RGBA64);
+    // FP32 scenes must enter the *same* color kernel as the preview and
+    // export. The former integer adapter truncated values >1 before user
+    // exposure, making full-resolution scopes disagree with the actual edit.
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    const QImage input=floating || source.format()==QImage::Format_RGBA64
+        ? source : source.convertToFormat(QImage::Format_RGBA64);
+    if (input.isNull()) return {};
     HistogramCounts total;
+    bool collecting=bool(completedStrip);
     for (int y=0; y<input.height() && !cancelled(token); y+=128) {
-        const QImage view(input.constScanLine(y),input.width(),std::min(128,input.height()-y),input.bytesPerLine(),QImage::Format_RGBA64);
         const QImage rendered=ImagePipeline::processRegion(input,plan,QRect(0,y,input.width(),std::min(128,input.height()-y)),token);
         if (rendered.isNull()) return {};
         countRows(rendered,0,rendered.height(),total,token);
+        if (collecting && !cancelled(token)) {
+            try { completedStrip(rendered,y); }
+            catch (...) {
+                // Optional collection must not fail a valid streamed histogram.
+                collecting=false;
+                PerformanceRecorder::count("full_scopes_collector_failures");
+            }
+        }
     }
     return cancelled(token) ? ScopesResult{} : result(total);
 }
@@ -85,4 +102,38 @@ ScopesResult ScopesEngine::fromGpu(const QByteArray &bytes, quint64 expectedPixe
         if (sum!=expectedPixels) return {};
     }
     return result(counts);
+}
+ScopesResult ScopesEngine::analyzeAdmitted(BrushRenderRequest &request,const CancelToken &token,
+                                          QString *error,std::array<ScopePlotResult,3> *plots,const RenderedStripObserver &completedStrip) {
+    if(error)error->clear();
+    const auto refuse=[&](const QString &message){if(error)*error=message;return ScopesResult{};};
+    if(request.layout()!=BrushRenderRequest::Layout::Stripes128)return refuse("Scopes require a streamed admitted brush request");
+    try {
+        HistogramCounts total;int rows=0;bool collecting=bool(completedStrip);
+        std::vector<ScopePlotCounts> counts;
+        if(plots)for(const auto &mode:{"waveform","parade","vectorscope"})counts.emplace_back(mode);
+        if(!request.visitStrips([&](const BrushImageLease &lease,int y) {
+            const auto &image=lease.image();
+            if(y!=rows||image.width()!=request.size().width()||image.format()!=QImage::Format_RGBA64)return false;
+            countRows(image,0,image.height(),total,token);rows+=image.height();
+            for(auto &plot:counts)if(!plot.add(image,token))return false;
+            if(collecting&&!cancelled(token)) {
+                try{completedStrip(image,y);}
+                catch(...){collecting=false;PerformanceRecorder::count("full_scopes_collector_failures");}
+            }
+            return !cancelled(token);
+        },token,error))return {};
+        if(rows!=request.size().height()||total.pixels!=quint64(request.size().width())*request.size().height())return refuse("Incomplete admitted scopes");
+        auto histogram=result(total);
+        if(plots) {
+            std::array<ScopePlotResult,3> completed;
+            for(std::size_t i=0;i<completed.size();++i) {
+                completed[i]={counts[i].image(),counts[i].pixels,{}};
+                if(completed[i].image.isNull()||counts[i].pixels!=total.pixels)return refuse("Admitted scope plot allocation failed");
+            }
+            if(cancelled(token))return refuse("Cancelled");
+            *plots=std::move(completed);
+        }
+        return histogram;
+    }catch(...){return refuse("Admitted scopes allocation failed");}
 }

@@ -6,18 +6,30 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QFile>
 #include <atomic>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QDataStream>
 #include <QStandardPaths>
 #include "app/PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/LoggingEngine.h"
+#include <cstring>
 #include <random>
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/LatestJob.h"
+#include "core/async/ParallelRows.h"
 #include "core/cache/SourceCache.h"
+#include "core/cache/RenderedPreviewCache.h"
+#include "core/cache/FullScopesCache.h"
+#include "core/cache/ScopePlotCache.h"
+#include "core/cache/AnalysisFrameCache.h"
+#include "diagnostics/PerformanceRecorder.h"
+#include "core/preview/PreviewTasks.h"
+#include "core/pipeline/FloatSceneResampler.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
 #include "core/scopes/ScopesEngine.h"
@@ -36,10 +48,496 @@ QImage fixture(int width=512,int height=341) {
 ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) {
     return ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0.0f);
 }
+bool sameExposureBits(const std::vector<float> &a,const std::vector<float> &b) {
+    return a.size()==b.size()
+        && (a.empty() || std::memcmp(a.data(),b.data(),a.size()*sizeof(float))==0);
+}
 }
 class PerformanceTests:public QObject {
     Q_OBJECT
 private slots:
+    void brushFrameRequestCancelsWithoutPublishingPartialImage() {
+        namespace BM=BrushMaskGeometry; namespace BD=BrushMaskDocument;
+        BM::Stroke stroke{BM::Style{.25,.4,.7},{}};
+        stroke.dabs.assign(128,{{.5,.5},1});
+        BD::Layer layer;layer.id="cancel_load";layer.enabled=true;
+        layer.exposureEv=1;layer.strokes={stroke};
+        AdjustmentState state;state.brushMasks.layers={layer};
+        const auto source=fixture(1024,1024);
+        const auto plan=nonRawLinearPlan(state);
+        auto token=std::make_shared<std::atomic_bool>(false);
+        std::atomic_bool entered{false};
+        auto future=QtConcurrent::run([&] {
+            entered.store(true);
+            return ImagePipeline::processWithPlan(source,plan,token,false);
+        });
+        QElapsedTimer wait;wait.start();
+        while(!entered.load() && wait.elapsed()<5000) QTest::qWait(1);
+        QTest::qWait(10);
+        const bool pending=!future.isFinished();
+        token->store(true);future.waitForFinished();
+        QVERIFY(entered.load());QVERIFY(pending);
+        QVERIFY(future.result().isNull());
+        // A subsequent independent request is unaffected by the old token.
+        QVERIFY(!ImagePipeline::processWithPlan(fixture(32,24),nonRawLinearPlan(),{},false).isNull());
+    }
+
+    void brushRepresentativeWorkloads_data() {
+        QTest::addColumn<int>("width"); QTest::addColumn<int>("height");
+        QTest::addColumn<int>("dabs"); QTest::addColumn<double>("radius");
+        QTest::addColumn<bool>("viewport"); QTest::addColumn<bool>("offscreen");
+        QTest::addColumn<int>("distribution"); // 0: historical, 1: spread, 2: mostly offscreen
+        QTest::newRow("sparse-landscape")<<512<<384<<8<<.025<<false<<false<<0;
+        QTest::newRow("overlap-portrait")<<384<<512<<96<<.12<<false<<false<<0;
+        QTest::newRow("dense-viewport")<<1024<<768<<64<<.07<<true<<false<<0;
+        QTest::newRow("empty-viewport")<<512<<384<<8<<.025<<true<<true<<0;
+        // Dabs are per layer: these reach 4K/16K document dabs without
+        // exceeding 64 strokes per layer or the 16,384-dab document cap.
+        QTest::newRow("distributed-sparse-4k")<<512<<384<<2048<<.002<<false<<false<<1;
+        QTest::newRow("distributed-sparse-16k")<<512<<384<<8192<<.002<<false<<false<<1;
+        QTest::newRow("mostly-offscreen-4k")<<512<<384<<2048<<.002<<true<<false<<2;
+        QTest::newRow("mostly-offscreen-16k")<<512<<384<<8192<<.002<<true<<false<<2;
+        // Large enough to admit parallel tiles even when coverage is sparse;
+        // the overlap case measures candidate work on the same source size.
+        QTest::newRow("parallel-sparse-landscape")<<1024<<768<<8<<.025<<false<<false<<0;
+        QTest::newRow("parallel-overlap-landscape")<<1024<<768<<96<<.12<<false<<false<<0;
+    }
+    void brushRepresentativeWorkloads() {
+        namespace BT=BrushMaskTileRaster;
+        namespace BD=BrushMaskDocument;
+        namespace BM=BrushMaskGeometry;
+        QFETCH(int,width); QFETCH(int,height); QFETCH(int,dabs);
+        QFETCH(double,radius); QFETCH(bool,viewport); QFETCH(bool,offscreen);
+        QFETCH(int,distribution);
+        BD::Document doc;
+        for(int layerIndex=0;layerIndex<2;++layerIndex) {
+            BD::Layer layer;layer.id=QStringLiteral("perf_%1").arg(layerIndex);
+            layer.enabled=true;layer.exposureEv=layerIndex?-.7:1.2;
+            const int dabsPerStroke=distribution?128:dabs;
+            for(int start=0;start<dabs;start+=dabsPerStroke) {
+                BM::Stroke stroke{BM::Style{radius,.4,.7},{}};
+                for(int i=start;i<std::min(start+dabsPerStroke,dabs);++i) {
+                    BM::Point point{.25+.5*(i%8)/7.,.25+.5*((i/8)%8)/7.};
+                    if(distribution) {
+                        const int columns=dabs==2048?64:128;
+                        const int rows=dabs/columns;
+                        point={(i%columns+.5+.1*layerIndex)/columns,
+                               (i/columns+.5+.1*layerIndex)/rows};
+                        if(distribution==2) {
+                            // Only eight dabs/layer intersect the small panned
+                            // viewport. The remaining strokes are irrelevant.
+                            if(i<8)point={.84+.012*(i%4),.85+.018*(i/4)};
+                            else point={.1+.5*point.x,.1+.5*point.y};
+                        }
+                    }
+                    stroke.dabs.push_back({point,.5+.5*(i%3)/2.});
+                }
+                layer.strokes.push_back(std::move(stroke));
+            }
+            doc.layers.push_back(layer);
+        }
+        QVERIFY(BD::validDocument(doc));
+        const BT::NormalizedFrame frame=(offscreen || distribution==2)?BT::NormalizedFrame{.8,.8,.2,.2}
+            : viewport?BT::NormalizedFrame{.2,.15,.6,.7}:BT::NormalizedFrame{};
+        std::vector<double> planningMs,rasterMs,indexedMs,oracleMs;
+        std::size_t visits=0,tileCount=0,candidateReferences=0,indexBytes=0;
+        for(int repeat=0;repeat<3;++repeat) {
+            BT::FramePlan plan;QElapsedTimer timer;timer.start();
+            QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&plan,nullptr,frame));
+            planningMs.push_back(timer.nsecsElapsed()/1e6);
+            QVERIFY(plan.hasCandidateIndex());
+            candidateReferences=plan.candidateReferences();indexBytes=plan.candidateIndexBytes();
+            if(distribution==2) {
+                QVERIFY(candidateReferences>0);
+                QVERIFY(candidateReferences<=64); // only the 16 visible dabs can intersect tiles
+            }
+            BT::FramePlan fallback;
+            if(repeat==0) {
+                QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&fallback,nullptr,frame,0));
+                QCOMPARE(fallback.candidateVisits,plan.candidateVisits);
+                QCOMPARE(fallback.candidateReferences(),candidateReferences);
+                QCOMPARE(fallback.candidateIndexBytes(),std::size_t(0));
+                if(candidateReferences)QVERIFY(!fallback.hasCandidateIndex());
+            }
+            visits=0;tileCount=plan.tiles.size();double raster=0,indexed=0,oracle=0;
+            for(std::size_t tileIndex=0;tileIndex<plan.tiles.size();++tileIndex) {
+                const auto &tile=plan.tiles[tileIndex];
+                BT::ExposureOutput indexedOutput;timer.restart();
+                QVERIFY(BT::exposureOnly(plan,tileIndex,&indexedOutput));
+                indexed+=timer.nsecsElapsed()/1e6;
+                BT::ExposureOutput actual;timer.restart();
+                QVERIFY(BT::exposureOnly(doc,width,height,tile.rect,&actual,nullptr,frame));
+                raster+=timer.nsecsElapsed()/1e6;
+                QCOMPARE(actual.visitedDabPixels,tile.candidateVisits);
+                QCOMPARE(indexedOutput.visitedDabPixels,actual.visitedDabPixels);
+                QVERIFY(sameExposureBits(indexedOutput.weightedExposureEv,actual.weightedExposureEv));
+                if(repeat==0) {
+                    BT::ExposureOutput fallbackOutput;
+                    QVERIFY(BT::exposureOnly(fallback,tileIndex,&fallbackOutput));
+                    QCOMPARE(fallbackOutput.visitedDabPixels,actual.visitedDabPixels);
+                    QVERIFY(sameExposureBits(fallbackOutput.weightedExposureEv,actual.weightedExposureEv));
+                }
+                visits+=actual.visitedDabPixels;
+                std::vector<float> rgba(actual.weightedExposureEv.size()*4,.25f);
+                BT::Output reference;timer.restart();
+                QVERIFY(BT::render(doc,width,height,tile.rect,rgba,&reference,nullptr,frame));
+                oracle+=timer.nsecsElapsed()/1e6;
+                QVERIFY(sameExposureBits(actual.weightedExposureEv,reference.weightedExposureEv));
+            }
+            QCOMPARE(visits,plan.candidateVisits);
+            rasterMs.push_back(raster);indexedMs.push_back(indexed);oracleMs.push_back(oracle);
+        }
+        for(auto *times:{&planningMs,&rasterMs,&indexedMs,&oracleMs}) std::sort(times->begin(),times->end());
+        qInfo()<<"brush-workload"<<QTest::currentDataTag()<<"pixels"<<width*height
+               <<"tiles"<<tileCount<<"candidate_visits"<<visits
+               <<"median_plan_ms"<<planningMs[1]<<"median_exposure_ms"<<rasterMs[1]
+               <<"median_rgba_oracle_ms"<<oracleMs[1];
+        qInfo()<<"brush-candidate-index"<<QTest::currentDataTag()<<"document_dabs"<<2*dabs
+               <<"document_strokes"<<2*doc.layers.front().strokes.size()
+               <<"candidate_references"<<candidateReferences<<"index_capacity_bytes"<<indexBytes
+               <<"median_plan_ms"<<planningMs[1]<<"median_indexed_exposure_ms"<<indexedMs[1]
+               <<"median_unindexed_exposure_ms"<<rasterMs[1];
+        // Timings are evidence, not a portable GPU/interactive latency claim.
+        std::atomic_bool cancel{true};BT::FramePlan sentinel;
+        sentinel.candidateVisits=42;
+        QVERIFY(!BT::planFrame(doc,width,height,{0,0,width,height},&sentinel,&cancel,frame));
+        QCOMPARE(sentinel.candidateVisits,std::size_t(42));
+        const auto source=fixture(width,height);auto state=AdjustmentState{};state.brushMasks=doc;
+        auto plan=nonRawLinearPlan(state);
+        plan.setFrameRect(QRectF(frame.x,frame.y,frame.width,frame.height));
+        BT::FramePlan framePlan;
+        QVERIFY(BT::planFrame(doc,width,height,{0,0,width,height},&framePlan,nullptr,frame));
+        BT::ExposureOutput cancelled{{9.f},42};
+        QVERIFY(!BT::exposureOnly(framePlan,0,&cancelled,&cancel));
+        QCOMPARE(cancelled.visitedDabPixels,std::size_t(42));
+        QVERIFY(cancelled.weightedExposureEv==std::vector<float>{9.f});
+        const auto expectedPruned=std::count_if(framePlan.tiles.begin(),framePlan.tiles.end(),
+            [](const auto &tile){return tile.candidateVisits==0;});
+        const auto counter=[](const char *key) {
+            return PerformanceRecorder::snapshot()["counters"].toObject().value(key).toInteger();
+        };
+        const auto beforePruned=counter("brush_research_pruned_tiles");
+        const auto beforeRaster=counter("brush_research_rasterized_tiles");
+        const auto beforeTiles=counter("brush_research_cpu_tiles");
+        const auto beforeVisits=counter("brush_research_dab_pixel_visits");
+        const auto beforeReferences=counter("brush_research_candidate_references");
+        const auto beforeIndexBytes=counter("brush_research_candidate_index_bytes");
+        const auto beforeFallbacks=counter("brush_research_candidate_index_fallbacks");
+        const auto beforeHelpers=counter("brush_research_helper_tasks");
+        const auto beforeParallel=counter("brush_research_parallel_frames");
+        const auto beforeSerial=counter("brush_research_serial_frames");
+        std::vector<double> cpuMs;QImage processed;
+        for(int repeat=0;repeat<3;++repeat) {
+            QElapsedTimer timer;timer.start();
+            const auto result=ImagePipeline::processWithPlan(source,plan,{},false);
+            cpuMs.push_back(timer.nsecsElapsed()/1e6);
+            QVERIFY(!result.isNull());
+            if(repeat)QCOMPARE(result,processed);
+            processed=result;
+        }
+        QCOMPARE(counter("brush_research_pruned_tiles")-beforePruned,qint64(3*expectedPruned));
+        QCOMPARE(counter("brush_research_rasterized_tiles")-beforeRaster,
+                 qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        QCOMPARE(counter("brush_research_cpu_tiles")-beforeTiles,qint64(3*framePlan.tiles.size()));
+        QCOMPARE(counter("brush_research_dab_pixel_visits")-beforeVisits,qint64(3*framePlan.candidateVisits));
+        QCOMPARE(counter("brush_research_candidate_references")-beforeReferences,
+                 qint64(3*framePlan.candidateReferences()));
+        QCOMPARE(counter("brush_research_candidate_index_bytes")-beforeIndexBytes,
+                 qint64(3*framePlan.candidateIndexBytes()));
+        QCOMPARE(counter("brush_research_candidate_index_fallbacks"),beforeFallbacks);
+        QCOMPARE(counter("brush_research_helper_tasks"),beforeHelpers);
+        QCOMPARE(counter("brush_research_parallel_frames"),beforeParallel);
+        QCOMPARE(counter("brush_research_serial_frames")-beforeSerial,
+                 framePlan.candidateVisits ? qint64(3) : qint64(0));
+        if(offscreen) {
+            QCOMPARE(framePlan.candidateVisits,std::size_t(0));
+            QCOMPARE(processed,ImagePipeline::processWithPlan(source,nonRawLinearPlan(),{},false));
+        }
+        std::sort(cpuMs.begin(),cpuMs.end());
+        qInfo()<<"brush-frame-pruning"<<QTest::currentDataTag()<<"tiles"<<framePlan.tiles.size()
+               <<"pruned_tiles"<<expectedPruned<<"median_cpu_frame_ms"<<cpuMs[1];
+
+        const auto parallelBefore=PerformanceRecorder::snapshot()["counters"].toObject();
+        const int budget=ParallelRows::threadBudget();
+        const bool eligible=framePlan.candidateVisits && framePlan.tiles.size()>1 && budget>1
+            && std::size_t(width)*height+framePlan.candidateVisits>=262144;
+        std::vector<double> parallelMs;
+        for(int repeat=0;repeat<3;++repeat) {
+            const auto helpers=counter("brush_research_helper_tasks");
+            const auto parallelFrames=counter("brush_research_parallel_frames");
+            const auto serialFrames=counter("brush_research_serial_frames");
+            QElapsedTimer timer;timer.start();
+            const auto result=ImagePipeline::processWithPlan(source,plan,{},true);
+            parallelMs.push_back(timer.nsecsElapsed()/1e6);
+            QVERIFY(!result.isNull());QCOMPARE(result,processed);
+            const auto submitted=counter("brush_research_helper_tasks")-helpers;
+            if(!framePlan.candidateVisits) {
+                QCOMPARE(submitted,qint64(0));
+                QCOMPARE(counter("brush_research_parallel_frames"),parallelFrames);
+                QCOMPARE(counter("brush_research_serial_frames"),serialFrames);
+            } else {
+                QVERIFY(submitted>=0 && submitted<=std::max(0,budget-1));
+                if(!eligible) QCOMPARE(submitted,qint64(0));
+                QCOMPARE(counter("brush_research_parallel_frames")-parallelFrames,
+                         submitted>0 ? qint64(1) : qint64(0));
+                QCOMPARE(counter("brush_research_serial_frames")-serialFrames,
+                         submitted>0 ? qint64(0) : qint64(1));
+            }
+        }
+        const auto delta=[&](const char *key) { return counter(key)-parallelBefore.value(key).toInteger(); };
+        QCOMPARE(delta("brush_research_cpu_tiles"),qint64(3*framePlan.tiles.size()));
+        QCOMPARE(delta("brush_research_pruned_tiles"),qint64(3*expectedPruned));
+        QCOMPARE(delta("brush_research_rasterized_tiles"),qint64(3*(framePlan.tiles.size()-expectedPruned)));
+        QCOMPARE(delta("brush_research_dab_pixel_visits"),qint64(3*framePlan.candidateVisits));
+        QCOMPARE(delta("brush_research_candidate_references"),qint64(3*framePlan.candidateReferences()));
+        QCOMPARE(delta("brush_research_candidate_index_bytes"),qint64(3*framePlan.candidateIndexBytes()));
+        QCOMPARE(delta("brush_research_candidate_index_fallbacks"),qint64(0));
+        std::sort(parallelMs.begin(),parallelMs.end());
+        qInfo()<<"brush-frame-parallel"<<QTest::currentDataTag()<<"thread_budget"<<budget
+               <<"parallel_eligible"<<eligible<<"helper_tasks"<<delta("brush_research_helper_tasks")
+               <<"parallel_frames"<<delta("brush_research_parallel_frames")
+               <<"serial_frames"<<delta("brush_research_serial_frames")
+               <<"median_serial_cpu_frame_ms"<<cpuMs[1]<<"median_parallel_cpu_frame_ms"<<parallelMs[1];
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(ImagePipeline::processWithPlan(source,plan,token,false).isNull());
+    }
+
+    void analysisFrameReuseMeasuresColdHistogramAndThreePlotRequests() {
+        // Explicit FP32 scene: retain signed/HDR RGB and mixed unassociated
+        // alpha through a real geometry + detail request at roughly 3 MP.
+        QImage source(2048,1536,QImage::Format_RGBA32FPx4);
+        QVERIFY(!source.isNull());
+        source.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb)
+            .withTransferFunction(QColorSpace::TransferFunction::Linear));
+        source.setText("analysis-perf-fixture","FP32 signed HDR and mixed alpha");
+        for(int y=0;y<source.height();++y) {
+            auto *row=reinterpret_cast<float *>(source.scanLine(y));
+            for(int x=0;x<source.width();++x) {
+                row[4*x]=float((x*19+y*7)%137)/43.f-.25f;
+                row[4*x+1]=float((x*3+y*13)%113)/67.f-.12f;
+                row[4*x+2]=float((x*23+y*5)%127)/51.f-.2f;
+                row[4*x+3]=std::array<float,4>{0.f,1.f/65535,.375f,1.f}[(x+y)%4];
+            }
+        }
+        GeometryState geometry; geometry.straighten=.75; geometry.crop={.01,.01,.98,.98};
+        AdjustmentState state; state.geometry=geometry; state.exposure=-.6; state.saturation=7;
+        state.look.mode="manual"; state.look.code="ST";
+        state.look.parameters={{"sharpness",1},{"clarity",1}};
+        const auto plan=nonRawLinearPlan(state);
+        QVERIFY(plan.state.brushMasks.layers.empty());
+        QVERIFY(plan.data[ProcessingPlan::LookDetail].x>0);
+        QVERIFY(plan.data[ProcessingPlan::LookDetail].y>0);
+        constexpr qint64 frameBudget=32*1024*1024;
+        const QStringList modes{"waveform","parade","vectorscope"};
+        struct Sample {
+            double elapsedMs=0;
+            ScopesResult histogram;
+            std::array<ScopePlotResult,3> plots;
+            QJsonObject histogramCache,plotCache,frameCache;
+            qint64 sharedPasses=0,encodedPasses=0,sharedTiles=0,encodedPixels=0;
+        };
+        const auto run=[&](bool reuse) {
+            // Every sample owns fresh result caches and, when enabled, a fresh
+            // analysis cache. Fixture/cache construction and assertions are
+            // outside elapsed time; frame admission/copy and all four actual
+            // requests are inside it. No previously completed frame is warm.
+            const auto frames=reuse ? std::make_shared<AnalysisFrameCache>(frameBudget)
+                                    : std::shared_ptr<AnalysisFrameCache>{};
+            FullScopesCache histogram(4*1024*1024,frames);
+            ScopePlotCache plots(16*1024*1024,frames);
+            const ScopeRequest histogramRequest{source,plan,1,true,geometry};
+            ScopePlotRequest plotRequest{source,plan,geometry,modes[0],1,true};
+            const auto before=PerformanceRecorder::snapshot()["counters"].toObject();
+            Sample sample; QElapsedTimer timer; timer.start();
+            sample.histogram=histogram.analyze(histogramRequest);
+            for(int i=0;i<3;++i) {
+                plotRequest.mode=modes[i];
+                sample.plots[i]=plots.render(plotRequest);
+            }
+            sample.elapsedMs=timer.nsecsElapsed()/1e6;
+            const auto after=PerformanceRecorder::snapshot()["counters"].toObject();
+            const auto delta=[&](const char *name) {return after[name].toInteger()-before[name].toInteger();};
+            sample.sharedPasses=delta("scope_plot_shared_passes");
+            sample.encodedPasses=delta("scope_plot_encoded_passes");
+            sample.sharedTiles=delta("scope_plot_shared_tiles");
+            sample.encodedPixels=delta("scope_plot_encoded_pixels");
+            sample.histogramCache=histogram.snapshot(); sample.plotCache=plots.snapshot();
+            if(frames)sample.frameCache=frames->snapshot();
+            return sample;
+        };
+        std::array<double,3> baselineMs{},reuseMs{};
+        QJsonArray baselineSamples,reuseSamples;
+        ScopesResult truthHistogram;
+        std::array<ScopePlotResult,3> truthPlots;
+        qint64 peakBytes=0,baselineSharedPasses=0,reuseEncodedPasses=0,totalPublications=0;
+        for(int repeat=0;repeat<3;++repeat) {
+            // AB, AB, AB pairs avoid measuring all baseline work before all
+            // reuse work. No cross-machine timing/speedup assertion is made.
+            const auto baseline=run(false);
+            const auto reused=run(true);
+            baselineMs[repeat]=baseline.elapsedMs; reuseMs[repeat]=reused.elapsedMs;
+            baselineSamples.append(baseline.elapsedMs); reuseSamples.append(reused.elapsedMs);
+            if(repeat==0) {truthHistogram=baseline.histogram; truthPlots=baseline.plots;}
+            for(const auto *sample:{&baseline,&reused}) {
+                QCOMPARE(sample->histogram.red.size(),1024); QCOMPARE(sample->histogram.green.size(),1024);
+                QCOMPARE(sample->histogram.blue.size(),1024); QCOMPARE(sample->histogram.luma.size(),1024);
+                QCOMPARE(sample->histogram.red,truthHistogram.red); QCOMPARE(sample->histogram.green,truthHistogram.green);
+                QCOMPARE(sample->histogram.blue,truthHistogram.blue); QCOMPARE(sample->histogram.luma,truthHistogram.luma);
+                QCOMPARE(sample->histogram.pixelCount,truthHistogram.pixelCount);
+                QCOMPARE(sample->histogram.shadowClipPercent,truthHistogram.shadowClipPercent);
+                QCOMPARE(sample->histogram.highlightClipPercent,truthHistogram.highlightClipPercent);
+                // Mild straighten/crop preserve the intended multi-strip,
+                // approximately three-megapixel workload.
+                QVERIFY(sample->histogram.pixelCount>quint64(2*1024*1024));
+                QVERIFY(sample->histogram.pixelCount<=quint64(source.width())*source.height());
+                for(int i=0;i<3;++i) {
+                    QVERIFY2(sample->plots[i].error.isEmpty(),qPrintable(sample->plots[i].error));
+                    QVERIFY(!sample->plots[i].image.isNull());
+                    QCOMPARE(sample->plots[i].image,truthPlots[i].image);
+                    QCOMPARE(sample->plots[i].pixels,sample->histogram.pixelCount);
+                }
+                QCOMPARE(sample->histogramCache["misses"].toInteger(),qint64(1));
+                QCOMPARE(sample->histogramCache["hits"].toInteger(),qint64(0));
+                QCOMPARE(sample->histogramCache["entries"].toInteger(),qint64(1));
+                QCOMPARE(sample->plotCache["misses"].toInteger(),qint64(1));
+                QCOMPARE(sample->plotCache["hits"].toInteger(),qint64(2));
+                QCOMPARE(sample->plotCache["entries"].toInteger(),qint64(1));
+            }
+            // Baseline already renders the three plots together, once. The
+            // comparison is one shared color pass versus one encoded batch,
+            // never three color renders versus zero.
+            QCOMPARE(baseline.sharedPasses,qint64(1)); QCOMPARE(baseline.encodedPasses,qint64(0));
+            QVERIFY(baseline.sharedTiles>1); QCOMPARE(baseline.encodedPixels,qint64(0));
+            QCOMPARE(reused.sharedPasses,qint64(0)); QCOMPARE(reused.encodedPasses,qint64(1));
+            QCOMPARE(reused.sharedTiles,qint64(0));
+            QCOMPARE(reused.encodedPixels,qint64(reused.histogram.pixelCount));
+            QCOMPARE(reused.frameCache["publications"].toInteger(),qint64(1));
+            QCOMPARE(reused.frameCache["budget_bytes"].toInteger(),frameBudget);
+            QVERIFY(reused.frameCache["peak_charged_bytes"].toInteger()<=frameBudget);
+            QVERIFY(reused.frameCache["charged_bytes"].toInteger()<=frameBudget);
+            QVERIFY(reused.frameCache["charged_bytes"].toInteger()>=qint64(reused.histogram.pixelCount)*8);
+            QCOMPARE(reused.frameCache["building_bytes"].toInteger(),qint64(0));
+            baselineSharedPasses+=baseline.sharedPasses; reuseEncodedPasses+=reused.encodedPasses;
+            totalPublications+=reused.frameCache["publications"].toInteger();
+            peakBytes=std::max(peakBytes,reused.frameCache["peak_charged_bytes"].toInteger());
+        }
+        std::sort(baselineMs.begin(),baselineMs.end()); std::sort(reuseMs.begin(),reuseMs.end());
+        const QJsonObject report{{"workload","cold full histogram + waveform/parade/vectorscope"},
+            {"source_width",source.width()},{"source_height",source.height()},
+            {"thread_budget",ParallelRows::threadBudget()},{"source_storage","RGBA32FPx4"},
+            {"actual_pixels",qint64(truthHistogram.pixelCount)},{"samples_per_path",3},
+            {"baseline_end_to_end_ms",baselineSamples},{"reuse_end_to_end_ms",reuseSamples},
+            {"median_baseline_end_to_end_ms",baselineMs[1]},{"median_reuse_end_to_end_ms",reuseMs[1]},
+            {"analysis_budget_bytes",frameBudget},{"analysis_peak_charged_bytes",peakBytes},
+            {"baseline_plot_shared_passes",baselineSharedPasses},{"reuse_plot_encoded_passes",reuseEncodedPasses},
+            {"reuse_publications",totalPublications},{"timing_gate",false}};
+        qInfo().noquote()<<"analysis-frame-paired"<<QJsonDocument(report).toJson(QJsonDocument::Compact);
+    }
+
+    void scopePlotCacheHonorsLruOversizeAndRetainedLutCosts() {
+        const auto source=fixture(16,9); ScopePlotRequest a{source,nonRawLinearPlan(),{},"waveform",1,true};
+        ScopePlotCache probe; const auto original=probe.render(a); QVERIFY(!original.image.isNull());
+        const auto cost=probe.snapshot()["charged_bytes"].toInteger(); QVERIFY(cost>=5*1024*1024);
+        ScopePlotCache cache(2*cost); auto b=a,c=a; b.plan.state.exposure=.3; b.plan=nonRawLinearPlan(b.plan.state);
+        c.plan.state.exposure=.6; c.plan=nonRawLinearPlan(c.plan.state);
+        const auto first=cache.render(a); cache.render(b); a.mode="vectorscope"; cache.render(a); cache.render(c);
+        QCOMPARE(cache.snapshot()["entries"].toInt(),2); QCOMPARE(cache.snapshot()["evictions"].toInteger(),1);
+        b.mode="parade"; cache.render(b); QCOMPARE(cache.snapshot()["misses"].toInteger(),4);
+        ScopePlotCache disabled(0); a.mode="waveform"; QCOMPARE(disabled.render(a).image,original.image); QCOMPARE(disabled.snapshot()["entries"].toInt(),0);
+        ScopePlotCache small(cost-1024); QCOMPARE(small.render(a).image,original.image); QCOMPARE(small.snapshot()["bypasses"].toInteger(),1);
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(5)); std::weak_ptr<const LookLut> weak=lut;
+        AdjustmentState state; state.look.mode="calibrated"; state.look.lut=lut; auto withLut=a; withLut.plan=nonRawLinearPlan(state);
+        ScopePlotCache guarded(cost+4096); guarded.render(withLut);
+        QVERIFY(guarded.snapshot()["charged_bytes"].toInteger()>cost); state.look.lut.reset(); withLut.plan.state.look.lut.reset(); lut.reset(); QVERIFY(!weak.expired());
+        guarded.render(a); QVERIFY(weak.expired());
+        auto largeLut=LookLut::identity(33); state.look.lut=largeLut; withLut.plan=nonRawLinearPlan(state);
+        ScopePlotCache oversized(cost); oversized.render(a); const auto held=oversized.render(a).image.cacheKey();
+        QCOMPARE(oversized.render(withLut).image,renderScopePlot(withLut,{}).image); QCOMPARE(oversized.snapshot()["bypasses"].toInteger(),1);
+        QCOMPARE(oversized.render(a).image.cacheKey(),held); QCOMPARE(oversized.snapshot()["entries"].toInt(),1);
+    }
+    void scopePlotCacheDropsCancelledBatchesAndSharesConcurrentModes() {
+        ScopePlotCache cache; const auto source=fixture(24,17); ScopePlotRequest request{source,nonRawLinearPlan(),{},"waveform",1,true};
+        auto token=std::make_shared<std::atomic_bool>(true); QVERIFY(cache.render(request,token).image.isNull());
+        const auto complete=cache.render(request); QVERIFY(cache.render(request,token).image.isNull());
+        const auto entries=cache.snapshot()["entries"].toInt(); request.source=fixture(2048,1536);
+        AdjustmentState state; state.vignetteAmount=-1.5; state.vignetteMidpoint=.3; state.vignetteFeather=.7;
+        state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}}; request.plan=nonRawLinearPlan(state);
+        token->store(false); const auto tiles=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger();
+        auto future=QtConcurrent::run([&] { return cache.render(request,token); });
+        QElapsedTimer wait; wait.start(); while (PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger()==tiles && !future.isFinished() && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=PerformanceRecorder::snapshot()["counters"].toObject()["scope_plot_shared_tiles"].toInteger()>tiles && !future.isFinished(); token->store(true); future.waitForFinished();
+        QVERIFY(started); QVERIFY(future.result().image.isNull()); QCOMPARE(cache.snapshot()["entries"].toInt(),entries); QCOMPARE(cache.snapshot()["cancelled_requests"].toInteger(),3);
+        request.source=source; request.plan=nonRawLinearPlan(); request.mode="waveform"; QCOMPARE(cache.render(request).image.cacheKey(),complete.image.cacheKey());
+        ScopePlotCache concurrent; std::array<QFuture<ScopePlotResult>,6> work; const QStringList modes{"waveform","parade","vectorscope"};
+        for (int i=0;i<6;++i) { auto r=request; r.mode=modes[i%3]; work[i]=QtConcurrent::run([&concurrent,r] { return concurrent.render(r); }); }
+        for (int i=0;i<6;++i) { work[i].waitForFinished(); auto r=request; r.mode=modes[i%3]; QCOMPARE(work[i].result().image,renderScopePlot(r,{}).image); QCOMPARE(work[i].result().pixels,quint64(24*17)); }
+        QCOMPARE(concurrent.snapshot()["entries"].toInt(),1); QVERIFY(concurrent.snapshot()["charged_bytes"].toInteger()<=concurrent.snapshot()["budget_bytes"].toInteger());
+    }
+    void vignetteIsDeterministicAndViewportCoordinatesInvalidateRenderCache() {
+        const auto source=fixture(319,277); const auto before=source.copy();
+        AdjustmentState state; state.vignetteAmount=-2; state.vignetteMidpoint=.3; state.vignetteFeather=.6;
+        state.look.mode="manual"; state.look.code="FL"; state.look.parameters={{"clarity",4},{"sharpness",5}};
+        auto plan=nonRawLinearPlan(state); plan.setFrameRect({.17,.28,.52,.61});
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS"); const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        auto restore=qScopeGuard([&] { if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous); else qunsetenv("JIXELLIGHT_CPU_THREADS"); });
+        qputenv("JIXELLIGHT_CPU_THREADS","1"); const auto serial=ImagePipeline::processWithPlan(source,plan);
+        qputenv("JIXELLIGHT_CPU_THREADS","8"); QCOMPARE(ImagePipeline::processWithPlan(source,plan),serial);
+        for (int y=0;y<source.height();y+=128) {
+            const QRect roi(0,y,source.width(),std::min(128,source.height()-y)); QCOMPARE(ImagePipeline::processRegion(source,plan,roi),serial.copy(roi));
+        }
+        RenderedPreviewCache cache; const auto first=cache.render(source,plan); QCOMPARE(first,serial);
+        auto shifted=plan; shifted.setFrameRect({.2,.28,.52,.61});
+        const auto next=cache.render(source,shifted); QVERIFY(next!=first); QCOMPARE(cache.snapshot()["misses"].toInteger(),2);
+        QCOMPARE(cache.render(source,plan).cacheKey(),first.cacheKey());
+        QCOMPARE(source,before); QVERIFY(cache.snapshot()["charged_bytes"].toInteger()<=cache.snapshot()["budget_bytes"].toInteger());
+    }
+    void floatPreviewResizeIsDeterministicAcrossThreadBudgetsAndBounded() {
+        QImage scene(800,600,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<scene.height();++y) for(int x=0;x<scene.width();++x) {
+            auto *p=reinterpret_cast<float *>(scene.scanLine(y))+4*x;
+            p[0]=float(2.2+.002*x+.001*y);
+            p[1]=float(.08+.002*x);
+            p[2]=float(-.4+.0004*y);
+            p[3]=(x+y)%13==0?0.0f:(x+y)%5==0?.375f:1.0f;
+        }
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS");
+        const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        auto restore=qScopeGuard([&] {
+            if(hadBudget)qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
+        const auto before=scene.copy();
+        qputenv("JIXELLIGHT_CPU_THREADS","1");
+        const auto serial=FloatSceneResampler::scale(scene,{480,360});
+        QVERIFY(!serial.isNull());
+        qputenv("JIXELLIGHT_CPU_THREADS","8");
+        const auto parallel=FloatSceneResampler::scale(scene,{480,360});
+        QCOMPARE(parallel,serial);
+        QCOMPARE(scene,before);
+        QCOMPARE(serial.sizeInBytes(),qint64(480)*360*16);
+        QVERIFY(reinterpret_cast<const float *>(serial.constScanLine(200))[4*200]>1.0f);
+        QVERIFY(reinterpret_cast<const float *>(serial.constScanLine(200))[4*200+2]<0.0f);
+        // Same-size requests must not allocate/copy pixel storage.
+        const auto same=FloatSceneResampler::scale(scene,scene.size());
+        QCOMPARE(same.cacheKey(),scene.cacheKey());
+        auto cancelledToken=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(FloatSceneResampler::scale(scene,{480,360},cancelledToken).isNull());
+    }
+    void manualGeometryIsDeterministicAcrossCpuBudgetsAndCancellation() {
+        const QImage source=fixture(1100,800); const auto before=source.copy();
+        GeometryState g; g.perspectiveHorizontal=.12; g.perspectiveVertical=-.08; g.distortion=.15;
+        g.redCa=1; g.blueCa=-1; g.straighten=3;
+        const bool hadBudget=qEnvironmentVariableIsSet("JIXELLIGHT_CPU_THREADS"); const auto previous=qgetenv("JIXELLIGHT_CPU_THREADS");
+        qputenv("JIXELLIGHT_CPU_THREADS","1"); const auto serial=g.apply(source);
+        qputenv("JIXELLIGHT_CPU_THREADS","8"); const auto parallel=g.apply(source);
+        if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous); else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        QVERIFY(!serial.isNull()); QCOMPARE(parallel,serial); QCOMPARE(source,before);
+        const auto token=std::make_shared<std::atomic_bool>(false);
+        auto future=QtConcurrent::run([&] { return g.apply(source,token); });
+        QThread::msleep(2); token->store(true);
+        future.waitForFinished(); QVERIFY(future.result().isNull()); QCOMPARE(source,before);
+        QVERIFY(g.apply(source,token).isNull());
+    }
     void parallelIsDeterministic() {
         const QImage image=fixture(800,512);
         AdjustmentState state; state.exposure=.6; state.temperature=30;state.tint=-15;state.saturation=12;state.hslHue[0]=28;state.masterCurve[2]=.56;
@@ -107,6 +605,62 @@ private slots:
         QCOMPARE(delivered.first(),99);
         QVERIFY(calls.load()<=2);
     }
+    void fp32SourceCacheSharesLruBudgetAndConcurrentReaders() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString key(64,'e');
+        const auto signature=SourceCache::floatDecoderSignature(
+            QByteArrayLiteral("camera float test: sensor black+white per channel; WB/matrix v1"));
+        SourceData floating;floating.key=key;floating.fullResolution=true;
+        floating.image=QImage(160,160,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<160;++y) for(int x=0;x<160;++x) {
+            auto *p=reinterpret_cast<float *>(floating.image.scanLine(y))+4*x;
+            p[0]=float(2.0+.001*x+.002*y);
+            p[1]=float(-.25+.0001*y);
+            p[2]=float(.1+.0001*x);
+            p[3]=1.0f;
+        }
+        SourceCache cache(1024*1024,dir.path());
+        QVERIFY(cache.storeFloatScene(floating,signature));
+        const auto initial=cache.floatScene(key,signature);
+        QVERIFY(!initial.image.isNull());
+        QCOMPARE(initial.image.size(),floating.image.size());
+        QCOMPARE(initial.image.format(),QImage::Format_RGBA32FPx4);
+        const auto initialHit=cache.floatScene(key,signature);
+        QCOMPARE(initialHit.image.cacheKey(),initial.image.cacheKey());
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        SourceData integer;
+        integer.key=QString(64,'f');integer.fullResolution=true;
+        integer.image=fixture(350,300); // 840 KiB, must evict 400 KiB float entry
+        cache.put(integer);
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        QCOMPARE(cache.get(integer.key).image.cacheKey(),integer.image.cacheKey());
+        const auto recovered=cache.floatScene(key,signature);
+        QVERIFY(!recovered.image.isNull());
+        QCOMPARE(recovered.image.format(),QImage::Format_RGBA32FPx4);
+        QCOMPARE(recovered.image.size(),floating.image.size());
+        QVERIFY(cache.memoryBytes()<=cache.budgetBytes());
+        QVERIFY(cache.get(integer.key).image.isNull()); // single shared budget
+
+        SourceCache parallel(1024*1024,dir.path());
+        std::array<QFuture<SourceData>,6> tasks;
+        for(auto &task:tasks)
+            task=QtConcurrent::run([&parallel,key,signature] {
+                return parallel.floatScene(key,signature);
+            });
+        for(auto &task:tasks) {
+            task.waitForFinished();
+            const auto result=task.result();
+            QVERIFY(!result.image.isNull());
+            QCOMPARE(result.image.format(),QImage::Format_RGBA32FPx4);
+            QCOMPARE(result.image.size(),floating.image.size());
+            const auto *p=reinterpret_cast<const float *>(result.image.constScanLine(100))+4*100;
+            QVERIFY(p[0]>2.0f);
+            QVERIFY(p[1]<0.0f);
+        }
+        QVERIFY(parallel.memoryBytes()<=parallel.budgetBytes());
+        QCOMPARE(QDir(dir.path()).entryList({"*.jlfs"},QDir::Files).size(),1);
+    }
+
     void sourceCacheBudgetAndDiskRoundtrip() {
         QTemporaryDir dir;
         SourceCache cache(1024*1024,dir.path());
@@ -130,6 +684,132 @@ private slots:
         const auto before=SourceCache::fileKey(file.fileName());
         QVERIFY(file.open(QIODevice::WriteOnly));file.write("abd");file.close();
         QVERIFY(before!=SourceCache::fileKey(file.fileName()));
+    }
+    void renderedPreviewCacheHonorsLruAndChargesRetainedLuts() {
+        const QImage image=fixture(16,8); // 1024-byte rendered image.
+        RenderedPreviewCache cache(2048);
+        const auto a=nonRawLinearPlan();
+        AdjustmentState state; state.exposure=.2; const auto b=nonRawLinearPlan(state);
+        state.exposure=.4; const auto c=nonRawLinearPlan(state);
+        const auto imageA=cache.render(image,a), imageB=cache.render(image,b);
+        QCOMPARE(cache.render(image,a).cacheKey(),imageA.cacheKey()); // A becomes most recently used.
+        cache.render(image,c);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2);
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),2048);
+        QCOMPARE(cache.snapshot().value("evictions").toInteger(),1);
+        QCOMPARE(cache.render(image,a).cacheKey(),imageA.cacheKey());
+        const auto newB=cache.render(image,b); QCOMPARE(newB,imageB); QVERIFY(newB.cacheKey()!=imageB.cacheKey());
+        QCOMPARE(cache.snapshot().value("evictions").toInteger(),2);
+        const auto large=fixture(32,16);
+        QCOMPARE(cache.render(large,a),ImagePipeline::processWithPlan(large,a));
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),1);
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),2048); // Oversize doesn't flush useful entries.
+        RenderedPreviewCache disabled(0);
+        QCOMPARE(disabled.render(image,a),ImagePipeline::processWithPlan(image,a));
+        QCOMPARE(disabled.snapshot().value("entries").toInt(),0);
+
+        auto lut=std::make_shared<LookLut>(*LookLut::identity(5)); // 1500-byte retained payload.
+        std::weak_ptr<const LookLut> weak=lut;
+        state.look.mode="calibrated"; state.look.lut=lut;
+        auto lutPlan=nonRawLinearPlan(state);
+        cache.render(image,lutPlan); // 2524 bytes exceeds this cache, even though the image fits.
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),2);
+        RenderedPreviewCache withLut(3072);
+        withLut.render(image,lutPlan);
+        QCOMPARE(withLut.snapshot().value("charged_bytes").toInteger(),3072);
+        state.look.lut.reset(); lutPlan.state.look.lut.reset(); lut.reset();
+        QVERIFY(!weak.expired()); // Pointer-key lifetime is guarded by the entry.
+        withLut.render(image,a); QVERIFY(weak.expired());
+        QVERIFY(withLut.snapshot().value("charged_bytes").toInteger()<=3072);
+    }
+    void renderedPreviewCacheDiscardsCancelledMissAndHit() {
+        RenderedPreviewCache cache;
+        const auto image=fixture(16,8); const auto plan=nonRawLinearPlan();
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QVERIFY(cache.render(image,plan,token).isNull());
+        QCOMPARE(cache.snapshot().value("entries").toInt(),0);
+        const auto complete=cache.render(image,plan);
+        QVERIFY(cache.render(image,plan,token).isNull());
+        QCOMPARE(cache.render(image,plan).cacheKey(),complete.cacheKey());
+        QVERIFY(cache.render({},plan).isNull());
+
+        const auto large=fixture(2048,1536); token->store(false);
+        AdjustmentState complex; complex.hue=13; complex.saturation=27; complex.hslHue[0]=19; complex.masterCurve[2]=.58;
+        const auto expensive=nonRawLinearPlan(complex);
+        const auto misses=cache.snapshot().value("misses").toInteger();
+        auto future=QtConcurrent::run([&] { return cache.render(large,expensive,token); });
+        // Wait until lookup has missed, then cancel the expensive request.
+        QElapsedTimer wait; wait.start();
+        while (cache.snapshot().value("misses").toInteger()==misses && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=cache.snapshot().value("misses").toInteger()>misses;
+        token->store(true); future.waitForFinished(); QVERIFY(future.result().isNull());
+        QVERIFY(started);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),1);
+        token->store(false);
+        const auto retry=cache.render(large,expensive,token); QVERIFY(!retry.isNull());
+        QCOMPARE(cache.snapshot().value("misses").toInteger(),misses+2);
+        QCOMPARE(cache.render(large,expensive).cacheKey(),retry.cacheKey());
+        QCOMPARE(cache.snapshot().value("cancelled_requests").toInteger(),3);
+    }
+    void renderedPreviewCacheSupportsConcurrentImmutableSnapshots() {
+        RenderedPreviewCache cache(2*1024*1024);
+        const auto source=fixture(192,128);
+        AdjustmentState state; state.exposure=.4; state.saturation=17; state.masterCurve[2]=.58;
+        const auto plan=nonRawLinearPlan(state), other=nonRawLinearPlan();
+        const auto expected=ImagePipeline::processWithPlan(source,plan), expectedOther=ImagePipeline::processWithPlan(source,other);
+        QList<QFuture<QImage>> futures;
+        for (int i=0;i<8;++i) futures.append(QtConcurrent::run([&,i] { return cache.render(source,i%2 ? plan : other); }));
+        for (int i=0;i<futures.size();++i) {
+            futures[i].waitForFinished(); QCOMPARE(futures[i].result(),i%2 ? expected : expectedOther);
+        }
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2);
+        const auto cached=cache.render(source,plan);
+        QCOMPARE(cache.render(source,plan).cacheKey(),cached.cacheKey());
+        QCOMPARE(cache.snapshot().value("charged_bytes").toInteger(),qint64(source.sizeInBytes())*2);
+    }
+    void fullScopesCacheRetainsLruCountsAndBypassesOversizeLuts() {
+        ScopeRequest request; request.image=fixture(32,16); request.plan=nonRawLinearPlan(); request.fullResolution=true;
+        FullScopesCache probe; probe.analyze(request);
+        const auto cost=probe.snapshot().value("charged_bytes").toInteger(); QVERIFY(cost>0);
+        FullScopesCache cache(cost*2);
+        const auto a=cache.analyze(request); const auto planA=request.plan;
+        AdjustmentState state; state.exposure=.2; request.plan=nonRawLinearPlan(state);
+        const auto b=cache.analyze(request); const auto planB=request.plan;
+        request.plan=planA; QCOMPARE(cache.analyze(request).red.constData(),a.red.constData());
+        state.exposure=.4; request.plan=nonRawLinearPlan(state); cache.analyze(request);
+        QCOMPARE(cache.snapshot().value("entries").toInt(),2); QCOMPARE(cache.snapshot().value("evictions").toInteger(),1);
+        request.plan=planA; QCOMPARE(cache.analyze(request).red.constData(),a.red.constData());
+        request.plan=planB; const auto newB=cache.analyze(request);
+        QCOMPARE(newB.red,b.red); QVERIFY(newB.red.constData()!=b.red.constData());
+        state.look.mode="calibrated"; state.look.lut=LookLut::identity(33); request.plan=nonRawLinearPlan(state);
+        const auto oversize=cache.analyze(request);
+        QCOMPARE(oversize.red,ScopesEngine::analyzeFull(request.image,request.plan).red);
+        QCOMPARE(cache.snapshot().value("bypasses").toInteger(),1);
+        QVERIFY(cache.snapshot().value("charged_bytes").toInteger()<=cost*2);
+        FullScopesCache disabled(0); QCOMPARE(disabled.analyze(request).red,oversize.red);
+        QCOMPARE(disabled.snapshot().value("entries").toInt(),0);
+    }
+    void fullScopesCacheDoesNotStoreCancelledCounts() {
+        FullScopesCache cache;
+        ScopeRequest request; request.image=fixture(16,8); request.plan=nonRawLinearPlan(); request.fullResolution=true;
+        auto token=std::make_shared<std::atomic_bool>(true);
+        QCOMPARE(cache.analyze(request,token).pixelCount,quint64(0));
+        const auto complete=cache.analyze(request); QVERIFY(complete.pixelCount>0);
+        QCOMPARE(cache.analyze(request,token).pixelCount,quint64(0));
+        QCOMPARE(cache.analyze(request).red.constData(),complete.red.constData());
+        request.image=fixture(2048,1536);
+        AdjustmentState state; state.hue=13; state.saturation=27; state.hslHue[0]=19; request.plan=nonRawLinearPlan(state);
+        token->store(false); const auto misses=cache.snapshot().value("misses").toInteger();
+        auto future=QtConcurrent::run([&] { return cache.analyze(request,token); });
+        QElapsedTimer wait; wait.start();
+        while (cache.snapshot().value("misses").toInteger()==misses && wait.elapsed()<5000) QTest::qWait(1);
+        const bool started=cache.snapshot().value("misses").toInteger()>misses;
+        token->store(true); future.waitForFinished(); QVERIFY(started); QCOMPARE(future.result().pixelCount,quint64(0));
+        QCOMPARE(cache.snapshot().value("entries").toInt(),1);
+        token->store(false); const auto retry=cache.analyze(request,token);
+        QCOMPARE(retry.pixelCount,quint64(2048*1536)); QCOMPARE(cache.snapshot().value("misses").toInteger(),misses+2);
+        QCOMPARE(cache.analyze(request).red.constData(),retry.red.constData());
+        QCOMPARE(cache.snapshot().value("cancelled_requests").toInteger(),3);
     }
     void databaseBatchPersistsFinalSnapshot() {
         QTemporaryDir dir;ProjectDatabase store;QVERIFY(store.create(dir.path(),"test"));

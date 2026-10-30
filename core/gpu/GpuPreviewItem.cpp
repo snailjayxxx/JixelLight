@@ -1,5 +1,6 @@
 #include "core/gpu/GpuPreviewItem.h"
 #include "core/gpu/GpuEngine.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/color/MonitorColorTransform.h"
 #include "app/PhotoController.h"
 #include <QQuickWindow>
@@ -18,6 +19,9 @@ public:
         const auto *view=static_cast<GpuPreviewItem *>(item);
         m_controller=qobject_cast<PhotoController *>(view->controller());
         m_source={};
+        m_diagnosticRequest=m_controller?m_controller->diagnosticRequestId():0;
+        m_diagnosticRevision=m_controller?m_controller->diagnosticRevision():0;
+        m_diagnosticSourceKey=m_controller?m_controller->diagnosticSourceKey():0;
         if (m_engine) m_engine->setDisplayColorLut(view->displayColorLut(), view->displayColorLutKey(), view->displayColorProfileName());
         if (m_controller && m_controller->gpuEnabled()) {
             if (m_failed && m_rhi) {
@@ -31,6 +35,7 @@ public:
     }
     void render(QRhiCommandBuffer *cb) override {
         if (m_source.isNull() || !m_engine || m_failed) {
+            diagnosticUnavailable(QStringLiteral("GPU preview is unavailable for the frozen snapshot"));
             cb->beginPass(renderTarget(), Qt::transparent, {1.0f,0}); cb->endPass();
             return;
         }
@@ -39,18 +44,40 @@ public:
             if (gpuSeconds>0) PerformanceRecorder::sample("gpu_previous_frame_ms",gpuSeconds*1000.0,{{"scope",QStringLiteral("whole previous QRhi frame, not one node")}});
         }
         const auto controller=m_controller;
-        const bool processed=m_engine->process(cb,m_source,m_plan,m_revision,
+        const auto histogram=GpuEngine::HistogramReady(
             [controller](quint64 revision,QByteArray counts,quint64 pixels) {
                 if (controller) QMetaObject::invokeMethod(controller,[controller,revision,counts=std::move(counts),pixels] {
                     if (controller) controller->gpuScopes(revision,counts,pixels);
                 },Qt::QueuedConnection);
             });
-        if (!processed || !m_engine->draw(cb,renderTarget())) {
+        QString failure;
+        const bool processed=BrushMaskTileRaster::anyEnabled(m_plan.state.brushMasks)
+            ?m_engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure,controller?controller->brushRenderBudget():nullptr)
+            :m_engine->process(cb,m_source,m_plan,m_revision,histogram);
+        if (!processed || !m_engine->drawForSceneGraph(cb,renderTarget())) {
+            if(failure.isEmpty())failure=m_engine->error();
+            diagnosticUnavailable(failure);
             m_failed=true;
-            if (controller) QMetaObject::invokeMethod(controller,[controller,error=m_engine->error()] {
+            if (controller) QMetaObject::invokeMethod(controller,[controller,error=failure] {
                 if (controller) controller->gpuFailed(error);
             },Qt::QueuedConnection);
             return;
+        }
+        if (m_diagnosticRequest && m_handledDiagnosticRequest!=m_diagnosticRequest) {
+            if (m_revision!=m_diagnosticRevision || m_source.cacheKey()!=m_diagnosticSourceKey) {
+                diagnosticUnavailable(QStringLiteral("GPU preview changed before diagnostic capture"));
+            } else {
+                const auto request=m_diagnosticRequest;
+                m_handledDiagnosticRequest=request;
+                QString error;
+                const bool captured=m_engine->captureWorkingFrame(cb,m_diagnosticRevision,
+                    [controller,request](QJsonObject output) {
+                        if (controller) QMetaObject::invokeMethod(controller,[controller,request,output=std::move(output)] {
+                            if (controller) controller->gpuDiagnosticReady(request,output);
+                        },Qt::QueuedConnection);
+                    },&error);
+                if (!captured) sendDiagnostic({{"available",false},{"error",error}});
+            }
         }
         if (m_notified!=m_revision) {
             m_notified=m_revision;
@@ -63,17 +90,33 @@ public:
         if (m_engine->hasPendingReadback()) update();
     }
 private:
+    void sendDiagnostic(QJsonObject output) {
+        const auto controller=m_controller;
+        const auto request=m_diagnosticRequest;
+        if (controller) QMetaObject::invokeMethod(controller,[controller,request,output=std::move(output)] {
+            if (controller) controller->gpuDiagnosticReady(request,output);
+        },Qt::QueuedConnection);
+    }
+    void diagnosticUnavailable(const QString &error) {
+        if (!m_diagnosticRequest || m_handledDiagnosticRequest==m_diagnosticRequest) return;
+        m_handledDiagnosticRequest=m_diagnosticRequest;
+        sendDiagnostic({{"available",false},{"error",error}});
+    }
     QRhi *m_rhi=nullptr;
     std::unique_ptr<GpuEngine> m_engine;
     QPointer<PhotoController> m_controller;
     QImage m_source;
     ProcessingPlan m_plan;
     quint64 m_revision=0,m_notified=0;
+    quint64 m_diagnosticRequest=0,m_diagnosticRevision=0,m_handledDiagnosticRequest=0;
+    qint64 m_diagnosticSourceKey=0;
     bool m_failed=false;
 };
 }
 GpuPreviewItem::GpuPreviewItem(QQuickItem *parent):QQuickRhiItem(parent) {
-    setAlphaBlending(false);
+    // QQuickRhiItem expects premultiplied content when compositing transparency.
+    // The renderer applies this after the monitor transform, at presentation.
+    setAlphaBlending(true);
     m_histogramRefresh.setInterval(90); m_histogramRefresh.setSingleShot(true);
     connect(&m_histogramRefresh,&QTimer::timeout,this,[this] { update(); });
     connect(this,&QQuickItem::windowChanged,this,[this](QQuickWindow *window) {

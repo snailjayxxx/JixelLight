@@ -1,0 +1,27 @@
+# F4 M4.6K — allow complete Linux cold-setup validation
+
+Development branch `design/lightcraft-fusion-20261008`; PR #16 remains Draft. K `183d42d21a8189bdb6910baf149e7382c6a8735d` is not accepted: Linux completes successfully, but macOS package CPU vignette input fails and Windows package CLI/final manifest is interrupted by its45-minute total job budget. Last fully accepted checkpoint remains I8ed006a/[CI40445440071](https://github.com/snailjayxxx/JixelLight/actions/runs/40445440071). [J's original Linux cancellation and successful desktop evidence](F4_BRUSH_CAPACITY_STAGE_M46J.md) remain retained; J is not retroactively accepted.
+
+## Committed outcome
+
+[CI40462199953](https://github.com/snailjayxxx/JixelLight/actions/runs/40462199953) passes45/45 without skips on Linux643.78s, Windows1,138.63s and macOS931.53s. Linux completes all subsequent native/RAW steps: owned CPU/GPU13,034/13,859ms24/nine/7 blocked+4 ready/full2,659,021/45s; realSony19,925/22,476ms16/six/full32,947,264/sourceSHA/shared3GiB/60s. This verifies the Linux whole-job repair, independently of the failed desktop package outcomes.
+
+Mac package manifest attempts11 modes;10 pass. Only original-RAW CPU GUI returns2 at33,444ms, below the unchanged60,000ms gate. All23 screenshots save, final10,340,960-pixel statistics and every other UI flag pass. `ui_vignette_trace` records amount_revealed=true/clicked=true/changed=false/amount0 while midpoint and feather change. The vignette-control phase uses the smoke's owned64×48 JPG; it is distinct from real RAW/real Sony numerical acceptance. Original `.vignette.png`, JSON and logs are retained; there is no observed color-precision failure or60s timeout. Native brush and Sony modes pass.
+
+Windows's GitHub annotation confirms45m0s total-job exhaustion. Its package has9 passing GUI reports: originalRAWCPU55,492/GPU38,202ms23screens/full10,340,960/QML0/60s; owned31,147/19,386ms24/nine/7+4/full2,659,021/45s; Sony49,420/43,779ms16/six/full32,947,264/sourceSHA/3GiB/60s; both diagnostics and relink also pass. CLI completion and final manifest are absent, so this is not an11-mode package pass.
+
+All three actual full logs prove checkout `6ae7e675d53a3bc5f161b847ce48dda00d40c5c5`, tree `cec52ab1f67b93d3fcccd4bbd82852c9d50b4693`, equal K HEAD. Five original ZIP sizes/SHA/CRC/safe extraction and complete1,028,812-character Linux/1,176,445-character macOS/905,722-character Windows logs (original CRLF preserved) are verified. Originals, receipts and accepted=false summary are `/tmp/jixellight-40462199953-*`; physical build parent retains `ci-40462199953-summary.json`, `brush-ci-budget-windows-check-annotation.json` and `brush-vignette-first-click-failure.json`. [L](F4_VIGNETTE_POINTER_STAGE_M46L.md) repairs these two observed blockers; K remains failed.
+
+## Observed failure and narrow repair
+
+J [CI40457184947](https://github.com/snailjayxxx/JixelLight/actions/runs/40457184947) Linux122033117031 exceeded its25-minute total job budget. GitHub's check annotation explicitly states25m0s. Dependency/Qt preparation before CMake consumed about13 minutes. The job completed38/45 tests without an observed assertion failure and was cancelled during `brush-gpu-pan100`; Linux native and subsequent gates did not run. Windows/macOS completed45/45 and both actual11-mode packages on their original jobs, with actual source/tree and all five original ZIPs/three complete logs audited.
+
+K changes only the Linux job's `timeout-minutes` from25 to45. Windows remains45 and macOS60. This covers dependency installation, compilation, all45 tests and subsequent native/RAW validation as one job. Every step, fixture, assertion and individual timeout remains byte-identical. Source32Mi/shared3GiB/research2Mi/tile8Mi/work96Mi/GPU40/65535, owned45,000ms, RAW/Sony60,000ms and120s performance shards are unchanged. A test that hangs or exceeds its existing individual deadline still fails.
+
+The workflow edit was prepared privately while desktop verification ran and applied only after both jobs finished. No running gate was cancelled and no already-passed local45/native4/Sony4/legacy matrix was restarted. All nine product/test/wrapper source hashes remain identical to J and its complete local source snapshot; these are explicitly reused local results, not new K timings or report stamps. No product controller/QML/model/kernel/decoder/schema changes are introduced.
+
+## Verification and completion boundary
+
+The focused review checks a single Linux total-budget line change, unchanged Windows/macOS budgets, unchanged steps/individual gates and byte equality of the previously tested source. The complete local45 suite and native/Sony/legacy evidence remain documented in J, with their original8ed006a precommit stamp and hashes matching committed J source. New K requires its own exact committed all-three45/45 suites, current native24/nine/7 blocked+4 ready, realSony16/six/full32,947,264/sourceSHA/shared3GiB, original RAW23screens/60s, both actual SDK-stripped11-mode packages, original artifact SHA/CRC and actual full-job checkout/tree proof before acceptance.
+
+Original J Linux38/45 cancellation remains a failed/incomplete run regardless of later K success. Full Sony photographs stay private. Capacity/source-switch controller coverage and real native UI coverage stay distinguished. Eraser, pressure, continuous drag color, native GPU brush, native FP32 RAW and remaining F0–F6 work remain unfinished.

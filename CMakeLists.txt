@@ -33,18 +33,44 @@ if(NOT TARGET Exiv2::exiv2lib)
 endif()
 find_package(JPEG REQUIRED)
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE JIXELLIGHT_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+# A reused build must not keep the commit from its first configuration. Resolve
+# Git's paths as well, so linked worktrees and detached CI checkouts are covered.
+execute_process(COMMAND git symbolic-ref --quiet HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE JIXELLIGHT_GIT_REF OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+foreach(git_path IN ITEMS HEAD packed-refs "${JIXELLIGHT_GIT_REF}")
+    if(NOT git_path STREQUAL "")
+        execute_process(COMMAND git rev-parse --git-path "${git_path}" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE git_dependency OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT git_dependency STREQUAL "")
+            get_filename_component(git_dependency "${git_dependency}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+            if(EXISTS "${git_dependency}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${git_dependency}")
+            endif()
+        endif()
+    endif()
+endforeach()
 if(NOT JIXELLIGHT_GIT_COMMIT)
     set(JIXELLIGHT_GIT_COMMIT "unknown")
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/BrushController.cpp
+    app/RelinkController.cpp
     app/LookController.cpp
     app/DisplayColorController.cpp
     core/cache/SourceCache.cpp
+    core/cache/FloatSceneSourceCache.cpp
+    core/cache/RenderedPreviewCache.cpp
+    core/cache/FullScopesCache.cpp
+    core/cache/AnalysisFrameCache.cpp
+    core/cache/ScopePlotCache.cpp
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
     core/image/ProcessedImageProvider.cpp
+    core/image/ThumbnailProvider.cpp
+    core/import/CopyImport.cpp
+    core/import/ImportNaming.cpp
+    core/import/CopyImportQueue.cpp
     core/metadata/MetadataReader.cpp
+    core/metadata/XmpSidecar.cpp
     core/look/SonyLookMetadata.cpp
     core/look/LookLut.cpp
     core/look/LookProfiles.cpp
@@ -52,12 +78,24 @@ add_library(JixelLightCore STATIC
     core/look/CameraReference.cpp
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
+    core/pipeline/BrushRenderRequest.cpp
+    core/pipeline/ColorStageDiagnostics.cpp
+    core/pipeline/GeometryState.cpp
+    core/pipeline/GeometryCorrections.cpp
     core/preview/PreviewTasks.cpp
     core/project/ProjectDatabase.cpp
     core/raw/RawDecoder.cpp
+    core/raw/SensorMosaicAudit.cpp
+    core/raw/SensorLinearMosaic.cpp
+    core/raw/SensorFloatDevelop.cpp
+    core/raw/FloatRawTrial.cpp
     core/scopes/ScopesEngine.cpp
+    core/scopes/ScopePlot.cpp
+    core/export/PngExporter.cpp
+    core/export/RasterExporter.cpp
     core/export/JpegExporter.cpp
     core/export/ExportQueue.cpp
+    core/export/ExportNaming.cpp
     diagnostics/ActionTrace.cpp
     diagnostics/LoggingEngine.cpp
     diagnostics/PerformanceRecorder.cpp
@@ -70,9 +108,15 @@ target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Q
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/SmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/AdjustmentSlider.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml)
+target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(JixelLight PRIVATE app/GuiSmokeActivity.mm)
+    target_link_libraries(JixelLight PRIVATE "-framework Foundation")
+endif()
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/BrushCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
@@ -80,7 +124,10 @@ endforeach()
 qt_add_qml_module(JixelLight URI JixelLight VERSION 1.0 QML_FILES ${QML_SOURCES})
 add_library(JixelLightGpu STATIC core/gpu/GpuEngine.cpp)
 target_link_libraries(JixelLightGpu PUBLIC JixelLightCore Qt6::GuiPrivate)
-qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
+set(JIXELLIGHT_SHADER_SOURCES
+    shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
+    shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
+qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightGpu)
 if(WIN32)
@@ -93,6 +140,86 @@ enable_testing()
 qt_add_executable(JixelLightCoreTests tests/CoreTests.cpp)
 target_link_libraries(JixelLightCoreTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME core-tests COMMAND JixelLightCoreTests -o core-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightProjectRelinkTests tests/ProjectRelinkTests.cpp)
+target_link_libraries(JixelLightProjectRelinkTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME project-relink COMMAND JixelLightProjectRelinkTests -o project-relink-results.txt,txt -o -,txt)
+set_tests_properties(project-relink PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightProjectRelinkTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightMissingSourceTests tests/MissingSourceTests.cpp)
+target_link_libraries(JixelLightMissingSourceTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME missing-source COMMAND JixelLightMissingSourceTests -o missing-source-results.txt,txt -o -,txt)
+set_tests_properties(missing-source PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightMissingSourceTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightBrushAdmissionTests tests/BrushAdmissionTests.cpp)
+target_link_libraries(JixelLightBrushAdmissionTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME brush-admission COMMAND JixelLightBrushAdmissionTests -o brush-admission-results.txt,txt -o -,txt)
+set_tests_properties(brush-admission PROPERTIES TIMEOUT 120)
+set_target_properties(JixelLightBrushAdmissionTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(JixelLightBrushRoutingTests tests/BrushRoutingTests.cpp)
+target_link_libraries(JixelLightBrushRoutingTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushRoutingTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-routing-cache COMMAND JixelLightBrushRoutingTests cpuPreviewCachePreservesIntentAndLeasesAcrossHitsEvictionAndRefusal -o brush-routing-cache-results.txt,txt -o -,txt)
+add_test(NAME brush-routing-queue COMMAND JixelLightBrushRoutingTests queuedEnabledBrushExportsAllFormatsWithFrozenStateAndIcc -o brush-routing-queue-results.txt,txt -o -,txt)
+add_test(NAME brush-routing-cancel COMMAND JixelLightBrushRoutingTests queueBudgetRefusalAndRealStripCancelPreserveTargetThenRecover -o brush-routing-cancel-results.txt,txt -o -,txt)
+add_test(NAME brush-routing-native COMMAND JixelLightBrushRoutingTests queuedRealRawAsShotLoadsSourceAndMatchesIndependentTiffPixels -o brush-routing-native-results.txt,txt -o -,txt)
+set_tests_properties(brush-routing-cache brush-routing-queue brush-routing-cancel brush-routing-native PROPERTIES TIMEOUT 120)
+qt_add_executable(JixelLightBrushScopeRoutingTests tests/BrushScopeRoutingTests.cpp)
+target_link_libraries(JixelLightBrushScopeRoutingTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushScopeRoutingTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-scopes-cache COMMAND JixelLightBrushScopeRoutingTests originalGeometryAndCompletedFrameReuse -o brush-scopes-cache-results.txt,txt -o -,txt)
+add_test(NAME brush-scopes-cancel COMMAND JixelLightBrushScopeRoutingTests admissionFailuresAndCollectorCancellation -o brush-scopes-cancel-results.txt,txt -o -,txt)
+add_test(NAME brush-scopes-native COMMAND JixelLightBrushScopeRoutingTests nativeSonyFullStatisticsReuse -o brush-scopes-native-results.txt,txt -o -,txt)
+add_test(NAME brush-scopes-controller COMMAND JixelLightBrushScopeRoutingTests controllerFailuresRetryAndDiagnostic -o brush-scopes-controller-results.txt,txt -o -,txt)
+add_test(NAME brush-scopes-scheduling COMMAND JixelLightBrushScopeRoutingTests controllerDefersExactPlotsWithoutBlockingFallback controllerStartsPendingExactAfterFinalFrame -o brush-scopes-scheduling-results.txt,txt -o -,txt)
+set_tests_properties(brush-scopes-cache brush-scopes-cancel brush-scopes-native brush-scopes-controller brush-scopes-scheduling PROPERTIES TIMEOUT 120)
+qt_add_executable(JixelLightBrushLivePreviewTests tests/BrushLivePreviewTests.cpp)
+target_link_libraries(JixelLightBrushLivePreviewTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushLivePreviewTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-live-queue COMMAND JixelLightBrushLivePreviewTests continuousQueueAndCancellationReleaseFutureLeases -o brush-live-queue-results.txt,txt -o -,txt)
+add_test(NAME brush-live-display COMMAND JixelLightBrushLivePreviewTests versionedManagedDisplayPreservesCommittedPixelsAndLeases -o brush-live-display-results.txt,txt -o -,txt)
+add_test(NAME brush-live-controller COMMAND JixelLightBrushLivePreviewTests controllerKeepsTransientStateOutOfHistoryScopesAndFinalSampling -o brush-live-controller-results.txt,txt -o -,txt)
+set_tests_properties(brush-live-queue brush-live-display brush-live-controller PROPERTIES TIMEOUT 120)
+qt_add_executable(JixelLightBrushPersistenceTests tests/BrushPersistenceTests.cpp)
+qt_add_executable(JixelLightBrushGestureTests tests/BrushGestureTests.cpp)
+target_link_libraries(JixelLightBrushGestureTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushGestureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-gesture COMMAND JixelLightBrushGestureTests completedStrokeIsOneUndoAndProducesAllExportsAfterReopen geometryViewportCancellationAndSourceGuards invalidLongAndOverBudgetGesturesNeverPublishPartialState -o brush-gesture-results.txt,txt -o -,txt)
+add_test(NAME brush-pressure-gesture COMMAND JixelLightBrushGestureTests pressureStartRejectsInvalidAndKeepsExactZeroWithoutHistoryLeak earlyCapacityWarningTracksRemainingDocumentAndResets zeroPressureOnlyDoesNotWarnAtOneRemainingDab warningAtOneRemainingDabPaint warningAtOneRemainingDabErase warningSamePointPulsePaint warningSamePointPulseErase warningDifferentPointRefusalPaint warningDifferentPointRefusalErase -o brush-pressure-gesture-results.txt,txt -o -,txt)
+set_tests_properties(brush-pressure-gesture PROPERTIES TIMEOUT 120)
+add_test(NAME brush-gesture-sony COMMAND JixelLightBrushGestureTests realSonyGestureProducesExactFullStatistics -o brush-gesture-sony-results.txt,txt -o -,txt)
+add_test(NAME brush-layer COMMAND JixelLightBrushGestureTests layerRemovalCommandsPreserveOtherLayersAndRoundTrip -o brush-layer-results.txt,txt -o -,txt)
+add_test(NAME brush-capture COMMAND JixelLightBrushGestureTests clippedNativeCaptureSamplesTheVisibleStrokeAtDeviceScale -o brush-capture-results.txt,txt -o -,txt)
+add_test(NAME brush-stroke-selection COMMAND JixelLightBrushGestureTests selectedStrokeUsesFrozenIdentityAndPreservesRemainingIntent -o brush-stroke-selection-results.txt,txt -o -,txt)
+add_test(NAME brush-capacity COMMAND JixelLightBrushGestureTests capacityReadsTargetLimitsAndRefusesFullDocumentBeforeDrawing -o brush-capacity-results.txt,txt -o -,txt)
+add_test(NAME brush-erase-gesture COMMAND JixelLightBrushGestureTests eraserGestureFreezesModeIsOneUndoAndPersistsExactPng -o brush-erase-gesture-results.txt,txt -o -,txt)
+add_test(NAME brush-erase-refusal COMMAND JixelLightBrushGestureTests eraserModeRejectsMalformedDisabledAndFullTargetsBeforeTransient -o brush-erase-refusal-results.txt,txt -o -,txt)
+set_tests_properties(brush-gesture brush-gesture-sony brush-layer brush-capture brush-stroke-selection brush-capacity brush-erase-gesture brush-erase-refusal PROPERTIES TIMEOUT 120)
+add_dependencies(JixelLightBrushGestureTests JixelLightCli)
+target_link_libraries(JixelLightBrushPersistenceTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushPersistenceTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_dependencies(JixelLightBrushPersistenceTests JixelLightCli)
+add_test(NAME brush-persistence COMMAND JixelLightBrushPersistenceTests activeSnapshotsAndStrictCommandsPersistAtomically controllerActiveProjectVersionsUndoScopesAndExports -o brush-persistence-results.txt,txt -o -,txt)
+set_tests_properties(brush-persistence PROPERTIES TIMEOUT 120)
+foreach(format png tif webp jpg)
+    add_test(NAME brush-cli-sony-${format} COMMAND JixelLightBrushPersistenceTests realSonyCliEnabledBrushExport:${format} -o brush-cli-sony-${format}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-cli-sony-${format} PROPERTIES TIMEOUT 120)
+endforeach()
+qt_add_executable(JixelLightLargeBrushTests tests/LargeBrushTests.cpp)
+target_link_libraries(JixelLightLargeBrushTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightLargeBrushTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-large-float24 COMMAND JixelLightLargeBrushTests float24MpGeometryWholeAndPannedUnevenRoiMatchIndependentStrips -o brush-large-float24-results.txt,txt -o -,txt)
+foreach(space srgb p3 prophoto)
+    add_test(NAME brush-large-sony-${space} COMMAND JixelLightLargeBrushTests sony33MpWholeAndRoiMatchIndependentStrips:${space} -o brush-large-sony-${space}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-large-sony-${space} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-large-scopes COMMAND JixelLightLargeBrushTests sony33MpSharedFullScopesAndPlotsMatchIndependentEncodedFrame:paint -o brush-large-scopes-results.txt,txt -o -,txt)
+set_tests_properties(brush-large-float24 brush-large-scopes PROPERTIES TIMEOUT 120)
+foreach(format png16 tiff16 webp8)
+    add_test(NAME brush-large-${format} COMMAND JixelLightLargeBrushTests sony33MpRasterExportsMatchIndependentPixelsAndIcc:${format} -o brush-large-${format}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-large-${format} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-large-jpeg COMMAND JixelLightLargeBrushTests sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu:paint -o brush-large-jpeg-results.txt,txt -o -,txt)
+set_tests_properties(brush-large-jpeg PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp)
 target_link_libraries(JixelLightPerformanceTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME performance-correctness COMMAND JixelLightPerformanceTests -o performance-results.txt,txt -o -,txt)
@@ -101,6 +228,39 @@ target_link_libraries(JixelLightBenchmark PRIVATE JixelLightCore)
 qt_add_executable(JixelLightGpuTests tests/GpuTests.cpp)
 target_link_libraries(JixelLightGpuTests PRIVATE JixelLightGpu Qt6::Test)
 add_test(NAME gpu-correctness COMMAND JixelLightGpuTests -o gpu-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightBrushGpuPreviewTests tests/BrushGpuPreviewTests.cpp)
+target_link_libraries(JixelLightBrushGpuPreviewTests PRIVATE JixelLightGpu Qt6::Test)
+set_target_properties(JixelLightBrushGpuPreviewTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-gpu-admission COMMAND JixelLightBrushGpuPreviewTests admissionRefusalDoesNotUploadOrPoisonEngineAndLeaseSurvivesUpload -o brush-gpu-admission-results.txt,txt -o -,txt)
+add_test(NAME brush-gpu-hdr COMMAND JixelLightBrushGpuPreviewTests preparedHdrRetainsSignedRgbHiddenColorAndFractionalAlpha:paint -o brush-gpu-hdr-results.txt,txt -o -,txt)
+foreach(view fit pan100)
+    add_test(NAME brush-gpu-${view} COMMAND JixelLightBrushGpuPreviewTests realSonyPreparedPreview:${view} -o brush-gpu-${view}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-gpu-${view} PROPERTIES TIMEOUT 120)
+endforeach()
+set_tests_properties(brush-gpu-admission brush-gpu-hdr PROPERTIES TIMEOUT 120)
+
+# Ordered Paint/Erase/Paint coverage retains every paint-only row and its gate.
+foreach(format png tif webp jpg)
+    add_test(NAME brush-erase-cli-sony-${format} COMMAND JixelLightBrushPersistenceTests realSonyCliEnabledBrushExport:erase-${format} -o brush-erase-cli-sony-${format}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-erase-cli-sony-${format} PROPERTIES TIMEOUT 120)
+endforeach()
+foreach(space srgb p3 prophoto)
+    add_test(NAME brush-erase-large-sony-${space} COMMAND JixelLightLargeBrushTests sony33MpWholeAndRoiMatchIndependentStrips:erase-${space} -o brush-erase-large-sony-${space}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-erase-large-sony-${space} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-erase-large-scopes COMMAND JixelLightLargeBrushTests sony33MpSharedFullScopesAndPlotsMatchIndependentEncodedFrame:erase -o brush-erase-large-scopes-results.txt,txt -o -,txt)
+foreach(format png16 tiff16 webp8)
+    add_test(NAME brush-erase-large-${format} COMMAND JixelLightLargeBrushTests sony33MpRasterExportsMatchIndependentPixelsAndIcc:erase-${format} -o brush-erase-large-${format}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-erase-large-${format} PROPERTIES TIMEOUT 120)
+endforeach()
+add_test(NAME brush-erase-large-jpeg COMMAND JixelLightLargeBrushTests sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu:erase -o brush-erase-large-jpeg-results.txt,txt -o -,txt)
+add_test(NAME brush-erase-gpu-hdr COMMAND JixelLightBrushGpuPreviewTests preparedHdrRetainsSignedRgbHiddenColorAndFractionalAlpha:erase -o brush-erase-gpu-hdr-results.txt,txt -o -,txt)
+foreach(view fit pan100)
+    add_test(NAME brush-erase-gpu-${view} COMMAND JixelLightBrushGpuPreviewTests realSonyPreparedPreview:erase-${view} -o brush-erase-gpu-${view}-results.txt,txt -o -,txt)
+    set_tests_properties(brush-erase-gpu-${view} PROPERTIES TIMEOUT 120)
+endforeach()
+set_tests_properties(brush-erase-large-scopes brush-erase-large-jpeg brush-erase-gpu-hdr PROPERTIES TIMEOUT 120)
+
 qt_add_executable(JixelLightMonitorColorTests tests/MonitorColorTests.cpp)
 target_link_libraries(JixelLightMonitorColorTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME monitor-color COMMAND JixelLightMonitorColorTests -o monitor-color-results.txt,txt -o -,txt)
@@ -140,7 +300,25 @@ qt_add_executable(JixelLightRawRenderMatrix tools/RawRenderMatrix.cpp)
 target_link_libraries(JixelLightRawRenderMatrix PRIVATE JixelLightGpu)
 set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
+# Experimental, opt-in only. Not installed in normal Windows/macOS packages.
+qt_add_executable(JixelLightFloatRawTrial tools/FloatRawTrial.cpp)
+target_link_libraries(JixelLightFloatRawTrial PRIVATE JixelLightCore)
+set_target_properties(JixelLightFloatRawTrial PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+# Offline/private fixtures are opt-in and never installed or uploaded as images.
+qt_add_executable(JixelLightOfflineRawProbe tools/OfflineRawProbe.cpp)
+target_link_libraries(JixelLightOfflineRawProbe PRIVATE JixelLightCore)
+set_target_properties(JixelLightOfflineRawProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+include(cmake/QsbDepfile.cmake)
+jixellight_escape_qsb_depfiles(${JIXELLIGHT_SHADER_SOURCES})
+add_test(NAME qsb-depfile-spaces COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/tests/TestQsbDepfile.py"
+    --cmake "${CMAKE_COMMAND}" --qsb "$<TARGET_FILE:Qt6::qsb>"
+    --generator "${CMAKE_GENERATOR}" --make-program "${CMAKE_MAKE_PROGRAM}"
+    --report-directory "${CMAKE_BINARY_DIR}/qsb-depfile-test"
+    --results-file "${CMAKE_BINARY_DIR}/qsb-depfile-results.txt")
+set_tests_properties(qsb-depfile-spaces PROPERTIES TIMEOUT 120)
 add_test(NAME sony-real-files COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/ValidateSonyFixtures.py $<TARGET_FILE:JixelLightSonyValidation>
     ${CMAKE_SOURCE_DIR}/tests/fixtures/sony-real-manifest.json ${CMAKE_BINARY_DIR}/sony-real-reports)
@@ -148,3 +326,31 @@ set_tests_properties(sony-real-files PROPERTIES TIMEOUT 540 SKIP_RETURN_CODE 77)
 # The native GPU test consumes the actual profile fitted by the real-file test.
 set_tests_properties(gpu-correctness PROPERTIES DEPENDS sony-real-files
     ENVIRONMENT "JIXELLIGHT_TEST_SONY_PROFILE=${CMAKE_BINARY_DIR}/sony-real-reports/dataset/empirical.jlook.json")
+
+# Offline automation uses the same parameter registry and CPU reference engine.
+qt_add_executable(JixelLightCli tools/Cli.cpp)
+target_link_libraries(JixelLightCli PRIVATE JixelLightCore)
+set_target_properties(JixelLightCli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME cli-schema COMMAND JixelLightCli --schema)
+add_test(NAME cli-export-safety COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateCli.py $<TARGET_FILE:JixelLightCli>)
+set_tests_properties(cli-schema cli-export-safety PROPERTIES TIMEOUT 120)
+
+# Controlled Qt input fixture; actual photo UI and device hardware have separate gates.
+qt_add_executable(JixelLightBrushInputProbe tests/BrushPressureInputProbe.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h)
+target_include_directories(JixelLightBrushInputProbe PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(JixelLightBrushInputProbe PRIVATE Qt6::Quick Qt6::Qml Qt6::GuiPrivate)
+target_compile_definitions(JixelLightBrushInputProbe PRIVATE JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+set_target_properties(JixelLightBrushInputProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME brush-pressure-input COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/ValidateBrushPressureInput.py
+    --probe $<TARGET_FILE:JixelLightBrushInputProbe>
+    --fixture ${CMAKE_SOURCE_DIR}/tests/qml/BrushPressureInputFixture.qml
+    --output-dir ${CMAKE_BINARY_DIR}/brush-pressure-input
+    --result-file ${CMAKE_BINARY_DIR}/brush-pressure-input-results.txt
+    --expected-source-commit ${JIXELLIGHT_GIT_COMMIT})
+set_tests_properties(brush-pressure-input PROPERTIES TIMEOUT 120)
+
+qt_add_executable(JixelLightBrushPressureExportVerifier tools/BrushPressureExportVerifier.cpp)
+target_link_libraries(JixelLightBrushPressureExportVerifier PRIVATE JixelLightCore)
+set_target_properties(JixelLightBrushPressureExportVerifier PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)

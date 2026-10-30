@@ -8,6 +8,15 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from ValidateDiagnostic import validate_diagnostic
+from ValidateRelink import validate_relink
+from ValidateBrushCanvas import validate_brush
+from ValidateSonyBrushCanvas import validate_sony_brush
+from ValidateBrushErase import validate_brush_erase
+from ValidateBrushPressure import validate_brush_pressure
+from ValidateBrushPressureEdges import validate_brush_pressure_edges
+from ValidateShortcutHelp import validate_shortcut_help
+from ValidateEditRecipe import run as validate_edit_recipe
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -21,11 +30,17 @@ def main() -> int:
     parser.add_argument('executable', type=Path)
     parser.add_argument('raw', type=Path)
     parser.add_argument('--sony-probe', type=Path)
+    parser.add_argument('--cli', type=Path)
+    parser.add_argument('--sony-brush-raw', type=Path)
+    parser.add_argument('--pressure-export-verifier', type=Path, required=True)
     parser.add_argument('--reports', type=Path, default=Path('package-validation'))
     args = parser.parse_args()
     executable, raw = args.executable.resolve(), args.raw.resolve()
     if not executable.is_file() or not raw.is_file():
         parser.error('Deployed executable and RAW fixture must exist')
+    pressure_verifier = args.pressure_export_verifier.resolve()
+    if not pressure_verifier.is_file():
+        parser.error('Deployed pressure export verifier must exist')
     reports = args.reports.resolve()
     reports.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
@@ -74,6 +89,9 @@ def main() -> int:
                 data = {}
             ok = (code == 0 and data.get('smoke_passed') is True
                   and data.get('preview_ready') is True and data.get('scope_pixels', 0) > 0
+                  and data.get('ui_vignette_passed') is True
+                  and data.get('ui_export_naming_passed') is True
+                  and data.get('ui_selected_export_passed') is True
                   and data.get('gpu_active') is (mode == 'gpu')
                   and data.get('screenshot_saved') is True and screenshot.is_file())
             ok = (ok and data.get('look_validation_required') is True
@@ -96,6 +114,59 @@ def main() -> int:
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)
+            results.append(validate_diagnostic(executable, env, home, reports, mode))
+            brush_home = Path(temp) / ("brush-" + mode)
+            brush_home.mkdir()
+            results.append(validate_brush(executable, env, brush_home,
+                                          reports / ("brush-" + mode + ".json"), mode))
+            erase_home = Path(temp) / ("brush-erase-" + mode)
+            erase_home.mkdir()
+            results.append(validate_brush_erase(executable, environment, erase_home,
+                reports / ("brush-erase-" + mode + ".json"), mode))
+            transparent_home = Path(temp) / ("transparent-brush-erase-" + mode)
+            transparent_home.mkdir()
+            results.append(validate_brush_erase(executable, environment, transparent_home,
+                reports / ("transparent-brush-erase-" + mode + ".json"), mode, transparent=True))
+            pressure_home = Path(temp) / ("brush-pressure-" + mode)
+            results.append(validate_brush_pressure(executable, environment, pressure_home,
+                reports / ("brush-pressure-" + mode + ".json"), mode))
+            pressure_alpha_home = Path(temp) / ("transparent-brush-pressure-" + mode)
+            results.append(validate_brush_pressure(executable, environment, pressure_alpha_home,
+                reports / ("transparent-brush-pressure-" + mode + ".json"), mode, transparent=True))
+            edge_home = Path(temp) / ("brush-pressure-edges-" + mode)
+            results.append(validate_brush_pressure_edges(executable, environment, edge_home,
+                reports / ("brush-pressure-edges-" + mode + ".json"), mode))
+            edge_alpha_home = Path(temp) / ("transparent-brush-pressure-edges-" + mode)
+            results.append(validate_brush_pressure_edges(executable, environment, edge_alpha_home,
+                reports / ("transparent-brush-pressure-edges-" + mode + ".json"), mode, transparent=True))
+            if args.sony_brush_raw:
+                sony_home = Path(temp) / ("sony-brush-" + mode)
+                sony_home.mkdir()
+                results.append(validate_sony_brush(executable, args.sony_brush_raw.resolve(),
+                    environment, sony_home, reports / ("sony-brush-" + mode + ".json"), mode))
+                sony_erase_home = Path(temp) / ("sony-brush-erase-" + mode)
+                sony_erase_home.mkdir()
+                results.append(validate_brush_erase(executable, environment, sony_erase_home,
+                    reports / ("sony-brush-erase-" + mode + ".json"), mode, args.sony_brush_raw.resolve()))
+                pressure_sony_home = Path(temp) / ("sony-brush-pressure-" + mode)
+                results.append(validate_brush_pressure(executable, environment, pressure_sony_home,
+                    reports / ("sony-brush-pressure-" + mode + ".json"), mode,
+                    args.sony_brush_raw.resolve(), pressure_verifier))
+        results.append(validate_shortcut_help(executable, environment, Path(temp) / "shortcut-help", reports / "shortcut-help.json"))
+        # Exercise the real packaged dialog with a fake in-memory clipboard.  Native
+        # clipboard writes are reserved for explicitly isolated CI runner tests.
+        recipe_qpa = 'windows' if sys.platform == 'win32' else ('cocoa' if sys.platform == 'darwin' else 'offscreen')
+        try:
+            recipe = validate_edit_recipe(executable, reports / 'edit-recipe',
+                results[0].get('source_commit') or '', recipe_qpa, 1, False, 'fake', environment)
+            recipe['sdk_paths_removed'] = True
+        except (OSError, ValueError) as error:
+            recipe = {'mode': 'edit-recipe-fake', 'passed': False, 'error': str(error),
+                      'production_accepted': False, 'sdk_paths_removed': True}
+        results.append(recipe)
+        relink_home = Path(temp) / 'source-relink'
+        relink_home.mkdir()
+        results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))
     sony_check = None
     if args.sony_probe:
         probe = args.sony_probe.resolve()
@@ -132,6 +203,19 @@ def main() -> int:
                           'source_commit': data.get('commit'), 'sdk_paths_removed': True,
                           'raw_sha256': data.get('rawSha256'), 'jpeg_sha256': data.get('jpegSha256')}
             results.append(sony_check)
+    if args.cli:
+        cli = args.cli.resolve()
+        try:
+            run = subprocess.run([sys.executable, str(Path(__file__).with_name('ValidateCli.py')), str(cli)],
+                                 env=environment, capture_output=True, text=True, timeout=180)
+            code = run.returncode
+            detail = run.stdout + run.stderr
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            code, detail = -1, str(exc)
+        (reports / 'develop-cli.log').write_text(detail, encoding='utf-8')
+        results.append({'mode': 'develop-cli', 'passed': code == 0, 'returncode': code,
+                        'sdk_paths_removed': True,
+                        'executable_sha256': hashlib.sha256(cli.read_bytes()).hexdigest() if cli.is_file() else None})
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),

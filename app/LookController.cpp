@@ -2,6 +2,7 @@
 #include "core/look/LookProfiles.h"
 #include "core/look/SonyLookMetadata.h"
 #include "core/pipeline/ProcessingPlan.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/ActionTrace.h"
 #include <QFileDialog>
@@ -77,37 +78,35 @@ void PhotoController::setShowCameraReference(bool show) {
     if(m_showReference==show)return;m_showReference=show;emit referenceChanged();
     if(show&&m_referenceImage.isNull()&&!m_referenceBusy)requestReference();
 }
+bool PhotoController::applyLookEdit(const QJsonObject &command,const QString &action,const QVariantMap &details) {
+    if(!currentSourceAvailable())return false;
+    auto staged=m_photos[m_currentIndex].state; QString error;
+    const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
+    if(!CommandRegistry::execute(staged,command,&error,&context)) {
+        setStatus(uiText("外观未修改：", "Look edit rejected: ")+error);return false;
+    }
+    auto *state=mutableCurrentState();if(!state)return false;*state=std::move(staged);
+    persistAndApply(action,details);return true;
+}
 void PhotoController::setLookMode(const QString &mode) {
-    auto *state=mutableCurrentState();if(!state)return;
-    if(mode=="as-shot") {
-        if(!currentIsRaw()){setStatus(uiText("JPEG/TIFF 已包含外观，不会自动重复套用。", "JPEG/TIFF already contains rendered color; no automatic double application."));return;}
-        state->look=LookState{};state->look.mode="as-shot";
-    } else if(mode=="off") state->look.mode="off";
-    else if(mode=="manual") {
-        if(state->look.mode=="as-shot")state->look=currentState().look;
-        state->look.mode=state->look.lut?"calibrated":"manual";
-        if(!state->look.lut&&SonyLookMetadata::normalize(state->look.code).isEmpty())state->look.code="ST";
-    } else return;
-    persistAndApply("look_mode",{{"mode",mode}});
+    if(!currentSourceAvailable())return;
+    if(mode=="as-shot" && !currentIsRaw()) {
+        setStatus(uiText("JPEG/TIFF 已包含外观，不会自动重复套用。", "JPEG/TIFF already contains rendered color; no automatic double application."));return;
+    }
+    applyLookEdit({{"command","look.mode"},{"mode",mode=="as-shot"?QStringLiteral("as_shot"):mode}},
+                  "look_mode",{{"mode",mode}});
 }
 void PhotoController::setLookCode(const QString &code) {
-    auto *state=mutableCurrentState();const auto normalized=SonyLookMetadata::normalize(code);
-    if(!state||normalized.isEmpty())return;
-    state->look={};state->look.mode="manual";state->look.code=normalized;
-    persistAndApply("look_preset",{{"code",normalized},{"quality","approximation"}});
+    QString normalized;
+    if(!LookProfiles::normalizeCommandCode(code,&normalized))return;
+    applyLookEdit({{"command","look.code"},{"code",normalized}},"look_preset",{{"code",normalized},{"quality","approximation"}});
 }
 void PhotoController::setLookStrength(double strength) {
-    auto *state=mutableCurrentState();if(!state||!std::isfinite(strength))return;
-    state->look.strength=std::clamp(strength,0.0,1.0);persistAndApply("look_strength");
+    applyLookEdit({{"command","look.strength"},{"value",strength}},"look_strength");
 }
 void PhotoController::setLookParameter(const QString &name,double value) {
-    auto *state=mutableCurrentState();if(!state||!std::isfinite(value)||!SonyLookMetadata::parameterNames().contains(name))return;
-    if(state->look.mode=="as-shot")state->look=currentState().look;
-    state->look.mode=state->look.lut?"calibrated":"manual";
-    if(!state->look.lut&&state->look.code.isEmpty())state->look.code="ST";
-    const auto range=SonyLookMetadata::parameterRange(name);
-    state->look.parameters[name]=std::clamp(std::round(value),double(range.first),double(range.second));
-    persistAndApply("look_parameter",{{"name",name},{"value",value}});
+    applyLookEdit({{"command","look.parameter"},{"parameter",name},{"value",value}},
+                  "look_parameter",{{"name",name},{"value",value}});
 }
 bool PhotoController::loadReference(const QUrl &url) {
     if(!hasImage()||!url.isLocalFile()||!QFileInfo(url.toLocalFile()).isFile())return false;
@@ -134,7 +133,7 @@ bool PhotoController::isProtectedPhoto(const QString &path) const {
     return false;
 }
 bool PhotoController::loadLookProfile(const QUrl &url) {
-    if(!hasImage()||!url.isLocalFile())return false;
+    if(!currentSourceAvailable()||!url.isLocalFile())return false;
     QFile file(url.toLocalFile());if(!file.open(QIODevice::ReadOnly)||file.size()>4*1024*1024||file.size()<=0){setStatus(uiText("外观文件不可读或超过 4 MB。", "Look file is unreadable or exceeds 4 MB."));return false;}
     const QByteArray bytes=file.readAll();LookState look;QString error;
     if(QFileInfo(file).suffix().compare("cube",Qt::CaseInsensitive)==0){look.lut=LookLut::fromCube(bytes,&error);look.mode="calibrated";}
@@ -144,13 +143,8 @@ bool PhotoController::loadLookProfile(const QUrl &url) {
         else {look=LookState::fromJson(doc.object()["look"].toObject());error=look.error;
             if(look.mode=="as-shot")error="Profile must contain a materialized look, not an unresolved as-shot request";}
     }
-    if(error.isEmpty() && look.lut) {
-        const auto kind=look.lut->evidence.value("kind").toString();
-        const auto fittedEngine=look.lut->evidence.value("engineVersion").toString();
-        const bool fitted = kind=="image-specific-fit" || kind=="multi-scene-empirical-fit";
-        if(fitted && fittedEngine != QLatin1String(ProcessingPlan::EngineVersion))
-            error="This fitted look was created for a different RAW rendering engine; refit or regenerate it.";
-    }
+    if(error.isEmpty() && !LookProfiles::engineCompatible(look))
+        error="This fitted look was created for a different RAW rendering engine; refit or regenerate it.";
     if(error.isEmpty()&&!LookProfiles::active(look))error="Profile has no supported active look";
     if(!error.isEmpty()){setStatus(uiText("外观未导入：", "Look not imported: ")+error);return false;}
     mutableCurrentState()->look=std::move(look);persistAndApply("look_profile_imported");return true;

@@ -1,6 +1,8 @@
 #include "core/gpu/GpuEngine.h"
 #include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
 #include <QResource>
@@ -18,6 +20,9 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+    // All QRhi backends require the established CPU numeric upload while the
+    // M4.4A brush is a research-only CPU kernel. No silent GPU omission.
+    if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) return true;
     // Metal stays inside the original 40/65535 bound. D3D11 and OpenGL have
     // a few backend-specific ULP divergences that sRGB encoding amplifies near
     // an Oklab/HSL gamut edge, so only those parameter regions use the CPU
@@ -28,7 +33,9 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
     for (int i=0; i<8; ++i)
         complexHsl = complexHsl || state.hslHue[i] != 0 || state.hslSaturation[i] != 0 || state.hslLuminance[i] != 0;
     const bool extremeBrightPerceptual =
-        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure >= 2.5
+        plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure+std::max(0.0f,plan.data[ProcessingPlan::Vignette].x)
+            +std::max(0.0f,plan.data[ProcessingPlan::LinearMask].x)
+            +std::max(0.0f,plan.data[ProcessingPlan::RadialMask].x) >= 2.5
         && (state.saturation != 0 || state.vibrance != 0);
     return complexHsl || extremeBrightPerceptual;
 }
@@ -69,7 +76,52 @@ QString GpuEngine::backendName() const {
     }
     return QStringLiteral("GPU · %1 · %2").arg(QString::fromLatin1(name), QString::fromUtf8(m_rhi->driverInfo().deviceName));
 }
-bool GpuEngine::hasPendingReadback() const { return m_readback && !m_readback->done; }
+bool GpuEngine::hasPendingReadback() const {
+    return (m_readback && !m_readback->done) || (m_frameReadback && !m_frameReadback->done);
+}
+bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
+                                   QString *error, qint64 budget) {
+    const auto reject = [error](const QString &message) { if (error) *error = message; return false; };
+    if (!cb || !ready || !m_output || !m_revision || revision != m_revision)
+        return reject(QStringLiteral("Requested GPU revision is not rendered"));
+    if (m_frameReadback && !m_frameReadback->done)
+        return reject(QStringLiteral("A diagnostic readback is already pending"));
+    const qint64 bytes = qint64(m_size.width()) * m_size.height() * 16;
+    if (budget < 0 || bytes > std::min(budget, FloatFrameFingerprint::BudgetBytes))
+        return reject(QStringLiteral("Diagnostic frame exceeds readback budget"));
+    if (error) error->clear();
+    m_frameReadback = std::make_shared<ReadbackState>();
+    const std::weak_ptr<ReadbackState> weak = m_frameReadback;
+    const auto size = m_size;
+    const QJsonObject context{{"parameter_revision", qint64(revision)},
+        {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
+        {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
+        {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
+        {"stage", "working-output"}, {"monitor_icc", false}};
+    m_frameReadback->result.completed = [weak, ready, size, bytes, context] {
+        if (const auto state = weak.lock()) {
+            state->done = true;
+            QJsonObject result;
+            if (state->result.format != QRhiTexture::RGBA32F || state->result.pixelSize != size
+                || state->result.data.size() != bytes) {
+                result = {{"available", false}, {"error", "Invalid RGBA32F texture readback"}};
+            } else {
+                const QImage frame(reinterpret_cast<const uchar *>(state->result.data.constData()),
+                                   size.width(), size.height(), size.width() * 16, QImage::Format_RGBA32FPx4);
+                result = FloatFrameFingerprint::capture(frame);
+            }
+            for (auto it = context.begin(); it != context.end(); ++it) result.insert(it.key(), it.value());
+            PerformanceRecorder::count("diagnostic_gpu_readback_bytes", state->result.data.size());
+            // Release frame bytes before notifying; retain only a small fingerprint.
+            state->result.data.clear();
+            ready(std::move(result));
+        }
+    };
+    auto *updates = m_rhi->nextResourceUpdateBatch();
+    updates->readBackTexture(QRhiReadbackDescription(m_output.get()), &m_frameReadback->result);
+    cb->resourceUpdate(updates);
+    return true;
+}
 bool GpuEngine::buildCompute(std::unique_ptr<QRhiComputePipeline> &pipeline,
                              QRhiShaderResourceBindings *bindings, const QString &name) {
     const auto code = shader(name);
@@ -90,6 +142,7 @@ bool GpuEngine::initialize(QSize size) {
     if (m_size == size && m_pipeline) return true;
     if (hasPendingReadback()) m_rhi->finish(); // rare source resize, never a slider update
     m_readback.reset();
+    m_frameReadback.reset();
     m_display.reset(); m_displayBindings.reset();
     m_pipeline.reset(); m_histogram.reset(); m_reduce.reset();
     m_pipelineBindings.reset(); m_histogramBindings.reset(); m_reduceBindings.reset();
@@ -138,8 +191,31 @@ bool GpuEngine::initialize(QSize size) {
 
 bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingPlan plan,
                         quint64 revision, const HistogramReady &histogramReady, bool forceHistogram) {
+    return processImpl(cb,source,std::move(plan),revision,histogramReady,forceHistogram,nullptr);
+}
+bool GpuEngine::processAdmittedBrush(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,
+    quint64 revision,const HistogramReady &histogramReady,bool forceHistogram,QString *error,
+    std::shared_ptr<BrushRenderBudget> budget) {
+    if(error)error->clear();
+    const auto refuse=[&](const QString &message){if(error)*error=message;return false;};
+    if(!m_error.isEmpty())return refuse(m_error);
+    if(!cb||source.isNull()||source.format()!=QImage::Format_RGBA32FPx4)
+        return refuse("Admitted GPU brush requires a command buffer and prepared FP32 source");
+    if(source.width()>4096||source.height()>4096
+        ||std::max(source.width(),source.height())>m_rhi->resourceLimit(QRhi::TextureSizeMax))
+        return refuse("Prepared brush preview exceeds GPU texture budget");
+    auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,{},error,std::move(budget));
+    if(!request)return false;
+    if(!processImpl(cb,source,std::move(plan),revision,histogramReady,forceHistogram,request.get()))
+        return refuse(m_error);
+    return true;
+}
+bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,
+    quint64 revision,const HistogramReady &histogramReady,bool forceHistogram,BrushRenderRequest *admitted) {
     if (!m_error.isEmpty()) return false;
     if (source.isNull() || source.format() != QImage::Format_RGBA32FPx4) return fail(QStringLiteral("GPU source must be linear RGBA32FPx4"));
+    if (!BrushMaskDocument::validDocument(plan.state.brushMasks))
+        return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
     m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;
@@ -147,6 +223,10 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
     const bool newSource = source.cacheKey() != m_sourceKey;
+    // Inspect only new uploads, never repeat the O(pixels) validation on a
+    // slider tick. Refuse bad FP32 data before any QRhi resources are updated.
+    if (newSource && !ImagePipeline::validFloatSource(source))
+        return fail(QStringLiteral("Invalid non-finite/out-of-range FP32 source or alpha"));
     if (revision != m_revision || newSource || newLut) {
         PerformanceSpan timing("gpu_submit_cpu_ms", {{"pixels", qint64(source.width())*source.height()}});
         auto *updates = m_rhi->nextResourceUpdateBatch();
@@ -167,20 +247,33 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
             PerformanceRecorder::count("look_lut_uploads");
         }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
+        plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
         if (m_lastCpuFallback) {
-            const QImage cpuInput = source.convertToFormat(QImage::Format_RGBA64);
-            const QImage cpuResult = ImagePipeline::processWithPlan(cpuInput, plan);
+            // Render from the exact GPU upload source. An RGBA64 conversion
+            // would truncate HDR scene channels (>1) before the safety fallback.
+            BrushImageLease admittedPixels;
+            if(admitted)admittedPixels=admitted->render();
+            const QImage cpuResult = admitted ? admittedPixels.image() : ImagePipeline::processWithPlan(source, plan);
             if (cpuResult.isNull()) { updates->release(); return fail(QStringLiteral("CPU numeric safety fallback failed")); }
-            m_cpuFallbackFrame = cpuResult.convertToFormat(QImage::Format_RGBA32FPx4);
+            auto uploadFrame=ImagePipeline::floatSource(cpuResult);
+            if(admitted)uploadFrame=admitted->retainFloatUpload(std::move(uploadFrame));
+            if(uploadFrame.isNull()){updates->release();return fail("CPU fallback upload allocation failed");}
+            m_cpuFallbackFrame=std::move(uploadFrame);
             QRhiTextureSubresourceUploadDescription upload(m_cpuFallbackFrame.constBits(), quint32(m_cpuFallbackFrame.sizeInBytes()));
             upload.setSourceSize(m_cpuFallbackFrame.size());
             upload.setDataStride(quint32(m_cpuFallbackFrame.bytesPerLine()));
             updates->uploadTexture(m_output.get(), {{0, 0, upload}});
             cb->resourceUpdate(updates);
+            if(admitted)PerformanceRecorder::count("brush_admitted_gpu_uploads");
             PerformanceRecorder::count("gpu_numeric_cpu_fallbacks");
-            PerformanceRecorder::value("gpu_last_execution", QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
+            PerformanceRecorder::value("gpu_last_execution",
+                admitted?QStringLiteral("M4.5B admitted brush CPU numeric -> GPU display/scopes"):
+                BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)
+                    ? QStringLiteral("M4.4A research brush CPU numeric -> GPU display/scopes")
+                    : QStringLiteral("CPU numeric safety fallback -> GPU display/scopes"));
         } else {
+            m_cpuFallbackFrame={};
             cb->beginComputePass(updates);
             cb->setComputePipeline(m_pipeline.get());
             cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());
@@ -195,6 +288,7 @@ bool GpuEngine::process(QRhiCommandBuffer *cb, const QImage &source, ProcessingP
             PerformanceRecorder::value("gpu_last_execution", backendName());
         }
         m_revision = revision;
+        m_outputSpace = plan.output;
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision
         && (forceHistogram || !m_histogramClock.isValid() || m_histogramClock.elapsed() >= 70)) {
@@ -237,9 +331,9 @@ bool GpuEngine::ensureDisplayColorResources() {
     return true;
 }
 
-bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
+bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha) {
     if (!ensureDisplayColorResources()) return false;
-    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount()) return true;
+    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount() && m_displayPremultipliedAlpha == premultipliedAlpha) return true;
     m_display.reset(); m_displayBindings.reset();
     if (!m_sampler) {
         m_sampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
@@ -266,12 +360,25 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target) {
     m_display->setShaderResourceBindings(m_displayBindings.get());
     m_display->setRenderPassDescriptor(target->renderPassDescriptor());
     m_display->setSampleCount(target->sampleCount());
+    if(premultipliedAlpha) {
+        // Presentation only: Qt Quick consumes premultiplied device RGB.
+        // Keep processing/output texture and ordinary diagnostic draws straight.
+        QRhiGraphicsPipeline::TargetBlend blend;
+        blend.enable = true;
+        blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+        blend.dstColor = QRhiGraphicsPipeline::Zero;
+        blend.srcAlpha = QRhiGraphicsPipeline::One;
+        blend.dstAlpha = QRhiGraphicsPipeline::Zero;
+        m_display->setTargetBlends({blend});
+    }
     if (!m_display->create()) return fail(QStringLiteral("GPU display pipeline failed"));
-    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount();
+    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount(); m_displayPremultipliedAlpha=premultipliedAlpha;
     return true;
 }
-bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
-    if (!m_output || !createDisplay(target)) return false;
+bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,false);}
+bool GpuEngine::drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,true);}
+bool GpuEngine::drawImpl(QRhiCommandBuffer *cb, QRhiRenderTarget *target,bool premultipliedAlpha) {
+    if (!m_output || !createDisplay(target,premultipliedAlpha)) return false;
     QRhiResourceUpdateBatch *updates = nullptr;
     const auto ensureUpdates=[&]() {
         if (!updates) updates=m_rhi->nextResourceUpdateBatch();
@@ -299,7 +406,7 @@ bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {
         PerformanceRecorder::count("display_monitor_lut_upload_bytes",m_displayColorLut.sizeInBytes());
         PerformanceRecorder::value("display_monitor_profile_gpu",m_displayColorProfileName);
     }
-    cb->beginPass(target, Qt::black, {1.0f,0}, updates);
+    cb->beginPass(target, premultipliedAlpha?Qt::transparent:Qt::black, {1.0f,0}, updates);
     cb->setGraphicsPipeline(m_display.get());
     cb->setShaderResources(m_displayBindings.get());
     cb->setViewport({0,0,float(target->pixelSize().width()),float(target->pixelSize().height())});

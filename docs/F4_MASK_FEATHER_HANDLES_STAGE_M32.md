@@ -1,0 +1,11 @@
+# F4 Stage M3.2 — drag mask feather guides directly on the photo
+
+**Development:** `design/lightcraft-fusion-20261008`, PR #16 Draft. The code is a new **exact-HEAD CI candidate**, not three-platform accepted until mandatory run completion.
+
+This is a deliberately narrow follow-up to accepted M3.1. In the existing non-AI single linear gradient and single radial ellipse, add **green feather handles** in the complete post-crop/post-geometry image's normalized coordinates. The already supported exposure/radii/center/rotation/invert parameters, RAW metadata, XMP/presets/project snapshots, and the CPU/GPU color processing order are unchanged.
+
+- **Linear:** the center guide has two boundaries at center ± feather/2. Move the positive-normal green boundary by normalized image delta projected onto `(sin(angle),cos(angle))`; set `feather = clamp(original + 2*projection, 0.02, 1)`. Use frozen gesture parameters rather than self-referential updated values.
+- **Rotated ellipse:** the green handle rests on the inner feather ellipse at `radiusX*(1-feather)` along the local rotated X axis. Project mouse delta onto that X axis; set `feather = clamp(original - projection/radiusX, 0.02, 1)`. This preserves the existing smoothstep radius and supports any allowed ellipse angle, including inverted masks.
+- All events reuse existing `mask.linear.set / mask.radial.set` validation, Undo coalescing and final `finishInteraction()`. Tool buttons, guides, other handles and the right-side feather sliders remain available. Handles may overlap near the minimum 0.02 feather; the independent numeric slider remains accessible. No AI / brush / multiple layers added.
+- The independent synthetic-image GUI smoke now exercises **both** green feather controls by actual mouse press/move/release on QML Repeater handles, verifies increase in feather and Undo/Redo for each, plus the accepted old center/ROI/source SHA checks. Standalone UI smoke has a 30s functional deadline (45s outer process timeout); the original full RAW GUI smoke stays **60,000 ms, unchanged**.
+- Windows x64, macOS arm64, Linux GPU, mandatory 40/65535 CPU/GPU parity, real Sony RAW/JPEG, full 1024-bin Scopes, project safety and Windows/macOS deployed package tests remain mandatory and cannot be skipped.
