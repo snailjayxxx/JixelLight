@@ -83,6 +83,55 @@ def validate_brush_radius(data: dict) -> None:
         assert 0 < row["width"] <= row["canvas_width"] - 15
 
 
+
+def preserve_failure_captures(data: dict, native_path: Path, report: Path, *, sony: bool) -> tuple[dict, list]:
+    """Copy only self-consistent partial QA screenshots; never turn failure into success."""
+    copied, errors, seen = {}, [], set()
+    if not isinstance(data, dict) or not isinstance(data.get("captures"), list):
+        return copied, ["No readable native capture list"]
+    allowed = (CAPTURES if sony else OWNED_CAPTURES) | {"failure"}
+    captures = data["captures"]
+    if len(captures) > len(allowed):
+        return copied, ["Too many native captures"]
+    for capture in captures:
+        label = capture.get("label") if isinstance(capture, dict) else None
+        if not isinstance(label, str) or label not in allowed or label in seen:
+            errors.append("Invalid or duplicate capture label")
+            continue
+        seen.add(label)
+        try:
+            suffix = "-controls.png" if sony else "-owned.png"
+            path = Path(str(native_path) + "." + label + suffix)
+            if Path(capture["path"]) != path or capture["dpr"] != data["dpr"]:
+                raise ValueError("Capture path or DPR mismatch")
+            if path.is_symlink() or not path.is_file() or path.parent.resolve() != native_path.parent.resolve():
+                raise ValueError("Capture is not a regular private output")
+            with path.open("rb") as stream:
+                header = stream.read(24)
+            if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+                raise ValueError("Invalid PNG header")
+            width, height = struct.unpack(">II", header[16:24])
+            expected = ((capture["controls_width"], capture["controls_height"]) if sony else
+                        (capture["width"], capture["height"]))
+            if (width, height) != expected or width <= 0 or height <= 0 or sha256(path) != capture["sha256"]:
+                raise ValueError("Capture size or SHA256 mismatch")
+            if sony and not (width < capture["width"] and height <= capture["height"]):
+                raise ValueError("Sony screenshot is not a controls-only crop")
+            destination = report.parent / path.name
+            if destination.exists() or destination.is_symlink():
+                if destination.is_symlink() or not destination.is_file() or sha256(destination) != capture["sha256"]:
+                    raise ValueError("Existing artifact differs; preserved unchanged")
+            else:
+                with path.open("rb") as source, destination.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+                if sha256(destination) != capture["sha256"]:
+                    raise ValueError("Copied screenshot differs")
+            copied[label] = str(destination)
+        except (OSError, ValueError, TypeError, KeyError, struct.error) as error:
+            errors.append(f"{label}: {error}")
+    return copied, errors
+
+
 def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Path,
                            report: Path, mode: str, raw: Path | None = None,
                            verifier: Path | None = None, *, transparent: bool = False) -> dict:
@@ -262,6 +311,11 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
         frozen = Path(str(native_path) + ".frozen.json")
         if frozen.is_file():
             shutil.copy2(frozen, report.parent / frozen.name)
+        if not result["passed"]:
+            copied, errors = preserve_failure_captures(result.get("report", {}), native_path, report, sony=raw is not None)
+            result["failure_capture_artifacts"] = copied
+            result["failure_capture_errors"] = errors
+            result["failure_captures_partial"] = True
         result["private_output_preserved"] = not result["passed"]
         if result["passed"]:
             shutil.rmtree(work)

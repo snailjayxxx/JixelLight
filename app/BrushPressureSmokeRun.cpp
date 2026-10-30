@@ -15,6 +15,8 @@
 #include <QJSValue>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QTemporaryDir>
 #include <QSaveFile>
 #include <QFile>
@@ -69,6 +71,10 @@ QImage reference(const QImage &source,const ProcessingPlan &plan){
         for(int row=0;row<strip.height();++row)std::memcpy(out.scanLine(y+row),strip.constScanLine(row),size_t(input.width())*8);}
     return out;
 }
+bool samePlan(const ProcessingPlan &a,const ProcessingPlan &b){
+    return a.state.toJson()==b.state.toJson()&&a.encoding==b.encoding&&a.output==b.output&&a.rawSource==b.rawSource
+        &&a.baseExposureStops==b.baseExposureStops&&std::memcmp(a.data.data(),b.data.data(),sizeof(a.data))==0;
+}
 bool sameStroke(const BrushMaskGeometry::Stroke &a,const BrushMaskGeometry::Stroke &b){
     if(a.mode!=b.mode||a.dabs.size()!=b.dabs.size()||a.style.radius!=b.style.radius||a.style.hardness!=b.style.hardness||a.style.opacity!=b.style.opacity)return false;
     for(size_t i=0;i<a.dabs.size();++i)if(std::abs(a.dabs[i].center.x-b.dabs[i].center.x)>1e-9||std::abs(a.dabs[i].center.y-b.dabs[i].center.y)>1e-9||std::abs(a.dabs[i].pressure-b.dabs[i].pressure)>1e-9)return false;return true;
@@ -91,6 +97,8 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
         QJsonObject initial,painted,erased,commitCheck;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
+        QFutureWatcher<QImage> *expectedJob=nullptr;std::optional<ProcessingPlan> referencePlan;bool referencePlanStable=false;
+        qint64 referenceStartedMs=-1,exportQueuedMs=-1;
         QJsonObject eraserTipCommitted;bool useEraser=false,eraserTipStarted=false,eraserTipEmptyRefused=false,eraserTipExact=false,eraserTipUndo=false,eraserTipRedo=false,eraserTipRestored=false,eraserTipPanelStable=false,eraserTipHintLocalized=false,eraserTipHintRestored=false;QString eraserTipHintEnglish,eraserTipHintChinese,eraserTipHintAfterRelease;std::shared_ptr<QPointingDevice> pen,eraser;std::optional<BM::Stroke> expectedPaint,expectedErase;
     };
     auto s=std::make_shared<State>();s->clock.start();s->sourceHash=hash(source);
@@ -107,10 +115,10 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
-        const bool passed=error.isEmpty()&&s->lowPressureContinuous&&s->lowPressureUndo&&s->lowPressureRedo&&s->lowPressureReset&&s->lowLimitFinishRefused&&s->lowLimitStatusVisible&&s->lowLimitUnchanged&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const bool passed=error.isEmpty()&&s->referencePlanStable&&s->expectedJob&&s->expectedJob->isFinished()&&s->lowPressureContinuous&&s->lowPressureUndo&&s->lowPressureRedo&&s->lowPressureReset&&s->lowLimitFinishRefused&&s->lowLimitStatusVisible&&s->lowLimitUnchanged&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject d{{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"initial_window_active",s->initialWindowActive},{"focus_bootstrap_count",s->focusBootstrapCount},{"window_focus_ready",s->focusReady},{"physical_OS_activation_verified",false},{"commit_check",s->commitCheck},{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"eraser_tip_started",s->eraserTipStarted},{"eraser_tip_empty_refused",s->eraserTipEmptyRefused},{"eraser_tip_exact",s->eraserTipExact},{"eraser_tip_undo",s->eraserTipUndo},{"eraser_tip_redo",s->eraserTipRedo},{"eraser_tip_restored",s->eraserTipRestored},{"eraser_tip_panel_stable",s->eraserTipPanelStable},{"eraser_tip_hint_localized",s->eraserTipHintLocalized},{"eraser_tip_hint_restored",s->eraserTipHintRestored},{"eraser_tip_hint_english",s->eraserTipHintEnglish},{"eraser_tip_hint_chinese",s->eraserTipHintChinese},{"eraser_tip_hint_after_release",s->eraserTipHintAfterRelease},{"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
-            {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
+            {"reference_plan_stable",s->referencePlanStable},{"reference_started_ms",s->referenceStartedMs},{"export_queued_ms",s->exportQueuedMs},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
             {"low_pressure_limit_finish_refused",s->lowLimitFinishRefused},{"low_pressure_limit_status_visible",s->lowLimitStatusVisible},{"low_pressure_limit_unchanged",s->lowLimitUnchanged},{"low_pressure_limit_packets",s->lowLimitPackets},
             {"low_pressure_continuous",s->lowPressureContinuous},{"low_pressure_undo",s->lowPressureUndo},{"low_pressure_redo",s->lowPressureRedo},{"low_pressure_reset",s->lowPressureReset},{"low_pressure_pixel_delta",s->lowDelta},
@@ -384,7 +392,17 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
                 s->commitCheck={{"exact",exact},{"one_undo",s->oneUndo},{"drawing",c->brushDrawing()},{"history",history(c)},{"expected_history",s->initialHistory+(erase?2:1)},{"before_grab",before},{"after_grab",masks(c)},{"oracle",oracle},{"editor_radius",editor->property("radius").toDouble()}};
                 finish("Pressure sequence was duplicated, flattened or committed as multiple history edits");return;
             }
-            if(erase){s->pressureErase=true;s->erased=masks(c);s->commitEraseDelta=composition;}else{s->pressurePaint=true;s->painted=masks(c);s->paintColor=color;s->commitPaintDelta=composition;}
+            if(erase){
+                s->pressureErase=true;s->erased=masks(c);s->commitEraseDelta=composition;
+                // Freeze the exact erase plan before Undo/Redo and reopen. The
+                // independent reference uses the original file in parallel
+                // with the remaining UI checks; its result is still required.
+                const auto frozen=c->gpuPlan(true);s->referencePlan=frozen;s->referenceStartedMs=s->clock.elapsed();
+                s->expectedJob=new QFutureWatcher<QImage>(timer);
+                s->expectedJob->setFuture(QtConcurrent::run([source,frozen,keep=owned]{
+                    Q_UNUSED(keep);const auto loaded=loadSourceFresh(source,{});return reference(loaded.image,frozen);
+                }));
+            }else{s->pressurePaint=true;s->painted=masks(c);s->paintColor=color;s->commitPaintDelta=composition;}
             if(!capture(erase?"erased":"painted",shot)||!click(window,item("undoEditButton"))){finish("Cannot inspect committed pressure picture or click Undo");return;}s->phase=erase?13:6;
         }else if(s->phase==6||s->phase==13){
             const bool erase=s->phase==13;QColor color;const auto shot=read(&color);if(shot.isNull()||delta(color,erase?s->paintColor:s->baseline)>2)return;
@@ -431,13 +449,20 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         }else if(s->phase==54){
             s->eraserTipRestored=masks(c)==s->erased&&history(c)==s->initialHistory+2&&editor->property("mode").toString()=="paint";
             if(!s->eraserTipRestored){finish("Eraser-end final Undo did not restore original intent");return;}
-            s->reopened=true;c->setExactScopes(true);s->phase=17;
+            // The export freezes the same reopened plan while exact-scope and
+            // locale checks continue. Neither reference nor export is skipped.
+            if(!s->referencePlan||!s->expectedJob||!samePlan(*s->referencePlan,c->gpuPlan(true))){finish("Reopened pressure plan changed before export");return;}
+            s->referencePlanStable=true;if(!c->exportCurrent(QUrl::fromLocalFile(output),"srgb",100)){finish("Cannot export the reopened pressure edit");return;}
+            s->exportQueuedMs=s->clock.elapsed();s->reopened=true;c->setExactScopes(true);s->phase=17;
         }else if(s->phase==17){
             if(c->scopesPixelCount()!=512*320||!c->scopesStatus().contains("Full-resolution statistics"))return;
-            const auto localeError=checkLocale(true);if(!localeError.isEmpty()){finish(localeError);return;}
-            const auto loaded=loadSourceFresh(source,{});s->expected=reference(loaded.image,c->gpuPlan(true));if(s->expected.isNull()||!c->exportCurrent(QUrl::fromLocalFile(output),"srgb",100)){finish("Cannot independently render/export the reopened pressure edit");return;}s->phase=16;
+            if(!s->referencePlan||!samePlan(*s->referencePlan,c->gpuPlan(true))){finish("Pressure plan changed during exact-scope check");return;}
+            const auto localeError=checkLocale(true);if(!localeError.isEmpty()){finish(localeError);return;}s->phase=16;
         }else if(s->phase==16){
-            if(!s->exportDone)return;const QImage actual(output);const bool exact=actual.colorSpace()==s->expected.colorSpace()&&actual.convertToFormat(QImage::Format_RGBA64)==s->expected;
+            if(!s->exportDone||!s->expectedJob||!s->expectedJob->isFinished())return;
+            if(!s->referencePlan||!samePlan(*s->referencePlan,c->gpuPlan(true))){finish("Pressure plan changed before pixel verification");return;}
+            s->expected=s->expectedJob->result();if(s->expected.isNull()){finish("Cannot independently render the reopened pressure edit");return;}
+            const QImage actual(output);const bool exact=actual.colorSpace()==s->expected.colorSpace()&&actual.convertToFormat(QImage::Format_RGBA64)==s->expected;
             if(!exact||!capture("final",grab())){finish("Pressure PNG16 pixels/ICC differ from independent CPU reference");return;}s->exactExport=true;finish({});
         }
     });

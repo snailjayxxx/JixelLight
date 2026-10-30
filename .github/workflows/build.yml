@@ -164,6 +164,7 @@ jobs:
             EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
             VERIFY=build/bin/JixelLightBrushPressureExportVerifier
           fi
+          python -m unittest discover -s tests -p 'TestBrushPressureFailureEvidence.py' -v
           python tools/ValidateBrushPressure.py "$EXE" gui-brush-pressure-cpu.json cpu
           python tools/ValidateBrushPressure.py "$EXE" gui-brush-pressure-gpu.json gpu
           python tools/ValidateBrushPressure.py "$EXE" gui-transparent-brush-pressure-cpu.json cpu --transparent
@@ -421,6 +422,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
+          python -m unittest discover -s tests -p 'TestBrushPressureFailureEvidence.py' -v
           python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-brush-pressure-cpu.json cpu
           xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-brush-pressure-gpu.json gpu
           python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-transparent-brush-pressure-cpu.json cpu --transparent
