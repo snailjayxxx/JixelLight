@@ -50,6 +50,13 @@ private slots:
         QVERIFY(image.save(path));const auto hash=hashFile(path);PhotoController c(nullptr);c.setGpuEnabled(false);
         QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
         const auto initial=state(c);const auto before=cursor(c);
+        // A stroke consisting exclusively of zero pressure has no coverage and
+        // must not create a layer, dirty history, or advance the render revision.
+        const auto initialRevision=c.renderRevision();
+        QVERIFY(c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"paint",0));
+        QVERIFY(c.appendBrushStroke(.6,.5,0));QVERIFY(c.endBrushStroke().isEmpty());
+        QVERIFY(!c.brushDrawing());QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);
+        QCOMPARE(c.renderRevision(),initialRevision);
         const double epsilon=std::numeric_limits<double>::epsilon();int rejected=0;
         for(double pressure:{std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity(),-std::numeric_limits<double>::infinity(),-.01,1.01,-epsilon,1+epsilon}) {
             QVERIFY(!c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"paint",pressure));
@@ -66,7 +73,37 @@ private slots:
         BM::StrokeBuilder builder(160,96,{.12,1,.8});QVERIFY(builder.append({{.3,.5},0}));QVERIFY(builder.append({{.6,.5},.8}));
         const auto expected=builder.finish();QVERIFY(expected);QCOMPARE(actual.dabs.size(),expected->dabs.size());
         for(size_t i=0;i<actual.dabs.size();++i){QCOMPARE(actual.dabs[i].center.x,expected->dabs[i].center.x);QCOMPARE(actual.dabs[i].center.y,expected->dabs[i].center.y);QCOMPARE(actual.dabs[i].pressure,expected->dabs[i].pressure);}
-        c.undo();QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);c.redo();QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);
+        // Existing-layer paint and erase must also stay untouched at zero
+        // pressure; a zero start followed by positive pressure above still commits.
+        const auto paintedRevision=c.renderRevision();
+        for(const auto *mode:{"paint","erase"}) {
+            QVERIFY(c.beginBrushStrokeModePressure(id,.3,.5,.12,1,.8,1,QString::fromLatin1(mode),0));
+            QVERIFY(c.appendBrushStroke(.6,.5,0));QVERIFY(c.endBrushStroke().isEmpty());
+            QVERIFY(!c.brushDrawing());QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);
+            QCOMPARE(c.renderRevision(),paintedRevision);
+        }
+        c.undo();QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);
+        // Wait for the undo preview before starting the next gesture; an
+        // invisible new stroke must not discard the available Redo branch.
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto redoHistory=c.editHistory();
+        QVERIFY(c.beginBrushStrokeModePressure("",.3,.5,.12,1,.8,1,"paint",0));
+        QVERIFY(c.appendBrushStroke(.6,.5,0));QVERIFY(c.endBrushStroke().isEmpty());
+        QCOMPARE(state(c),initial);QCOMPARE(cursor(c),before);QCOMPARE(c.editHistory(),redoHistory);
+        c.redo();QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        // A stationary positive pulse must remain visible, not be discarded as
+        // an all-zero gesture when pressure returns to zero before release.
+        QVERIFY(c.beginBrushStrokeModePressure(id,.5,.5,.12,1,.8,1,"paint",0));
+        QVERIFY(c.appendBrushStroke(.5,.5,.8));QVERIFY(c.appendBrushStroke(.5,.5,0));
+        QCOMPARE(c.endBrushStroke(),id);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto pulseDoc=c.gpuPlan(true).state.brushMasks;
+        QCOMPARE(pulseDoc.layers.size(),std::size_t(1));QCOMPARE(pulseDoc.layers[0].strokes.size(),std::size_t(2));
+        const auto &pulse=pulseDoc.layers[0].strokes.back();double peakPressure=0;
+        for(const auto &dab:pulse.dabs)peakPressure=std::max(peakPressure,dab.pressure);
+        QCOMPARE(peakPressure,.8);const auto pulseOpacity=BM::strokeOpacity(pulse,{.5,.5},160,96);
+        QVERIFY(pulseOpacity);QVERIFY(*pulseOpacity>0);QCOMPARE(cursor(c),before+2);
+        QVERIFY(state(c)!=painted);c.undo();QCOMPARE(state(c),painted);QCOMPARE(cursor(c),before+1);
         QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
         QVERIFY(c.beginBrushStrokeModePressure(id,.4,.5,.12,1,.8,1,"erase",.25));
         QVERIFY(!c.appendBrushStroke(.5,.5,std::numeric_limits<double>::quiet_NaN()));

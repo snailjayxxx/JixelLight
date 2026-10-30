@@ -3477,6 +3477,23 @@ private slots:
         }
         StrokeBuilder zero(width,height,style);QVERIFY(zero.append({{.2,.5},0}));QVERIFY(zero.append({{.8,.5},0}));const auto empty=zero.finish();QVERIFY(empty);QCOMPARE(empty->dabs.size(),std::size_t(2));
         StrokeBuilder over(10000,10000,{.002,1,1});QVERIFY(over.append({{.05,.5},.1}));QVERIFY(!over.append({{.95,.5},.1}));QVERIFY(over.invalid());QVERIFY(!over.finish());
+        // Input packets may carry a positive peak without changing position.
+        // Preserve that peak for Paint and Erase while coalescing repeated
+        // stationary packets and keeping the existing stroke capacity bound.
+        for(const auto mode:{StrokeMode::Paint,StrokeMode::Erase}) {
+            StrokeBuilder pulse(width,height,style,mode);
+            QVERIFY(pulse.append({{.5,.5},0}));QVERIFY(pulse.append({{.5,.5},.8}));QVERIFY(pulse.append({{.5,.5},0}));
+            const auto p=pulse.finish();QVERIFY(p);QVERIFY(p->mode==mode);
+            double maximum=0;for(const auto &dab:p->dabs)maximum=std::max(maximum,dab.pressure);
+            QCOMPARE(maximum,.8);const auto opacity=strokeOpacity(*p,{.5,.5},width,height);QVERIFY(opacity);QVERIFY(std::abs(*opacity-.8)<1e-12);
+            StrokeBuilder tiny(width,height,style,mode);
+            QVERIFY(tiny.append({{.5,.5},0}));QVERIFY(tiny.append({{.5001,.5},.8}));QVERIFY(tiny.append({{.5002,.5},0}));
+            const auto t=tiny.finish();QVERIFY(t);const auto tinyOpacity=strokeOpacity(*t,{.5001,.5},width,height);
+            QVERIFY(tinyOpacity);QVERIFY(*tinyOpacity>0);
+            StrokeBuilder repeated(width,height,style,mode);QVERIFY(repeated.append({{.5,.5},0}));
+            for(int i=0;i<10000;++i)QVERIFY(repeated.append({{.5,.5},i%2?0.:1.}));
+            const auto bounded=repeated.finish();QVERIFY(bounded);QVERIFY(bounded->dabs.size()<=2);
+        }
     }
 
     void maskCanvasCoordinateMappingAndAtomicCenterUndo() {

@@ -133,6 +133,24 @@ public:
             started_=true;
             return true;
         }
+        // A pressure peak can occur between spatial samples, including while
+        // stationary or moving less than one sampling interval. Preserve it
+        // before a falling packet; coalesce an identical center by maximum.
+        const bool increasing=value.pressure>previous_.pressure;
+        const bool decreasing=value.pressure<previous_.pressure;
+        if (decreasing && pressureRising_) {
+            if (previous_.pressure>0) {
+                auto &last=stamps_.back();
+                if (last.center.x==previous_.center.x && last.center.y==previous_.center.y) {
+                    last.pressure=std::max(last.pressure,previous_.pressure);
+                } else {
+                    if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return false; }
+                    stamps_.push_back(previous_);
+                }
+            }
+            pressureRising_=false;
+        }
+        if (increasing) pressureRising_=true;
         const double distance=shortEdgeDistance(previous_.center,value.center,width_,height_);
         if (!finite(distance)) { invalidate(); return false; }
         if (distance==0) { previous_=value; return true; }
@@ -239,7 +257,7 @@ private:
     Style style_;
     StrokeMode mode_;
     double spacing_=0,remaining_=0;
-    bool invalid_=false,started_=false,finished_=false;
+    bool invalid_=false,started_=false,finished_=false,pressureRising_=false;
     Dab previous_;
     std::vector<Dab> stamps_;
 };

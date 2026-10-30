@@ -171,6 +171,10 @@ jobs:
           python tools/ValidateBrushPressure.py "$EXE" gui-transparent-brush-pressure-gpu.json gpu --transparent
           python tools/ValidateBrushPressure.py "$EXE" gui-sony-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY"
           python tools/ValidateBrushPressure.py "$EXE" gui-sony-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY"
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-cpu.json cpu
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-gpu.json gpu
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -429,6 +433,10 @@ jobs:
           xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-transparent-brush-pressure-gpu.json gpu --transparent
           python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier
           xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier
+          python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-gpu.json gpu
+          python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
+          xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

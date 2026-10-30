@@ -12,6 +12,7 @@ void startBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *win
 void startTransparentBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &reportPath);
 void startSonyBrushEraseCanvasSmokeRun(PhotoController *controller,QQuickWindow *window,const QString &sourcePath,const QString &reportPath);
 
+void startBrushPressureEdgesSmokeRun(PhotoController *,QQuickWindow *,const QString &,bool transparent=false);
 void startBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,bool transparent=false);
 void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 

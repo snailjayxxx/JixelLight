@@ -14,6 +14,7 @@ from ValidateBrushCanvas import validate_brush
 from ValidateSonyBrushCanvas import validate_sony_brush
 from ValidateBrushErase import validate_brush_erase
 from ValidateBrushPressure import validate_brush_pressure
+from ValidateBrushPressureEdges import validate_brush_pressure_edges
 from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
 
@@ -132,6 +133,12 @@ def main() -> int:
             pressure_alpha_home = Path(temp) / ("transparent-brush-pressure-" + mode)
             results.append(validate_brush_pressure(executable, environment, pressure_alpha_home,
                 reports / ("transparent-brush-pressure-" + mode + ".json"), mode, transparent=True))
+            edge_home = Path(temp) / ("brush-pressure-edges-" + mode)
+            results.append(validate_brush_pressure_edges(executable, environment, edge_home,
+                reports / ("brush-pressure-edges-" + mode + ".json"), mode))
+            edge_alpha_home = Path(temp) / ("transparent-brush-pressure-edges-" + mode)
+            results.append(validate_brush_pressure_edges(executable, environment, edge_alpha_home,
+                reports / ("transparent-brush-pressure-edges-" + mode + ".json"), mode, transparent=True))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()

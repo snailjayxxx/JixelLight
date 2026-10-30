@@ -53,6 +53,8 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"brush-erase-canvas-smoke-report", "Validate native Paint/Erase mode with an owned image and controls-only captures", "file"});
     arguments.addOption({"transparent-brush-erase-canvas-smoke-report", "Validate transparent native Paint/Erase composition with an owned image", "file"});
     arguments.addOption({"sony-brush-erase-canvas-smoke-report", "Validate native Erase using exactly one pinned real Sony ARW; controls-only captures", "file"});
+    arguments.addOption({"brush-pressure-edges-smoke-report", "Validate zero pressure and stationary positive pressure on an owned photo", "file"});
+    arguments.addOption({"transparent-brush-pressure-edges-smoke-report", "Validate zero pressure and stationary positive pressure on transparent owned pixels", "file"});
     arguments.addOption({"brush-pressure-canvas-smoke-report", "Validate controlled pressure and input ownership on an owned photo", "file"});
     arguments.addOption({"transparent-brush-pressure-canvas-smoke-report", "Validate controlled pressure on transparent owned pixels", "file"});
     arguments.addOption({"sony-brush-pressure-canvas-smoke-report", "Validate pinned real Sony pressure and exact export; controls-only captures", "file"});
@@ -61,7 +63,7 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"edit-recipe-clipboard-smoke-report", "Validate recipe clipboard using offscreen or explicitly isolated CI clipboard", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"));
@@ -167,6 +169,12 @@ int main(int argc, char *argv[]) {
     if(arguments.isSet("sony-brush-canvas-smoke-report")) {
         if(!window||photos.size()!=1)return 2;
         startSonyBrushCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-canvas-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("brush-pressure-edges-smoke-report")||arguments.isSet("transparent-brush-pressure-edges-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        const bool transparent=arguments.isSet("transparent-brush-pressure-edges-smoke-report");
+        startBrushPressureEdgesSmokeRun(&controller,window,arguments.value(transparent?"transparent-brush-pressure-edges-smoke-report":"brush-pressure-edges-smoke-report"),transparent);
         return app.exec();
     }
     if(arguments.isSet("brush-pressure-canvas-smoke-report")||arguments.isSet("transparent-brush-pressure-canvas-smoke-report")) {

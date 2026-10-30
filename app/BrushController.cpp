@@ -220,6 +220,11 @@ QString PhotoController::endBrushStroke() {
             if(g->builder->invalid())setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));
             return {};
         }
+        // Zero-pressure gestures have no coverage; do not create an empty
+        // layer or history entry. A stroke that starts at zero and later
+        // produces a positive-pressure dab is retained unchanged.
+        if(std::all_of(stroke->dabs.begin(),stroke->dabs.end(),
+            [](const auto &dab){return dab.pressure==0;}))return {};
         if(!brushCandidate(*g,std::move(*stroke),&candidate)){setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};}
         if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
