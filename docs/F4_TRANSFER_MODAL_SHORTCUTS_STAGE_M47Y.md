@@ -20,4 +20,12 @@ After CI319 was accepted and sealed, the candidate was applied with a guarded th
 
 On the public Sony RAW, actual Root CPU/Metal pressure GUI runs completed in 10,239/10,119 ms; export plus independent reference took 34,777.382/34,134.250 ms. Source, histogram and waveform each covered 32,947,264 pixels, with exact PNG16 pixels and ICC. Peak shared reservations were 1,716,323,360/1,720,467,584 bytes under 3 GiB, within the unchanged 60,000 ms GUI and 120,000 ms export-reference gates. Reservation is not process RSS. The 221 tested source files, three binaries and user preferences remained unchanged during these tests.
 
-Root local evidence is recorded at `evidence/F4-transfer-modal-shortcuts-root-local-v1/receipt.json`. The source stamp names the pre-commit parent, not a later commit. The new committed three-platform CI and both deployed packages remain pending. This slice does not establish physical tablet input, native GPU brush, native FP32 RAW, or overall F4/F0–F6 completion.
+Root local evidence is recorded at `evidence/F4-transfer-modal-shortcuts-root-local-v1/receipt.json`. The source stamp names the pre-commit parent, not a later commit.
+
+[CI320](https://github.com/snailjayxxx/JixelLight/actions/runs/40987666788) is accepted for commit `c2775c6`: all 69 tests passed without failures or skips on Linux, Windows and macOS. Isolated native clipboard GUI checks passed 34 cases in 3,739/4,906/6,693 ms, and guide checks passed 16 cases in 6,222/16,470/16,170 ms. Both actual SDK-stripped packages passed 25 modes. Five native/package audits retained six pressure flows and the nine eraser-tip/hint checks.
+
+In the actual Windows package, Sony CPU/GPU GUI took 55,581/31,255 ms and export plus independent reference 79,675.699/79,813.068 ms. Source, histogram and waveform each covered 32,947,264 pixels, with exact PNG16 pixels and ICC and peak shared reservations of 1,708,242,080/1,709,692,544 bytes under 3 GiB. The unchanged limits remain 60,000 ms for GUI and 120,000 ms for export plus reference. Reservation is not process RSS.
+
+Linux’s first strict auditor exited 1: a timestamp-prefix BOM inside its original FULL log prevented the parser from reading the second guide report. The original failure remains in the archive. A Linux-only, in-memory prefix adaptation read both original report copies, compared each to the original artifact and passed a separate independent re-audit; it did not rewrite the log, change source or relax any gate. The three actual first-checkout logs, five original ZIPs, source and audit results are sealed at `evidence/ci-40987666788/terminal-accepted-v1/receipt.json` (2,969 files).
+
+This slice does not establish physical tablet input, native GPU brush, native FP32 RAW, or overall F4/F0–F6 completion.

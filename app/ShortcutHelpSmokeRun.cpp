@@ -97,6 +97,7 @@ private:
     QVariantList transferSelection;QStringList transferGroups;QJsonArray transferChecks,transferClosedChecks;
     int transferMode=0,transferFocus=0;bool transferSyncOpened=false,transferPasteOpened=false;
     bool transferSyncCancelled=false,transferPasteCancelled=false,transferTargetUnchanged=false,transferSourceRestored=false;
+    QVariantList copyImportSelection;QJsonArray copyImportChecks;QJsonObject copyImportClosed;int copyImportFocus=0;bool copyImportOpened=false,copyImportToggled=false,copyImportTextInput=false,copyImportCancelled=false;
     Qt::ApplicationState initialApplicationState=Qt::ApplicationInactive;
     ulong stamp=1000,tabletStamp=10000;bool snapshot=false,done=false;
     QQuickItem *find(const QString &name)const{return w?item(w->contentItem(),name):nullptr;}
@@ -238,7 +239,7 @@ private:
     }
     void finish(const QString &error) {
         if(done)return;done=true;timer->stop();const bool captured=(error.isEmpty()&&captures.size()==5)||capture(error.isEmpty()?"final":"failure");
-        const bool passed=error.isEmpty()&&records.size()==16&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==15&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
+        const bool passed=error.isEmpty()&&records.size()==17&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==16&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
         const QJsonObject data{{"backend_caption_checks",backendCaptionChecks},{"backend_captions_current",backendCaptionsCurrent},{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
             {"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"test_fixture",true},{"product_UI_acceptance",false},
@@ -260,6 +261,9 @@ private:
             {"transfer_setup_internal_selection_and_copy",true},{"transfer_source_restored",transferSourceRestored},
             {"transfer_target_unchanged",transferTargetUnchanged},{"transfer_target_source_sha256",QString::fromLatin1(transferTargetHash)},
             {"transfer_target_source_unchanged",!transferTargetHash.isEmpty()&&hash(transferTargetSource)==transferTargetHash},
+            {"copy_import_modal_checks",copyImportChecks},{"copy_import_navigation_after_close",copyImportClosed},
+            {"copy_import_picker_result_simulated",true},{"copy_import_folder_result_simulated",true},{"copy_import_opened",copyImportOpened},{"copy_import_custom_names_clicked",copyImportToggled},
+            {"copy_import_text_input",copyImportTextInput},{"copy_import_cancel_clicked",copyImportCancelled},{"copy_import_source_unchanged",hash(source)==sourceHash},
             {"dpr",w?w->effectiveDevicePixelRatio():0},{"records",records},{"captures",captures}};
         QSaveFile file(report);const auto bytes=QJsonDocument(data).toJson();const bool saved=file.open(QIODevice::WriteOnly)
             &&file.write(bytes)==bytes.size()&&file.commit();QCoreApplication::exit(passed&&saved?0:1);
@@ -544,6 +548,43 @@ private:
                 {"paste_cancelled",transferPasteCancelled},{"source_restored",transferSourceRestored},{"target_unchanged",transferTargetUnchanged}})){
                 finish("Adjustment transfer modal keyboard isolation failed");return;
             }
+            copyImportSelection=c->selectedIndices();c->copyImportRequested(QVariantList{QUrl::fromLocalFile(source)});advance(37);return;
+        }
+        if(phase==37) {
+            auto *copyDialog=w->findChild<QObject*>("copyImportDialog");if(!copyDialog||!copyDialog->property("visible").toBool())return;
+            const auto destination=files.filePath("owned-copy-import-destination");if(!QDir().mkpath(destination)||!copyDialog->setProperty("destination",QUrl::fromLocalFile(destination))){finish("Copy import destination setup failed");return;}copyImportOpened=true;copyImportFocus=0;advance(38);return;
+        }
+        if(phase==38) {
+            auto *copyDialog=w->findChild<QObject*>("copyImportDialog");if(!copyDialog||!copyDialog->property("visible").toBool()){finish("Copy import dialog disappeared");return;}
+            const auto unchanged=[&]{return copyDialog->property("visible").toBool()&&stable()&&c->currentIndex()==0&&c->selectedIndices()==copyImportSelection&&!c->copyImportBusy()&&!c->exportBusy();};
+            const QStringList names{"copyImportCustomNames","Choose…","copyImportApply","Cancel"};
+            if(copyImportFocus>=names.size()) {copyImportToggled=click(find("copyImportCustomNames"));if(!copyImportToggled){finish("Copy import custom names unavailable");return;}advance(39);return;}
+            const auto name=names[copyImportFocus];auto *control=(copyImportFocus==0||copyImportFocus==2)?find(name):canvasButton(w->contentItem(),name);
+            if(name=="copyImportApply"&&control&&!control->isEnabled())return;
+            if(!control||!control->isVisible()||!control->isEnabled()){finish("Copy import focus unavailable: "+name);return;}
+            for(const auto &pair:{std::pair<int,QString>{Qt::Key_G,"g"},std::pair<int,QString>{Qt::Key_D,"d"}}) {
+                const int workspace=pair.first==Qt::Key_G?1:0;w->setProperty("workspaceIndex",workspace);control->forceActiveFocus();const bool focused=control->hasActiveFocus();key(pair.first,pair.second);
+                const bool consumed=keys.last().toObject().value("shortcut_consumed").toBool();
+                copyImportChecks.append(QJsonObject{{"focus",name},{"shortcut",pair.second.toUpper()},{"focused",focused},{"shortcut_consumed",consumed},{"workspace_unchanged",w->property("workspaceIndex").toInt()==workspace},{"state_unchanged",unchanged()},{"expected_isolation",focused&&!consumed&&w->property("workspaceIndex").toInt()==workspace&&unchanged()}});
+            }
+            w->setProperty("workspaceIndex",1);++copyImportFocus;settle=0;return;
+        }
+        if(phase==39) {
+            auto *copyDialog=w->findChild<QObject*>("copyImportDialog");auto *field=find("copyImportPattern");
+            if(!copyDialog||!copyDialog->property("visible").toBool()||!field||!field->isVisible()||!field->isEnabled()){finish("Copy import pattern unavailable");return;}
+            w->setProperty("workspaceIndex",1);field->forceActiveFocus();const bool focused=field->hasActiveFocus();const auto prior=field->property("text").toString();field->setProperty("cursorPosition",prior.size());key(Qt::Key_G,"g");key(Qt::Key_D,"d");
+            copyImportTextInput=focused&&field->property("text").toString()==prior+"gd"&&w->property("workspaceIndex").toInt()==1&&stable()&&c->selectedIndices()==copyImportSelection&&!c->copyImportBusy();
+            copyImportCancelled=click(canvasButton(w->contentItem(),"Cancel"));if(!copyImportCancelled){finish("Copy import cancel unavailable");return;}advance(40);return;
+        }
+        if(phase==40) {
+            auto *copyDialog=w->findChild<QObject*>("copyImportDialog");if(!copyDialog||copyDialog->property("visible").toBool())return;
+            w->setProperty("workspaceIndex",1);key(Qt::Key_G,"g");const bool g=w->property("workspaceIndex").toInt()==0;const bool gConsumed=keys.last().toObject().value("shortcut_consumed").toBool();
+            key(Qt::Key_D,"d");const bool d=w->property("workspaceIndex").toInt()==1;const bool dConsumed=keys.last().toObject().value("shortcut_consumed").toBool();
+            const bool unchanged=stable()&&c->currentIndex()==0&&c->selectedIndices()==copyImportSelection&&!c->copyImportBusy()&&!c->exportBusy();
+            copyImportClosed=QJsonObject{{"g_to_library",g},{"d_to_develop",d},{"g_consumed",gConsumed},{"d_consumed",dConsumed},{"state_unchanged",unchanged}};
+            bool checks=copyImportChecks.size()==8;for(const auto &v:copyImportChecks)checks=checks&&v.toObject().value("expected_isolation").toBool();
+            const bool okay=checks&&copyImportOpened&&copyImportToggled&&copyImportTextInput&&copyImportCancelled&&g&&d&&gConsumed&&dConsumed&&unchanged;
+            if(!record("copy-import-modal-focus-and-navigation-isolated",okay,{{"checks",copyImportChecks},{"navigation_after_close",copyImportClosed},{"picker_result_simulated",true},{"folder_result_simulated",true},{"dialog_opened",copyImportOpened},{"custom_names_clicked",copyImportToggled},{"text_input_works",copyImportTextInput},{"cancel_clicked",copyImportCancelled},{"no_copy_queued",!c->copyImportBusy()}})){finish("Copy import modal keyboard isolation failed");return;}
             finish({});
         }
     }

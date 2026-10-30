@@ -22,6 +22,7 @@ CASES = (
     'fresh-pressure-after-primary-lift-cancels-without-edit',
     'export-modal-focus-and-navigation-isolated',
     'transfer-modal-focus-and-navigation-isolated',
+    'copy-import-modal-focus-and-navigation-isolated',
 )
 MARKERS = ('TypeError:', 'ReferenceError:', 'Unable to assign [undefined]',
            'QQmlApplicationEngine failed', 'Binding loop detected')
@@ -118,7 +119,7 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         assert rows[5]['mask_tool'] == rows[6]['mask_tool'] == 'brush'
         assert rows[4]['navigation_active'] is False and rows[6]['navigation_active'] is True
         checks['readonly_contexts'] = True
-        assert data['backend_caption_checks'] == 15 and data['backend_captions_current'] is True
+        assert data['backend_caption_checks'] == 16 and data['backend_captions_current'] is True
         assert rows[0]['backend_caption_applicable'] is False and rows[0]['backend_caption_current'] is True
         for row in rows[1:]:
             assert row['backend_caption_applicable'] is True and row['backend_caption_current'] is True
@@ -189,6 +190,20 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         tc_packets = [p for p in packets if p['phase'] == 34]
         assert [p['key'] for p in tc_packets] == [71, 68]*2
         assert all(p['shortcut_consumed'] is True and p['key_press_delivered'] is False and p['modifiers'] == 0 and p['text'] == ('g' if p['key'] == 71 else 'd') for p in tc_packets)
+        copy_import = rows[16]
+        cc = copy_import['checks']; nav = copy_import['navigation_after_close']
+        assert len(cc) == 8 and [(r['focus'], r['shortcut']) for r in cc] == [(focus, key) for focus in ('copyImportCustomNames', 'Choose…', 'copyImportApply', 'Cancel') for key in ('G', 'D')]
+        assert all(all(r[k] is True for k in ('focused', 'workspace_unchanged', 'state_unchanged', 'expected_isolation')) and r['shortcut_consumed'] is False for r in cc)
+        assert all(nav[k] is True for k in ('g_to_library', 'd_to_develop', 'g_consumed', 'd_consumed', 'state_unchanged'))
+        assert all(copy_import[k] is True for k in ('picker_result_simulated', 'folder_result_simulated', 'dialog_opened', 'custom_names_clicked', 'text_input_works', 'cancel_clicked', 'no_copy_queued'))
+        assert data['copy_import_modal_checks'] == cc and data['copy_import_navigation_after_close'] == nav
+        assert all(data[k] is True for k in ('copy_import_picker_result_simulated', 'copy_import_folder_result_simulated', 'copy_import_opened', 'copy_import_custom_names_clicked', 'copy_import_text_input', 'copy_import_cancel_clicked', 'copy_import_source_unchanged'))
+        cp = [p for p in packets if p['phase'] == 38]
+        typed = [p for p in packets if p['phase'] == 39]
+        after_copy = [p for p in packets if p['phase'] == 40]
+        assert [p['key'] for p in cp] == [71, 68]*4 and [p['key'] for p in typed] == [71, 68] and [p['key'] for p in after_copy] == [71, 68]
+        assert all(p['shortcut_consumed'] is False and p['key_press_delivered'] is True and p['modifiers'] == 0 and p['text'] == ('g' if p['key'] == 71 else 'd') for p in cp + typed)
+        assert all(p['shortcut_consumed'] is True and p['key_press_delivered'] is False and p['modifiers'] == 0 and p['text'] == ('g' if p['key'] == 71 else 'd') for p in after_copy)
         checks['modal_keys'] = True
         assert rows[11]['pressure_owner_held'] is True and rows[11]['brush_drawing'] is False
         assert rows[11]['help_button_focus_setup_internal'] is True
