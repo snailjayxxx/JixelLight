@@ -233,6 +233,8 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert type(data["focus_bootstrap_count"]) is int and data["focus_bootstrap_count"] >= 0
             assert data["passed"] and data["export_exact_pixels_and_ICC"]
             assert data["deadline_ms"] == 45000 and 0 < data["elapsed_ms"] < 45000
+            assert data["capture_png_async"] is True and type(data["capture_png_queue_peak"]) is int
+            assert 1 <= data["capture_png_queue_peak"] <= 2 and data["capture_png_failures"] == 0
             assert data["source_kind"] == "owned-rgba64-png"
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
             validate_scope_locale(data, mode)

@@ -38,6 +38,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/MaskCanvasGeometry.h"
+#include "app/PressureCaptureQueue.h"
 #include "core/pipeline/BrushMaskGeometry.h"
 #include "core/pipeline/BrushMaskDocument.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
@@ -3494,6 +3495,34 @@ private slots:
             for(int i=0;i<10000;++i)QVERIFY(repeated.append({{.5,.5},i%2?0.:1.}));
             const auto bounded=repeated.finish();QVERIFY(bounded);QVERIFY(bounded->dabs.size()<=2);
         }
+    }
+
+    void pressureQaCaptureQueuePreservesEvidenceAndFailure() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        PressureCaptureQueue queue;QVector<QByteArray> referenceHashes;QVector<QString> references;
+        for(int i=0;i<8;++i) {
+            QImage image(i%2?640:320,i%2?400:200,QImage::Format_ARGB32_Premultiplied);
+            image.fill(QColor(12+i*7,90+i*3,130-i*4,i%2?145:255));
+            const QString reference=dir.filePath(QStringLiteral("reference-%1.png").arg(i));
+            QVERIFY(image.save(reference,"PNG",85));QFile expected(reference);QVERIFY(expected.open(QIODevice::ReadOnly));
+            referenceHashes.append(QCryptographicHash::hash(expected.readAll(),QCryptographicHash::Sha256).toHex());references.append(reference);
+            QVERIFY(queue.enqueue(QString::number(i),dir.filePath(QStringLiteral("frame-%1.png").arg(i)),image,i%2?2.:1.));
+            image.fill(Qt::black); // The queued snapshot must not be changed by later image writes.
+        }
+        QVERIFY(queue.finish());QVERIFY(queue.peakPending()<=2);QCOMPARE(queue.records().size(),std::size_t(8));
+        for(std::size_t i=0;i<queue.records().size();++i) {
+            const auto &entry=queue.records()[i];QVERIFY(entry.saved);QCOMPARE(entry.label,QString::number(i));
+            QCOMPARE(entry.sha256.toLatin1(),referenceHashes[int(i)]);QCOMPARE(QImage(entry.path),QImage(references[int(i)]));
+            QCOMPARE(entry.dpr,i%2?2.:1.);
+        }
+        PressureCaptureQueue failed;QImage image(32,32,QImage::Format_ARGB32);image.fill(Qt::red);
+        const QString blocked=dir.filePath(QStringLiteral("blocked"));QVERIFY(QDir().mkpath(blocked));
+        QVERIFY(failed.enqueue(QStringLiteral("bad"),blocked,image,1));QVERIFY(!failed.finish());QVERIFY(failed.hasFailure());
+        QCOMPARE(failed.records().size(),std::size_t(1));QVERIFY(!failed.records()[0].saved);
+        QVERIFY(!failed.enqueue(QStringLiteral("later"),dir.filePath(QStringLiteral("later.png")),image,1));
+        const QString diagnostic=dir.filePath(QStringLiteral("failure.png"));
+        QVERIFY(failed.enqueue(QStringLiteral("failure"),diagnostic,image,1,true));QVERIFY(!failed.finish());
+        QCOMPARE(failed.records().size(),std::size_t(2));QVERIFY(failed.records()[1].saved);QVERIFY(QFile::exists(diagnostic));
     }
 
     void maskCanvasCoordinateMappingAndAtomicCenterUndo() {
