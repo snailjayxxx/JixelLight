@@ -90,6 +90,8 @@ private:
     int backendCaptionChecks=0;bool backendCaptionsCurrent=true;
     QJsonArray compactRecords,compactCaptures;
     bool compactOvalPointer=false,compactCancelPointer=false;
+    QJsonArray exportModalButtons;QJsonObject exportNavigation;QVariantList exportSelection;
+    int exportCurrentIndex=-1;bool exportTextInputWorks=false;
     Qt::ApplicationState initialApplicationState=Qt::ApplicationInactive;
     ulong stamp=1000,tabletStamp=10000;bool snapshot=false,done=false;
     QQuickItem *find(const QString &name)const{return w?item(w->contentItem(),name):nullptr;}
@@ -231,7 +233,7 @@ private:
     }
     void finish(const QString &error) {
         if(done)return;done=true;timer->stop();const bool captured=(error.isEmpty()&&captures.size()==5)||capture(error.isEmpty()?"final":"failure");
-        const bool passed=error.isEmpty()&&records.size()==14&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==13&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
+        const bool passed=error.isEmpty()&&records.size()==15&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==14&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
         const QJsonObject data{{"backend_caption_checks",backendCaptionChecks},{"backend_captions_current",backendCaptionsCurrent},{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
             {"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"test_fixture",true},{"product_UI_acceptance",false},
@@ -246,6 +248,7 @@ private:
             {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"gpu_active",c->gpuActive()},
             {"crop_context_setup_internal_beginCrop",true},{"help_button_focus_setup_internal",true},
             {"compact_canvas_protocol_version",1},{"compact_canvas_records",compactRecords},{"compact_canvas_captures",compactCaptures},{"compact_oval_pointer_activated",compactOvalPointer},{"compact_crop_cancel_pointer_activated",compactCancelPointer},{"compact_pose_setup_internal_splitter_reference",true},
+            {"export_modal_button_checks",exportModalButtons},{"export_text_input_works",exportTextInputWorks},{"export_navigation_after_close",exportNavigation},
             {"dpr",w?w->effectiveDevicePixelRatio():0},{"records",records},{"captures",captures}};
         QSaveFile file(report);const auto bytes=QJsonDocument(data).toJson();const bool saved=file.open(QIODevice::WriteOnly)
             &&file.write(bytes)==bytes.size()&&file.commit();QCoreApplication::exit(passed&&saved?0:1);
@@ -392,7 +395,59 @@ private:
             if(!splitWidth("librarySidebar",228)||!splitWidth("developRightPanel",390)){finish("Restored splitter setup unavailable");return;}advance(25);return;
         }
         if(phase==25) {
-            if(!compactRecord("restored-wide-en")){finish("Restored wide canvas controls unavailable");return;}finish({});
+            if(!compactRecord("restored-wide-en")){finish("Restored wide canvas controls unavailable");return;}
+            auto *menu=w->findChild<QObject*>("exportActionsMenu");
+            if(!menu||!QMetaObject::invokeMethod(menu,"open")){finish("Export menu unavailable");return;}advance(26);return;
+        }
+        if(phase==26) {
+            auto *menu=w->findChild<QObject*>("exportActionsMenu");
+            if(!menu||!menu->property("visible").toBool())return;
+            if(!click(w->findChild<QQuickItem*>("batchExportAction"))){finish("Batch export action unavailable");return;}
+            QMetaObject::invokeMethod(menu,"close");advance(27);return;
+        }
+        if(phase==27) {
+            auto *exportDialog=w->findChild<QObject*>("exportSettingsDialog");
+            if(!exportDialog||!exportDialog->property("visible").toBool())return;
+            if(!exportDialog->property("batchMode").toBool()){finish("Batch export dialog unavailable");return;}
+            exportSelection=c->selectedIndices();exportCurrentIndex=c->currentIndex();
+            const auto unchanged=[&]{return stable()&&c->selectedIndices()==exportSelection&&c->currentIndex()==exportCurrentIndex
+                &&!c->exportBusy()&&exportDialog->property("visible").toBool();};
+            bool all=true;
+            for(const auto *name:{"exportSettingsContinue","exportSettingsCancel"}) {
+                auto *control=find(QString::fromLatin1(name));
+                if(!control||!control->isVisible()||!control->isEnabled()){finish("Export dialog button unavailable");return;}
+                w->setProperty("workspaceIndex",1);control->forceActiveFocus();const bool focusG=control->hasActiveFocus();key(Qt::Key_G,"g");
+                const bool g=focusG&&w->property("workspaceIndex").toInt()==1&&unchanged();
+                w->setProperty("workspaceIndex",0);control->forceActiveFocus();const bool focusD=control->hasActiveFocus();key(Qt::Key_D,"d");
+                const bool d=focusD&&w->property("workspaceIndex").toInt()==0&&unchanged();
+                exportModalButtons.append(QJsonObject{{"focus",QString::fromLatin1(name)},{"g_isolated",g},{"d_isolated",d},
+                    {"dialog_visible",exportDialog->property("visible").toBool()},{"photo_history_selection_unchanged",unchanged()}});all=all&&g&&d;
+            }
+            w->setProperty("workspaceIndex",1);const auto savedTemplate=exportDialog->property("nameTemplate").toString();
+            exportDialog->setProperty("nameTemplate",QString{});auto *field=find("batchExportTemplate");
+            if(!field||!field->isVisible()||!field->isEnabled()){finish("Export template field unavailable");return;}
+            field->forceActiveFocus();const bool focused=field->hasActiveFocus();key(Qt::Key_G,"g");key(Qt::Key_D,"d");
+            exportTextInputWorks=focused&&field->property("text").toString()=="gd"&&w->property("workspaceIndex").toInt()==1&&unchanged();
+            exportDialog->setProperty("nameTemplate",savedTemplate);
+            if(!all||!exportTextInputWorks){finish("Export modal leaked navigation or blocked template input");return;}
+            if(!click(find("exportSettingsCancel"))){finish("Export cancel unavailable");return;}advance(28);return;
+        }
+        if(phase==28) {
+            auto *exportDialog=w->findChild<QObject*>("exportSettingsDialog");
+            if(!exportDialog||exportDialog->property("visible").toBool())return;
+            key(Qt::Key_G,"g");const bool g=w->property("workspaceIndex").toInt()==0;
+            key(Qt::Key_D,"d");const bool d=w->property("workspaceIndex").toInt()==1;
+            exportNavigation=QJsonObject{{"g_to_library",g},{"d_to_develop",d}};advance(29);return;
+        }
+        if(phase==29) {
+            const bool selection=c->selectedIndices()==exportSelection&&c->currentIndex()==exportCurrentIndex;
+            const bool noExport=!c->exportBusy();
+            const bool okay=exportModalButtons.size()==2&&exportTextInputWorks&&exportNavigation.value("g_to_library").toBool()
+                &&exportNavigation.value("d_to_develop").toBool()&&selection&&noExport&&stable();
+            if(!record("export-modal-focus-and-navigation-isolated",okay,{{"modal_button_checks",exportModalButtons},
+                {"text_input_works",exportTextInputWorks},{"navigation_after_close",exportNavigation},
+                {"selection_preserved",selection},{"no_export_queued",noExport}})){finish("Export modal keyboard isolation failed");return;}
+            finish({});
         }
     }
 };

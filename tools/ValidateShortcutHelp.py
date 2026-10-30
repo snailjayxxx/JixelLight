@@ -20,6 +20,7 @@ CASES = (
     'open-guide-resize-stays-centered', 'keyboard-open-guide-cancels-held-pressure',
     'modal-close-keeps-cancelled-owner-until-primary-lift',
     'fresh-pressure-after-primary-lift-cancels-without-edit',
+    'export-modal-focus-and-navigation-isolated',
 )
 MARKERS = ('TypeError:', 'ReferenceError:', 'Unable to assign [undefined]',
            'QQmlApplicationEngine failed', 'Binding loop detected')
@@ -116,7 +117,7 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         assert rows[5]['mask_tool'] == rows[6]['mask_tool'] == 'brush'
         assert rows[4]['navigation_active'] is False and rows[6]['navigation_active'] is True
         checks['readonly_contexts'] = True
-        assert data['backend_caption_checks'] == 13 and data['backend_captions_current'] is True
+        assert data['backend_caption_checks'] == 14 and data['backend_captions_current'] is True
         assert rows[0]['backend_caption_applicable'] is False and rows[0]['backend_caption_current'] is True
         for row in rows[1:]:
             assert row['backend_caption_applicable'] is True and row['backend_caption_current'] is True
@@ -151,6 +152,20 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         modal = [p for p in packets if p['phase'] in (-1, 3, 4, 7, 11, 18)]
         assert modal and all(p['shortcut_consumed'] is False and p['key_press_delivered'] is True for p in modal)
         assert {p['phase'] for p in modal} == {-1, 3, 4, 7, 11, 18}
+        export = rows[14]
+        buttons = export['modal_button_checks']
+        assert len(buttons) == 2 and [r['focus'] for r in buttons] == ['exportSettingsContinue', 'exportSettingsCancel']
+        assert all(all(r[k] is True for k in ('g_isolated', 'd_isolated', 'dialog_visible', 'photo_history_selection_unchanged')) for r in buttons)
+        assert all(export[k] is True for k in ('text_input_works', 'selection_preserved', 'no_export_queued'))
+        assert export['navigation_after_close'] == {'g_to_library': True, 'd_to_develop': True}
+        assert data['export_modal_button_checks'] == buttons and data['export_text_input_works'] is True
+        assert data['export_navigation_after_close'] == export['navigation_after_close']
+        ep = [p for p in packets if p['phase'] == 27]
+        assert [p['key'] for p in ep] == [71, 68, 71, 68, 71, 68]
+        assert all(p['shortcut_consumed'] is False and p['key_press_delivered'] is True for p in ep)
+        after = [p for p in packets if p['phase'] == 28]
+        assert [p['key'] for p in after] == [71, 68]
+        assert all(p['shortcut_consumed'] is True and p['key_press_delivered'] is False for p in after)
         checks['modal_keys'] = True
         assert rows[11]['pressure_owner_held'] is True and rows[11]['brush_drawing'] is False
         assert rows[11]['help_button_focus_setup_internal'] is True
