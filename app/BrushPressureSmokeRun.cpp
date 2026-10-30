@@ -89,6 +89,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     if(!owned->isValid()||!image.save(source)){QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;}
     struct State {
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
+        int pngSaveCalls=0;qint64 pngSaveNs=0,pngSaveMaxNs=0;
         int focusBootstrapCount=0;bool focusObserved=false,initialWindowActive=false,focusReady=false;
         bool radiusProbeDone=false;int heldRadiusGuards=0;QJsonArray radiusRecords,radiusHintRecords;int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
         bool lowPressureContinuous=false,lowPressureUndo=false,lowPressureRedo=false,lowPressureReset=false;
@@ -109,7 +110,9 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     QWindowSystemInterface::registerInputDevice(s->eraser.get());auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return find(window->contentItem(),name);};
     const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
-    const auto capture=[=](const QString &label,const QImage &shot){const auto path=report+"."+label+"-owned.png";if(shot.isNull()||!shot.save(path))return false;
+    // A faster PNG compression setting preserves every pixel while reducing evidence I/O.
+    const auto capture=[=](const QString &label,const QImage &shot){const auto path=report+"."+label+"-owned.png";if(shot.isNull())return false;
+        QElapsedTimer pngTimer;pngTimer.start();const bool saved=shot.save(path,"PNG",85);const auto ns=pngTimer.nsecsElapsed();++s->pngSaveCalls;s->pngSaveNs+=ns;s->pngSaveMaxNs=std::max(s->pngSaveMaxNs,ns);if(!saved)return false;
         s->captures.append(QJsonObject{{"label",label},{"path",path},{"width",shot.width()},{"height",shot.height()},{"dpr",window->effectiveDevicePixelRatio()},{"sha256",QString::fromLatin1(hash(path))}});return true;};
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
@@ -125,7 +128,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             {"pressure_paint_reference",s->pressurePaint},{"pressure_erase_reference",s->pressureErase},{"cancel_paint",s->cancelPaint},{"cancel_erase",s->cancelErase},{"one_undo",s->oneUndo},{"undo_redo",s->undoRedo},{"project_reopen",s->reopened},{"held_intent_history_revision_unchanged",s->transient},
             {"live_paint_delta",s->livePaintDelta},{"live_erase_delta",s->liveEraseDelta},{"live_to_commit_paint_delta",s->commitPaintDelta},{"live_to_commit_erase_delta",s->commitEraseDelta},
             {"export_exact_pixels_and_ICC",s->exactExport},{"gpu_active",c->gpuActive()},{"backend",c->processingBackend()},{"dpr",window->effectiveDevicePixelRatio()},
-            {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},{"captures",s->captures},{"phases",s->phases}};
+            {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"capture_png_quality",85},{"capture_png_save_calls",s->pngSaveCalls},{"capture_png_save_total_ms",s->pngSaveNs/1e6},{"capture_png_save_max_ms",s->pngSaveMaxNs/1e6},{"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},{"captures",s->captures},{"phases",s->phases}};
         QSaveFile f(report);const auto bytes=QJsonDocument(d).toJson(QJsonDocument::Indented);const bool saved=f.open(QIODevice::WriteOnly)&&f.write(bytes)==bytes.size()&&f.commit();
         QTimer::singleShot(0,c,[passed,saved]{QCoreApplication::exit(passed&&saved?0:1);});
     };
