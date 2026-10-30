@@ -52,8 +52,8 @@ ApplicationWindow {
     }
     Component.onCompleted: workspaceSplit.restoreState(workspaceSettings.value("splitViewState"))
     Component.onDestruction: workspaceSettings.setValue("splitViewState", workspaceSplit.saveState())
-    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible; onActivated: window.workspaceIndex = 0 }
-    Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible; onActivated: window.workspaceIndex = 1 }
+    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible; onActivated: window.workspaceIndex = 0 }
+    Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible; onActivated: window.workspaceIndex = 1 }
 
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }

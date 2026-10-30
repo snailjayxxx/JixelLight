@@ -21,6 +21,7 @@ CASES = (
     'modal-close-keeps-cancelled-owner-until-primary-lift',
     'fresh-pressure-after-primary-lift-cancels-without-edit',
     'export-modal-focus-and-navigation-isolated',
+    'transfer-modal-focus-and-navigation-isolated',
 )
 MARKERS = ('TypeError:', 'ReferenceError:', 'Unable to assign [undefined]',
            'QQmlApplicationEngine failed', 'Binding loop detected')
@@ -117,7 +118,7 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         assert rows[5]['mask_tool'] == rows[6]['mask_tool'] == 'brush'
         assert rows[4]['navigation_active'] is False and rows[6]['navigation_active'] is True
         checks['readonly_contexts'] = True
-        assert data['backend_caption_checks'] == 14 and data['backend_captions_current'] is True
+        assert data['backend_caption_checks'] == 15 and data['backend_captions_current'] is True
         assert rows[0]['backend_caption_applicable'] is False and rows[0]['backend_caption_current'] is True
         for row in rows[1:]:
             assert row['backend_caption_applicable'] is True and row['backend_caption_current'] is True
@@ -166,6 +167,28 @@ def _checks(data: dict, native: Path) -> dict[str, bool]:
         after = [p for p in packets if p['phase'] == 28]
         assert [p['key'] for p in after] == [71, 68]
         assert all(p['shortcut_consumed'] is True and p['key_press_delivered'] is False for p in after)
+        transfer = rows[15]
+        tc = transfer['checks']; closed = transfer['closed_checks']
+        assert len(tc) == 16 and len(closed) == 2
+        expected = [(mode, focus, key) for mode in ('sync', 'paste')
+            for focus in ('transferApplyButton', 'transferSelectNone', 'transferGroup_masks', 'Cancel') for key in ('G', 'D')]
+        assert [(r['mode'], r['focus'], r['shortcut']) for r in tc] == expected
+        assert all(all(r[k] is True for k in ('focused', 'workspace_unchanged', 'state_unchanged', 'expected_isolation'))
+            and r['shortcut_consumed'] is False for r in tc)
+        assert [r['mode'] for r in closed] == ['sync', 'paste']
+        assert all(all(r[k] is True for k in ('g_to_library', 'd_to_develop', 'g_consumed', 'd_consumed', 'state_unchanged')) for r in closed)
+        assert data['transfer_modal_checks'] == tc and data['transfer_closed_checks'] == closed
+        assert all(transfer[k] is True for k in ('sync_clicked', 'paste_clicked', 'sync_cancelled', 'paste_cancelled', 'source_restored', 'target_unchanged'))
+        assert all(data[k] is True for k in ('transfer_actual_sync_clicked', 'transfer_actual_paste_clicked',
+            'transfer_actual_sync_cancelled', 'transfer_actual_paste_cancelled', 'transfer_setup_internal_selection_and_copy',
+            'transfer_source_restored', 'transfer_target_unchanged', 'transfer_target_source_unchanged'))
+        assert re.fullmatch('[0-9a-f]{64}', data['transfer_target_source_sha256'])
+        tp = [p for p in packets if p['phase'] == 33]
+        assert [p['key'] for p in tp] == [71, 68]*8
+        assert all(p['shortcut_consumed'] is False and p['key_press_delivered'] is True and p['modifiers'] == 0 and p['text'] == ('g' if p['key'] == 71 else 'd') for p in tp)
+        tc_packets = [p for p in packets if p['phase'] == 34]
+        assert [p['key'] for p in tc_packets] == [71, 68]*2
+        assert all(p['shortcut_consumed'] is True and p['key_press_delivered'] is False and p['modifiers'] == 0 and p['text'] == ('g' if p['key'] == 71 else 'd') for p in tc_packets)
         checks['modal_keys'] = True
         assert rows[11]['pressure_owner_held'] is True and rows[11]['brush_drawing'] is False
         assert rows[11]['help_button_focus_setup_internal'] is True

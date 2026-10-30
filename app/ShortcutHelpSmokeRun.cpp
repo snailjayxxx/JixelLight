@@ -11,6 +11,7 @@
 #include <QQmlProperty>
 #include <QQmlEngine>
 #include <QPointer>
+#include <QJSValue>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QElapsedTimer>
@@ -92,6 +93,10 @@ private:
     bool compactOvalPointer=false,compactCancelPointer=false;
     QJsonArray exportModalButtons;QJsonObject exportNavigation;QVariantList exportSelection;
     int exportCurrentIndex=-1;bool exportTextInputWorks=false;
+    QString transferTargetSource;QByteArray transferTargetHash;QJsonObject transferTargetBefore;QVariantList transferTargetHistory;
+    QVariantList transferSelection;QStringList transferGroups;QJsonArray transferChecks,transferClosedChecks;
+    int transferMode=0,transferFocus=0;bool transferSyncOpened=false,transferPasteOpened=false;
+    bool transferSyncCancelled=false,transferPasteCancelled=false,transferTargetUnchanged=false,transferSourceRestored=false;
     Qt::ApplicationState initialApplicationState=Qt::ApplicationInactive;
     ulong stamp=1000,tabletStamp=10000;bool snapshot=false,done=false;
     QQuickItem *find(const QString &name)const{return w?item(w->contentItem(),name):nullptr;}
@@ -233,7 +238,7 @@ private:
     }
     void finish(const QString &error) {
         if(done)return;done=true;timer->stop();const bool captured=(error.isEmpty()&&captures.size()==5)||capture(error.isEmpty()?"final":"failure");
-        const bool passed=error.isEmpty()&&records.size()==15&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==14&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
+        const bool passed=error.isEmpty()&&records.size()==16&&stable()&&captured&&captures.size()==5&&backendCaptionChecks==15&&backendCaptionsCurrent&&compactRecords.size()==4&&compactCaptures.size()==4&&compactOvalPointer&&compactCancelPointer&&clock.elapsed()<60000;
         const QJsonObject data{{"backend_caption_checks",backendCaptionChecks},{"backend_captions_current",backendCaptionsCurrent},{"protocol_version",2},{"passed",passed},{"error",error},{"phase",phase},
             {"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"test_fixture",true},{"product_UI_acceptance",false},
@@ -249,6 +254,12 @@ private:
             {"crop_context_setup_internal_beginCrop",true},{"help_button_focus_setup_internal",true},
             {"compact_canvas_protocol_version",1},{"compact_canvas_records",compactRecords},{"compact_canvas_captures",compactCaptures},{"compact_oval_pointer_activated",compactOvalPointer},{"compact_crop_cancel_pointer_activated",compactCancelPointer},{"compact_pose_setup_internal_splitter_reference",true},
             {"export_modal_button_checks",exportModalButtons},{"export_text_input_works",exportTextInputWorks},{"export_navigation_after_close",exportNavigation},
+            {"transfer_modal_checks",transferChecks},{"transfer_closed_checks",transferClosedChecks},
+            {"transfer_actual_sync_clicked",transferSyncOpened},{"transfer_actual_paste_clicked",transferPasteOpened},
+            {"transfer_actual_sync_cancelled",transferSyncCancelled},{"transfer_actual_paste_cancelled",transferPasteCancelled},
+            {"transfer_setup_internal_selection_and_copy",true},{"transfer_source_restored",transferSourceRestored},
+            {"transfer_target_unchanged",transferTargetUnchanged},{"transfer_target_source_sha256",QString::fromLatin1(transferTargetHash)},
+            {"transfer_target_source_unchanged",!transferTargetHash.isEmpty()&&hash(transferTargetSource)==transferTargetHash},
             {"dpr",w?w->effectiveDevicePixelRatio():0},{"records",records},{"captures",captures}};
         QSaveFile file(report);const auto bytes=QJsonDocument(data).toJson();const bool saved=file.open(QIODevice::WriteOnly)
             &&file.write(bytes)==bytes.size()&&file.commit();QCoreApplication::exit(passed&&saved?0:1);
@@ -447,6 +458,92 @@ private:
             if(!record("export-modal-focus-and-navigation-isolated",okay,{{"modal_button_checks",exportModalButtons},
                 {"text_input_works",exportTextInputWorks},{"navigation_after_close",exportNavigation},
                 {"selection_preserved",selection},{"no_export_queued",noExport}})){finish("Export modal keyboard isolation failed");return;}
+            transferTargetSource=files.filePath("owned-transfer-target.png");
+            QImage target(512,320,QImage::Format_RGBA64);target.fill(QColor(170,70,40));target.setColorSpace(QColorSpace(QColorSpace::SRgb));
+            if(!target.save(transferTargetSource)){finish("Transfer target fixture failed");return;}
+            transferTargetHash=hash(transferTargetSource);
+            if(!c->importFile(QUrl::fromLocalFile(transferTargetSource))||c->library().size()!=2){finish("Transfer target import failed");return;}
+            c->selectPhoto(1);advance(30);return;
+        }
+        if(phase==30) {
+            transferTargetBefore=c->gpuPlan(true).state.toJson();transferTargetHistory=c->editHistory();
+            c->selectPhoto(0);advance(31);return;
+        }
+        if(phase==31) {
+            if(!stable()||!c->setPhotoSelection({0,1})){finish("Transfer selection setup failed");return;}
+            transferSelection=c->selectedIndices();c->copyAdjustments();
+            if(!c->hasAdjustmentClipboard()){finish("Transfer copy setup failed");return;}
+            transferSyncOpened=click(find("openTransferSync"));
+            if(!transferSyncOpened){finish("Transfer sync action unavailable");return;}advance(32);return;
+        }
+        if(phase==32) {
+            auto *transfer=w->findChild<QObject*>("adjustmentTransferDialog");
+            if(!transfer||!transfer->property("visible").toBool())return;
+            const auto value=transfer->property("groups");
+            transferGroups=value.canConvert<QJSValue>()?value.value<QJSValue>().toVariant().toStringList():value.toStringList();
+            if(transfer->property("syncMode").toBool()!=(transferMode==0)||transfer->property("targetCount").toInt()!=1||transferGroups.isEmpty()){
+                finish("Transfer mode, groups or target count unavailable");return;
+            }
+            transferFocus=0;advance(33);return;
+        }
+        if(phase==33) {
+            auto *transfer=w->findChild<QObject*>("adjustmentTransferDialog");
+            if(!transfer||!transfer->property("visible").toBool()){finish("Transfer dialog disappeared");return;}
+            const auto unchanged=[&]{const auto value=transfer->property("groups");
+                const auto groups=value.canConvert<QJSValue>()?value.value<QJSValue>().toVariant().toStringList():value.toStringList();
+                return transfer->property("visible").toBool()&&stable()&&c->currentIndex()==0&&c->selectedIndices()==transferSelection
+                    &&groups==transferGroups&&!c->exportBusy()&&hash(transferTargetSource)==transferTargetHash;};
+            const QStringList names{"transferApplyButton","transferSelectNone","transferGroup_masks","Cancel"};
+            if(transferFocus>=names.size()) {
+                const bool cancelled=click(canvasButton(w->contentItem(),"Cancel"));
+                if(transferMode==0)transferSyncCancelled=cancelled;else transferPasteCancelled=cancelled;
+                if(!cancelled){finish("Transfer cancel unavailable");return;}advance(34);return;
+            }
+            const auto name=names[transferFocus];auto *control=name=="Cancel"?canvasButton(w->contentItem(),name):find(name);
+            if(!control||!control->isVisible()||!control->isEnabled()){finish("Transfer focus unavailable: "+name);return;}
+            for(const auto &pair:{std::pair<int,QString>{Qt::Key_G,"g"},std::pair<int,QString>{Qt::Key_D,"d"}}) {
+                const int workspace=pair.first==Qt::Key_G?1:0;w->setProperty("workspaceIndex",workspace);
+                control->forceActiveFocus();const bool focused=control->hasActiveFocus();key(pair.first,pair.second);
+                const bool consumed=keys.last().toObject().value("shortcut_consumed").toBool();
+                transferChecks.append(QJsonObject{{"mode",transferMode==0?"sync":"paste"},{"focus",name},
+                    {"shortcut",pair.second.toUpper()},{"focused",focused},{"shortcut_consumed",consumed},
+                    {"workspace_unchanged",w->property("workspaceIndex").toInt()==workspace},{"state_unchanged",unchanged()},
+                    {"expected_isolation",focused&&!consumed&&w->property("workspaceIndex").toInt()==workspace&&unchanged()}});
+            }
+            w->setProperty("workspaceIndex",1);++transferFocus;settle=0;return;
+        }
+        if(phase==34) {
+            auto *transfer=w->findChild<QObject*>("adjustmentTransferDialog");if(!transfer||transfer->property("visible").toBool())return;
+            w->setProperty("workspaceIndex",1);key(Qt::Key_G,"g");const bool g=w->property("workspaceIndex").toInt()==0;
+            const bool gConsumed=keys.last().toObject().value("shortcut_consumed").toBool();
+            key(Qt::Key_D,"d");const bool d=w->property("workspaceIndex").toInt()==1;
+            const bool dConsumed=keys.last().toObject().value("shortcut_consumed").toBool();
+            transferClosedChecks.append(QJsonObject{{"mode",transferMode==0?"sync":"paste"},{"g_to_library",g},{"d_to_develop",d},
+                {"g_consumed",gConsumed},{"d_consumed",dConsumed},{"state_unchanged",stable()&&c->selectedIndices()==transferSelection}});
+            if(transferMode==0) {
+                transferMode=1;transferPasteOpened=click(canvasButton(w->contentItem(),"Paste…"));
+                if(!transferPasteOpened){finish("Transfer paste action unavailable");return;}advance(32);return;
+            }
+            c->selectPhoto(1);advance(35);return;
+        }
+        if(phase==35) {
+            transferTargetUnchanged=c->currentIndex()==1&&c->gpuPlan(true).state.toJson()==transferTargetBefore
+                &&c->editHistory()==transferTargetHistory&&hash(transferTargetSource)==transferTargetHash;
+            c->selectPhoto(0);advance(36);return;
+        }
+        if(phase==36) {
+            transferSourceRestored=c->currentIndex()==0&&stable()&&c->setPhotoSelection(transferSelection)&&c->selectedIndices()==transferSelection;
+            bool checks=transferChecks.size()==16&&transferClosedChecks.size()==2;
+            for(const auto &v:transferChecks)checks=checks&&v.toObject().value("expected_isolation").toBool();
+            for(const auto &v:transferClosedChecks) {const auto row=v.toObject();checks=checks&&row.value("g_to_library").toBool()
+                &&row.value("d_to_develop").toBool()&&row.value("g_consumed").toBool()&&row.value("d_consumed").toBool()&&row.value("state_unchanged").toBool();}
+            const bool okay=checks&&transferSyncOpened&&transferPasteOpened&&transferSyncCancelled&&transferPasteCancelled
+                &&transferTargetUnchanged&&transferSourceRestored&&stable();
+            if(!record("transfer-modal-focus-and-navigation-isolated",okay,{{"checks",transferChecks},{"closed_checks",transferClosedChecks},
+                {"sync_clicked",transferSyncOpened},{"paste_clicked",transferPasteOpened},{"sync_cancelled",transferSyncCancelled},
+                {"paste_cancelled",transferPasteCancelled},{"source_restored",transferSourceRestored},{"target_unchanged",transferTargetUnchanged}})){
+                finish("Adjustment transfer modal keyboard isolation failed");return;
+            }
             finish({});
         }
     }
