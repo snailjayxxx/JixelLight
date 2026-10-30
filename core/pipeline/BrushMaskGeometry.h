@@ -250,6 +250,7 @@ public:
         if (!validStroke(stroke)) return std::nullopt;
         return stroke;
     }
+    std::size_t acceptedDabCount() const noexcept { return stamps_.size(); }
     bool invalid() const { return invalid_; }
 private:
     void invalidate() { invalid_=true; stamps_.clear(); }

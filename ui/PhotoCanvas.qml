@@ -262,7 +262,9 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "brush" ? (!brushOverlay.layerPaintable
+        text: root.maskTool === "brush" ? (root.controller.brushCapacityWarning
+              ? root.t("笔刷接近容量上限，请尽快松开。", "Brush capacity nearing its limit; release soon.")
+              : !brushOverlay.layerPaintable
               ? root.brushBlockHint(brushOverlay.paintBlock) : root.controller.brushReady && !root.brushDisplayReady
               ? root.t("正在更新预览显示，完成后可绘制。", "Wait for the displayed preview before painting.") : root.controller.brushReady && brushOverlay.erasing
               ? root.t("拖动擦除所选图层，松开应用 · Esc 取消当前笔触", "Drag to erase the selected layer, release to apply · Esc cancels the stroke") : root.controller.brushStatus) : root.maskTool === "linear"

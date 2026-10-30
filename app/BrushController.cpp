@@ -19,6 +19,17 @@ BrushCapacityFacts capacityFacts(const BrushMaskDocument::Document &document) {
     if(result.valid)for(const auto &layer:document.layers)for(const auto &stroke:layer.strokes)result.dabs+=int(stroke.dabs.size());
     return result;
 }
+// At exactly one remaining document dab, a zero-coverage endpoint at the
+// same center as the only positive dab can be removed without changing any
+// pixel or the geometric selection path. All other strokes remain unchanged.
+void compactCoincidentZeroEndpointAtDocumentLimit(const BrushMaskDocument::Document &document,BrushMaskGeometry::Stroke &stroke) {
+    const auto facts=capacityFacts(document);auto &dabs=stroke.dabs;
+    if(!facts.valid||std::size_t(facts.dabs)+1!=BrushMaskDocument::MaxTotalDabs||dabs.size()!=2)return;
+    const auto &a=dabs[0];const auto &b=dabs[1];
+    if(a.center.x!=b.center.x||a.center.y!=b.center.y)return;
+    if(a.pressure==0&&b.pressure>0)dabs.erase(dabs.begin());
+    else if(b.pressure==0&&a.pressure>0)dabs.pop_back();
+}
 BrushPaintRefusal paintRefusal(const BrushMaskDocument::Document &document,const BrushCapacityFacts &facts,const QString &id) {
     if(!facts.valid)return BrushPaintRefusal::Invalid;
     if(id.isEmpty()) {
@@ -89,6 +100,15 @@ QString PhotoController::brushStatus() const {
     if(!brushReady())return uiText("图像处理中，完成后可绘制。","Wait for image processing before painting.");
     return uiText("拖动绘制，松开应用 · Esc 取消当前笔触","Drag to paint, release to apply · Esc cancels the stroke");
 }
+bool PhotoController::brushCapacityWarning() const {
+    return m_brushGesture&&m_brushGesture->capacityWarned;
+}
+void PhotoController::updateBrushCapacityWarning() {
+    if(m_brushGesture&&!m_brushGesture->capacityWarned&&m_brushGesture->capacityHadPositivePressure
+        &&m_brushGesture->builder->acceptedDabCount()>=m_brushGesture->capacityWarningAt) {
+        m_brushGesture->capacityWarned=true;emit brushCapacityWarningChanged();
+    }
+}
 bool PhotoController::brushGestureCurrent() const {
     return m_brushGesture&&brushGestureCurrent(*m_brushGesture);
 }
@@ -100,8 +120,8 @@ bool PhotoController::brushGestureCurrent(const BrushGesture &g) const {
         &&g.geometry==m_photos[m_currentIndex].state.geometry.toJson();
 }
 void PhotoController::cancelBrushStroke() {
-    const bool drawing=bool(m_brushGesture);m_brushGesture.reset();clearBrushPreview();
-    if(drawing)emit brushDrawingChanged();
+    const bool drawing=bool(m_brushGesture),warned=brushCapacityWarning();m_brushGesture.reset();clearBrushPreview();
+    if(drawing)emit brushDrawingChanged();if(warned)emit brushCapacityWarningChanged();
 }
 void PhotoController::initializeBrushPreview() {
     m_brushPreviewRetryTimer.setSingleShot(true);m_brushPreviewRetryTimer.setInterval(40);
@@ -155,6 +175,7 @@ void PhotoController::requestBrushPreview() {
         // Completing a copy includes its current tail without consuming the
         // live sampler or changing the final stroke's event spacing.
         auto copy=*m_brushGesture->builder;auto stroke=copy.finish();if(!stroke)return;
+        compactCoincidentZeroEndpointAtDocumentLimit(m_brushGesture->initial.brushMasks,*stroke);
         AdjustmentState candidate;if(!brushCandidate(*m_brushGesture,std::move(*stroke),&candidate))return;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
         auto plan=ProcessingPlan::compile(resolved,ImagePipeline::InputEncoding::LinearProPhoto,
@@ -182,7 +203,8 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
         setStatus(uiText("请先选择要擦除的已有笔刷图层。","Select an existing brush layer to erase first."));return false;
     }
     const auto &doc=m_photos[m_currentIndex].state.brushMasks;
-    switch(paintRefusal(doc,capacityFacts(doc),layer)) {
+    const auto facts=capacityFacts(doc);
+    switch(paintRefusal(doc,facts,layer)) {
     case BrushPaintRefusal::Invalid:case BrushPaintRefusal::Missing:return false;
     case BrushPaintRefusal::Disabled:setStatus(uiText("请先启用所选笔刷图层。","Enable the selected brush layer first."));return false;
     case BrushPaintRefusal::Layers:setStatus(uiText("已达笔刷图层上限。","Brush layer limit reached."));return false;
@@ -197,21 +219,27 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
         g->generation=m_prepareGeneration;g->revision=m_requestedRevision;g->sourceKey=m_fullSource.cacheKey();
         g->layer=layer;g->frame=brushFrameSize();g->geometry=m_photos[m_currentIndex].state.geometry.toJson();g->exposure=exposure;
         g->mode=strokeMode;
+        const auto available=BrushMaskDocument::MaxTotalDabs-std::size_t(facts.dabs);
+        const auto strokeCapacity=std::min(BrushMaskGeometry::MaxDabsPerStroke,available);
+        g->capacityWarningAt=std::max(std::size_t(1),strokeCapacity*3/4);
         g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
         if(!g->builder->append({{x,y},pressure}))return false;
-        m_brushGesture=std::move(g);emit brushDrawingChanged();requestBrushPreview();return brushGestureCurrent();
+        g->capacityHadPositivePressure=pressure>0;
+        m_brushGesture=std::move(g);emit brushDrawingChanged();updateBrushCapacityWarning();requestBrushPreview();return brushGestureCurrent();
     }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
 }
 bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
     if(!brushGestureCurrent()){cancelBrushStroke();return false;}
     try {if(m_brushGesture->sample<std::numeric_limits<quint64>::max()&&m_brushGesture->builder->append({{x,y},pressure})) {
-        ++m_brushGesture->sample;m_brushPreviewRetries=0;requestBrushPreview();return true;
+        ++m_brushGesture->sample;m_brushPreviewRetries=0;
+        m_brushGesture->capacityHadPositivePressure|=pressure>0;updateBrushCapacityWarning();requestBrushPreview();return true;
     }}catch(...){}
     cancelBrushStroke();setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
 }
 QString PhotoController::endBrushStroke() {
     if(!brushGestureCurrent()){cancelBrushStroke();return {};}
-    auto g=std::move(m_brushGesture);clearBrushPreview();emit brushDrawingChanged();
+    const bool warned=brushCapacityWarning();auto g=std::move(m_brushGesture);clearBrushPreview();emit brushDrawingChanged();
+    if(warned)emit brushCapacityWarningChanged();
     if(!brushGestureCurrent(*g))return {};
     AdjustmentState candidate;
     try {
@@ -225,6 +253,7 @@ QString PhotoController::endBrushStroke() {
         // produces a positive-pressure dab is retained unchanged.
         if(std::all_of(stroke->dabs.begin(),stroke->dabs.end(),
             [](const auto &dab){return dab.pressure==0;}))return {};
+        compactCoincidentZeroEndpointAtDocumentLimit(g->initial.brushMasks,*stroke);
         if(!brushCandidate(*g,std::move(*stroke),&candidate)){setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};}
         if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());

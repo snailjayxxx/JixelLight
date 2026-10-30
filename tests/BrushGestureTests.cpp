@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QRgba64>
 #include <cstring>
@@ -41,7 +42,18 @@ int cursor(const PhotoController &c){const auto rows=c.editHistory();for(int i=0
 class BrushGestureTests final:public QObject {
     Q_OBJECT
 private slots:
-    void initTestCase(){QStandardPaths::setTestModeEnabled(true);}
+    void initTestCase(){
+        QStandardPaths::setTestModeEnabled(true);
+        static QTemporaryDir privateSettings;QVERIFY(privateSettings.isValid());
+        QCoreApplication::setOrganizationName(QStringLiteral("JixelLightTests"));
+        QCoreApplication::setApplicationName(QStringLiteral("BrushGestureTests"));
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,privateSettings.path());
+        QSettings::setPath(QSettings::IniFormat,QSettings::SystemScope,privateSettings.path());
+        QSettings verifySettings;QVERIFY(verifySettings.format()==QSettings::IniFormat);
+        QVERIFY(verifySettings.fileName().startsWith(privateSettings.path()+QStringLiteral("/")));
+        qInfo()<<"TEST_SETTINGS_INI_ISOLATED"<<true;
+    }
     void pressureStartRejectsInvalidAndKeepsExactZeroWithoutHistoryLeak() {
         namespace BM=BrushMaskGeometry;
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("pressure-api.png");
@@ -194,6 +206,96 @@ private slots:
         QVERIFY(!c.beginBrushStrokeMode("full",.5,.5,.002,.6,1,1,"erase"));
         QVERIFY(!c.beginBrushStroke("",.5,.5,.002,.6,1,1));QVERIFY(!c.brushDrawing());
         QCOMPARE(state(c),fullState);QCOMPARE(cursor(c),fullHistory);
+    }
+    void warningAtOneRemainingDabPaint() { warningAtOneRemainingDab("paint"); }
+    void warningAtOneRemainingDabErase() { warningAtOneRemainingDab("erase"); }
+private:
+    void warningAtOneRemainingDab(const QString &mode) {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("one-dab.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};
+        BrushMaskGeometry::Stroke large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document doc{{{"full",true,0,{large,large,large,large}}}};
+        doc.layers[0].strokes.back().dabs.resize(BrushMaskGeometry::MaxDabsPerStroke-1);
+        const auto install=[&]{QJsonObject json;return BrushMaskDocument::toJson(doc,&json)&&c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}});};
+        QVERIFY(install());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);
+        // Independent control: a stroke beginning at positive pressure fits one remaining dab.
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,mode,.5));QVERIFY(c.brushCapacityWarning());
+        QCOMPARE(c.endBrushStroke(),QString("full"));QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
+        c.undo();QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);
+        const auto before=state(c);const auto beforeHistory=cursor(c);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,mode,0));QVERIFY(!c.brushCapacityWarning());
+        QVERIFY(c.appendBrushStroke(.5,.5,.5));const bool warned=c.brushCapacityWarning();QVERIFY(warned);
+        const auto result=c.endBrushStroke();
+        QVERIFY2(result==QString("full"),"After the capacity warning, immediate release should retain this same-point positive mark within the one remaining document dab.");
+        const auto actual=c.gpuPlan(true).state.brushMasks;const auto &last=actual.layers[0].strokes.back();
+        QCOMPARE(last.dabs.size(),std::size_t(1));QCOMPARE(last.dabs[0].pressure,.5);QCOMPARE(last.dabs[0].center.x,.5);QCOMPARE(last.dabs[0].center.y,.5);
+        const auto committed=state(c);QCOMPARE(cursor(c),beforeHistory+1);const auto points=c.brushStrokeSelection("full",int(actual.layers[0].strokes.size())-1)["points"].toList();
+        QCOMPARE(points.size(),1);QCOMPARE(points[0].toMap()["x"].toDouble(),.5);QCOMPARE(points[0].toMap()["y"].toDouble(),.5);
+        c.undo();QCOMPARE(state(c),before);c.redo();QCOMPARE(state(c),committed);
+    }
+private slots:
+    void warningSamePointPulsePaint() { warningOneRemainingVariants("paint",true); }
+    void warningSamePointPulseErase() { warningOneRemainingVariants("erase",true); }
+    void warningDifferentPointRefusalPaint() { warningOneRemainingVariants("paint",false); }
+    void warningDifferentPointRefusalErase() { warningOneRemainingVariants("erase",false); }
+private:
+    void warningOneRemainingVariants(const QString &mode,bool pulse) {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("variant.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};BrushMaskGeometry::Stroke large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document doc{{{"full",true,0,{large,large,large,large}}}};doc.layers[0].strokes.back().dabs.resize(BrushMaskGeometry::MaxDabsPerStroke-1);
+        QJsonObject json;QVERIFY(BrushMaskDocument::toJson(doc,&json));QVERIFY(c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto before=state(c);const int history=cursor(c);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,mode,0));QVERIFY(c.appendBrushStroke(pulse?.5:.500001,.5,.5));
+        if(pulse)QVERIFY(c.appendBrushStroke(.5,.5,0));QVERIFY(c.brushCapacityWarning());const auto result=c.endBrushStroke();
+        if(pulse){QCOMPARE(result,QString("full"));const auto actual=c.gpuPlan(true).state.brushMasks;const auto &last=actual.layers[0].strokes.back();QCOMPARE(last.dabs.size(),std::size_t(1));QCOMPARE(last.dabs[0].pressure,.5);QCOMPARE(cursor(c),history+1);}
+        else{QVERIFY(result.isEmpty());QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);}
+    }
+private slots:
+    void earlyCapacityWarningTracksRemainingDocumentAndResets() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("early-capacity.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};
+        BrushMaskGeometry::Stroke large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document document{{{"full",true,0,{large,large,large,large}}}};
+        document.layers[0].strokes.back().dabs.resize(BrushMaskGeometry::MaxDabsPerStroke-100);
+        const auto install=[&]{QJsonObject json;return BrushMaskDocument::toJson(document,&json)&&c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}});};
+        QVERIFY(install());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16284);
+        const auto before=state(c);const int previous=cursor(c);QSignalSpy warnings(&c,&PhotoController::brushCapacityWarningChanged);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,"paint",.5));QVERIFY(!c.brushCapacityWarning());
+        for(int i=1;i<=147;++i)QVERIFY(c.appendBrushStroke(.5+2e-8*i,.5,(i%2)?.501:.5));
+        QVERIFY(!c.brushCapacityWarning());QCOMPARE(warnings.count(),0);
+        QVERIFY(c.appendBrushStroke(.5+2e-8*148,.5,.5));QVERIFY(c.brushCapacityWarning());QCOMPARE(warnings.count(),1);
+        QCOMPARE(state(c),before);QCOMPARE(cursor(c),previous);c.cancelBrushStroke();QVERIFY(!c.brushCapacityWarning());QCOMPARE(warnings.count(),2);QCOMPARE(state(c),before);QCOMPARE(cursor(c),previous);
+        document.layers[0].strokes.back().dabs.resize(BrushMaskGeometry::MaxDabsPerStroke-1);
+        QVERIFY(install());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);warnings.clear();const int beforeOne=cursor(c);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,"paint",.5));QVERIFY(c.brushCapacityWarning());QCOMPARE(warnings.count(),1);
+        QCOMPARE(c.endBrushStroke(),QString("full"));QVERIFY(!c.brushCapacityWarning());QCOMPARE(warnings.count(),2);QCOMPARE(cursor(c),beforeOne+1);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
+        c.undo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);c.redo();QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
+    }
+    void zeroPressureOnlyDoesNotWarnAtOneRemainingDab() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("zero-warning.png");
+        QImage image(160,96,QImage::Format_RGBA64);image.fill(QColor(70,90,110));
+        image.setColorSpace(QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear));
+        QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};
+        BrushMaskGeometry::Stroke large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document doc{{{"full",true,0,{large,large,large,large}}}};doc.layers[0].strokes.back().dabs.resize(BrushMaskGeometry::MaxDabsPerStroke-1);
+        QJsonObject json;QVERIFY(BrushMaskDocument::toJson(doc,&json));QVERIFY(c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);const auto before=state(c);const auto history=cursor(c);QSignalSpy warnings(&c,&PhotoController::brushCapacityWarningChanged);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,"paint",0));
+        QVERIFY2(!c.brushCapacityWarning(),"A zero-pressure-only no-op must not warn that it is approaching the capacity limit.");
+        QCOMPARE(c.endBrushStroke(),QString{});QCOMPARE(warnings.count(),0);QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);
+        // Once a zero-pressure start receives positive pressure, warning resumes.
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.08,1,1,1,"paint",0));QVERIFY(!c.brushCapacityWarning());
+        QVERIFY(c.appendBrushStroke(.5,.5,.5));QVERIFY(c.brushCapacityWarning());QCOMPARE(warnings.count(),1);
+        c.cancelBrushStroke();QVERIFY(!c.brushCapacityWarning());QCOMPARE(warnings.count(),2);QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);
     }
     void capacityReadsTargetLimitsAndRefusesFullDocumentBeforeDrawing() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("capacity.png"),other=dir.filePath("other.png");
