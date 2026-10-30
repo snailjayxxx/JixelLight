@@ -141,20 +141,79 @@ public:
             invalidate(); return false;
         }
         const Dab start=previous_;
-        double traversed=0;
-        double toGo=distance;
         const double epsilon=spacing_*1e-9;
-        while (toGo+epsilon>=remaining_) {
-            if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return false; }
-            traversed+=remaining_;
-            const double t=std::clamp(traversed/distance,0.0,1.0);
-            stamps_.push_back({{start.center.x+(value.center.x-start.center.x)*t,
-                                start.center.y+(value.center.y-start.center.y)*t},
-                               start.pressure+(value.pressure-start.pressure)*t});
-            toGo=std::max(0.0,distance-traversed);
-            remaining_=spacing_;
+        // Preserve the original mouse/full-pressure sampling arithmetic exactly.
+        if (start.pressure==1 && value.pressure==1) {
+            double traversed=0;
+            double toGo=distance;
+            while (toGo+epsilon>=remaining_) {
+                if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return false; }
+                traversed+=remaining_;
+                const double t=std::clamp(traversed/distance,0.0,1.0);
+                stamps_.push_back({{start.center.x+(value.center.x-start.center.x)*t,
+                                    start.center.y+(value.center.y-start.center.y)*t},
+                                   start.pressure+(value.pressure-start.pressure)*t});
+                toGo=std::max(0.0,distance-traversed);
+                remaining_=spacing_;
+            }
+            remaining_=std::clamp(remaining_-toGo,epsilon,spacing_);
+            previous_=value;
+            return true;
         }
-        remaining_=std::clamp(remaining_-toGo,epsilon,spacing_);
+        // A zero-pressure segment has no coverage and should not exhaust the
+        // stroke capacity. The original path-length refusal above still applies.
+        if (start.pressure==0 && value.pressure==0) {
+            previous_=value;remaining_=spacing_;return true;
+        }
+        // The phase is integrated in distance / pressure, so subdivision of
+        // the same piecewise-linear pressure path does not move dab positions.
+        // Below a half-source-pixel spacing we clamp density to keep the zero
+        // pressure limit finite; existing work and dab ceilings still apply.
+        const double floor=std::min(1.0,0.5/(std::min(width_,height_)*spacing_));
+        const auto pressureAt=[&](double at) {
+            return start.pressure+(value.pressure-start.pressure)*std::clamp(at/distance,0.0,1.0);
+        };
+        double cuts[3]={0,distance,distance};int count=2;
+        if ((start.pressure<floor && value.pressure>floor) ||
+            (start.pressure>floor && value.pressure<floor)) {
+            cuts[1]=distance*(floor-start.pressure)/(value.pressure-start.pressure);
+            cuts[2]=distance;count=3;
+        }
+        const auto metric=[&](double from,double to) {
+            const double length=to-from;
+            if (length<=0) return 0.0;
+            const double a=std::max(floor,pressureAt(from)),b=std::max(floor,pressureAt(to));
+            const double change=b-a;
+            return change==0 ? length/a : length*std::log1p(change/a)/change;
+        };
+        double total=0;for(int i=1;i<count;++i)total+=metric(cuts[i-1],cuts[i]);
+        if (!finite(total) || total/spacing_>static_cast<double>(MaxDabsPerStroke)+2) {
+            invalidate();return false;
+        }
+        for (int i=1;i<count;++i) {
+            double from=cuts[i-1],end=cuts[i];
+            while (from<end) {
+                const double available=metric(from,end);
+                if (!finite(available) || available<0) { invalidate();return false; }
+                if (available+epsilon<remaining_) {
+                    remaining_=std::clamp(remaining_-available,epsilon,spacing_);break;
+                }
+                if (stamps_.size()>=MaxDabsPerStroke) { invalidate();return false; }
+                const double length=end-from;
+                const double a=std::max(floor,pressureAt(from)),b=std::max(floor,pressureAt(end));
+                const double slope=(b-a)/length;
+                double step=slope==0 ? remaining_*a : a*std::expm1(slope*remaining_)/slope;
+                if (!finite(step) || step<=0) { invalidate();return false; }
+                step=std::min(step,length);
+                const double next=from+step;
+                if (!(next>from)) { invalidate();return false; }
+                from=next;const double t=std::clamp(from/distance,0.0,1.0);
+                stamps_.push_back({{start.center.x+(value.center.x-start.center.x)*t,
+                                    start.center.y+(value.center.y-start.center.y)*t},
+                                   start.pressure+(value.pressure-start.pressure)*t});
+                remaining_=spacing_;
+            }
+        }
         previous_=value;
         return true;
     }
@@ -163,7 +222,9 @@ public:
         finished_=true;
         const Dab last=stamps_.back();
         const double remainder=shortEdgeDistance(last.center,previous_.center,width_,height_);
-        if (remainder>spacing_*.1 || std::abs(last.pressure-previous_.pressure)>1e-9) {
+        const double floor=std::min(1.0,0.5/(std::min(width_,height_)*spacing_));
+        const double lastSpacing=spacing_*std::max(floor,previous_.pressure);
+        if (remainder>lastSpacing*.1 || std::abs(last.pressure-previous_.pressure)>1e-9) {
             if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return std::nullopt; }
             stamps_.push_back(previous_);
         }

@@ -20,7 +20,8 @@ CAPTURES = {"before", "cancel-paint-held", "cancel-paint-guarded", "paint-held",
             "painted", "reopened-paint", "cancel-erase-held", "cancel-erase-guarded",
             "erase-held", "erased", "final"}
 OWNED_CAPTURES = CAPTURES | {"locale-preview-1", "locale-preview-2", "locale-preview-3",
-                             "locale-full-4", "locale-full-5", "locale-full-6"}
+                             "locale-full-4", "locale-full-5", "locale-full-6",
+                             "low-pressure-before", "low-pressure-painted", "low-pressure-undo", "low-pressure-redo", "low-pressure-limit"}
 REQUIRED = ("settings_isolated", "source_unchanged", "actual_photo_app_UI",
             "pressure_paint_reference", "pressure_erase_reference", "cancel_paint",
             "cancel_erase", "one_undo", "undo_redo", "project_reopen",
@@ -187,6 +188,10 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
             validate_scope_locale(data, mode)
             validate_brush_radius(data)
+            assert all(data[key] is True for key in ("low_pressure_continuous", "low_pressure_undo", "low_pressure_redo", "low_pressure_reset"))
+            assert type(data["low_pressure_pixel_delta"]) is int and data["low_pressure_pixel_delta"] > 0
+            assert all(data[key] is True for key in ("low_pressure_limit_finish_refused", "low_pressure_limit_status_visible", "low_pressure_limit_unchanged"))
+            assert type(data["low_pressure_limit_packets"]) is int and data["low_pressure_limit_packets"] == 22
         captures = CAPTURES if raw else OWNED_CAPTURES
         assert len(data["captures"]) == len(captures) and {c["label"] for c in data["captures"]} == captures
         copied = {}

@@ -37,6 +37,10 @@ QQuickItem *find(QQuickItem *item,const QString &name){
     if(!item)return nullptr;if(item->objectName()==name)return item;
     for(auto *child:item->childItems())if(auto *result=find(child,name))return result;return nullptr;
 }
+QQuickItem *findText(QQuickItem *item,const QString &text){
+    if(!item)return nullptr;if(item->isVisible()&&item->property("text").toString()==text)return item;
+    for(auto *child:item->childItems())if(auto *result=findText(child,text))return result;return nullptr;
+}
 bool click(QQuickWindow *window,QQuickItem *item){
     if(!item||!item->isVisible()||!item->isEnabled())return false;
     const auto point=item->mapToScene({item->width()/2,item->height()/2});
@@ -81,6 +85,9 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
         int focusBootstrapCount=0;bool focusObserved=false,initialWindowActive=false,focusReady=false;
         bool radiusProbeDone=false;int heldRadiusGuards=0;QJsonArray radiusRecords,radiusHintRecords;int localeChecks=0;bool localeUnchanged=true;QJsonArray localeRecords;int cancelStep=0,barrelTransitions=0;bool cancelledBarrelPaint=false,cancelledBarrelErase=false;bool mouse=false,mouseHeld=false;double initialPressure=.2;QElapsedTimer clock;int phase=0,settle=0,moves=0,initialHistory=0;quint64 revision=0;ulong stamp=1000;bool done=false;
+        bool lowPressureContinuous=false,lowPressureUndo=false,lowPressureRedo=false,lowPressureReset=false;
+        bool lowLimitFinishRefused=false,lowLimitStatusVisible=false,lowLimitUnchanged=false;int lowLimitPackets=0;
+        QColor lowBefore,lowAfter;QPointF lowPoint;QJsonObject lowMasks;int lowDelta=0;
         bool cancelPaint=false,cancelErase=false,pressurePaint=false,pressureErase=false,oneUndo=false,undoRedo=false,reopened=false,transient=true;
         int livePaintDelta=0,liveEraseDelta=0,commitPaintDelta=999,commitEraseDelta=999;bool exactExport=false,exportDone=false;int exported=0,failed=0;bool exportCancelled=false;
         QJsonObject initial,painted,erased,commitCheck;QString project;QByteArray sourceHash;QColor baseline,paintColor,liveColor;QImage expected;QJsonArray captures,phases;
@@ -100,11 +107,13 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         if(s->done)return;s->done=true;timer->stop();if(!error.isEmpty())capture("failure",grab());
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
-        const bool passed=error.isEmpty()&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const bool passed=error.isEmpty()&&s->lowPressureContinuous&&s->lowPressureUndo&&s->lowPressureRedo&&s->lowPressureReset&&s->lowLimitFinishRefused&&s->lowLimitStatusVisible&&s->lowLimitUnchanged&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject d{{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"initial_window_active",s->initialWindowActive},{"focus_bootstrap_count",s->focusBootstrapCount},{"window_focus_ready",s->focusReady},{"physical_OS_activation_verified",false},{"commit_check",s->commitCheck},{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"eraser_tip_started",s->eraserTipStarted},{"eraser_tip_empty_refused",s->eraserTipEmptyRefused},{"eraser_tip_exact",s->eraserTipExact},{"eraser_tip_undo",s->eraserTipUndo},{"eraser_tip_redo",s->eraserTipRedo},{"eraser_tip_restored",s->eraserTipRestored},{"eraser_tip_panel_stable",s->eraserTipPanelStable},{"eraser_tip_hint_localized",s->eraserTipHintLocalized},{"eraser_tip_hint_restored",s->eraserTipHintRestored},{"eraser_tip_hint_english",s->eraserTipHintEnglish},{"eraser_tip_hint_chinese",s->eraserTipHintChinese},{"eraser_tip_hint_after_release",s->eraserTipHintAfterRelease},{"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
             {"settings_isolated",isolated},{"source_unchanged",unchanged},{"source_sha256",QString::fromLatin1(s->sourceHash)},
+            {"low_pressure_limit_finish_refused",s->lowLimitFinishRefused},{"low_pressure_limit_status_visible",s->lowLimitStatusVisible},{"low_pressure_limit_unchanged",s->lowLimitUnchanged},{"low_pressure_limit_packets",s->lowLimitPackets},
+            {"low_pressure_continuous",s->lowPressureContinuous},{"low_pressure_undo",s->lowPressureUndo},{"low_pressure_redo",s->lowPressureRedo},{"low_pressure_reset",s->lowPressureReset},{"low_pressure_pixel_delta",s->lowDelta},
             {"pressure_paint_reference",s->pressurePaint},{"pressure_erase_reference",s->pressureErase},{"cancel_paint",s->cancelPaint},{"cancel_erase",s->cancelErase},{"one_undo",s->oneUndo},{"undo_redo",s->undoRedo},{"project_reopen",s->reopened},{"held_intent_history_revision_unchanged",s->transient},
             {"live_paint_delta",s->livePaintDelta},{"live_erase_delta",s->liveEraseDelta},{"live_to_commit_paint_delta",s->commitPaintDelta},{"live_to_commit_erase_delta",s->commitEraseDelta},
             {"export_exact_pixels_and_ICC",s->exactExport},{"gpu_active",c->gpuActive()},{"backend",c->processingBackend()},{"dpr",window->effectiveDevicePixelRatio()},
@@ -200,7 +209,66 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             packet(.25,0,false);s->useEraser=false;
             s->eraserTipEmptyRefused=rejected&&!c->brushDrawing()&&masks(c)==before&&history(c)==cursor&&c->renderRevision()==revision&&editor->property("mode").toString()=="paint";
             if(!s->eraserTipEmptyRefused){finish("Empty eraser unexpectedly painted or lacked explicit feedback");return;}
-            s->phase=1;s->settle=0;
+            // The old fixed-spacing sampler left an unpainted gap here at
+            // constant 0.1 pressure. Inspect that original gap in the actual
+            // photo canvas, then exercise Undo/Redo before the existing flow.
+            editor->setProperty("radius",.2);editor->setProperty("hardness",1);editor->setProperty("opacity",1);
+            s->lowPoint=point(.2+.2*.125*double(size.height())/size.width());
+            const auto shot=grab();s->lowBefore=SmokeCaptureCoordinates::sample(shot,s->lowPoint,window->effectiveDevicePixelRatio());
+            if(shot.isNull()||!s->lowBefore.isValid()||!capture("low-pressure-before",shot)){finish("Low-pressure baseline capture unavailable");return;}
+            packet(.2,.1,true);if(!c->brushDrawing()){finish("Low-pressure stroke did not start");return;}
+            packet(.8,.1,true);if(!c->brushDrawing()){finish("Low-pressure stroke ended during motion");return;}
+            packet(.8,0,false);if(c->brushDrawing()){finish("Low-pressure stroke did not finish");return;}
+            s->phase=60;s->settle=0;
+        }else if(s->phase==60){
+            if(++s->settle<3)return;
+            const auto doc=c->gpuPlan(true).state.brushMasks;
+            if(doc.layers.size()!=1||doc.layers[0].strokes.size()!=1||history(c)!=s->initialHistory+1){finish("Low-pressure stroke was not one edit");return;}
+            const auto coverage=BM::strokeOpacity(doc.layers[0].strokes[0],{.2+.2*.125*double(size.height())/size.width(),.6},size.width(),size.height());
+            const auto shot=grab();s->lowAfter=SmokeCaptureCoordinates::sample(shot,s->lowPoint,window->effectiveDevicePixelRatio());s->lowDelta=delta(s->lowBefore,s->lowAfter);
+            s->lowPressureContinuous=coverage&&std::abs(*coverage-.1)<1e-6&&s->lowAfter.isValid()&&s->lowDelta>0;
+            if(!s->lowPressureContinuous||!capture("low-pressure-painted",shot)){finish("Low-pressure canvas gap remains");return;}
+            s->lowMasks=masks(c);if(!click(window,item("undoEditButton"))){finish("Cannot undo low-pressure stroke");return;}s->phase=61;s->settle=0;
+        }else if(s->phase==61){
+            if(++s->settle<3)return;const auto shot=grab();const auto color=SmokeCaptureCoordinates::sample(shot,s->lowPoint,window->effectiveDevicePixelRatio());
+            s->lowPressureUndo=masks(c)==s->initial&&history(c)==s->initialHistory&&color.isValid()&&delta(color,s->lowBefore)<=2;
+            if(!s->lowPressureUndo||!capture("low-pressure-undo",shot)||!click(window,item("redoEditButton"))){finish("Low-pressure Undo did not restore pixels");return;}s->phase=62;s->settle=0;
+        }else if(s->phase==62){
+            if(++s->settle<3)return;const auto shot=grab();const auto color=SmokeCaptureCoordinates::sample(shot,s->lowPoint,window->effectiveDevicePixelRatio());
+            s->lowPressureRedo=masks(c)==s->lowMasks&&history(c)==s->initialHistory+1&&color.isValid()&&delta(color,s->lowAfter)<=2;
+            if(!s->lowPressureRedo||!capture("low-pressure-redo",shot)||!click(window,item("undoEditButton"))){finish("Low-pressure Redo did not restore pixels");return;}s->phase=63;s->settle=0;
+        }else if(s->phase==63){
+            if(++s->settle<3)return;s->lowPressureReset=masks(c)==s->initial&&history(c)==s->initialHistory&&editor->property("layerId").toString().isEmpty();
+            if(!s->lowPressureReset){finish("Low-pressure setup did not return to the original document");return;}
+            // At exactly the dab ceiling, a final tail point cannot be added.
+            // Drive the real overlay to that boundary and require an explanation,
+            // with no partial edit, before continuing the existing workflow.
+            const double spacing=std::max(.2*.25*.1*std::min(size.width(),size.height()),.5);
+            const double path=.6*size.width();
+            const int whole=int(std::floor(double(BM::MaxDabsPerStroke-1)*spacing/path));
+            const double remainder=(double(BM::MaxDabsPerStroke-1)+.4)*spacing-whole*path;
+            const double edge=(whole%2? .8:.2)+(whole%2? -1:1)*remainder/size.width();
+            BM::StrokeBuilder bound(size.width(),size.height(),{.2,1,1});
+            bool built=bound.append({{.2,.6},.1});
+            for(int i=0;i<whole;++i)built=built&&bound.append({{i%2? .2:.8,.6},.1});
+            built=built&&bound.append({{edge,.6},.1})&&bound.append({{edge,.6},0});
+            const auto completed=bound.finish();
+            if(!built||completed||!bound.invalid()){finish("Low-pressure finish boundary reference failed");return;}
+            packet(.2,.1,true);if(!c->brushDrawing()){finish("Low-pressure limit probe did not start");return;}
+            for(int i=0;i<whole;++i){packet(i%2? .2:.8,.1,true);if(!c->brushDrawing()){finish("Low-pressure limit refused before finish");return;}}
+            packet(edge,.1,true);if(!c->brushDrawing()){finish("Low-pressure tail refused before release");return;}
+            s->lowLimitPackets=whole+1;packet(edge,0,false);
+            s->lowLimitFinishRefused=!c->brushDrawing()&&c->statusMessage()==QStringLiteral("Stroke limit exceeded; use shorter strokes.");
+            if(!s->lowLimitFinishRefused){finish("Low-pressure finish refusal lacks feedback");return;}
+            s->phase=64;s->settle=0;
+        }else if(s->phase==64){
+            if(++s->settle<3)return;const QString expected=QStringLiteral("Stroke limit exceeded; use shorter strokes.");
+            const auto *label=findText(window->contentItem(),expected);const auto shot=grab();
+            const auto color=SmokeCaptureCoordinates::sample(shot,s->lowPoint,window->effectiveDevicePixelRatio());
+            s->lowLimitStatusVisible=label&&label->width()>0&&label->height()>0&&c->statusMessage()==expected;
+            s->lowLimitUnchanged=masks(c)==s->initial&&history(c)==s->initialHistory&&editor->property("layerId").toString().isEmpty()&&color.isValid()&&delta(color,s->lowBefore)<=2;
+            if(!s->lowLimitStatusVisible||!s->lowLimitUnchanged||!capture("low-pressure-limit",shot)){finish("Low-pressure limit feedback or rollback failed");return;}
+            editor->setProperty("radius",.08);editor->setProperty("hardness",1);editor->setProperty("opacity",.8);overlay->forceActiveFocus();s->phase=1;s->settle=0;
         }else if(s->phase==1){
             if(++s->settle<4||!c->scopesPixelCount())return;
             if(!s->radiusProbeDone) {

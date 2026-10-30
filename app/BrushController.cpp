@@ -215,7 +215,11 @@ QString PhotoController::endBrushStroke() {
     if(!brushGestureCurrent(*g))return {};
     AdjustmentState candidate;
     try {
-        auto stroke=g->builder->finish();if(!stroke)return {};
+        auto stroke=g->builder->finish();
+        if(!stroke){
+            if(g->builder->invalid())setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));
+            return {};
+        }
         if(!brushCandidate(*g,std::move(*stroke),&candidate)){setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};}
         if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());

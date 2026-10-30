@@ -3426,6 +3426,59 @@ private slots:
         QVERIFY(!tooLong.finish());
     }
 
+    void brushLowPressureSamplingKeepsCoverageAndBoundedHistory() {
+        using namespace BrushMaskGeometry;
+        constexpr int width=1000,height=1000;
+        const Style style{.2,1,1};
+        for(const double pressure:{.01,.1,.25,1.}) {
+            StrokeBuilder sparse(width,height,style),dense(width,height,style);
+            QVERIFY(sparse.append({{.2,.5005},pressure}));
+            QVERIFY(sparse.append({{.8,.5005},pressure}));
+            for(int i=0;i<=120;++i)
+                QVERIFY(dense.append({{.2+.6*double(i)/120,.5005},pressure}));
+            const auto a=sparse.finish(),b=dense.finish();QVERIFY(a);QVERIFY(b);
+            QCOMPARE(a->dabs.size(),b->dabs.size());
+            for(std::size_t i=0;i<a->dabs.size();++i) {
+                QVERIFY(std::abs(a->dabs[i].center.x-b->dabs[i].center.x)<1e-10);
+                QVERIFY(std::abs(a->dabs[i].pressure-b->dabs[i].pressure)<1e-10);
+            }
+            if(pressure==1.) {
+                QCOMPARE(a->dabs.size(),std::size_t(13));
+                for(std::size_t i=0;i<a->dabs.size();++i)
+                    QVERIFY(std::abs(a->dabs[i].center.x-(.2+.05*double(i)))<1e-12);
+            }
+            for(const auto mode:{StrokeMode::Paint,StrokeMode::Erase}) {
+                auto selected=*a;selected.mode=mode;
+                BrushMaskDocument::Layer layer{QStringLiteral("pressure"),true,1,{}};
+                if(mode==StrokeMode::Erase)
+                    layer.strokes.push_back({{.5,1,1},{{{.5,.5005},1}},StrokeMode::Paint});
+                layer.strokes.push_back(selected);
+                const BrushMaskDocument::Document document{{layer}};
+                QJsonObject json,roundtrip;BrushMaskDocument::Document parsed;
+                QVERIFY(BrushMaskDocument::toJson(document,&json));
+                QVERIFY(BrushMaskDocument::fromJson(json,&parsed));
+                QVERIFY(BrushMaskDocument::toJson(parsed,&roundtrip));QCOMPARE(roundtrip,json);
+                for(int x=200;x<800;x+=128) {
+                    const int span=std::min(128,800-x);BrushMaskTileRaster::ExposureOutput output;
+                    QVERIFY(BrushMaskTileRaster::exposureOnly(parsed,width,height,{x,500,span,1},&output));
+                    QCOMPARE(output.weightedExposureEv.size(),std::size_t(span));
+                    const double expected=mode==StrokeMode::Paint?pressure:1-pressure;
+                    for(const auto value:output.weightedExposureEv)QVERIFY(std::abs(value-expected)<1e-5);
+                    QVERIFY(output.visitedDabPixels<=BrushMaskTileRaster::MaxDabPixelVisits);
+                }
+            }
+        }
+        for(const auto ramp:{std::pair{0.,1.},std::pair{1.,0.},std::pair{.01,.8}}) {
+            StrokeBuilder sparse(width,height,style),dense(width,height,style);
+            QVERIFY(sparse.append({{.2,.5},ramp.first}));QVERIFY(sparse.append({{.8,.5},ramp.second}));
+            for(int i=0;i<=120;++i){const double t=double(i)/120;QVERIFY(dense.append({{.2+.6*t,.5},ramp.first+(ramp.second-ramp.first)*t}));}
+            const auto a=sparse.finish(),b=dense.finish();QVERIFY(a);QVERIFY(b);QCOMPARE(a->dabs.size(),b->dabs.size());
+            for(std::size_t i=0;i<a->dabs.size();++i){QVERIFY(std::abs(a->dabs[i].center.x-b->dabs[i].center.x)<1e-10);QVERIFY(std::abs(a->dabs[i].pressure-b->dabs[i].pressure)<1e-10);}
+        }
+        StrokeBuilder zero(width,height,style);QVERIFY(zero.append({{.2,.5},0}));QVERIFY(zero.append({{.8,.5},0}));const auto empty=zero.finish();QVERIFY(empty);QCOMPARE(empty->dabs.size(),std::size_t(2));
+        StrokeBuilder over(10000,10000,{.002,1,1});QVERIFY(over.append({{.05,.5},.1}));QVERIFY(!over.append({{.95,.5},.1}));QVERIFY(over.invalid());QVERIFY(!over.finish());
+    }
+
     void maskCanvasCoordinateMappingAndAtomicCenterUndo() {
         const QSizeF display(600,360);
         const QRectF full(0,0,1,1);
