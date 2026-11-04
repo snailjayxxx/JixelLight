@@ -36,6 +36,7 @@ ApplicationWindow {
         property string mode: "paint"
         property var strokeSelection: ({})
         onActiveChanged: if (!active) strokeSelection=({})
+        property bool stabilizePen: false
         property real radius: 0.05
         property real hardness: 0.6
         property real opacity: 1

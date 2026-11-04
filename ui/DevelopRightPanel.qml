@@ -755,6 +755,20 @@ Rectangle {
                             ToolTip.text: root.t("擦除仅影响所选已有图层；每笔可独立撤销。","Erase affects only the selected existing layer; each stroke has one Undo step.")
                         }
                     }
+                    CheckBox {
+                        objectName: "brushPenStabilization"; Layout.fillWidth: true
+                        text: root.t("稳定笔尖微移", "Stabilize tiny pen movements")
+                        checked: root.brushEditor ? root.brushEditor.stabilizePen : false
+                        enabled: !root.controller.brushDrawing
+                        onClicked: if(root.brushEditor)root.brushEditor.stabilizePen=checked
+                        ToolTip.visible: hovered
+                        ToolTip.text: root.t("仅在开启时调整新笔触的位置：半个图像像素内的移动保持原位，笔压照常变化。鼠标与已有笔触不变。",
+                                             "When selected, new pen strokes hold position for moves within half an image pixel; pressure stays active. Mouse input and existing strokes are unchanged.")
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("可选：忽略半个图像像素内的笔尖移动，笔压保持有效。", "Optional: holds pen moves within half an image pixel; pressure stays active.")
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }

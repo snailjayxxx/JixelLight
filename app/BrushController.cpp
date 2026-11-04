@@ -208,6 +208,12 @@ bool PhotoController::beginBrushStrokeMode(const QString &layer,double x,double 
     return beginBrushStrokeModePressure(layer,x,y,radius,hardness,opacity,exposure,mode,1);
 }
 bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure) {
+    return beginBrushStrokeInput(layer,x,y,radius,hardness,opacity,exposure,mode,pressure,false);
+}
+bool PhotoController::beginStabilizedBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure) {
+    return beginBrushStrokeInput(layer,x,y,radius,hardness,opacity,exposure,mode,pressure,true);
+}
+bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen) {
     if(!std::isfinite(pressure)||pressure<0||pressure>1|| (mode!="paint"&&mode!="erase"))return false;
     const auto strokeMode=mode=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
     if(m_brushGesture||brushRecoveryAvailable())return false;
@@ -239,8 +245,13 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
         const auto strokeCapacity=std::min(BrushMaskGeometry::MaxDabsPerStroke,available);
         g->recoveryLimit=strokeCapacity;g->capacityWarningAt=std::max(std::size_t(1),strokeCapacity*3/4);
         g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
+        BrushMaskGeometry::Dab first{{x,y},pressure};
+        if(stabilizePen) {
+            g->movementStabilizer.emplace(g->frame.width(),g->frame.height());
+            const auto mapped=g->movementStabilizer->map(first);if(!mapped)return false;first=*mapped;
+        }
         if(!g->builder->setRecoveryLimit(strokeCapacity)
-            ||g->builder->appendForRecovery({{x,y},pressure})!=BrushMaskGeometry::StrokeBuilder::RecoveryResult::Appended)return false;
+            ||g->builder->appendForRecovery(first)!=BrushMaskGeometry::StrokeBuilder::RecoveryResult::Appended)return false;
         g->capacityHadPositivePressure=pressure>0;
         discardBrushRecovery();m_brushGesture=std::move(g);emit brushDrawingChanged();updateBrushCapacityWarning();requestBrushPreview();return brushGestureCurrent();
     }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
@@ -248,10 +259,16 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
 bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
     if(!brushGestureCurrent()){if(m_brushGesture)cancelBrushStroke();return false;}
     try {
+        BrushMaskGeometry::Dab input{{x,y},pressure};
+        if(m_brushGesture->movementStabilizer) {
+            const auto mapped=m_brushGesture->movementStabilizer->map(input);
+            if(!mapped) {cancelBrushStroke();setStatus(uiText("无效笔输入，已取消该笔触。","Invalid pen input; stroke cancelled."));return false;}
+            input=*mapped;
+        }
         // An unchanged tablet packet needs no new preview. If a preview was
         // never published, a later duplicate can still restart a bounded retry.
         if(m_brushGesture->sample<std::numeric_limits<quint64>::max()
-            &&m_brushGesture->builder->repeatsPreviousInput({{x,y},pressure})) {
+            &&m_brushGesture->builder->repeatsPreviousInput(input)) {
             if(m_provider&&m_brushPreviewJob&&m_brushPreviewSample!=m_brushGesture->sample
                 &&!m_brushPreviewRetryTimer.isActive()&&!m_brushPreviewScheduleTimer.isActive()
                 &&!m_brushPreviewJob->containsCurrentRequest([&](const auto &request){
@@ -262,7 +279,7 @@ bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
             return true;
         }
         if(m_brushGesture->sample<std::numeric_limits<quint64>::max()) {
-            const auto result=m_brushGesture->builder->appendForRecovery({{x,y},pressure});
+            const auto result=m_brushGesture->builder->appendForRecovery(input);
             if(result==BrushMaskGeometry::StrokeBuilder::RecoveryResult::Appended) {
                 ++m_brushGesture->sample;m_brushPreviewRetries=0;
                 m_brushGesture->capacityHadPositivePressure|=pressure>0;

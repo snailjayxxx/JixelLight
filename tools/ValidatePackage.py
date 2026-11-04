@@ -16,6 +16,7 @@ from ValidateBrushErase import validate_brush_erase
 from ValidateBrushPressure import validate_brush_pressure
 from ValidateBrushPressureEdges import validate_brush_pressure_edges
 from ValidateBrushRecovery import validate_brush_recovery
+from ValidateBrushStabilization import validate_brush_stabilization
 from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
 
@@ -146,6 +147,13 @@ def main() -> int:
                     prefix = "transparent-" if transparent else ""
                     label = prefix + "brush-recovery-" + action + "-" + mode
                     results.append(validate_brush_recovery(executable, environment, Path(temp) / label,
+                        reports / (label + ".json"), mode, transparent=transparent, erase=erase))
+            for erase in (False, True):
+                action = "erase" if erase else "paint"
+                for transparent in (False, True):
+                    prefix = "transparent-" if transparent else ""
+                    label = prefix + "brush-stabilization-" + action + "-" + mode
+                    results.append(validate_brush_stabilization(executable, environment, Path(temp) / label,
                         reports / (label + ".json"), mode, transparent=transparent, erase=erase))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)

@@ -21,6 +21,7 @@ class QQuickWindow;
 #include "core/look/LookCalibration.h"
 
 #include "core/pipeline/AdjustmentState.h"
+#include "core/pipeline/BrushInputStabilizer.h"
 #include "core/commands/EditHistory.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/scopes/ScopesEngine.h"
@@ -323,6 +324,7 @@ public:
     Q_INVOKABLE bool beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure);
     Q_INVOKABLE bool beginBrushStrokeMode(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode);
     Q_INVOKABLE bool beginBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure);
+    Q_INVOKABLE bool beginStabilizedBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure);
     Q_INVOKABLE bool appendBrushStroke(double x,double y,double pressure=1);
     Q_INVOKABLE QString endBrushStroke();
     Q_INVOKABLE void cancelBrushStroke();
@@ -601,8 +603,10 @@ private:
         BrushMaskGeometry::StrokeMode mode=BrushMaskGeometry::StrokeMode::Paint;
         AdjustmentState initial;
         std::unique_ptr<BrushMaskGeometry::StrokeBuilder> builder;
+        std::optional<BrushMaskGeometry::PenMovementStabilizer> movementStabilizer;
     };
     std::unique_ptr<BrushGesture> m_brushGesture,m_brushRecovery;
+    bool beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen);
     bool offerBrushRecovery(std::unique_ptr<BrushGesture> gesture);
     QString commitBrushGesture(std::unique_ptr<BrushGesture> gesture);
     bool brushGestureCurrent() const;

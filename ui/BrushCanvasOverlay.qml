@@ -146,7 +146,10 @@ Item {
             // the controller so it can explain that an existing layer is needed.
             if (!root.layerPaintable && !(eraserTip && root.editor.layerId === "")) return
             const mode=eraserTip ? "erase" : root.editor.mode
-            if (!root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)) return
+            const begun=root.editor.stabilizePen
+                ? root.controller.beginStabilizedBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)
+                : root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)
+            if (!begun) return
             root.editor.strokeSelection=({})
             root.strokeErasing=(mode === "erase");root.currentPressure=pressure;root.drawing=true;root.points=[];root.addGuide(x,y)
         }

@@ -58,6 +58,9 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"brush-recovery-smoke-report", "Validate explicit prefix recovery, discard and Escape on an owned photo", "file"});
     arguments.addOption({"transparent-brush-recovery-smoke-report", "Validate explicit prefix recovery on transparent owned pixels", "file"});
     arguments.addOption({"brush-recovery-erase", "Exercise Erase in the explicit prefix recovery validation"});
+    arguments.addOption({"brush-stabilization-smoke-report", "Validate explicitly selected pen movement stabilization with owned pixels", "file"});
+    arguments.addOption({"transparent-brush-stabilization-smoke-report", "Validate selected pen stabilization with transparent owned pixels", "file"});
+    arguments.addOption({"brush-stabilization-erase", "Exercise Erase in the selected pen stabilization validation"});
     arguments.addOption({"brush-pressure-canvas-smoke-report", "Validate controlled pressure and input ownership on an owned photo", "file"});
     arguments.addOption({"transparent-brush-pressure-canvas-smoke-report", "Validate controlled pressure on transparent owned pixels", "file"});
     arguments.addOption({"sony-brush-pressure-canvas-smoke-report", "Validate pinned real Sony pressure and exact export; controls-only captures", "file"});
@@ -70,10 +73,13 @@ int main(int argc, char *argv[]) {
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"))
-        +int(arguments.isSet("brush-recovery-smoke-report"))+int(arguments.isSet("transparent-brush-recovery-smoke-report"));
+        +int(arguments.isSet("brush-recovery-smoke-report"))+int(arguments.isSet("transparent-brush-recovery-smoke-report"))
+        +int(arguments.isSet("brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-brush-stabilization-smoke-report"));
     if(smokeModes>1)return 2;
     if(arguments.isSet("brush-recovery-erase")&&!arguments.isSet("brush-recovery-smoke-report")
         &&!arguments.isSet("transparent-brush-recovery-smoke-report"))return 2;
+    if(arguments.isSet("brush-stabilization-erase")&&!arguments.isSet("brush-stabilization-smoke-report")
+        &&!arguments.isSet("transparent-brush-stabilization-smoke-report"))return 2;
     std::unique_ptr<QTemporaryDir> smokeSettings;
     if(smokeModes) {
         // HOME/APPDATA overrides alone do not isolate native CFPreferences or
@@ -175,6 +181,12 @@ int main(int argc, char *argv[]) {
     if(arguments.isSet("sony-brush-canvas-smoke-report")) {
         if(!window||photos.size()!=1)return 2;
         startSonyBrushCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-brush-canvas-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("brush-stabilization-smoke-report")||arguments.isSet("transparent-brush-stabilization-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        const bool transparent=arguments.isSet("transparent-brush-stabilization-smoke-report");
+        startBrushStabilizationSmokeRun(&controller,window,arguments.value(transparent?"transparent-brush-stabilization-smoke-report":"brush-stabilization-smoke-report"),transparent,arguments.isSet("brush-stabilization-erase"));
         return app.exec();
     }
     if(arguments.isSet("brush-recovery-smoke-report")||arguments.isSet("transparent-brush-recovery-smoke-report")) {
