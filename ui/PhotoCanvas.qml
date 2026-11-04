@@ -56,7 +56,7 @@ Item {
                  && !(root.maskTool === "brush" && brushOverlay.activeFocus)
         onActivated: {
             if (root.maskTool === "brush" && brushOverlay.navigationActive) brushOverlay.cancelNavigation()
-            else if (root.maskTool === "brush" && controller.brushDrawing) controller.cancelBrushStroke()
+            else if (root.maskTool === "brush" && (controller.brushDrawing || controller.brushRecoveryAvailable)) controller.cancelBrushStroke()
             else root.maskTool = ""
         }
     }
@@ -250,7 +250,7 @@ Item {
             }
             Button {
                 objectName: "newBrushLayerCanvas"
-                visible: root.maskTool === "brush"; enabled: controller.brushReady && controller.brushCapacity.new_layer_allowed
+                visible: root.maskTool === "brush"; enabled: controller.brushReady && controller.brushCapacity.new_layer_allowed && !controller.brushRecoveryAvailable
                 text: root.t("新图层", "New layer")
                 onClicked: if (root.brushEditor) { root.brushEditor.mode="paint"; root.brushEditor.layerId=""; root.brushEditor.exposure=1 }
             }
@@ -262,7 +262,9 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "brush" ? (root.controller.brushCapacityWarning
+        text: root.maskTool === "brush" ? (root.controller.brushRecoveryAvailable
+              ? root.t("请选择应用已完成部分或放弃。", "Apply the completed part or discard it.")
+              : root.controller.brushCapacityWarning
               ? root.t("笔刷接近容量上限，请尽快松开。", "Brush capacity nearing its limit; release soon.")
               : !brushOverlay.layerPaintable
               ? root.brushBlockHint(brushOverlay.paintBlock) : root.controller.brushReady && !root.brushDisplayReady
@@ -275,6 +277,41 @@ Item {
         width: Math.min(implicitWidth, Math.max(1,parent.width-16)); wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignHCenter; font.pixelSize: 11; color: "#e5edf5"
         background: Rectangle { color: "#dd101820"; radius: 4 }
+    }
+    Rectangle {
+        id: brushRecoveryPanel
+        objectName: "brushRecoveryPanel"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: maskToolHint.top; anchors.bottomMargin: 8
+        width: Math.min(560, Math.max(1,parent.width-16))
+        height: recoveryLayout.implicitHeight+16
+        radius: 6; color: "#ed172331"; border.color: "#879fb0"; z: 7
+        visible: root.maskTool === "brush" && controller.brushRecoveryAvailable
+        ColumnLayout {
+            id: recoveryLayout; anchors.fill: parent; anchors.margins: 8; spacing: 6
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#f3f7fa"
+                text: root.t("笔触超出上限，末尾未应用。可应用已完成的部分。", "Stroke exceeded the limit. Its end was not applied.")
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight; spacing: 8
+                Button {
+                    objectName: "applyBrushRecoveryButton"
+                    enabled: !brushOverlay.inputHeld && !controller.brushDrawing && controller.brushRecoveryAvailable
+                    text: root.t("应用已完成部分", "Apply completed part")
+                    onClicked: {
+                        const layer=controller.applyBrushRecovery()
+                        if (layer !== "" && root.brushEditor) root.brushEditor.layerId=layer
+                    }
+                }
+                Button {
+                    objectName: "discardBrushRecoveryButton"
+                    enabled: !brushOverlay.inputHeld
+                    text: root.t("放弃", "Discard")
+                    onClicked: controller.discardBrushRecovery()
+                }
+            }
+        }
     }
     Label {
         objectName: "brushRadiusHint"

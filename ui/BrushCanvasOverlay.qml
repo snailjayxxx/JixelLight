@@ -17,11 +17,12 @@ Item {
             if (layer.id === editor.layerId) return layer.paint_block
         return "missing"
     }
-    readonly property bool layerPaintable: paintBlock === ""
+    readonly property bool layerPaintable: paintBlock === "" && !(controller && controller.brushRecoveryAvailable)
     property bool strokeErasing: false
     readonly property bool erasing: root.drawing ? root.strokeErasing : (editor && editor.mode === "erase")
     property real currentPressure: 1
     property bool drawing: false
+    readonly property bool inputHeld: pointer.pressed || tabletInput.pressed
     property var points: []
     readonly property var selectedStroke: editor && editor.strokeSelection.points ? editor.strokeSelection.points : []
     property point cursorPoint: Qt.point(-1000, -1000)
@@ -37,7 +38,7 @@ Item {
             event.accepted = true
             return
         }
-        const held = root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed
+        const held = root.drawing || root.controller.brushDrawing || root.controller.brushRecoveryAvailable || pointer.pressed || tabletInput.pressed
         root.cancel()
         if (!held && root.editor) root.editor.active = false
         event.accepted = true
@@ -54,7 +55,7 @@ Item {
         if (!root.editor || !root.visible || !root.enabled) return
         event.accepted = true
         // Keep the held stroke's style and ownership intact until primary lift.
-        if (root.navigationActive || root.drawing || root.controller.brushDrawing || pointer.pressed || tabletInput.pressed) return
+        if (root.navigationActive || root.drawing || root.controller.brushDrawing || root.controller.brushRecoveryAvailable || pointer.pressed || tabletInput.pressed) return
         const factor = event.key === Qt.Key_BracketRight ? 1.25 : 0.8
         root.editor.radius = Math.max(0.002, Math.min(0.5, root.editor.radius * factor))
     }
@@ -86,7 +87,7 @@ Item {
     }
     onVisibleChanged: { if (!visible) cancel(); if (guide) guide.requestPaint() }
     onEnabledChanged: if (!enabled) cancel()
-    onLayerPaintableChanged: { if (!layerPaintable) cancel(); if (guide) guide.requestPaint() }
+    onLayerPaintableChanged: { if (!layerPaintable && !(controller && controller.brushRecoveryAvailable)) cancel(); if (guide) guide.requestPaint() }
     onRadiusXChanged: if (guide) guide.requestPaint()
     onRadiusYChanged: if (guide) guide.requestPaint()
     onFrameChanged: if (guide) guide.requestPaint()
@@ -136,7 +137,7 @@ Item {
     }
     BrushTabletInput {
         id: tabletInput; objectName: "brushTabletInput"
-        target: root; blocked: pointer.pressed || root.navigationActive
+        target: root; blocked: pointer.pressed || root.navigationActive || root.controller.brushRecoveryAvailable
         onBegan: function(x,y,pressure,eraserTip) {
             root.forceActiveFocus()
             const p=root.imagePoint(x,y);root.cursorPoint=Qt.point(x,y)

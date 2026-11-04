@@ -120,7 +120,9 @@ inline std::optional<double> combinedOpacity(std::span<const Stroke> strokes, Po
 // Refuse invalid paths or an oversized stroke rather than returning a partial
 // result for serialization. No persistent input is modified by this builder.
 class StrokeBuilder {
+    enum class Failure { Invalid, Capacity };
 public:
+    enum class RecoveryResult { Appended, Capacity, Rejected };
     StrokeBuilder(int width, int height, Style style, StrokeMode mode=StrokeMode::Paint)
         : width_(width),height_(height),style_(style),mode_(mode),spacing_(style.radius*.25),
           remaining_(spacing_),invalid_(!validFrame(width,height)||!validStyle(style)||!validMode(mode)) {}
@@ -145,7 +147,7 @@ public:
                 if (last.center.x==previous_.center.x && last.center.y==previous_.center.y) {
                     last.pressure=std::max(last.pressure,previous_.pressure);
                 } else {
-                    if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return false; }
+                    if (stamps_.size()>=MaxDabsPerStroke) { invalidate(Failure::Capacity); return false; }
                     stamps_.push_back(previous_);
                 }
             }
@@ -157,7 +159,7 @@ public:
         if (distance==0) { previous_=value; return true; }
         // Guard against pathological path lengths before any potentially huge loop.
         if (distance/spacing_>static_cast<double>(MaxDabsPerStroke)+2) {
-            invalidate(); return false;
+            invalidate(Failure::Capacity); return false;
         }
         const Dab start=previous_;
         const double epsilon=spacing_*1e-9;
@@ -166,7 +168,7 @@ public:
             double traversed=0;
             double toGo=distance;
             while (toGo+epsilon>=remaining_) {
-                if (stamps_.size()>=MaxDabsPerStroke) { invalidate(); return false; }
+                if (stamps_.size()>=MaxDabsPerStroke) { invalidate(Failure::Capacity); return false; }
                 traversed+=remaining_;
                 const double t=std::clamp(traversed/distance,0.0,1.0);
                 stamps_.push_back({{start.center.x+(value.center.x-start.center.x)*t,
@@ -206,8 +208,9 @@ public:
             return change==0 ? length/a : length*std::log1p(change/a)/change;
         };
         double total=0;for(int i=1;i<count;++i)total+=metric(cuts[i-1],cuts[i]);
-        if (!finite(total) || total/spacing_>static_cast<double>(MaxDabsPerStroke)+2) {
-            invalidate();return false;
+        if (!finite(total)) { invalidate();return false; }
+        if (total/spacing_>static_cast<double>(MaxDabsPerStroke)+2) {
+            invalidate(Failure::Capacity);return false;
         }
         for (int i=1;i<count;++i) {
             double from=cuts[i-1],end=cuts[i];
@@ -217,7 +220,7 @@ public:
                 if (available+epsilon<remaining_) {
                     remaining_=std::clamp(remaining_-available,epsilon,spacing_);break;
                 }
-                if (stamps_.size()>=MaxDabsPerStroke) { invalidate();return false; }
+                if (stamps_.size()>=MaxDabsPerStroke) { invalidate(Failure::Capacity);return false; }
                 const double length=end-from;
                 const double a=std::max(floor,pressureAt(from)),b=std::max(floor,pressureAt(end));
                 const double slope=(b-a)/length;
@@ -251,6 +254,33 @@ public:
         if (!validStroke(stroke)) return std::nullopt;
         return stroke;
     }
+    // Private experiment: preserve only a finishable prefix within document capacity.
+    // The normal append/finish API above retains its original fail-closed behavior.
+    bool setRecoveryLimit(std::size_t limit) {
+        if (started_ || invalid_ || finished_ || limit==0 || limit>MaxDabsPerStroke) return false;
+        prefixLimit_=limit;return true;
+    }
+    bool restoreRecoveryPrefix() {
+        if (invalid_ || finished_ || recovered_ || !prefix_.valid || stamps_.size()<prefix_.count) return false;
+        restoreCheckpoint();return true;
+    }
+    RecoveryResult appendForRecovery(Dab value) {
+        if (invalid_ || finished_ || recovered_) return RecoveryResult::Rejected;
+        preserveOnFailure_=true;failure_=Failure::Invalid;bool ok=false;
+        try { ok=append(value); }
+        catch (...) { preserveOnFailure_=false;invalidate();throw; }
+        preserveOnFailure_=false;
+        if (ok) {
+            if (prefixFinishable()) checkpoint();
+            return RecoveryResult::Appended;
+        }
+        if (invalid_ && failure_==Failure::Capacity && prefix_.valid
+            && stamps_.size()>=prefix_.count) {
+            restoreCheckpoint();return RecoveryResult::Capacity;
+        }
+        if (invalid_) stamps_.clear();
+        return RecoveryResult::Rejected;
+    }
     // An identical finite packet cannot change the sampling phase, pressure
     // peak or current tail. Keep +0 and -0 distinct for serialized endpoints.
     bool repeatsPreviousInput(Dab value) const noexcept {
@@ -265,7 +295,32 @@ public:
     std::size_t acceptedDabCount() const noexcept { return stamps_.size(); }
     bool invalid() const { return invalid_; }
 private:
-    void invalidate() { invalid_=true; stamps_.clear(); }
+    bool prefixFinishable() const {
+        if (invalid_ || finished_ || !started_ || stamps_.empty()) return false;
+        if (stamps_.size()>prefixLimit_) return false;
+        if (stamps_.size()<prefixLimit_) return true;
+        const auto last=stamps_.back();
+        const double remainder=shortEdgeDistance(last.center,previous_.center,width_,height_);
+        const double floor=std::min(1.0,0.5/(std::min(width_,height_)*spacing_));
+        const double lastSpacing=spacing_*std::max(floor,previous_.pressure);
+        return !(remainder>lastSpacing*.1 || std::abs(last.pressure-previous_.pressure)>1e-9);
+    }
+    void checkpoint() {
+        prefix_={true,stamps_.size(),stamps_.back(),previous_,remaining_,pressureRising_};
+    }
+    void restoreCheckpoint() {
+        stamps_.resize(prefix_.count);stamps_.back()=prefix_.last;
+        previous_=prefix_.previous;remaining_=prefix_.remaining;
+        started_=true;finished_=false;pressureRising_=prefix_.pressureRising;
+        invalid_=false;recovered_=true;
+    }
+    void invalidate(Failure failure=Failure::Invalid) {
+        invalid_=true;failure_=failure;if(!preserveOnFailure_)stamps_.clear();
+    }
+    struct Prefix { bool valid=false;std::size_t count=0;Dab last,previous;double remaining=0;bool pressureRising=false; };
+    Prefix prefix_;std::size_t prefixLimit_=MaxDabsPerStroke;
+    bool preserveOnFailure_=false,recovered_=false;
+    Failure failure_=Failure::Invalid;
     int width_=0,height_=0;
     Style style_;
     StrokeMode mode_;

@@ -107,6 +107,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QVariantMap brushCapacity READ brushCapacity NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool brushDrawing READ brushDrawing NOTIFY brushDrawingChanged)
     Q_PROPERTY(bool brushCapacityWarning READ brushCapacityWarning NOTIFY brushCapacityWarningChanged)
+    Q_PROPERTY(bool brushRecoveryAvailable READ brushRecoveryAvailable NOTIFY brushRecoveryChanged)
     Q_PROPERTY(QString brushPreviewUrl READ brushPreviewUrl NOTIFY brushPreviewChanged)
     Q_PROPERTY(bool brushReady READ brushReady NOTIFY activityChanged)
     Q_PROPERTY(QString brushStatus READ brushStatus NOTIFY activityChanged)
@@ -312,6 +313,9 @@ public:
     QVariantMap brushCapacity() const;
     bool brushDrawing() const { return bool(m_brushGesture); }
     bool brushCapacityWarning() const;
+    bool brushRecoveryAvailable() const;
+    Q_INVOKABLE QString applyBrushRecovery();
+    Q_INVOKABLE void discardBrushRecovery();
     QString brushPreviewUrl() const {return m_brushPreviewId.isEmpty()?QString{}:QStringLiteral("image://processed/")+m_brushPreviewId;}
     bool brushReady() const;
     QString brushStatus() const;
@@ -428,6 +432,7 @@ public:
 signals:
     void brushDrawingChanged();
     void brushCapacityWarningChanged();
+    void brushRecoveryChanged();
     void brushPreviewChanged();
     void relinkChanged();
     void diagnosticChanged();
@@ -592,12 +597,14 @@ private:
         QSize frame;
         QJsonObject geometry;
         double exposure=1;
-        std::size_t capacityWarningAt=1;bool capacityWarned=false,capacityHadPositivePressure=false;
+        std::size_t capacityWarningAt=1,recoveryLimit=1;bool capacityWarned=false,capacityHadPositivePressure=false;
         BrushMaskGeometry::StrokeMode mode=BrushMaskGeometry::StrokeMode::Paint;
         AdjustmentState initial;
         std::unique_ptr<BrushMaskGeometry::StrokeBuilder> builder;
     };
-    std::unique_ptr<BrushGesture> m_brushGesture;
+    std::unique_ptr<BrushGesture> m_brushGesture,m_brushRecovery;
+    bool offerBrushRecovery(std::unique_ptr<BrushGesture> gesture);
+    QString commitBrushGesture(std::unique_ptr<BrushGesture> gesture);
     bool brushGestureCurrent() const;
     bool brushGestureCurrent(const BrushGesture &gesture) const;
     struct BrushPreviewRequest {QImage source;ProcessingPlan plan;quint64 gesture=0,sample=0;};

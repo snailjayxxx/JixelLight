@@ -719,10 +719,10 @@ Rectangle {
                     Layout.fillWidth: true
                     ToolButton { id: brushPanelHeader; objectName: "brushPanelToggle"; text: (root.brushExpanded ? "▾ " : "▸ ")+root.t("笔刷局部曝光","BRUSH EXPOSURE"); font.bold: true; onClicked: root.brushExpanded=!root.brushExpanded }
                     Item { Layout.fillWidth: true }
-                    Button { text: root.t("清空","Clear"); enabled: root.controller.brushLayers.length>0; onClicked: root.controller.executeEditCommand({command:"mask.brush.reset"}) }
+                    Button { text: root.t("清空","Clear"); enabled: root.controller.brushLayers.length>0 && !root.controller.brushRecoveryAvailable; onClicked: root.controller.executeEditCommand({command:"mask.brush.reset"}) }
                 }
                 ColumnLayout {
-                    visible: root.brushExpanded; Layout.fillWidth: true; spacing: 6; enabled: root.brushEditor !== null
+                    visible: root.brushExpanded; Layout.fillWidth: true; spacing: 6; enabled: root.brushEditor !== null && !root.controller.brushRecoveryAvailable
                     RowLayout {
                         Layout.fillWidth: true
                         ComboBox {
