@@ -124,6 +124,10 @@ void PhotoController::cancelBrushStroke() {
     if(drawing)emit brushDrawingChanged();if(warned)emit brushCapacityWarningChanged();
 }
 void PhotoController::initializeBrushPreview() {
+    // Coalesce only preparation of the live frame; every input still enters
+    // the sampler synchronously and the pending callback reads its latest state.
+    m_brushPreviewScheduleTimer.setSingleShot(true);m_brushPreviewScheduleTimer.setInterval(0);
+    connect(&m_brushPreviewScheduleTimer,&QTimer::timeout,this,&PhotoController::requestBrushPreview);
     m_brushPreviewRetryTimer.setSingleShot(true);m_brushPreviewRetryTimer.setInterval(40);
     connect(&m_brushPreviewRetryTimer,&QTimer::timeout,this,&PhotoController::requestBrushPreview);
     const auto budget=m_brushBudget;
@@ -151,7 +155,7 @@ void PhotoController::initializeBrushPreview() {
         });
 }
 void PhotoController::clearBrushPreview() {
-    m_brushPreviewRetryTimer.stop();m_brushPreviewRetries=0;
+    m_brushPreviewScheduleTimer.stop();m_brushPreviewRetryTimer.stop();m_brushPreviewRetries=0;
     if(m_brushPreviewJob)m_brushPreviewJob->cancel();
     if(m_provider)m_provider->clearBrushPreview();
     const bool changed=!m_brushPreviewId.isEmpty();m_brushPreviewId.clear();m_brushPreviewSample=0;
@@ -171,6 +175,9 @@ bool PhotoController::brushCandidate(const BrushGesture &g,BrushMaskGeometry::St
 void PhotoController::requestBrushPreview() {
     if(!m_provider||!m_brushPreviewJob||!brushGestureCurrent()||m_previewSource.isNull()
         ||m_brushPreviewSample==m_brushGesture->sample)return;
+    if(m_brushPreviewJob->containsCurrentRequest([&](const auto &request){
+        return request.gesture==m_brushGesture->gesture&&request.sample==m_brushGesture->sample;
+    }))return;
     try {
         // Completing a copy includes its current tail without consuming the
         // live sampler or changing the final stroke's event spacing.
@@ -236,7 +243,7 @@ bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
         if(m_brushGesture->sample<std::numeric_limits<quint64>::max()
             &&m_brushGesture->builder->repeatsPreviousInput({{x,y},pressure})) {
             if(m_provider&&m_brushPreviewJob&&m_brushPreviewSample!=m_brushGesture->sample
-                &&!m_brushPreviewRetryTimer.isActive()
+                &&!m_brushPreviewRetryTimer.isActive()&&!m_brushPreviewScheduleTimer.isActive()
                 &&!m_brushPreviewJob->containsCurrentRequest([&](const auto &request){
                     return request.gesture==m_brushGesture->gesture&&request.sample==m_brushGesture->sample;
                 })) {
@@ -248,7 +255,9 @@ bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
             &&m_brushGesture->builder->append({{x,y},pressure})) {
             ++m_brushGesture->sample;m_brushPreviewRetries=0;
             m_brushGesture->capacityHadPositivePressure|=pressure>0;
-            updateBrushCapacityWarning();requestBrushPreview();return true;
+            updateBrushCapacityWarning();
+            if(!m_brushPreviewScheduleTimer.isActive())m_brushPreviewScheduleTimer.start();
+            return true;
         }
     }catch(...){}
     cancelBrushStroke();setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;

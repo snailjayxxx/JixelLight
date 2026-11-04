@@ -604,7 +604,7 @@ private:
     std::unique_ptr<LatestFrameJob<BrushPreviewRequest,RenderedFrame>> m_brushPreviewJob;
     quint64 m_brushGestureSerial=0,m_brushPreviewSerial=0,m_brushPreviewSample=0;
     QString m_brushPreviewId;
-    QTimer m_brushPreviewRetryTimer;
+    QTimer m_brushPreviewRetryTimer,m_brushPreviewScheduleTimer;
     int m_brushPreviewRetries=0;
     void initializeBrushPreview();
     void requestBrushPreview();

@@ -177,7 +177,7 @@ target_link_libraries(JixelLightBrushLivePreviewTests PRIVATE JixelLightCore Qt6
 set_target_properties(JixelLightBrushLivePreviewTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME brush-live-queue COMMAND JixelLightBrushLivePreviewTests continuousQueueAndCancellationReleaseFutureLeases -o brush-live-queue-results.txt,txt -o -,txt)
 add_test(NAME brush-live-display COMMAND JixelLightBrushLivePreviewTests versionedManagedDisplayPreservesCommittedPixelsAndLeases -o brush-live-display-results.txt,txt -o -,txt)
-add_test(NAME brush-live-controller COMMAND JixelLightBrushLivePreviewTests controllerKeepsTransientStateOutOfHistoryScopesAndFinalSampling -o brush-live-controller-results.txt,txt -o -,txt)
+add_test(NAME brush-live-controller COMMAND JixelLightBrushLivePreviewTests controllerKeepsTransientStateOutOfHistoryScopesAndFinalSampling previewCoalescesBurstWithoutLosingTailOrLeakingAcrossGestures earlierFrameCannotCancelNewScheduledFrame scheduledPreviewStopsOnControllerShutdown budgetRetryAndScheduledInputRecoverTogether continuousEventLoopStreamPublishesBeforeRelease -o brush-live-controller-results.txt,txt -o -,txt)
 set_tests_properties(brush-live-queue brush-live-display brush-live-controller PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightBrushPersistenceTests tests/BrushPersistenceTests.cpp)
 qt_add_executable(JixelLightBrushGestureTests tests/BrushGestureTests.cpp)

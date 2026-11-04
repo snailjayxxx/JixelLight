@@ -1,8 +1,10 @@
 #include <QtTest>
 #include <QColorSpace>
+#include <QElapsedTimer>
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QPointer>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QStandardPaths>
@@ -124,6 +126,105 @@ private slots:
         qInfo().noquote()<<"BRUSH_LIVE_DISPLAY_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"versioned_keys",true},{"independent_monitor_rgb_alpha",true},{"committed_slot_separate",true},{"scope_pixels_unchanged",true},{"view_leases_retained_and_refunded",true},{"native_gpu_brush",false}}).toJson(QJsonDocument::Compact);
     }
+
+
+
+    void continuousEventLoopStreamPublishesBeforeRelease() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("stream.png");QVERIFY(sourceImage().save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_scopeJob->busy(),15000);
+        QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==1&&!c.m_brushPreviewJob->busy(),10000);
+        int sent=0,publishedDuring=0;bool accepted=true,done=false;
+        QTimer stream;stream.setInterval(1);
+        connect(&c,&PhotoController::brushPreviewChanged,&stream,[&]{if(sent>0&&sent<200)++publishedDuring;});
+        connect(&stream,&QTimer::timeout,&stream,[&]{++sent;accepted=accepted&&c.appendBrushStroke(.1+2e-6*sent,.5,sent%2?.501:.5);if(sent==200||!accepted){stream.stop();done=true;}});
+        stream.start();QTRY_VERIFY_WITH_TIMEOUT(done,10000);QVERIFY(accepted);QCOMPARE(sent,200);QVERIFY(publishedDuring>0);
+        const auto finalSample=c.m_brushGesture->sample;QCOMPARE(finalSample,quint64(201));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==finalSample&&!c.m_brushPreviewJob->busy(),10000);
+        QVERIFY(!c.brushPreviewUrl().isEmpty());c.cancelBrushStroke();
+    }
+
+
+    void scheduledPreviewStopsOnControllerShutdown() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("shutdown.png");QVERIFY(sourceImage().save(path));
+        ProcessedImageProvider provider;auto budget=std::make_shared<BrushRenderBudget>();auto c=std::make_unique<PhotoController>(&provider,nullptr,budget);
+        c->setGpuEnabled(false);QVERIFY(c->importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c->brushReady()&&!c->m_scopeJob->busy(),15000);
+        QPointer<PhotoController> guard(c.get());QSignalSpy preview(c.get(),&PhotoController::brushPreviewChanged);
+        QVERIFY(c->beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));QVERIFY(c->appendBrushStroke(.2,.5,.8));
+        QVERIFY(c->m_brushPreviewScheduleTimer.isActive());c.reset();QVERIFY(guard.isNull());QTest::qWait(50);
+        QCOMPARE(preview.count(),0);QCOMPARE(budget->snapshot().charged,0);
+    }
+
+    void earlierFrameCannotCancelNewScheduledFrame() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("coalesce-race.png");QVERIFY(sourceImage().save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_scopeJob->busy(),15000);
+        QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+        QVERIFY(c.appendBrushStroke(.2,.5,.8));QCOMPARE(c.m_brushGesture->sample,quint64(2));QVERIFY(c.m_brushPreviewScheduleTimer.isActive());
+        // Deliver only completed futures while deliberately withholding timer events.
+        // This orders actual old-frame publication before the pending new sample.
+        QElapsedTimer timer;timer.start();
+        while(c.m_brushPreviewSample!=1&&timer.elapsed()<5000){QCoreApplication::sendPostedEvents(nullptr,QEvent::FutureCallOut);QTest::qSleep(5);}
+        QCOMPARE(c.m_brushPreviewSample,quint64(1));QVERIFY(c.m_brushPreviewScheduleTimer.isActive());
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==2&&!c.m_brushPreviewJob->busy(),10000);
+        QVERIFY(!c.brushPreviewUrl().isEmpty());c.cancelBrushStroke();
+    }
+    void budgetRetryAndScheduledInputRecoverTogether() {
+        const auto source=sourceImage();const auto plan=planFor(1);QString error;
+        auto measured=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,{},&error);QVERIFY2(measured,qPrintable(error));
+        const auto needed=measured->reservedBytes();measured.reset();auto budget=std::make_shared<BrushRenderBudget>(needed+1024*1024);
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("retry-race.png");QVERIFY(source.save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_scopeJob->busy(),15000);
+        auto holder=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(holder,qPrintable(error));
+        QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewRetries>0&&c.m_brushPreviewRetryTimer.isActive(),10000);
+        for(int i=1;i<=25;++i)QVERIFY(c.appendBrushStroke(.1+.01*i,.5,i%2?.8:.5));
+        const auto sample=c.m_brushGesture->sample;QVERIFY(c.m_brushPreviewScheduleTimer.isActive());holder.reset();
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==sample&&!c.m_brushPreviewJob->busy(),10000);
+        QVERIFY(!c.brushPreviewUrl().isEmpty());QVERIFY(!c.m_brushPreviewRetryTimer.isActive());c.cancelBrushStroke();
+        QTRY_VERIFY_WITH_TIMEOUT(!c.m_brushPreviewJob->busy()&&budget->snapshot().charged==0,10000);
+    }
+
+    void previewCoalescesBurstWithoutLosingTailOrLeakingAcrossGestures() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("coalesced-live.png");QVERIFY(sourceImage().save(path));
+        ProcessedImageProvider provider;auto budget=std::make_shared<BrushRenderBudget>();PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_scopeJob->busy(),15000);
+        const auto initial=c.gpuPlan(true).state.toJson();const auto history=cursor(c);const auto revision=c.renderRevision();
+        BrushMaskGeometry::StrokeBuilder direct(80,48,{.12,.65,.7});QVERIFY(direct.append({{.1,.5},.5}));
+        QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==c.m_brushGesture->sample&&!c.m_brushPreviewJob->busy(),10000);
+        double lastX=0;
+        for(int i=1;i<=12;++i){const double x=.1+i*.01,p=i%2?.8:.5;lastX=x;QVERIFY(direct.append({{x,.5},p}));QVERIFY(c.appendBrushStroke(x,.5,p));}
+        const auto sample=c.m_brushGesture->sample;QVERIFY(c.m_brushPreviewScheduleTimer.isActive());
+        QVERIFY(c.appendBrushStroke(lastX,.5,.5));QCOMPARE(c.m_brushGesture->sample,sample);QVERIFY(c.m_brushPreviewScheduleTimer.isActive());
+        QCOMPARE(c.gpuPlan(true).state.toJson(),initial);QCOMPARE(cursor(c),history);QCOMPARE(c.renderRevision(),revision);
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==sample&&!c.m_brushPreviewJob->busy(),10000);
+        QVERIFY(!c.m_brushPreviewScheduleTimer.isActive());const auto expectedStroke=direct.finish();QVERIFY(expectedStroke);
+        AdjustmentState expected;expected.brushMasks.layers={{c.m_brushGesture->newLayer,true,1,{*expectedStroke}}};
+        auto plan=ProcessingPlan::compile(expected,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);plan.setFrameRect(c.previewFrameRect());
+        const auto oracle=ImagePipeline::processRegion(c.m_previewSource,plan,QRect(QPoint{},c.m_previewSource.size()));
+        const auto shown=provider.requestImage(c.m_brushPreviewId,nullptr,{});QVERIFY(!shown.isNull()&&!oracle.isNull());QCOMPARE(pixels(shown),pixels(oracle));
+        c.cancelBrushStroke();QVERIFY(!c.m_brushPreviewScheduleTimer.isActive());QTRY_VERIFY_WITH_TIMEOUT(!c.m_brushPreviewJob->busy(),10000);
+        QCOMPARE(c.gpuPlan(true).state.toJson(),initial);QCOMPARE(cursor(c),history);QVERIFY(c.brushPreviewUrl().isEmpty());
+        // Cancelling an unflushed frame prevents it from leaking into a new gesture.
+        QVERIFY(c.beginBrushStrokeModePressure("",.3,.5,.12,.65,.7,1,"paint",.5));QVERIFY(c.appendBrushStroke(.4,.5,.8));
+        QVERIFY(c.m_brushPreviewScheduleTimer.isActive());c.cancelBrushStroke();QVERIFY(!c.m_brushPreviewScheduleTimer.isActive());
+        QVERIFY(c.beginBrushStrokeModePressure("",.6,.5,.12,.65,.7,1,"paint",.5));QVERIFY(c.appendBrushStroke(.7,.5,.8));
+        const auto newSample=c.m_brushGesture->sample;QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==newSample&&!c.m_brushPreviewJob->busy(),10000);
+        QVERIFY(!c.brushPreviewUrl().isEmpty());QCOMPARE(c.gpuPlan(true).state.toJson(),initial);
+        // A release before the zero-delay callback still commits the last sample exactly once.
+        QVERIFY(c.appendBrushStroke(.8,.5,.9));QVERIFY(c.m_brushPreviewScheduleTimer.isActive());
+        auto endCopy=*c.m_brushGesture->builder;const auto finalStroke=endCopy.finish();QVERIFY(finalStroke);
+        const auto layer=c.m_brushGesture->newLayer;AdjustmentState finalState;finalState.brushMasks.layers={{layer,true,1,{*finalStroke}}};
+        QCOMPARE(c.endBrushStroke(),layer);QVERIFY(!c.m_brushPreviewScheduleTimer.isActive());QVERIFY(c.brushPreviewUrl().isEmpty());
+        QJsonObject actualJson,expectedJson;QVERIFY(BrushMaskDocument::toJson(c.gpuPlan(true).state.brushMasks,&actualJson));
+        QVERIFY(BrushMaskDocument::toJson(finalState.brushMasks,&expectedJson));QCOMPARE(actualJson,expectedJson);QCOMPARE(cursor(c),history+1);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_brushPreviewJob->busy(),15000);QVERIFY(c.brushPreviewUrl().isEmpty());
+        c.undo();QCOMPARE(c.gpuPlan(true).state.toJson(),initial);QCOMPARE(cursor(c),history);
+    }
+
     void controllerKeepsTransientStateOutOfHistoryScopesAndFinalSampling() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned-live.png");const auto source=sourceImage();QVERIFY(source.save(path));
         ProcessedImageProvider provider;auto budget=std::make_shared<BrushRenderBudget>();PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);
