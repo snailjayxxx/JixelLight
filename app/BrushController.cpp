@@ -230,10 +230,27 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
 }
 bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
     if(!brushGestureCurrent()){cancelBrushStroke();return false;}
-    try {if(m_brushGesture->sample<std::numeric_limits<quint64>::max()&&m_brushGesture->builder->append({{x,y},pressure})) {
-        ++m_brushGesture->sample;m_brushPreviewRetries=0;
-        m_brushGesture->capacityHadPositivePressure|=pressure>0;updateBrushCapacityWarning();requestBrushPreview();return true;
-    }}catch(...){}
+    try {
+        // An unchanged tablet packet needs no new preview. If a preview was
+        // never published, a later duplicate can still restart a bounded retry.
+        if(m_brushGesture->sample<std::numeric_limits<quint64>::max()
+            &&m_brushGesture->builder->repeatsPreviousInput({{x,y},pressure})) {
+            if(m_provider&&m_brushPreviewJob&&m_brushPreviewSample!=m_brushGesture->sample
+                &&!m_brushPreviewRetryTimer.isActive()
+                &&!m_brushPreviewJob->containsCurrentRequest([&](const auto &request){
+                    return request.gesture==m_brushGesture->gesture&&request.sample==m_brushGesture->sample;
+                })) {
+                m_brushPreviewRetries=0;requestBrushPreview();
+            }
+            return true;
+        }
+        if(m_brushGesture->sample<std::numeric_limits<quint64>::max()
+            &&m_brushGesture->builder->append({{x,y},pressure})) {
+            ++m_brushGesture->sample;m_brushPreviewRetries=0;
+            m_brushGesture->capacityHadPositivePressure|=pressure>0;
+            updateBrushCapacityWarning();requestBrushPreview();return true;
+        }
+    }catch(...){}
     cancelBrushStroke();setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
 }
 QString PhotoController::endBrushStroke() {

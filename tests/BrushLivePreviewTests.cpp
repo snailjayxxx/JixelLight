@@ -8,7 +8,10 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QRgba64>
+#include <atomic>
+#include <cmath>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include "app/PhotoController.h"
 #include "core/color/MonitorColorTransform.h"
@@ -70,7 +73,11 @@ private slots:
             [&](const auto &r,auto result){delivered.push_back(r.sample);publication=publication&&provider.setBrushPreview("brush-live/"+QString::number(r.sample),result.image);held=provider.requestImage("brush-live/"+QString::number(r.sample),nullptr,{});});
         const auto cleanup=qScopeGuard([&]{gate.release(100);});
         job.submit({1});QTRY_VERIFY_WITH_TIMEOUT(gate.reached(1),5000);
-        for(int i=2;i<=20;++i)job.submit({i});gate.release(1);
+        const auto isSample=[](int sample){return [sample](const Request &r){return r.sample==sample;};};
+        QVERIFY(job.containsCurrentRequest(isSample(1)));
+        for(int i=2;i<=20;++i)job.submit({i});
+        QVERIFY(job.containsCurrentRequest(isSample(1)));QVERIFY(job.containsCurrentRequest(isSample(20)));
+        QVERIFY(!job.containsCurrentRequest(isSample(19)));gate.release(1);
         QTRY_VERIFY_WITH_TIMEOUT(delivered.size()==1&&gate.reached(2),5000);
         QCOMPARE(delivered,QVector<int>({1}));QVERIFY(publication);
         auto reference=ImagePipeline::processRegion(source,planFor(1),QRect(QPoint{},source.size()));QCOMPARE(pixels(held),pixels(reference));
@@ -86,7 +93,9 @@ private slots:
         // retain an otherwise invisible output after the last consumer clears.
         QCOMPARE(budget->snapshot().charged,0);
         job.submit({1});QTRY_VERIFY_WITH_TIMEOUT(gate.reached(4),5000);job.cancel();
-        for(int i=2;i<=7;++i)job.submit({i});gate.release(5);QTRY_VERIFY_WITH_TIMEOUT(!job.busy(),5000);
+        QVERIFY(!job.containsCurrentRequest(isSample(1)));
+        for(int i=2;i<=7;++i)job.submit({i});QVERIFY(job.containsCurrentRequest(isSample(7)));
+        QVERIFY(!job.containsCurrentRequest(isSample(6)));gate.release(5);QTRY_VERIFY_WITH_TIMEOUT(!job.busy(),5000);
         QCOMPARE(gate.executed,QVector<int>({1,20,40,1,7}));QCOMPARE(delivered,QVector<int>({1,20,40,7}));QCOMPARE(gate.peak,1);
         provider.clearBrushPreview();held={};QCOMPARE(budget->snapshot().charged,0);QCOMPARE(pixels(source),original);
         qInfo().noquote()<<"BRUSH_LIVE_QUEUE_EVIDENCE "<<QJsonDocument(QJsonObject{{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
@@ -119,8 +128,77 @@ private slots:
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("owned-live.png");const auto source=sourceImage();QVERIFY(source.save(path));
         ProcessedImageProvider provider;auto budget=std::make_shared<BrushRenderBudget>();PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);
         QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.m_scopeJob->busy(),15000);
+        // A cancelled older frame can still be running after its pending work
+        // was dropped. A duplicate packet must requeue the current gesture.
+        {
+            std::mutex mutex;std::condition_variable condition;bool release=false;std::atomic<int> entered{0};
+            auto originalJob=std::move(c.m_brushPreviewJob);
+            const auto cleanup=qScopeGuard([&]{
+                if(c.brushDrawing())c.cancelBrushStroke();
+                {std::lock_guard lock(mutex);release=true;}condition.notify_all();
+                c.m_brushPreviewJob.reset();c.m_brushPreviewJob=std::move(originalJob);
+            });
+            c.m_brushPreviewJob=std::make_unique<LatestFrameJob<PhotoController::BrushPreviewRequest,RenderedFrame>>(
+                [&](const auto &,const auto &){
+                    const int ordinal=++entered;
+                    if(ordinal==1){std::unique_lock lock(mutex);condition.wait_for(lock,std::chrono::seconds(5),[&]{return release;});}
+                    return RenderedFrame{};
+                },[](const auto &,auto){});
+            c.m_brushPreviewJob->submit({});QTRY_COMPARE_WITH_TIMEOUT(entered.load(),1,5000);
+            QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+            c.m_brushPreviewJob->cancel(); // Discard the first current-frame request.
+            QVERIFY(c.appendBrushStroke(.1,.5,.5));
+            {std::lock_guard lock(mutex);release=true;}condition.notify_all();
+            QTRY_VERIFY_WITH_TIMEOUT(!c.m_brushPreviewJob->busy(),5000);
+            QCOMPARE(entered.load(),2);
+            c.cancelBrushStroke();
+        }
         QCOMPARE(c.m_catalogEpoch,quint64(0));const auto initial=c.gpuPlan(true).state.toJson();const auto history=cursor(c);const auto revision=c.renderRevision();
         const auto histogram=c.redHistogram();const auto scopesSequence=c.m_scopeJob->sequence(),fullSequence=c.m_fullScopeJob->sequence(),plotSequence=c.m_plotJob->sequence();
+        BrushMaskGeometry::StrokeBuilder exact(80,48,{.12,.65,.7});
+        const BrushMaskGeometry::Dab zero{{0.0,0.0},0.0};
+        QVERIFY(!exact.repeatsPreviousInput(zero));QVERIFY(exact.append(zero));QVERIFY(exact.repeatsPreviousInput(zero));
+        QVERIFY(!exact.repeatsPreviousInput({{-0.0,0.0},0.0}));
+        QVERIFY(!exact.repeatsPreviousInput({{0.0,0.0},-0.0}));
+        QVERIFY(!exact.repeatsPreviousInput({{std::numeric_limits<double>::min(),0.0},0.0}));
+        QVERIFY(!exact.repeatsPreviousInput({{0.0,0.0},std::numeric_limits<double>::quiet_NaN()}));
+        QVERIFY(exact.finish());QVERIFY(!exact.repeatsPreviousInput(zero));
+        BrushMaskGeometry::StrokeBuilder adjacent(80,48,{.12,.65,.7});
+        QVERIFY(adjacent.append({{.5,.5},.5}));
+        QVERIFY(!adjacent.repeatsPreviousInput({{std::nextafter(.5,1.0),.5},.5}));
+        // Repeated stationary packets should neither publish duplicate frames
+        // nor prevent retrying an absent preview. Pressure changes must still
+        // produce the same stroke as the unmodified sampler.
+        QVERIFY(c.beginBrushStrokeModePressure("",.1,.5,.12,.65,.7,1,"paint",.5));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==c.m_brushGesture->sample&&!c.m_brushPreviewJob->busy(),10000);
+        const auto initialSample=c.m_brushGesture->sample;const auto firstId=c.m_brushPreviewId;
+        QSignalSpy repeatedUpdates(&c,&PhotoController::brushPreviewChanged);
+        for(int i=0;i<40;++i)QVERIFY(c.appendBrushStroke(.1,.5,.5));
+        QVERIFY(!c.m_brushPreviewJob->busy());QCOMPARE(c.m_brushGesture->sample,initialSample);
+        QCOMPARE(c.m_brushPreviewId,firstId);QCOMPARE(repeatedUpdates.count(),0);
+        // Clearing the transient preview simulates an absent publication.
+        c.clearBrushPreview();repeatedUpdates.clear();QVERIFY(c.brushPreviewUrl().isEmpty());
+        QVERIFY(c.appendBrushStroke(.1,.5,.5));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==initialSample&&!c.m_brushPreviewJob->busy(),10000);
+        QCOMPARE(repeatedUpdates.count(),1);
+        auto beforePressureImage=provider.requestImage(c.m_brushPreviewId,nullptr,{});
+        QVERIFY(!beforePressureImage.isNull());const auto beforePressure=pixels(beforePressureImage);beforePressureImage={};
+        QVERIFY(c.appendBrushStroke(.1,.5,.8));
+        QTRY_VERIFY_WITH_TIMEOUT(c.m_brushPreviewSample==c.m_brushGesture->sample&&!c.m_brushPreviewJob->busy(),10000);
+        auto afterPressureImage=provider.requestImage(c.m_brushPreviewId,nullptr,{});
+        QVERIFY(!afterPressureImage.isNull());QVERIFY(pixels(afterPressureImage)!=beforePressure);afterPressureImage={};
+        QVERIFY(c.appendBrushStroke(.1,.5,.8));QVERIFY(c.appendBrushStroke(.1,.5,.2));
+        auto sampled=*c.m_brushGesture->builder;const auto actualPulse=sampled.finish();QVERIFY(actualPulse);
+        BrushMaskGeometry::StrokeBuilder pulse(c.brushFrameSize().width(),c.brushFrameSize().height(),{.12,.65,.7});
+        QVERIFY(pulse.append({{.1,.5},.5}));QVERIFY(pulse.append({{.1,.5},.8}));QVERIFY(pulse.append({{.1,.5},.2}));
+        const auto expectedPulse=pulse.finish();QVERIFY(expectedPulse);QCOMPARE(actualPulse->dabs.size(),expectedPulse->dabs.size());
+        for(std::size_t i=0;i<actualPulse->dabs.size();++i) {
+            QCOMPARE(actualPulse->dabs[i].center.x,expectedPulse->dabs[i].center.x);
+            QCOMPARE(actualPulse->dabs[i].center.y,expectedPulse->dabs[i].center.y);
+            QCOMPARE(actualPulse->dabs[i].pressure,expectedPulse->dabs[i].pressure);
+        }
+        c.cancelBrushStroke();QTRY_VERIFY_WITH_TIMEOUT(!c.m_brushPreviewJob->busy(),5000);
+        QCOMPARE(c.gpuPlan(true).state.toJson(),initial);QCOMPARE(cursor(c),history);
         QVERIFY(c.beginBrushStroke("",.1,.5,.12,.65,.7,1));const auto layer=c.m_brushGesture->newLayer;
         BrushMaskGeometry::StrokeBuilder direct(c.brushFrameSize().width(),c.brushFrameSize().height(),{.12,.65,.7});QVERIFY(direct.append({{.1,.5},1}));
         for(int i=1;i<=40;++i){QVERIFY(c.appendBrushStroke(.1+.018*i,.5));QVERIFY(direct.append({{.1+.018*i,.5},1}));}

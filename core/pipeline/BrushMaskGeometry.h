@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <span>
@@ -249,6 +250,17 @@ public:
         Stroke stroke{style_,std::move(stamps_),mode_};
         if (!validStroke(stroke)) return std::nullopt;
         return stroke;
+    }
+    // An identical finite packet cannot change the sampling phase, pressure
+    // peak or current tail. Keep +0 and -0 distinct for serialized endpoints.
+    bool repeatsPreviousInput(Dab value) const noexcept {
+        const auto same=[](double a,double b) {
+            return std::memcmp(&a,&b,sizeof(double))==0;
+        };
+        return started_ && !invalid_ && !finished_
+            && same(value.center.x,previous_.center.x)
+            && same(value.center.y,previous_.center.y)
+            && same(value.pressure,previous_.pressure);
     }
     std::size_t acceptedDabCount() const noexcept { return stamps_.size(); }
     bool invalid() const { return invalid_; }

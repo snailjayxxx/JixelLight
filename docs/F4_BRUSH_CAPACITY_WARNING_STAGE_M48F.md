@@ -16,4 +16,10 @@ The original CPU/Metal pressure workflow passed eight 1×/2× opaque/transparent
 
 Public real Sony ARW CPU/Metal pressure regressions completed their GUI in 10,425/10,277 ms and export plus independent reference in 35,628.3/34,458.362 ms. Each retained 32,947,264 source, histogram and waveform pixels, the shared 3 GiB reservation and exact PNG16/ICC under the original 60,000/120,000 ms limits. Peak reservations were 1,716,323,360/1,720,467,584 bytes. The original Sony native reports retain their external-verification-pending state; the independent verifiers and complete drivers exited 0. These are existing pressure regressions, not physical tablet or new jitter-specific Sony tests.
 
-The local reports carry the pre-commit source stamp `920249b`; local evidence is recorded at `evidence/F4-capacity-warning-root-local-v1/receipt.json`. The new commit's cross-platform CI is pending. Native GPU brush computation, native FP32 RAW decoding and complete F0–F6 coverage remain unverified.
+The local reports carry the pre-commit source stamp `920249b`; local evidence is recorded at `evidence/F4-capacity-warning-root-local-v1/receipt.json`.
+
+## Committed cross-platform validation
+
+Commit `0925cb8f6ae4523926d693c5f3b4408d30c4431a` passed [CI327](https://github.com/snailjayxxx/JixelLight/actions/runs/41063898436). All 69 registered tests passed on Linux, Windows and macOS, with the original isolated clipboard, guide, pressure, color, Sony, scope, memory and timing gates. Both actual deployed packages passed all 29 modes. The complete terminal logs show the actual checkout `45bb7d917c38d41992e7274d6facef506ee90b85`, whose tree matches the commit; all five original validation ZIPs were checked. Windows native CPU pressure took 44,542 ms against the unchanged 45,000 ms limit; one run does not establish a statistical safety margin. The independently verified evidence is at `evidence/ci-41063898436/terminal-accepted-v1/receipt.json` (3,140 files; SHA-256 `1ac5fdf99bb41790f87db67d4ca8f9fe894532df343981ca5b6ec5421f2daa0e`).
+
+The CI result does not verify physical tablet input, native GPU brush computation, native FP32 RAW decoding or complete F0–F6 coverage.

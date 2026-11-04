@@ -28,6 +28,11 @@ public:
     void submit(Request request){m_pending=Pending{m_epoch,std::move(request)};if(!m_running)start();}
     void cancel(){++m_epoch;m_pending.reset();if(m_cancel)m_cancel->store(true,std::memory_order_relaxed);}
     bool busy()const{return m_running||m_pending.has_value();}
+    template<class Predicate>
+    bool containsCurrentRequest(Predicate matches) const {
+        return (m_active&&m_active->epoch==m_epoch&&matches(m_active->request))
+            || (m_pending&&m_pending->epoch==m_epoch&&matches(m_pending->request));
+    }
 private:
     struct Pending{quint64 epoch;Request request;};
     void start(){
