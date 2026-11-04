@@ -175,6 +175,23 @@ jobs:
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-gpu.json gpu
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicit prefix recovery on the actual photo canvas
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python -m unittest discover -s tests -p 'TestBrushRecoveryValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              python tools/ValidateBrushRecovery.py "$EXE" "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+              python tools/ValidateBrushRecovery.py "$EXE" "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+            done
+          done
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -437,6 +454,25 @@ jobs:
           xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-gpu.json gpu
           python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
           xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicit prefix recovery on the actual photo canvas
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestBrushRecoveryValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              if [ "$MODE" = gpu ]; then
+                xvfb-run -a python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                xvfb-run -a python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              else
+                python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              fi
+            done
+          done
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen

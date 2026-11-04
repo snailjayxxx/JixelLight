@@ -15,6 +15,7 @@ from ValidateSonyBrushCanvas import validate_sony_brush
 from ValidateBrushErase import validate_brush_erase
 from ValidateBrushPressure import validate_brush_pressure
 from ValidateBrushPressureEdges import validate_brush_pressure_edges
+from ValidateBrushRecovery import validate_brush_recovery
 from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
 
@@ -139,6 +140,13 @@ def main() -> int:
             edge_alpha_home = Path(temp) / ("transparent-brush-pressure-edges-" + mode)
             results.append(validate_brush_pressure_edges(executable, environment, edge_alpha_home,
                 reports / ("transparent-brush-pressure-edges-" + mode + ".json"), mode, transparent=True))
+            for erase in (False, True):
+                action = "erase" if erase else "paint"
+                for transparent in (False, True):
+                    prefix = "transparent-" if transparent else ""
+                    label = prefix + "brush-recovery-" + action + "-" + mode
+                    results.append(validate_brush_recovery(executable, environment, Path(temp) / label,
+                        reports / (label + ".json"), mode, transparent=transparent, erase=erase))
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()
