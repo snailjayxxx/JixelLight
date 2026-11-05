@@ -42,7 +42,8 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
         QMutexLocker lock(&m_mutex);
         if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
         if (cacheable) {
-            if (const auto *entry=m_entries.object(key)) {
+            if (const auto *entry=m_entries.object(key); entry && !entry->results[index].image.isNull()
+                    && entry->results[index].pixels && entry->results[index].error.isEmpty()) {
                 ++m_hits; PerformanceRecorder::count("scope_plot_cache_hit"); recordLocked();
                 return cancelled(cancel) ? ScopePlotResult{} : entry->results[index];
             }
@@ -71,12 +72,24 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
         if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
         return result;
     }
-    auto results=completed ? renderEncodedScopePlots(completed.image(),cancel)
+    // A large completed analysis frame already supplies every encoded sample.
+    // Deliver the requested full-resolution plot without first counting two
+    // unrequested modes. Small/missing frames keep the shared three-mode pass.
+    const bool requestedOnly=completed && completed.image().sizeInBytes()>=64*1024*1024;
+    std::array<ScopePlotResult,3> results;
+    if (requestedOnly) results[index]=renderEncodedScopePlot(completed.image(),request.mode,cancel);
+    else results=completed ? renderEncodedScopePlots(completed.image(),cancel)
         :admitted?renderScopePlots(*admitted,cancel):renderScopePlots(request,cancel);
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
-    for (const auto &result : results) if (result.image.isNull() || !result.pixels || !result.error.isEmpty()) return results[index];
-    if (!m_entries.object(key)) {
+    const auto valid=[](const ScopePlotResult &r) { return !r.image.isNull() && r.pixels && r.error.isEmpty(); };
+    if (!valid(results[index])) return results[index];
+    if (!requestedOnly) for (const auto &result : results) if (!valid(result)) return results[index];
+    if (auto *entry=m_entries.object(key)) {
+        // Concurrent requests for different modes can complete under one key.
+        // Merge completed ink; cancellation above prevents partial publication.
+        for (int i=0;i<3;++i) if (valid(results[i]) && !valid(entry->results[i])) entry->results[i]=results[i];
+    } else {
         const auto previous=m_entries.size();
         m_entries.insert(key,new Entry{results,lut},int(cost));
         const qint64 evicted=previous+1-m_entries.size(); m_evictions+=evicted;

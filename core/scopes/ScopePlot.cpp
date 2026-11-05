@@ -70,13 +70,49 @@ QImage ScopePlotCounts::image() const {
     // Plot colors are UI ink, not image pixels requiring monitor conversion.
     return ink;
 }
+namespace {
+// Dispatch once per plot; the independent ScopePlotCounts::add reference keeps
+// its generic path. These loops retain every RGBA64 sample and exact formulas.
+template<int Mode> bool addEncodedPlot(ScopePlotCounts &counts,const QImage &encoded,const CancelToken &cancel) {
+    constexpr int columns=ScopePlotCounts::Columns,levels=ScopePlotCounts::Levels,chroma=ScopePlotCounts::ChromaSize;
+    auto *bins=counts.bins.data();
+    for (int y=0;y<encoded.height();++y) {
+        if (cancelled(cancel)) return false;
+        const auto *row=reinterpret_cast<const QRgba64 *>(encoded.constScanLine(y));
+        for (int x=0;x<encoded.width();++x) {
+            const quint32 r=row[x].red(),g=row[x].green(),b=row[x].blue();
+            if constexpr (Mode==0) {
+                const quint32 luma=(2126*r+7152*g+722*b+5000)/10000;
+                const int column=encoded.width()>1 ? int(qint64(x)*(columns-1)/(encoded.width()-1)):columns/2;
+                ++bins[(levels-1-int(luma>>6))*columns+column];
+            } else if constexpr (Mode==1) {
+                const int column=encoded.width()>1 ? int(qint64(x)*(columns-1)/(encoded.width()-1)):columns/2;
+                ++bins[(levels-1-int(r>>6))*3*columns+column];
+                ++bins[(levels-1-int(g>>6))*3*columns+columns+column];
+                ++bins[(levels-1-int(b>>6))*3*columns+2*columns+column];
+            } else {
+                const double red=r/65535.0,green=g/65535.0,blue=b/65535.0;
+                const double yPrime=.2126*red+.7152*green+.0722*blue;
+                const auto cx=int(std::lround(std::clamp(.5+(blue-yPrime)/1.8556,0.0,1.0)*(chroma-1)));
+                const auto cy=int(std::lround(std::clamp(.5-(red-yPrime)/1.5748,0.0,1.0)*(chroma-1)));
+                ++bins[cy*chroma+cx];
+            }
+        }
+    }
+    counts.pixels=quint64(encoded.width())*encoded.height();
+    return !cancelled(cancel);
+}
+}
 ScopePlotResult renderEncodedScopePlot(const QImage &encoded,const QString &mode,const CancelToken &cancel) {
     ScopePlotResult result;
     try {
         if (encoded.isNull() || encoded.format()!=QImage::Format_RGBA64 || cancelled(cancel)) return {};
         PerformanceSpan timing("cpu_scope_plot_encoded",{{"mode",mode},{"pixels",qint64(encoded.width())*encoded.height()}});
         ScopePlotCounts counts(mode);
-        if (!counts.add(encoded,cancel)) return {};
+        const bool added=mode=="waveform" ? addEncodedPlot<0>(counts,encoded,cancel)
+            :mode=="parade" ? addEncodedPlot<1>(counts,encoded,cancel)
+            :mode=="vectorscope" ? addEncodedPlot<2>(counts,encoded,cancel):false;
+        if (!added) return {};
         if (cancelled(cancel)) return {};
         result={counts.image(),counts.pixels,{}};
         if (result.image.isNull()) result.error="Scope plot image allocation failed";

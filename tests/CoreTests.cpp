@@ -5332,6 +5332,9 @@ private slots:
             for (int i=0;i<3;++i) {
                 ScopePlotCounts truth(modes[i]);QVERIFY(truth.add(padded));
                 QCOMPARE(plots[i].image,truth.image());QCOMPARE(plots[i].pixels,truth.pixels);QVERIFY(plots[i].error.isEmpty());
+                const auto encodedSingle=renderEncodedScopePlot(padded,modes[i]);
+                QCOMPARE(encodedSingle.image,truth.image());QCOMPARE(encodedSingle.pixels,truth.pixels);QVERIFY(encodedSingle.error.isEmpty());
+                QVERIFY(renderEncodedScopePlot(padded,modes[i],std::make_shared<std::atomic_bool>(true)).image.isNull());
             }
             QCOMPARE(storage,before);
             const auto cancelledPlots=renderEncodedScopePlots(padded,std::make_shared<std::atomic_bool>(true));
@@ -6302,6 +6305,47 @@ private slots:
         QCOMPARE(plots.snapshot()["misses"].toInteger(),qint64(1));
         QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(2));
         QCOMPARE(StageGraph::outputFingerprint(f.source),fingerprint);
+
+        // At the 64 MiB encoded-frame boundary, requested modes fill one cache
+        // entry independently. Every sample, 1024-level bin and display pixel
+        // must still match the separate generic counting oracle.
+        QImage large(4096,2048,QImage::Format_RGBA64);QVERIFY(!large.isNull());
+        for(int y=0;y<large.height();++y) {
+            auto *row=reinterpret_cast<QRgba64 *>(large.scanLine(y));
+            for(int x=0;x<large.width();++x) row[x]=QRgba64::fromRgba64(quint16(x*613+y*127),quint16(x*977+y*263),quint16(x*179+y*947),quint16((x+y)%4==0?0:(x+y)%4==1?1:(x+y)%4==2?23456:65535));
+        }
+        const auto largeFingerprint=StageGraph::outputFingerprint(large);
+        const auto largePlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb);
+        ScopePlotRequest request{large,largePlan,{},"waveform",1,true};
+        auto largeFrames=std::make_shared<AnalysisFrameCache>(320*1024*1024);
+        auto writer=largeFrames->begin(StageGraph::analysisFrameKey(large,largePlan,{}),large.size());QVERIFY(bool(writer));
+        for(int y=0;y<large.height();y+=128) QVERIFY(writer.append(large.copy(0,y,large.width(),std::min(128,large.height()-y)),y));
+        QVERIFY(writer.publish());
+        ScopePlotCache demanded(16*1024*1024,largeFrames);
+        const auto demandBoundary=analysisIntegrationBoundary();
+        for(const auto &mode:modes) {
+            request.mode=mode;const auto actual=demanded.render(request);ScopePlotCounts truth(mode);QVERIFY(truth.add(large));
+            QVERIFY(actual.error.isEmpty());QCOMPARE(actual.pixels,quint64(8388608));QCOMPARE(actual.image,truth.image());
+            QCOMPARE(demanded.render(request).image.cacheKey(),actual.image.cacheKey());
+        }
+        QCOMPARE(demanded.snapshot()["entries"].toInteger(),qint64(1));
+        QCOMPARE(demanded.snapshot()["misses"].toInteger(),qint64(3));
+        QCOMPARE(demanded.snapshot()["hits"].toInteger(),qint64(3));
+        QCOMPARE(analysisIntegrationStagesSince(demandBoundary,"cpu_scope_plot_encoded"),qint64(3));
+        QCOMPARE(analysisIntegrationStagesSince(demandBoundary,"cpu_scope_plots_encoded"),qint64(0));
+        ScopePlotCache simultaneous(16*1024*1024,largeFrames);
+        std::array<QFuture<ScopePlotResult>,3> pending;
+        for(int i=0;i<3;++i) {auto q=request;q.mode=modes[i];pending[i]=QtConcurrent::run([&simultaneous,q]{return simultaneous.render(q);});}
+        for(int i=0;i<3;++i) {request.mode=modes[i];const auto result=pending[i].result();QCOMPARE(result.image,demanded.render(request).image);QCOMPARE(result.pixels,quint64(8388608));}
+        QCOMPARE(simultaneous.snapshot()["entries"].toInteger(),qint64(1));
+        for(const auto &mode:modes) {request.mode=mode;const auto beforeHits=simultaneous.snapshot()["hits"].toInteger();QVERIFY(!simultaneous.render(request).image.isNull());QCOMPARE(simultaneous.snapshot()["hits"].toInteger(),beforeHits+1);}
+        ScopePlotCache stopped(16*1024*1024,largeFrames);
+        QVERIFY(stopped.render(request,std::make_shared<std::atomic_bool>(true)).image.isNull());
+        QCOMPARE(stopped.snapshot()["entries"].toInteger(),qint64(0));
+        QCOMPARE(demanded.snapshot()["charged_bytes"].toInteger(),simultaneous.snapshot()["charged_bytes"].toInteger());
+        QVERIFY(demanded.snapshot()["charged_bytes"].toInteger()<=16*1024*1024);
+        QVERIFY(largeFrames->snapshot()["charged_bytes"].toInteger()<=320*1024*1024);
+        QCOMPARE(StageGraph::outputFingerprint(large),largeFingerprint);
     }
 
     void analysisFrameCompletedPixelsRebuildHistogramWithoutGeometryOrColor() {
