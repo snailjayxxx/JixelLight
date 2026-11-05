@@ -175,6 +175,19 @@ jobs:
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-gpu.json gpu
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
           python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicitly selected Sony pen stabilization and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            VERIFY=build/bin/Release/JixelLightBrushPressureExportVerifier.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            VERIFY=build/bin/JixelLightBrushPressureExportVerifier
+          fi
+          python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
       - name: Explicit prefix recovery on the actual photo canvas
         shell: bash
         run: |
@@ -471,6 +484,14 @@ jobs:
           xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-gpu.json gpu
           python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
           xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicitly selected Sony pen stabilization and exact export
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
       - name: Explicit prefix recovery on the actual photo canvas
         env:
           QT_QPA_PLATFORM: offscreen

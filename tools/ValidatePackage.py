@@ -168,6 +168,10 @@ def main() -> int:
                 results.append(validate_brush_pressure(executable, environment, pressure_sony_home,
                     reports / ("sony-brush-pressure-" + mode + ".json"), mode,
                     args.sony_brush_raw.resolve(), pressure_verifier))
+                pressure_selected_home = Path(temp) / ("sony-stabilized-brush-pressure-" + mode)
+                results.append(validate_brush_pressure(executable, environment, pressure_selected_home,
+                    reports / ("sony-stabilized-brush-pressure-" + mode + ".json"), mode,
+                    args.sony_brush_raw.resolve(), pressure_verifier, stabilized_sony=True))
         results.append(validate_shortcut_help(executable, environment, Path(temp) / "shortcut-help", reports / "shortcut-help.json"))
         # Exercise the real packaged dialog with a fake in-memory clipboard.  Native
         # clipboard writes are reserved for explicitly isolated CI runner tests.

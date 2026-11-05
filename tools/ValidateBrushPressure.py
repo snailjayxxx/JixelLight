@@ -132,10 +132,31 @@ def preserve_failure_captures(data: dict, native_path: Path, report: Path, *, so
     return copied, errors
 
 
+def validate_sony_pen_stabilization(data: dict, *, selected: bool) -> None:
+    """Reject mode crossover and incomplete selected-rule Sony observations."""
+    assert data["selected_pen_stabilization_smoke"] is selected
+    assert data["raw_unfiltered_jitter_fixed"] is False
+    assert data["stabilizer_specific_Sony_verified"] is False
+    for name in ("selected_starts", "selected_extra_pressure_packets", "explicit_selection_clicks"):
+        assert type(data[name]) is int
+    if not selected:
+        assert data["selected_starts"] == data["selected_extra_pressure_packets"] == data["explicit_selection_clicks"] == 0
+        assert data["selected_jitter_span_source_pixels"] == 0
+        assert data["selected_rule_changes_raw_intent"] is False
+        return
+    assert data["selected_default_off"] is True
+    assert data["selected_starts"] == 4 and data["selected_extra_pressure_packets"] == 36000
+    assert 1 <= data["explicit_selection_clicks"] <= 4
+    assert data["selected_checkbox_held_disabled"] is True
+    assert data["selected_jitter_span_source_pixels"] == .1
+    assert data["selected_rule_changes_raw_intent"] is True
+
+
 def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Path,
                            report: Path, mode: str, raw: Path | None = None,
-                           verifier: Path | None = None, *, transparent: bool = False) -> dict:
-    if mode not in ("cpu", "gpu") or (transparent and raw is not None):
+                           verifier: Path | None = None, *, transparent: bool = False,
+                           stabilized_sony: bool = False) -> dict:
+    if mode not in ("cpu", "gpu") or (transparent and raw is not None) or (stabilized_sony and raw is None):
         raise ValueError("Invalid pressure-validation mode/source")
     binary, report = binary.resolve(), report.resolve()
     if report.exists() or list(report.parent.glob(report.stem + ".*")):
@@ -178,11 +199,12 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
     native_log = work / (report.stem + ".native.log")
     reference_path = work / (report.stem + ".reference.json")
     reference_log = work / (report.stem + ".reference.log")
-    flag = ("sony-brush-pressure-canvas-smoke-report" if raw else
+    flag = ("sony-brush-stabilized-pressure-canvas-smoke-report" if stabilized_sony else
+            "sony-brush-pressure-canvas-smoke-report" if raw else
             "transparent-brush-pressure-canvas-smoke-report" if transparent else
             "brush-pressure-canvas-smoke-report")
     command = [str(binary), "--" + flag, str(native_path)] + ([str(raw)] if raw else [])
-    prefix = "sony-" if raw else "transparent-" if transparent else ""
+    prefix = "sony-stabilized-" if stabilized_sony else "sony-" if raw else "transparent-" if transparent else ""
     result = dict(mode=prefix + "brush-pressure-" + mode, passed=False,
                   physical_tablet_verified=False, native_gpu_brush=False,
                   native_float_raw_decoder=False, photographs_published=False,
@@ -214,6 +236,7 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
         source_pixels = 32_947_264 if raw else 512 * 320
         assert data["source_pixels"] == source_pixels
         if raw:
+            validate_sony_pen_stabilization(data, selected=stabilized_sony)
             assert data["passed"] is False and data["gui_and_export_write_passed"]
             assert data["external_pixel_verification_pending"] and not data["export_exact_pixels_and_ICC"]
             assert data["source_bytes"] == SONY_BYTES and data["source_sha256"] == SONY_SHA256
@@ -302,6 +325,8 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
                                 one_undo_and_reopen=True, held_and_committed_rgb=True,
                                 exact_export_pixels_and_ICC=True, captures_verified=True,
                                 source_unchanged=True, settings_isolated=True)
+        if stabilized_sony:
+            result["checks"]["selected_pen_stabilization"] = True
         result["passed"] = True
     except (OSError, ValueError, TypeError, IndexError, KeyError, AssertionError, subprocess.TimeoutExpired) as error:
         result["error"] = str(error) or "Pressure validation predicate failed"
@@ -333,11 +358,15 @@ def main() -> int:
     parser.add_argument("--sony", type=Path)
     parser.add_argument("--verifier", type=Path)
     parser.add_argument("--transparent", action="store_true")
+    parser.add_argument("--stabilized-sony", action="store_true",
+                        help="Require explicitly selected pen stabilization in the real-Sony flow")
     args = parser.parse_args()
+    if args.stabilized_sony and (args.sony is None or args.transparent):
+        parser.error("--stabilized-sony requires --sony and an opaque real source")
     with tempfile.TemporaryDirectory(prefix="jixellight-pressure-home-") as folder:
         result = validate_brush_pressure(args.binary, os.environ.copy(), Path(folder),
                                         args.report, args.mode, args.sony, args.verifier,
-                                        transparent=args.transparent)
+                                        transparent=args.transparent, stabilized_sony=args.stabilized_sony)
     print(json.dumps(result, indent=2), flush=True)
     return 0 if result["passed"] else 1
 
