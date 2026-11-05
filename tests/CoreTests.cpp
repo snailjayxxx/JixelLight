@@ -3162,6 +3162,44 @@ private slots:
         QVERIFY(BD::validDocument(large));
         QVERIFY(!BT::exposureOnly(large,128,128,{0,0,128,128},&sentinel));
         checkUntouched();
+
+        // Dense concentric hard dabs have an analytic three-ring result.
+        // Later lower-pressure samples keep the existing stroke maximum;
+        // neither saturation nor an identical final image reduces charged work.
+        {
+            constexpr int edge=65;
+            const BT::Rect rect{0,0,edge,edge};
+            BM::Stroke fill{{.12,1,.6},std::vector<BM::Dab>(4096,{{.5,.5},.5})};
+            fill.dabs[0].pressure=1;
+            BM::Stroke erase{{.12,1,.3},std::vector<BM::Dab>(128,{{.5,.5},.25}),BM::StrokeMode::Erase};
+            erase.dabs[0].pressure=.5;
+            const BM::Stroke repaint{{.12,1,.4},{{{.5,.5},.25}}};
+            const BD::Document dense{{{"rings",true,1.25,{fill,erase,repaint}}}};
+            QJsonObject before;QVERIFY(BD::toJson(dense,&before));
+            // Integer candidate squares are 15x15 then 7x7 for fill,
+            // 7x7 then 3x3 for Erase, and 3x3 for the final Paint.
+            constexpr std::size_t expectedVisits=225+4095*49+49+127*9+9;
+            std::vector<float> expected(std::size_t(edge)*edge);
+            for(int y=0;y<edge;++y)for(int x=0;x<edge;++x) {
+                const double distance=std::hypot(double(x-32),double(y-32));
+                const double paintAlpha=distance<7.8?.6:0;
+                const double eraseAlpha=distance<3.9?.15:0;
+                const double repaintAlpha=distance<1.95?.1:0;
+                expected[std::size_t(y)*edge+x]=float(1.25*(1-(1-paintAlpha*(1-eraseAlpha))*(1-repaintAlpha)));
+            }
+            BT::ExposureOutput direct;QVERIFY(BT::exposureOnly(dense,edge,edge,rect,&direct));
+            QVERIFY(direct.weightedExposureEv==expected);QCOMPARE(direct.visitedDabPixels,expectedVisits);
+            for(const std::size_t indexBudget:{std::size_t(0),std::size_t(1),BT::MaxCandidateIndexReferences}) {
+                BT::FramePlan plan;QVERIFY(BT::planFrame(dense,edge,edge,rect,&plan,nullptr,{},indexBudget));
+                QCOMPARE(plan.candidateVisits,expectedVisits);
+                BT::ExposureOutput actual;QVERIFY(BT::exposureOnly(plan,0,&actual));
+                QVERIFY(actual.weightedExposureEv==expected);QCOMPARE(actual.visitedDabPixels,expectedVisits);
+            }
+            QJsonObject after;QVERIFY(BD::toJson(dense,&after));QCOMPARE(after,before);
+            auto overCapacity=dense;
+            overCapacity.layers[0].strokes[0].dabs.push_back({{.5,.5},.5});
+            QVERIFY(!BT::exposureOnly(overCapacity,edge,edge,rect,&sentinel));checkUntouched();
+        }
     }
 
     // F4 M4.2 research-only CPU pixel tile oracle; no live editor path.

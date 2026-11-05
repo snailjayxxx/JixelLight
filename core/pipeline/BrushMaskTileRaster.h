@@ -109,10 +109,15 @@ inline bool accumulateDab(const CandidateBounds &bounds,
     if (!area) return true;
     if (area>MaxDabPixelVisits-visited) return false;
     visited+=area;
+    // Valid pressure/opacity and feather <= 1 bound this dab's alpha.
+    // Keep candidate visits and row cancellation checks unchanged.
+    const double peakAlpha=style.opacity*pressure;
     for (int y=top;y<=bottom;++y) {
         if (stopped(cancel)) return false;
         const std::size_t row=std::size_t(y-tile.y)*std::size_t(tile.width);
         for (int x=left;x<=right;++x) {
+            const std::size_t offset=row+std::size_t(x-tile.x);
+            if (strokeAlpha[offset]>=peakAlpha) continue;
             const double radial=std::hypot(x-cx,y-cy)/radius;
             if (radial>=1) continue;
             double feather=1;
@@ -121,7 +126,6 @@ inline bool accumulateDab(const CandidateBounds &bounds,
                 feather=1-t*t*(3-2*t);
             }
             const double alpha=style.opacity*pressure*feather;
-            const std::size_t offset=row+std::size_t(x-tile.x);
             strokeAlpha[offset]=std::max(strokeAlpha[offset],alpha);
         }
     }
