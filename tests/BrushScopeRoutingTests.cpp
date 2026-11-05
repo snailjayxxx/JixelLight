@@ -294,16 +294,32 @@ private slots:
         QVERIFY2(actual.pixelCount,qPrintable(actual.error));QVERIFY(sameHistogram(actual,counts));QCOMPARE(budget->snapshot().charged,0);
         auto denied=std::make_shared<BrushRenderBudget>(1);ScopePlotCache plots(16*1024*1024,frames,denied);
         const auto beforeEncoded=counter("scope_plot_encoded_passes");
+        const auto beforeFrameHits=frames->snapshot()["hits"].toInteger();
+        int requestedModes=0;
         for(const auto &mode:{"waveform","parade","vectorscope"}) {
             const auto actualPlot=plots.render({source.image,plan,view,mode,11,true});const auto expectedPlot=renderEncodedScopePlot(expected,mode);
             QVERIFY2(!actualPlot.image.isNull(),qPrintable(actualPlot.error));QCOMPARE(actualPlot.pixels,32947264);QCOMPARE(actualPlot.image,expectedPlot.image);
+            ++requestedModes;
+            QCOMPARE(plots.snapshot()["misses"].toInteger(),qint64(requestedModes));
+            QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(requestedModes-1));
+            QCOMPARE(plots.snapshot()["entries"].toInteger(),qint64(1));
+            const auto hit=plots.render({source.image,plan,view,mode,12,true});
+            QCOMPARE(hit.image.cacheKey(),actualPlot.image.cacheKey());QCOMPARE(hit.pixels,actualPlot.pixels);
+            QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(requestedModes));
+            QCOMPARE(plots.snapshot()["misses"].toInteger(),qint64(requestedModes));
         }
-        QCOMPARE(counter("scope_plot_encoded_passes"),beforeEncoded+1);QCOMPARE(plots.snapshot()["hits"].toInteger(),2);QCOMPARE(denied->snapshot().charged,0);
+        // Large completed frames count each requested mode on demand. A second
+        // visit hits that exact ink; no color-render admission or batched
+        // speculative three-mode pass is needed.
+        QCOMPARE(counter("scope_plot_encoded_passes"),beforeEncoded);
+        QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(3));QCOMPARE(plots.snapshot()["misses"].toInteger(),qint64(3));
+        QCOMPARE(frames->snapshot()["hits"].toInteger(),beforeFrameHits+3);
+        QVERIFY(plots.snapshot()["charged_bytes"].toInteger()<=16*1024*1024);QCOMPARE(denied->snapshot().charged,0);
         QCOMPARE(StageGraph::outputFingerprint(source.image),before);QCOMPARE(fileHash(path),hash);
         qInfo().noquote()<<"BRUSH_SCOPE_ROUTING_EVIDENCE "<<QJsonDocument(QJsonObject{
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"case","native-sony-full-statistics"},{"raw_sha256",QString::fromLatin1(hash)},
             {"source_pixels",32947264},{"statistics_pixels",qint64(actual.pixelCount)},{"exact_histogram_bins",4096},{"exact_plot_modes",3},
-            {"uncropped_view_geometry",true},{"completed_frame_plot_reuse",true},{"operation_peak_reserved_bytes",budget->snapshot().peak},
+            {"uncropped_view_geometry",true},{"completed_frame_plot_reuse",true},{"requested_full_frame_modes",3},{"same_mode_cache_hits",3},{"speculative_batch_passes",0},{"operation_peak_reserved_bytes",budget->snapshot().peak},
             {"operation_end_charged_bytes",budget->snapshot().charged},{"source_unchanged",true},{"native_float_raw_decoder",false},{"native_gpu_brush",false}}).toJson(QJsonDocument::Compact);
     }
     void controllerFailuresRetryAndDiagnostic() {
