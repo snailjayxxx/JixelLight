@@ -23,9 +23,9 @@ jobs:
           - os: windows-2022
             artifact: JixelLight-Windows-x64
             triplet: x64-windows-static-md
-            # CI314 reached the aggregate 75-minute limit during package validation.
+            # CI337 reached90m after its47-mode manifest, cancelling final packaging.
             # Individual GUI and export/reference deadlines remain unchanged.
-            job_timeout: 90
+            job_timeout: 105
           - os: macos-15
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static

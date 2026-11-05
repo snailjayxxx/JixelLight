@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from ValidateBrushPressure import validate_sony_pen_stabilization, validate_brush_pressure
+from ValidateBrushPressure import validate_sony_pen_stabilization, validate_brush_pressure, validate_sony_runtime_qpa
 
 
 class SonyPenStabilizationValidation(unittest.TestCase):
@@ -20,6 +20,17 @@ class SonyPenStabilizationValidation(unittest.TestCase):
         d=deepcopy(self.data);d[key]=value
         with self.assertRaises((AssertionError, KeyError, TypeError)):
             validate_sony_pen_stabilization(d, selected=True)
+
+    def test_runtime_qpa_valid(self):
+        for mode in ("cpu", "gpu"):
+            expected = ("xcb" if mode == "gpu" else "offscreen") if sys.platform.startswith("linux") else "windows" if sys.platform == "win32" else "cocoa"
+            validate_sony_runtime_qpa({"actual_qpa":expected}, mode)
+
+    def test_runtime_qpa_missing(self):
+        with self.assertRaises(KeyError): validate_sony_runtime_qpa({}, "cpu")
+
+    def test_runtime_qpa_wrong(self):
+        with self.assertRaises(AssertionError): validate_sony_runtime_qpa({"actual_qpa":"incorrect"}, "gpu")
 
     def test_selected_observation(self):
         validate_sony_pen_stabilization(self.data, selected=True)

@@ -132,6 +132,20 @@ def preserve_failure_captures(data: dict, native_path: Path, report: Path, *, so
     return copied, errors
 
 
+def validate_sony_runtime_qpa(data: dict, mode: str) -> None:
+    """Require the platform actually reported by the native Sony process."""
+    assert mode in ("cpu", "gpu")
+    if sys.platform.startswith("linux"):
+        expected = "xcb" if mode == "gpu" else "offscreen"
+    elif sys.platform == "win32":
+        expected = "windows"
+    elif sys.platform == "darwin":
+        expected = "cocoa"
+    else:
+        raise ValueError("Unsupported Sony validation platform")
+    assert data["actual_qpa"] == expected
+
+
 def validate_sony_pen_stabilization(data: dict, *, selected: bool) -> None:
     """Reject mode crossover and incomplete selected-rule Sony observations."""
     assert data["selected_pen_stabilization_smoke"] is selected
@@ -237,6 +251,7 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
         assert data["source_pixels"] == source_pixels
         if raw:
             validate_sony_pen_stabilization(data, selected=stabilized_sony)
+            validate_sony_runtime_qpa(data, mode)
             assert data["passed"] is False and data["gui_and_export_write_passed"]
             assert data["external_pixel_verification_pending"] and not data["export_exact_pixels_and_ICC"]
             assert data["source_bytes"] == SONY_BYTES and data["source_sha256"] == SONY_SHA256
