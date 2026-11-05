@@ -760,7 +760,9 @@ Rectangle {
                             checked: root.brushEditor ? root.brushEditor.stabilizePen : false
                             enabled: !root.controller.brushDrawing
                             onClicked: if(root.brushEditor)root.brushEditor.stabilizePen=checked
-                            ToolTip.visible: hovered
+                            Accessible.name: text
+                            Accessible.description: ToolTip.text
+                            ToolTip.visible: hovered || visualFocus
                             ToolTip.text: root.t("仅在开启时调整新笔触的位置：半个图像像素内的移动保持原位，笔压照常变化。鼠标与已有笔触不变。",
                                                  "When selected, new pen strokes hold position for moves within half an image pixel; pressure stays active. Mouse input and existing strokes are unchanged.")
                         }
