@@ -155,6 +155,15 @@ def main() -> int:
                     label = prefix + "brush-stabilization-" + action + "-" + mode
                     results.append(validate_brush_stabilization(executable, environment, Path(temp) / label,
                         reports / (label + ".json"), mode, transparent=transparent, erase=erase))
+            # BEGIN additional1px owned package modes
+            for erase in (False, True):
+                action = "erase" if erase else "paint"
+                for transparent in (False, True):
+                    prefix = "transparent-" if transparent else ""
+                    label = prefix + "one-pixel-brush-stabilization-" + action + "-" + mode
+                    results.append(validate_brush_stabilization(executable, environment, Path(temp) / label,
+                        reports / (label + ".json"), mode, transparent=transparent, erase=erase, one_pixel=True))
+            # END additional1px owned package modes
             if args.sony_brush_raw:
                 sony_home = Path(temp) / ("sony-brush-" + mode)
                 sony_home.mkdir()
@@ -172,6 +181,12 @@ def main() -> int:
                 results.append(validate_brush_pressure(executable, environment, pressure_selected_home,
                     reports / ("sony-stabilized-brush-pressure-" + mode + ".json"), mode,
                     args.sony_brush_raw.resolve(), pressure_verifier, stabilized_sony=True))
+                # BEGIN additional1px Sony package modes
+                pressure_selected_home = Path(temp) / ("sony-one-pixel-brush-pressure-" + mode)
+                results.append(validate_brush_pressure(executable, environment, pressure_selected_home,
+                    reports / ("sony-one-pixel-brush-pressure-" + mode + ".json"), mode,
+                    args.sony_brush_raw.resolve(), pressure_verifier, stabilized_sony=True, one_pixel=True))
+                # END additional1px Sony package modes
         results.append(validate_shortcut_help(executable, environment, Path(temp) / "shortcut-help", reports / "shortcut-help.json"))
         # Exercise the real packaged dialog with a fake in-memory clipboard.  Native
         # clipboard writes are reserved for explicitly isolated CI runner tests.

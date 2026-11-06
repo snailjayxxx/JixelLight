@@ -169,8 +169,8 @@ def validate_sony_pen_stabilization(data: dict, *, selected: bool) -> None:
 def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Path,
                            report: Path, mode: str, raw: Path | None = None,
                            verifier: Path | None = None, *, transparent: bool = False,
-                           stabilized_sony: bool = False) -> dict:
-    if mode not in ("cpu", "gpu") or (transparent and raw is not None) or (stabilized_sony and raw is None):
+                           stabilized_sony: bool = False, one_pixel: bool = False) -> dict:
+    if type(one_pixel) is not bool or (one_pixel and not stabilized_sony) or mode not in ("cpu", "gpu") or (transparent and raw is not None) or (stabilized_sony and raw is None):
         raise ValueError("Invalid pressure-validation mode/source")
     binary, report = binary.resolve(), report.resolve()
     if report.exists() or list(report.parent.glob(report.stem + ".*")):
@@ -213,12 +213,13 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
     native_log = work / (report.stem + ".native.log")
     reference_path = work / (report.stem + ".reference.json")
     reference_log = work / (report.stem + ".reference.log")
-    flag = ("sony-brush-stabilized-pressure-canvas-smoke-report" if stabilized_sony else
+    flag = ("sony-one-pixel-brush-pressure-canvas-smoke-report" if one_pixel else
+            "sony-brush-stabilized-pressure-canvas-smoke-report" if stabilized_sony else
             "sony-brush-pressure-canvas-smoke-report" if raw else
             "transparent-brush-pressure-canvas-smoke-report" if transparent else
             "brush-pressure-canvas-smoke-report")
     command = [str(binary), "--" + flag, str(native_path)] + ([str(raw)] if raw else [])
-    prefix = "sony-stabilized-" if stabilized_sony else "sony-" if raw else "transparent-" if transparent else ""
+    prefix = "sony-one-pixel-" if one_pixel else "sony-stabilized-" if stabilized_sony else "sony-" if raw else "transparent-" if transparent else ""
     result = dict(mode=prefix + "brush-pressure-" + mode, passed=False,
                   physical_tablet_verified=False, native_gpu_brush=False,
                   native_float_raw_decoder=False, photographs_published=False,
@@ -250,7 +251,11 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
         source_pixels = 32_947_264 if raw else 512 * 320
         assert data["source_pixels"] == source_pixels
         if raw:
-            validate_sony_pen_stabilization(data, selected=stabilized_sony)
+            if one_pixel:
+                from ValidateOnePixelSonyValidation import validate_one_pixel_sony_pen
+                validate_one_pixel_sony_pen(data, selected=stabilized_sony)
+            else:
+                validate_sony_pen_stabilization(data, selected=stabilized_sony)
             validate_sony_runtime_qpa(data, mode)
             assert data["passed"] is False and data["gui_and_export_write_passed"]
             assert data["external_pixel_verification_pending"] and not data["export_exact_pixels_and_ICC"]
@@ -375,13 +380,16 @@ def main() -> int:
     parser.add_argument("--transparent", action="store_true")
     parser.add_argument("--stabilized-sony", action="store_true",
                         help="Require explicitly selected pen stabilization in the real-Sony flow")
+    parser.add_argument("--one-pixel", action="store_true", help="Require1px Sony selection together with --stabilized-sony")
     args = parser.parse_args()
+    if args.one_pixel and not args.stabilized_sony:
+        parser.error("--one-pixel requires --stabilized-sony and --sony")
     if args.stabilized_sony and (args.sony is None or args.transparent):
         parser.error("--stabilized-sony requires --sony and an opaque real source")
     with tempfile.TemporaryDirectory(prefix="jixellight-pressure-home-") as folder:
         result = validate_brush_pressure(args.binary, os.environ.copy(), Path(folder),
                                         args.report, args.mode, args.sony, args.verifier,
-                                        transparent=args.transparent, stabilized_sony=args.stabilized_sony)
+                                        transparent=args.transparent, stabilized_sony=args.stabilized_sony, one_pixel=args.one_pixel)
     print(json.dumps(result, indent=2), flush=True)
     return 0 if result["passed"] else 1
 

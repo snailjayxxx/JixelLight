@@ -147,7 +147,7 @@ Item {
             if (!root.layerPaintable && !(eraserTip && root.editor.layerId === "")) return
             const mode=eraserTip ? "erase" : root.editor.mode
             const begun=root.editor.stabilizePen
-                ? root.controller.beginStabilizedBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)
+                ? root.controller.beginStabilizedBrushStrokeModePressurePixels(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure,root.editor.stabilizePenPixels)
                 : root.controller.beginBrushStrokeModePressure(root.editor.layerId,p.x,p.y,root.editor.radius,root.editor.hardness,root.editor.opacity,root.editor.exposure,mode,pressure)
             if (!begun) return
             root.editor.strokeSelection=({})

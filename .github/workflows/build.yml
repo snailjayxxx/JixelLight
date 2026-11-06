@@ -188,6 +188,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
           python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
           python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
+      - name: Explicit one-pixel Sony pen choice and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            VERIFY=build/bin/Release/JixelLightBrushPressureExportVerifier.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            VERIFY=build/bin/JixelLightBrushPressureExportVerifier
+          fi
+          python -m unittest discover -s tests -p 'TestOnePixelSonyValidation.py' -v
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-one-pixel-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony --one-pixel
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-one-pixel-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony --one-pixel
       - name: Explicit prefix recovery on the actual photo canvas
         shell: bash
         run: |
@@ -220,6 +233,23 @@ jobs:
               if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
               python tools/ValidateBrushStabilization.py "$EXE" "gui-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
               python tools/ValidateBrushStabilization.py "$EXE" "gui-transparent-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+            done
+          done
+      - name: Explicit one-pixel pen choice on the photo canvas
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python -m unittest discover -s tests -p 'TestOnePixelBrushValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
             done
           done
       - name: Real RAW JPEG CPU GPU render matrix
@@ -492,6 +522,14 @@ jobs:
           python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
           python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
           xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
+      - name: Explicit one-pixel Sony pen choice and exact export
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestOnePixelSonyValidation.py' -v
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-one-pixel-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony --one-pixel
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-one-pixel-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony --one-pixel
       - name: Explicit prefix recovery on the actual photo canvas
         env:
           QT_QPA_PLATFORM: offscreen
@@ -527,6 +565,25 @@ jobs:
               else
                 python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
                 python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              fi
+            done
+          done
+      - name: Explicit one-pixel pen choice on the photo canvas
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestOnePixelBrushValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              if [ "$MODE" = gpu ]; then
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
+              else
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
               fi
             done
           done

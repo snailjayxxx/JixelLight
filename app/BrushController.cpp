@@ -213,7 +213,11 @@ bool PhotoController::beginBrushStrokeModePressure(const QString &layer,double x
 bool PhotoController::beginStabilizedBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure) {
     return beginBrushStrokeInput(layer,x,y,radius,hardness,opacity,exposure,mode,pressure,true);
 }
-bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen) {
+bool PhotoController::beginStabilizedBrushStrokeModePressurePixels(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,double movementPixels) {
+    if(movementPixels!=0.5 && movementPixels!=1.0)return false;
+    return beginBrushStrokeInput(layer,x,y,radius,hardness,opacity,exposure,mode,pressure,true,movementPixels);
+}
+bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen,double movementPixels) {
     if(!std::isfinite(pressure)||pressure<0||pressure>1|| (mode!="paint"&&mode!="erase"))return false;
     const auto strokeMode=mode=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
     if(m_brushGesture||brushRecoveryAvailable())return false;
@@ -247,7 +251,7 @@ bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double
         g->builder=std::make_unique<BrushMaskGeometry::StrokeBuilder>(g->frame.width(),g->frame.height(),style,strokeMode);
         BrushMaskGeometry::Dab first{{x,y},pressure};
         if(stabilizePen) {
-            g->movementStabilizer.emplace(g->frame.width(),g->frame.height());
+            g->movementStabilizer.emplace(g->frame.width(),g->frame.height(),movementPixels);
             const auto mapped=g->movementStabilizer->map(first);if(!mapped)return false;first=*mapped;
         }
         if(!g->builder->setRecoveryLimit(strokeCapacity)

@@ -69,8 +69,11 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"edit-recipe-smoke-report", "Validate the edit recipe dialog with an in-memory clipboard and owned pixels", "file"});
     arguments.addOption({"edit-recipe-clipboard-smoke-report", "Validate recipe clipboard using offscreen or explicitly isolated CI clipboard", "file"});
     arguments.addOption({"screenshot", "Screenshot path for GUI validation", "file"});
+    arguments.addOption({"one-pixel-brush-stabilization-smoke-report", "Validate explicitly selected one image pixel pen input with owned pixels", "file"});
+    arguments.addOption({"transparent-one-pixel-brush-stabilization-smoke-report", "Validate explicit one pixel input on transparent owned pixels", "file"});
+    arguments.addOption({"sony-one-pixel-brush-pressure-canvas-smoke-report", "Validate explicit one pixel pen input on pinned Sony RAW and exact export", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"))
@@ -80,7 +83,8 @@ int main(int argc, char *argv[]) {
     if(arguments.isSet("brush-recovery-erase")&&!arguments.isSet("brush-recovery-smoke-report")
         &&!arguments.isSet("transparent-brush-recovery-smoke-report"))return 2;
     if(arguments.isSet("brush-stabilization-erase")&&!arguments.isSet("brush-stabilization-smoke-report")
-        &&!arguments.isSet("transparent-brush-stabilization-smoke-report"))return 2;
+        &&!arguments.isSet("transparent-brush-stabilization-smoke-report")
+        &&!arguments.isSet("one-pixel-brush-stabilization-smoke-report")&&!arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))return 2;
     std::unique_ptr<QTemporaryDir> smokeSettings;
     if(smokeModes) {
         // HOME/APPDATA overrides alone do not isolate native CFPreferences or
@@ -167,6 +171,18 @@ int main(int argc, char *argv[]) {
     if(arguments.isSet("shortcut-help-smoke-report")) {
         if(!window||!photos.isEmpty())return 2;
         startShortcutHelpSmokeRun(&controller,window,arguments.value("shortcut-help-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report")) {
+        if(!window||photos.size()!=1)return 2;
+        app.setProperty("jixellightSmokeSonyPenStabilization",true);
+        startSonyOnePixelBrushPressureCanvasSmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("sony-one-pixel-brush-pressure-canvas-smoke-report"));
+        return app.exec();
+    }
+    if(arguments.isSet("one-pixel-brush-stabilization-smoke-report")||arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report")) {
+        if(!window||!photos.isEmpty())return 2;
+        const bool transparent=arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report");
+        startOnePixelBrushStabilizationSmokeRun(&controller,window,arguments.value(transparent?"transparent-one-pixel-brush-stabilization-smoke-report":"one-pixel-brush-stabilization-smoke-report"),transparent,arguments.isSet("brush-stabilization-erase"));
         return app.exec();
     }
     if(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report")) {

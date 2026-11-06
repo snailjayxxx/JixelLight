@@ -755,16 +755,29 @@ Rectangle {
                             ToolTip.text: root.t("擦除仅影响所选已有图层；每笔可独立撤销。","Erase affects only the selected existing layer; each stroke has one Undo step.")
                         }
                         CheckBox {
+                            id: brushPenChoice
                             objectName: "brushPenStabilization"; Layout.minimumWidth: implicitWidth; Layout.maximumWidth: implicitWidth
-                            text: root.t("稳笔 ½像素", "Steady pen ½px")
+                            text: root.t("稳笔", "Steady pen")
                             checked: root.brushEditor ? root.brushEditor.stabilizePen : false
                             enabled: !root.controller.brushDrawing
                             onClicked: if(root.brushEditor)root.brushEditor.stabilizePen=checked
                             Accessible.name: text
                             Accessible.description: ToolTip.text
                             ToolTip.visible: hovered || visualFocus
-                            ToolTip.text: root.t("仅在开启时调整新笔触的位置：半个图像像素内的移动保持原位，笔压照常变化。鼠标与已有笔触不变。",
-                                                 "When selected, new pen strokes hold position for moves within half an image pixel; pressure stays active. Mouse input and existing strokes are unchanged.")
+                            ToolTip.text: root.brushEditor && root.brushEditor.stabilizePenPixels === 1
+                                ? root.t("仅在开启时调整新笔触的位置：一个图像像素内的移动保持原位，笔压照常变化。鼠标与已有笔触不变。", "When selected, new pen strokes hold position for moves within one image pixel; pressure stays active. Mouse input and existing strokes are unchanged.")
+                                : root.t("仅在开启时调整新笔触的位置：半个图像像素内的移动保持原位，笔压照常变化。鼠标与已有笔触不变。", "When selected, new pen strokes hold position for moves within half an image pixel; pressure stays active. Mouse input and existing strokes are unchanged.")
+                        }
+                        ComboBox {
+                            objectName: "brushPenDistance"; Layout.preferredWidth: 56; Layout.minimumWidth: 56; Layout.maximumWidth: 56
+                            model: ["½px", "1px"]
+                            currentIndex: root.brushEditor && root.brushEditor.stabilizePenPixels === 1 ? 1 : 0
+                            enabled: root.brushEditor !== null && root.brushEditor.stabilizePen && !root.controller.brushDrawing
+                            onActivated: function(index) { root.brushEditor.stabilizePenPixels=index===1 ? 1 : 0.5 }
+                            Accessible.name: root.t("稳笔范围，图像像素", "Steady pen distance in image pixels")
+                            Accessible.description: ToolTip.text
+                            ToolTip.visible: hovered || visualFocus
+                            ToolTip.text: brushPenChoice.ToolTip.text
                         }
                     }
                     RowLayout {

@@ -218,8 +218,8 @@ def validate_stabilization_report(data: dict, mode: str, transparent: bool,
 
 def validate_brush_stabilization(binary: Path, environment: dict[str, str], home: Path,
                                   report: Path, mode: str, *, transparent: bool = False,
-                                  qpa: str | None = None, erase: bool = False) -> dict:
-    if mode not in ("cpu", "gpu") or qpa not in (None, "offscreen", "cocoa", "windows", "xcb"):
+                                  qpa: str | None = None, erase: bool = False, one_pixel: bool = False) -> dict:
+    if type(one_pixel) is not bool or mode not in ("cpu", "gpu") or qpa not in (None, "offscreen", "cocoa", "windows", "xcb"):
         raise ValueError("Invalid brush-stabilization mode or QPA")
     if report.is_symlink():
         raise ValueError("Existing report link is preserved")
@@ -254,10 +254,10 @@ def validate_brush_stabilization(binary: Path, environment: dict[str, str], home
     work = Path(tempfile.mkdtemp(prefix="jixellight-brush-stabilization-"))
     native = work / (report.stem + ".native.json")
     log = work / (report.stem + ".native.log")
-    flag = ("transparent-brush-stabilization-smoke-report" if transparent else
-            "brush-stabilization-smoke-report")
+    flag = (("transparent-one-pixel-brush-stabilization-smoke-report" if transparent else "one-pixel-brush-stabilization-smoke-report") if one_pixel else
+            ("transparent-brush-stabilization-smoke-report" if transparent else "brush-stabilization-smoke-report"))
     prefix = "transparent-" if transparent else ""
-    result = {"mode": prefix + "brush-stabilization-" + ("erase-" if erase else "paint-") + mode, "passed": False,
+    result = {"mode": prefix + ("one-pixel-brush-stabilization-" if one_pixel else "brush-stabilization-") + ("erase-" if erase else "paint-") + mode, "passed": False,
               "physical_tablet_verified": False, "native_gpu_brush": False,
               "native_float_raw_decoder": False, "production_accepted": False,
               "continuous_unique_jitter_fixed": False, "raw_unfiltered_jitter_fixed": False,
@@ -274,7 +274,11 @@ def validate_brush_stabilization(binary: Path, environment: dict[str, str], home
         data = strict_json(native.read_text(encoding="utf-8"))
         result["report"] = data
         assert run.returncode == 0
-        validate_stabilization_report(data, mode, transparent, erase, qpa)
+        if one_pixel:
+            from ValidateOnePixelBrush import validate_one_pixel_report
+            validate_one_pixel_report(data, mode, transparent, erase, qpa)
+        else:
+            validate_stabilization_report(data, mode, transparent, erase, qpa)
         copied, errors = copy_captures(data, native, report)
         result["capture_artifacts"], result["capture_errors"] = copied, errors
         assert not errors and set(copied) == LABELS
@@ -311,11 +315,12 @@ def main() -> int:
     parser.add_argument("--transparent", action="store_true")
     parser.add_argument("--erase", action="store_true")
     parser.add_argument("--qpa", choices=("offscreen", "cocoa", "windows", "xcb"))
+    parser.add_argument("--one-pixel", action="store_true", help="Require explicitly selected1px input; default keeps half-pixel validation")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="jixellight-brush-stabilization-home-") as home:
         result = validate_brush_stabilization(args.executable, os.environ.copy(), Path(home),
                                                args.report, args.mode, transparent=args.transparent,
-                                               qpa=args.qpa, erase=args.erase)
+                                               qpa=args.qpa, erase=args.erase, one_pixel=args.one_pixel)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0 if result["passed"] else 1
 

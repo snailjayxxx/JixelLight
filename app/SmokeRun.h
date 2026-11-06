@@ -23,3 +23,6 @@ void startShortcutHelpSmokeRun(PhotoController *,QQuickWindow *,const QString &)
 void startEditRecipeSmokeRun(PhotoController *,QQuickWindow *,const QString &);
 
 void startEditRecipeClipboardSmokeRun(PhotoController *,QQuickWindow *,const QString &);
+
+void startOnePixelBrushStabilizationSmokeRun(PhotoController *,QQuickWindow *,const QString &,bool transparent,bool erase);
+void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

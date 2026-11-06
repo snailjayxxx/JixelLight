@@ -705,6 +705,48 @@ private slots:
         QCOMPARE(c.endBrushStroke(),QStringLiteral("full"));QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);const auto final=c.gpuPlan(true).state.brushMasks;const auto &last=final.layers[0].strokes.back();QCOMPARE(last.dabs.size(),size_t(1));QCOMPARE(last.dabs[0].center.x,.5);QCOMPARE(last.dabs[0].pressure,.5);
         QVERIFY(!c.beginStabilizedBrushStrokeModePressure("full",.5,.5,.002,.6,1,1,"paint",.5));QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);
     }
+
+    void onePixelSelectedPressureCommitsEightUniqueStreamsAndHistory() {
+        namespace BM=BrushMaskGeometry;
+        for(const QString mode:{QStringLiteral("paint"),QStringLiteral("erase")})for(bool vertical:{false,true})for(double amplitude:{.5001,.9999}) {
+            QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("onepx.png");QImage image(512,320,QImage::Format_RGBA64);image.fill(QColor(70,90,110));QVERIFY(image.save(path));const auto sourceHash=hashFile(path);
+            PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QString layer;
+            if(mode=="erase"){QVERIFY(c.beginBrushStroke("",.5,.5,.04,1,.7,1));layer=c.endBrushStroke();QVERIFY(!layer.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);}
+            const auto before=state(c);const int history=cursor(c);
+            QVERIFY(c.beginStabilizedBrushStrokeModePressurePixels(layer,.5,.5,.002,.6,1,1,mode,.5,1));
+            BM::StrokeBuilder oracle(512,320,{.002,.6,1},mode=="erase"?BM::StrokeMode::Erase:BM::StrokeMode::Paint);QVERIFY(oracle.append({{.5,.5},.5}));
+            for(int i=1;i<=9000;++i){const double distance=amplitude*(.99+double(i)/900000.),offset=(i%2?1:-1)*distance;const double x=.5+(vertical?0:offset/512),y=.5+(vertical?offset/320:0),pressure=i%2?.501:.5;QVERIFY(c.appendBrushStroke(x,y,pressure));QVERIFY(oracle.append({{.5,.5},pressure}));}
+            QVERIFY(!c.brushRecoveryAvailable());QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);QVERIFY(c.appendBrushStroke(.5,.5,0));QVERIFY(oracle.append({{.5,.5},0}));const auto expected=oracle.finish();QVERIFY(expected);
+            const auto id=c.endBrushStroke();QVERIFY(!id.isEmpty());QCOMPARE(cursor(c),history+1);const auto after=state(c);const auto doc=c.gpuPlan(true).state.brushMasks;const auto &stroke=doc.layers.back().strokes.back();QCOMPARE(stroke.mode,expected->mode);QCOMPARE(stroke.dabs.size(),expected->dabs.size());QCOMPARE(stroke.dabs.size(),size_t(2));
+            for(size_t i=0;i<stroke.dabs.size();++i){QCOMPARE(stroke.dabs[i].center.x,expected->dabs[i].center.x);QCOMPARE(stroke.dabs[i].center.y,expected->dabs[i].center.y);QCOMPARE(stroke.dabs[i].pressure,expected->dabs[i].pressure);}
+            c.undo();QCOMPARE(state(c),before);c.redo();QCOMPARE(state(c),after);QCOMPARE(hashFile(path),sourceHash);
+        }
+    }
+    void onePixelChoiceRejectsInvalidAndKeepsRawHalfRecoveryDecisions() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("onepx-limits.png");QImage image(512,320,QImage::Format_RGBA64);image.fill(QColor(70,90,110));QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        const auto before=state(c);const auto history=cursor(c);
+        for(double v:{0.,.1,.4999,.75,1.0001,std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity()}){QVERIFY(!c.beginStabilizedBrushStrokeModePressurePixels("",.5,.5,.002,.6,1,1,"paint",.5,v));QVERIFY(!c.brushDrawing());QVERIFY(!c.brushRecoveryAvailable());QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);}
+        for(int rule:{0,1}){
+            const bool started=rule?c.beginStabilizedBrushStrokeModePressurePixels("",.5,.5,.002,.6,1,1,"paint",.5,.5):c.beginBrushStrokeModePressure("",.5,.5,.002,.6,1,1,"paint",.5);QVERIFY(started);int refused=0;
+            for(int i=1;i<=9000;++i){const double dx=(i%2?1:-1)*(.9+double(i)/100000.)/512;if(!c.appendBrushStroke(.5+dx,.5,i%2?.501:.5)){refused=i;break;}}
+            QVERIFY(refused>0);QVERIFY(c.brushRecoveryAvailable());QVERIFY(!c.brushDrawing());QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);QVERIFY(!c.beginStabilizedBrushStrokeModePressurePixels("",.5,.5,.002,.6,1,1,"paint",.5,1));QCOMPARE(state(c),before);QCOMPARE(cursor(c),history);QVERIFY(c.brushRecoveryAvailable());c.discardBrushRecovery();QVERIFY(!c.brushRecoveryAvailable());
+        }
+    }
+    void onePixelCapturesChoicePerGestureAndResetsAnchor() {
+        namespace BM=BrushMaskGeometry;
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("onepx-capture.png");QImage image(512,320,QImage::Format_RGBA64);image.fill(QColor(70,90,110));QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.beginStabilizedBrushStrokeModePressurePixels("",.3,.4,.002,.6,1,1,"paint",.5,1));QVERIFY(c.appendBrushStroke(.3+.9/512,.4,.7));QVERIFY(!c.beginStabilizedBrushStrokeModePressurePixels("",.6,.4,.002,.6,1,1,"paint",.5,.5));QVERIFY(c.appendBrushStroke(.3+.95/512,.4,.8));QVERIFY(!c.endBrushStroke().isEmpty());const auto first=c.gpuPlan(true).state.brushMasks.layers.back().strokes.back();BM::StrokeBuilder oracle(512,320,{.002,.6,1});QVERIFY(oracle.append({{.3,.4},.5}));QVERIFY(oracle.append({{.3,.4},.7}));QVERIFY(oracle.append({{.3,.4},.8}));const auto expected=oracle.finish();QVERIFY(expected);QCOMPARE(first.dabs.size(),expected->dabs.size());for(size_t i=0;i<first.dabs.size();++i){QCOMPARE(first.dabs[i].center.x,expected->dabs[i].center.x);QCOMPARE(first.dabs[i].center.y,expected->dabs[i].center.y);QCOMPARE(first.dabs[i].pressure,expected->dabs[i].pressure);}
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);
+        QVERIFY(c.beginStabilizedBrushStrokeModePressurePixels("",.7,.4,.002,.6,1,1,"paint",.5,.5));QVERIFY(c.appendBrushStroke(.7+.9/512,.4,.7));QVERIFY(!c.endBrushStroke().isEmpty());const auto second=c.gpuPlan(true).state.brushMasks.layers.back().strokes.back();QVERIFY(second.dabs.size()>1);QCOMPARE(second.dabs.front().center.x,.7);QCOMPARE(second.dabs.back().center.x,.7+.9/512);
+        BM::PenMovementStabilizer a(512,320),b(512,320,.5);for(int i=0;i<100;++i){BM::Dab input{{.5+2e-6*i,.5},i%2?.501:.5};const auto x=a.map(input),y=b.map(input);QVERIFY(x&&y);QCOMPARE(x->center.x,y->center.x);QCOMPARE(x->center.y,y->center.y);QCOMPARE(x->pressure,y->pressure);}
+    }
+    void onePixelStillHonorsDocumentAndSingleStrokeCapacity() {
+        namespace BM=BrushMaskGeometry;namespace BD=BrushMaskDocument;
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("onepx-capacity.png");QImage image(512,320,QImage::Format_RGBA64);image.fill(QColor(70,90,110));QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);const auto before=state(c);
+        QVERIFY(c.beginStabilizedBrushStrokeModePressurePixels("",.1,.5,.002,.6,1,1,"paint",1,1));bool refused=false;for(int i=1;i<=12;++i)if(!c.appendBrushStroke(i%2?.9:.1,.5,1)){refused=true;break;}QVERIFY(refused);QVERIFY(c.brushRecoveryAvailable());QCOMPARE(state(c),before);c.discardBrushRecovery();
+        BM::Stroke repeated{{.002,.6,1},{{{.5,.5},1}}};repeated.dabs.resize(BM::MaxDabsPerStroke,repeated.dabs[0]);BD::Document document{{{"full",true,1,{repeated,repeated,repeated,repeated}}}};document.layers[0].strokes.back().dabs.pop_back();QJsonObject stored;QVERIFY(BD::toJson(document,&stored));QVERIFY(c.executeEditCommand({{"command","mask.brush.replace"},{"document",stored}}));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady(),15000);QCOMPARE(c.brushCapacity()["dabs"].toInt(),16383);
+        QVERIFY(c.beginStabilizedBrushStrokeModePressurePixels("full",.5,.5,.002,.6,1,1,"paint",0,1));QVERIFY(c.appendBrushStroke(.5+.9/512,.5,.5));QCOMPARE(c.endBrushStroke(),QStringLiteral("full"));QCOMPARE(c.brushCapacity()["dabs"].toInt(),16384);QVERIFY(!c.beginStabilizedBrushStrokeModePressurePixels("full",.5,.5,.002,.6,1,1,"paint",.5,1));
+    }
 };
 QTEST_MAIN(BrushGestureTests)
 #include "BrushGestureTests.moc"

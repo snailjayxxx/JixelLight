@@ -36,6 +36,7 @@ namespace XmpSidecar { struct Document; }
 
 class PhotoController final : public QObject {
     friend void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+    friend void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     Q_OBJECT
     Q_PROPERTY(QVariantMap sonyLook READ sonyLook NOTIFY lookChanged)
     Q_PROPERTY(QVariantMap lookState READ lookState NOTIFY lookChanged)
@@ -325,6 +326,7 @@ public:
     Q_INVOKABLE bool beginBrushStrokeMode(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode);
     Q_INVOKABLE bool beginBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure);
     Q_INVOKABLE bool beginStabilizedBrushStrokeModePressure(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure);
+    Q_INVOKABLE bool beginStabilizedBrushStrokeModePressurePixels(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,double movementPixels);
     Q_INVOKABLE bool appendBrushStroke(double x,double y,double pressure=1);
     Q_INVOKABLE QString endBrushStroke();
     Q_INVOKABLE void cancelBrushStroke();
@@ -606,7 +608,7 @@ private:
         std::optional<BrushMaskGeometry::PenMovementStabilizer> movementStabilizer;
     };
     std::unique_ptr<BrushGesture> m_brushGesture,m_brushRecovery;
-    bool beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen);
+    bool beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen,double movementPixels=0.5);
     bool offerBrushRecovery(std::unique_ptr<BrushGesture> gesture);
     QString commitBrushGesture(std::unique_ptr<BrushGesture> gesture);
     bool brushGestureCurrent() const;
