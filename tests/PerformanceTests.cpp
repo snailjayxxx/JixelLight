@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <QSemaphore>
+#include "tests/GeometryProgressProbe.h"
 #include <QImage>
 #include <QRgba64>
 #include <QTemporaryDir>
@@ -532,11 +534,40 @@ private slots:
         qputenv("JIXELLIGHT_CPU_THREADS","8"); const auto parallel=g.apply(source);
         if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous); else qunsetenv("JIXELLIGHT_CPU_THREADS");
         QVERIFY(!serial.isNull()); QCOMPARE(parallel,serial); QCOMPARE(source,before);
+        // Cancel after an actual completed row, while the producer is held
+        // before its next row. Sleeping cannot establish this ordering.
+        qputenv("JIXELLIGHT_CPU_THREADS","1");
+        auto restoreBudget=qScopeGuard([&] {
+            if (hadBudget) qputenv("JIXELLIGHT_CPU_THREADS",previous);
+            else qunsetenv("JIXELLIGHT_CPU_THREADS");
+        });
         const auto token=std::make_shared<std::atomic_bool>(false);
-        auto future=QtConcurrent::run([&] { return g.apply(source,token); });
-        QThread::msleep(2); token->store(true);
-        future.waitForFinished(); QVERIFY(future.result().isNull()); QCOMPARE(source,before);
+        QThreadPool cancellationPool; cancellationPool.setMaxThreadCount(1);
+        QSemaphore rowReady,resume;
+        std::atomic_int completedRows{0};
+        std::atomic_bool producerOffOwner{false};
+        QThread *const owner=QThread::currentThread();
+        auto future=QtConcurrent::run(&cancellationPool,[&] {
+            producerOffOwner.store(QThread::currentThread()!=owner);
+            GeometryProgressProbe::rowCompleted=[&](int row) {
+                completedRows.fetch_add(1);
+                if (row==0) { rowReady.release(); resume.acquire(); }
+            };
+            auto clearProbe=qScopeGuard([] { GeometryProgressProbe::rowCompleted={}; });
+            return g.apply(source,token);
+        });
+        const bool sawCompletedRow=rowReady.tryAcquire(1,5000);
+        const bool producerPending=!future.isFinished();
+        token->store(true);
+        // Always unblock before any assertion or wait, including a failed
+        // observation. No waiting owner can steal and run a blocked task.
+        resume.release();
+        future.waitForFinished();
+        QVERIFY(sawCompletedRow); QVERIFY(producerPending);
+        QVERIFY(producerOffOwner.load()); QCOMPARE(completedRows.load(),1);
+        QVERIFY(future.result().isNull()); QCOMPARE(source,before);
         QVERIFY(g.apply(source,token).isNull());
+        qInfo("GEOMETRY_CANCEL_OBSERVED_V1 completed_rows=1 pending=true worker=true null=true source_unchanged=true");
     }
     void parallelIsDeterministic() {
         const QImage image=fixture(800,512);

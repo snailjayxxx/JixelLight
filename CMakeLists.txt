@@ -231,7 +231,10 @@ foreach(format png16 tiff16 webp8)
 endforeach()
 add_test(NAME brush-large-jpeg COMMAND JixelLightLargeBrushTests sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu:paint -o brush-large-jpeg-results.txt,txt -o -,txt)
 set_tests_properties(brush-large-jpeg PROPERTIES TIMEOUT 120)
-qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp)
+# A test-only compiled copy provides a row observation seam; Core/App never
+# define the probe and retain the original cancellation and pixel algorithm.
+qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp core/pipeline/GeometryCorrections.cpp)
+target_compile_definitions(JixelLightPerformanceTests PRIVATE JIXELLIGHT_GEOMETRY_TEST_PROGRESS=1)
 target_link_libraries(JixelLightPerformanceTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME performance-correctness COMMAND JixelLightPerformanceTests -o performance-results.txt,txt -o -,txt)
 qt_add_executable(JixelLightBenchmark tools/Benchmark.cpp tests/LegacyPipeline.cpp)

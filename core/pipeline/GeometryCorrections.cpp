@@ -1,4 +1,7 @@
 #include "GeometryState.h"
+#ifdef JIXELLIGHT_GEOMETRY_TEST_PROGRESS
+#include "tests/GeometryProgressProbe.h"
+#endif
 #include "core/pipeline/FloatGeometrySampling.h"
 #include "core/async/ParallelRows.h"
 #include "diagnostics/PerformanceRecorder.h"
@@ -127,6 +130,9 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
                     : FloatGeometrySampling::Sample{};
                 FloatGeometrySampling::write(out+4*x,mixed);
             }
+#ifdef JIXELLIGHT_GEOMETRY_TEST_PROGRESS
+        GeometryProgressProbe::notify(y);
+#endif
         });
     } else {
     // The historical integer rounding and sampling path is intentionally
@@ -144,6 +150,9 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
             // their own radial position and return unassociated 16-bit values.
             out[x]=green.a>0 ? QRgba64::fromRgba64(channel(red.r),channel(green.g),channel(blue.b),channel(green.a)) : QRgba64::fromRgba64(0,0,0,0);
         }
+#ifdef JIXELLIGHT_GEOMETRY_TEST_PROGRESS
+        GeometryProgressProbe::notify(y);
+#endif
     });
     }
     return cancelled(cancel) || invalid ? QImage{} : result;
