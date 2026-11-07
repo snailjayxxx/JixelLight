@@ -19,3 +19,13 @@ One complete Core217 report has217 passes/zero failures/skips/blacklists (23023m
 The old separate RAW/Sony/GPU/pressure/native-six completed heavy groups are not rerun. Their exact unchanged shader/colour/RAW/scope/export sources and original test methods are retained; CI347 remains historical baseline evidence, not current280/65 acceptance. No new local full71/Performance39/Qt24-live8/Sony23/backend/package pass is claimed. Normal publication must freeze the new Root until the same commit/tree's three native71 and both actual65 packages/final shipping pass independently, or the true failed whole round is completely sealed. Private/control/oldCI results cannot fill that new contract.
 
 Full metadata Undo, read-only catalogs/physical IO/OOM/all corrupt old rows/in-place foreign-XMP merging, physical tablet/device loss, complete raw jitter/native FP32 RAW and complete F0–F6 remain open. Live brush overlay remains CPU. Main and PR15 remain untouched.
+
+
+## CI348 terminal failure and next repair
+
+CI348/run42385783482 at5163b637/treeedb6 is genuinely failed and completely independently sealed as9cac4597d6bb6d3d8568c28086a71e5524bb1cd9a74ac2b1acd5f29f471a1892/989files, three original FULL logs and three original partial validation ZIPs. Linux dd04f144/327 and Windows7107c01f/329 each retain70 passed CTest entries and two failed normal bilingual XMP Qt rows (exposure0vs1.25). Mac c1c6694f/313 retains70 passed CTest entries and xmp-controller-merge Timeout120101ms; its raw controller report contains only initTestCase, so its subphase/cause is unproven. Later App/native/RAW/package/shipping stages are missing. No source280/71/65 acceptance is inferred. All original download/byte/diagnosis/collection/seal/source bindings are closed and immutable.
+
+The historical local c574/3877 above remains accurate; it cannot replace failed current CI. [M49B](F2_XMP_EXPLICIT_REVIEW_ACTIONS_STAGE_M49B.md) addresses the independently reproduced Return/default-Cancel event chain and strengthens native file-picker readiness/diagnostics. Last published full acceptance remains CI3470a7f/773.
+
+
+M49B now has formal related Root build/nativeQt20/both App wrappers passed with accurate targeted2fresh/13adopted scope, eight new captures/5840rows at actualDPR1. This does not change M49A c574 historical15fresh/DPR2 scope, the preserved CI348 failures, or the requirement for a new same-commit full71/65 run. See the M49B stage record.

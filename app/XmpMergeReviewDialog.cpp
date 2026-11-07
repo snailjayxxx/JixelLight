@@ -116,6 +116,13 @@ XmpMergeReviewDialog::XmpMergeReviewDialog(const XmpMerge::Plan &plan, bool engl
     m_buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
     m_buttons->button(QDialogButtonBox::Apply)->setText(uiText(english, "应用所选字段", "Apply selected fields"));
     m_buttons->button(QDialogButtonBox::Cancel)->setText(uiText(english, "取消", "Cancel"));
+    // Completing a field with Return leaves the review open. Applying or
+    // cancelling fields requires the corresponding explicit button action.
+    for (const auto role : {QDialogButtonBox::Apply, QDialogButtonBox::Cancel}) {
+        auto *button = m_buttons->button(role);
+        button->setAutoDefault(false);
+        button->setDefault(false);
+    }
     connect(m_buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this,
             [this] { if (resolutions().has_value() && m_hasIncomingChange) accept(); });
     connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

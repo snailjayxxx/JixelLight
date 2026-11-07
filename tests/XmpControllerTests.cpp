@@ -24,6 +24,8 @@
 #include <QSqlRecord>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QPointer>
+#include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrentRun>
 #include <functional>
 #include <stdexcept>
@@ -47,6 +49,32 @@ void chooseIncoming(QDialog *dialog,bool pointer=false) {
  for(auto *combo:combos){const auto index=combo->findData(int(XmpMerge::Choice::UseSidecar));require(index>0,"incoming choice missing");if(pointer){QTest::mouseClick(combo,Qt::LeftButton);QTest::keyClick(combo,Qt::Key_End);QTest::keyClick(combo,Qt::Key_Return);}else combo->setCurrentIndex(index);require(combo->currentIndex()==index,"actual selected choice");}
 }
 void apply(QDialog *dialog) {auto *box=dialog->findChild<QDialogButtonBox*>();require(box&&box->button(QDialogButtonBox::Apply)->isEnabled(),"complete explicit Apply");QTest::mouseClick(box->button(QDialogButtonBox::Apply),Qt::LeftButton);}
+// A static file dialog may enter its event loop before its filesystem model
+// can accept the owned selection. Observe actual acceptance with a deadline.
+struct XmpFilePicker {
+ QTimer timer;QElapsedTimer clock;QPointer<QFileDialog> observed;QString path;
+ bool accepted=false,expired=false,select=true;int attempts=0,visibleTicks=0,deadlineMs=10000,minVisibleTicks=1;
+ explicit XmpFilePicker(QString value,int deadline=10000,int holdTicks=1,bool selectFile=true)
+  :path(std::move(value)),select(selectFile),deadlineMs(deadline),minVisibleTicks(holdTicks) {
+  timer.setInterval(5);
+  QObject::connect(&timer,&QTimer::timeout,&timer,[this] {
+   if(clock.elapsed()>=deadlineMs) {
+    expired=true;timer.stop();
+    for(auto *w:QApplication::topLevelWidgets())if(auto *d=qobject_cast<QFileDialog*>(w))d->reject();
+    qInfo()<<"XMP_FILE_PICKER_V1 expired=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;return;
+   }
+   for(auto *w:QApplication::topLevelWidgets())if(auto *d=qobject_cast<QFileDialog*>(w);d&&d->isVisible()) {
+    if(observed!=d) {observed=d;QObject::connect(d,&QDialog::accepted,&timer,[this] {
+      accepted=true;timer.stop();qInfo()<<"XMP_FILE_PICKER_V1 accepted=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;
+    });}
+    ++visibleTicks;if(!select||visibleTicks<minVisibleTicks)return;
+    ++attempts;d->selectFile(path);QMetaObject::invokeMethod(d,"accept",Qt::DirectConnection);return;
+   }
+  });
+ }
+ void start(){clock.start();timer.start();}
+ void stop(){timer.stop();}
+};
 struct Fixture {
  QTemporaryDir dir;ProcessedImageProvider provider;std::unique_ptr<PhotoController> c;
  QString original,other,sidecar,project;QByteArray originalHash,sidecarHash;
@@ -85,9 +113,11 @@ private slots:
   qInfo().noquote()<<QString("XMP_CONTROLLER_NATIVE_V1 qpa=%1").arg(QGuiApplication::platformName());}
  void normalDialogActionBilingual_data(){QTest::addColumn<QString>("language");QTest::newRow("English")<<QString("en_US");QTest::newRow("Chinese")<<QString("zh_CN");}
  void normalDialogActionBilingual() {
-  QFETCH(QString,language);Fixture f(language);bool picked=false;
-  QTimer::singleShot(0,f.c.get(),[&]{for(auto *w:QApplication::topLevelWidgets())if(auto *dialog=qobject_cast<QFileDialog*>(w)){dialog->selectFile(f.sidecar);picked=QMetaObject::invokeMethod(dialog,"accept",Qt::DirectConnection);return;}});
-  f.c->openXmpImportDialog();QVERIFY(picked);QVERIFY(spin([&]{return reviewDialog()!=nullptr;}));auto *dialog=reviewDialog();
+  QFETCH(QString,language);qInfo().noquote()<<"XMP_NORMAL_REVIEW_PHASE fixture-start"<<language;
+  Fixture f(language);qInfo()<<"XMP_NORMAL_REVIEW_PHASE fixture-ready";
+  XmpFilePicker picker(f.sidecar);picker.start();qInfo()<<"XMP_NORMAL_REVIEW_PHASE picker-start";
+  f.c->openXmpImportDialog();picker.stop();QVERIFY2(picker.accepted&&!picker.expired,"Actual file picker acceptance required within the owned deadline");
+  qInfo()<<"XMP_NORMAL_REVIEW_PHASE picker-accepted";QVERIFY(spin([&]{return reviewDialog()!=nullptr;}));auto *dialog=reviewDialog();
   QCOMPARE(dialog->windowTitle(),language=="en_US"?QString("Review XMP import fields"):QString::fromUtf8("逐项检查 XMP 导入"));
   chooseIncoming(dialog,true);QVERIFY(dialog->grab().save(qEnvironmentVariable("JIXEL_XMP_EVIDENCE_DIR")+"/normal-review-"+language+".png"));apply(dialog);f.done();
   QCOMPARE(f.c->exposure(),1.25);QCOMPARE(f.c->currentRating(),4);QCOMPARE(f.c->currentFlag(),QString("pick"));QCOMPARE(f.c->currentKeywords(),QStringList{"incoming"});
@@ -137,6 +167,43 @@ private slots:
   auto saved=f.stored();QCOMPARE(saved.adjustments.exposure,1.25);QCOMPARE(saved.rating,4);QCOMPARE(saved.tags.keywords,QStringList{"incoming"});QVERIFY(saved.history.canUndo());QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
 
  }
+ void returnInIncompleteReviewThenEscapePreservesCatalogAndFiles() {
+  Fixture f;const auto before=f.rows();auto *d=f.start();auto combos=d->findChildren<QComboBox*>();QVERIFY(combos.size()==6);
+  auto *box=d->findChild<QDialogButtonBox*>();QVERIFY(box);auto *applyButton=box->button(QDialogButtonBox::Apply);auto *cancelButton=box->button(QDialogButtonBox::Cancel);
+  QVERIFY(!applyButton->autoDefault()&&!applyButton->isDefault());QVERIFY(!cancelButton->autoDefault()&&!cancelButton->isDefault());
+  QSignalSpy accepted(d,&QDialog::accepted),rejected(d,&QDialog::rejected);
+  QTest::mouseClick(combos.front(),Qt::LeftButton);QTest::keyClick(combos.front(),Qt::Key_End);QTest::keyClick(combos.front(),Qt::Key_Return);
+  QVERIFY(d->isVisible());QVERIFY(f.c->xmpMergeBusy());QCOMPARE(accepted.count(),0);QCOMPARE(rejected.count(),0);QVERIFY(!applyButton->isEnabled());QCOMPARE(f.rows(),before);
+  QTest::keyClick(d,Qt::Key_Escape);f.done();QCOMPARE(accepted.count(),0);QVERIFY(rejected.count()>=1);QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  qInfo()<<"XMP_EXPLICIT_ACTIONS incomplete_return_kept_review=true escape_cancelled=true catalog_and_files_unchanged=true";
+ }
+ void returnInCompleteReviewThenExplicitSpaceAppliesDurably() {
+  Fixture f;const auto before=f.rows();auto *d=f.start();chooseIncoming(d);auto *box=d->findChild<QDialogButtonBox*>();QVERIFY(box);auto *applyButton=box->button(QDialogButtonBox::Apply);QVERIFY(applyButton->isEnabled());
+  QSignalSpy accepted(d,&QDialog::accepted),rejected(d,&QDialog::rejected),clicked(applyButton,&QPushButton::clicked);
+  QTest::keyClick(d,Qt::Key_Return);QVERIFY(d->isVisible());QVERIFY(f.c->xmpMergeBusy());QCOMPARE(accepted.count(),0);QCOMPARE(rejected.count(),0);QCOMPARE(clicked.count(),0);QCOMPARE(f.rows(),before);
+  applyButton->setFocus(Qt::TabFocusReason);QTest::keyClick(applyButton,Qt::Key_Space);QCOMPARE(clicked.count(),1);f.done();QVERIFY(accepted.count()>=1);
+  QCOMPARE(f.c->exposure(),1.25);QCOMPARE(f.c->currentRating(),4);QCOMPARE(f.c->currentFlag(),QString("pick"));QCOMPARE(f.c->currentKeywords(),QStringList{"incoming"});QCOMPARE(f.c->currentAlbums(),QStringList{"External"});QCOMPARE(f.c->currentColorLabel(),QString("red"));
+  const auto stored=f.stored();QCOMPARE(stored.adjustments.exposure,1.25);QCOMPARE(stored.rating,4);QCOMPARE(stored.flag,QString("pick"));QCOMPARE(stored.tags.keywords,QStringList{"incoming"});QCOMPARE(stored.tags.albums,QStringList{"External"});QCOMPARE(stored.tags.label,QString("red"));QVERIFY(stored.history.canUndo());QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  qInfo()<<"XMP_EXPLICIT_ACTIONS complete_return_kept_review=true explicit_space_clicked=true durable_six_fields=true files_unchanged=true";
+ }
+ void explicitCancelAfterCompleteChoicesPreservesCatalogAndFiles() {
+  Fixture f;const auto before=f.rows();auto *d=f.start();chooseIncoming(d,true);QVERIFY(d->isVisible());QVERIFY(f.c->xmpMergeBusy());auto *box=d->findChild<QDialogButtonBox*>();QVERIFY(box&&box->button(QDialogButtonBox::Apply)->isEnabled());
+  QSignalSpy accepted(d,&QDialog::accepted),rejected(d,&QDialog::rejected);QTest::mouseClick(box->button(QDialogButtonBox::Cancel),Qt::LeftButton);f.done();QCOMPARE(accepted.count(),0);QVERIFY(rejected.count()>=1);QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  qInfo()<<"XMP_EXPLICIT_ACTIONS explicit_cancel_clicked=true complete_choices_not_applied=true catalog_and_files_unchanged=true";
+ }
+
+ void filePickerWaitsForVisibleDialogAndRealAcceptance() {
+  Fixture f;const auto before=f.rows();XmpFilePicker picker(f.sidecar,10000,3);picker.start();f.c->openXmpImportDialog();picker.stop();
+  QVERIFY(picker.accepted);QVERIFY(!picker.expired);QVERIFY(picker.visibleTicks>=3);QVERIFY(picker.attempts>=1);QVERIFY(spin([&]{return reviewDialog()!=nullptr;}));
+  QVERIFY(f.c->cancelXmpMerge());f.done();QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  qInfo()<<"XMP_EXPLICIT_ACTIONS delayed_picker_real_acceptance=true review_cancelled=true catalog_and_files_unchanged=true";
+ }
+ void unansweredFilePickerDeadlineClosesWithoutCatalogMutation() {
+  Fixture f;const auto before=f.rows();XmpFilePicker picker(f.sidecar,150,1,false);picker.start();f.c->openXmpImportDialog();picker.stop();
+  QVERIFY(!picker.accepted);QVERIFY(picker.expired);QVERIFY(picker.visibleTicks>=1);QCOMPARE(picker.attempts,0);QVERIFY(!f.c->xmpMergeBusy());QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  qInfo()<<"XMP_EXPLICIT_ACTIONS unanswered_picker_deadline_closed=true no_acceptance=true catalog_and_files_unchanged=true";
+ }
+
 };
 QTEST_MAIN(XmpControllerTests)
 #include "XmpControllerTests.moc"
