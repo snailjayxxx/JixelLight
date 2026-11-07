@@ -2,6 +2,8 @@
 #include "core/commands/EditHistory.h"
 #include "core/library/CatalogTags.h"
 #include "core/library/PhotoTimeline.h"
+#include "core/metadata/XmpCapture.h"
+#include "core/metadata/XmpMerge.h"
 #include <QObject>
 #include <QByteArray>
 #include <QHash>
@@ -27,6 +29,28 @@ public:
         bool acknowledgeUnknownIdentity = false;
     };
     struct SavedPhoto { QString path; AdjustmentState adjustments; int rating = 0; QString flag = QStringLiteral("none"); EditHistory history; CatalogTags tags; QString copyKey; QString versionName; PhotoTimeline timeline; QString sourceKey; OriginalIdentity identity; };
+    struct XmpReviewRecord {
+        bool valid = false;
+        QString writerId, projectLocator, storageKey, sourceKey, sidecarLocator;
+        QByteArray sidecarSha256, recordToken;
+        XmpCapture::Target target;
+        SavedPhoto photo;
+        std::optional<XmpMerge::Snapshot> ancestor;
+        XmpMerge::Plan plan;
+    };
+    using XmpReviewDone = std::function<void(XmpReviewRecord, QString)>;
+    using XmpCommitDone = std::function<void(bool, XmpReviewRecord, QString)>;
+    // Queued means scheduled, not saved. All reads/parsing/token generation and
+    // SQL execute on the existing writer, after older queued saves. Callbacks
+    // run on this object's owner only while the supplied owner context lives.
+    bool reviewCapturedXmp(const XmpCapture::Captured &, QObject *context, XmpReviewDone);
+    // Rebuilds the plan against current stored values and the same captured
+    // bytes; one transaction writes Develop/history, curation, tags and a full
+    // reviewed ancestor. Partial sidecars never invent/advance absent ancestry.
+    // The controller must serialize new edits until the durable callback and
+    // recheck its actual current target before updating the visible photo.
+    bool commitCapturedXmp(const XmpCapture::Captured &, const XmpReviewRecord &expected,
+                           const QVector<XmpMerge::Resolution> &, QObject *context, XmpCommitDone);
     explicit ProjectDatabase(QObject *parent = nullptr);
     ~ProjectDatabase() override;
     bool create(const QString &projectDirectory, const QString &projectName);

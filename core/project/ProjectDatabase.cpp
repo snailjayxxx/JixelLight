@@ -1,4 +1,5 @@
 #include "core/project/ProjectDatabase.h"
+#include "diagnostics/ActionTrace.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QDir>
 #include <QFileInfo>
@@ -10,6 +11,8 @@
 #include <QSqlQuery>
 #include <QSet>
 #include <QUuid>
+#include <QCryptographicHash>
+#include <QPointer>
 #include <algorithm>
 
 namespace {
@@ -849,4 +852,252 @@ bool ProjectDatabase::flush() {
     QMetaObject::invokeMethod(m_worker, [] {}, Qt::BlockingQueuedConnection);
     QMutexLocker lock(&m_state->mutex);
     return m_state->error.isEmpty();
+}
+
+namespace {
+using XmpRecord = ProjectDatabase::XmpReviewRecord;
+constexpr qsizetype XmpJsonLimit = 64 * 1024 * 1024;
+bool xmpError(QString *error, const QString &text) { *error=text; return false; }
+QByteArray xmpBytes(const QJsonObject &object) { return QJsonDocument(object).toJson(QJsonDocument::Compact); }
+bool xmpHash(const QByteArray &h) {
+    return h.size()==64 && std::all_of(h.cbegin(),h.cend(),[](char c){return(c>='0'&&c<='9')||(c>='a'&&c<='f');});
+}
+bool xmpObject(const QByteArray &bytes,QJsonObject *out,QString *error) {
+    if(bytes.isEmpty()||bytes.size()>XmpJsonLimit)return xmpError(error,"Invalid or oversized XMP catalog JSON");
+    QJsonParseError parse;const auto doc=QJsonDocument::fromJson(bytes,&parse);
+    if(parse.error!=QJsonParseError::NoError||!doc.isObject())return xmpError(error,"Invalid XMP catalog JSON");
+    *out=doc.object();return true;
+}
+QJsonObject xmpSnapshotJson(const XmpMerge::Snapshot &s) {
+    return {{"schema",1},{"adjustments",s.adjustments.toJson()},{"tags",s.tags.toJson()},{"rating",s.rating},{"flag",s.flag}};
+}
+bool xmpSnapshotParse(const QJsonObject &j,XmpMerge::Snapshot *out,QString *error) {
+    const auto rating=j.value("rating");XmpMerge::Snapshot s;
+    if(j.size()!=5||!j.value("schema").isDouble()||j.value("schema").toDouble()!=1
+        ||!j.value("adjustments").isObject()||!j.value("tags").isObject()
+        ||!rating.isDouble()||rating.toDouble()!=rating.toInt(-1)||rating.toInt(-1)<0||rating.toInt()>5
+        ||!j.value("flag").isString()||!CatalogTags::fromJson(j.value("tags").toObject(),&s.tags))
+        return xmpError(error,"Invalid XMP ancestor snapshot");
+    s.adjustments=AdjustmentState::fromJson(j.value("adjustments").toObject());s.rating=rating.toInt();s.flag=j.value("flag").toString();
+    XmpMerge::Plan check;
+    if(s.adjustments.toJson()!=j.value("adjustments").toObject()||!LookProfiles::engineCompatible(s.adjustments.look)
+        ||!XmpMerge::analyze("validate-saved-ancestor",s,s,{},&check,error)||xmpSnapshotJson(s)!=j)
+        return xmpError(error,"Invalid or unsupported XMP ancestor intent");
+    *out=std::move(s);return true;
+}
+QJsonObject xmpTargetJson(const XmpCapture::Target &t) {
+    return {{"project",t.projectLocator},{"source",t.sourceKey},{"storage",t.storageKey},{"copy",t.copyKey},
+        {"source_identity",t.sourceIdentity},{"controller",t.controller.toString(QUuid::WithoutBraces)},
+        {"catalog_epoch",QString::number(t.catalogEpoch)},{"photo_epoch",QString::number(t.photoEpoch)},
+        {"sequence",QString::number(t.sequence)}};
+}
+class XmpTransaction {
+public:
+    explicit XmpTransaction(QSqlDatabase &db):m_db(db){}
+    ~XmpTransaction(){if(m_active)m_db.rollback();}
+    bool begin(QString *error){m_active=m_db.transaction();return m_active||xmpError(error,m_db.lastError().text());}
+    bool commit(QString *error){if(!m_db.commit())return xmpError(error,m_db.lastError().text());m_active=false;return true;}
+private:
+    QSqlDatabase &m_db;bool m_active=false;
+};
+bool xmpAncestor(QSqlDatabase &db,const XmpRecord &record,std::optional<XmpMerge::Snapshot> *out,QJsonValue *token,QString *error) {
+    bool exists=false;if(!tableExists(db,"xmp_ancestry",&exists,error))return false;
+    *out={};*token=QJsonValue(QJsonValue::Null);if(!exists)return true;
+    QSqlQuery shape(db);if(!shape.exec("PRAGMA table_info(xmp_ancestry)"))return xmpError(error,shape.lastError().text());
+    const QStringList names{"version_key","locator","schema","source_key","size_bytes","source_sha256","sidecar_sha256","snapshot_json"};
+    const QStringList types{"TEXT","TEXT","INTEGER","TEXT","INTEGER","TEXT","TEXT","TEXT"};int index=0;
+    while(shape.next()) {
+        if(index>=names.size()||shape.value(1).toString()!=names[index]||shape.value(2).toString().toUpper()!=types[index]
+            ||shape.value(5).toInt()!=(index<2?index+1:0))return xmpError(error,"Unsupported XMP ancestry table schema");
+        ++index;
+    }
+    if(index!=names.size())return xmpError(error,"Unsupported XMP ancestry table schema");
+    QSqlQuery q(db);q.prepare("SELECT schema,source_key,size_bytes,source_sha256,sidecar_sha256,snapshot_json,typeof(schema),typeof(size_bytes) FROM xmp_ancestry WHERE version_key=? AND locator=?");
+    q.addBindValue(record.storageKey);q.addBindValue(record.sidecarLocator);
+    if(!q.exec())return xmpError(error,q.lastError().text());if(!q.next())return true;
+    QJsonObject snapshot;
+    if(q.value(6).toString()!="integer"||q.value(7).toString()!="integer"||q.value(0).toLongLong()!=1
+        ||q.value(1).toString()!=record.sourceKey||q.value(2).toLongLong()!=record.photo.identity.sizeBytes
+        ||q.value(3).toByteArray()!=record.photo.identity.sha256||!xmpHash(q.value(4).toByteArray())
+        ||!xmpObject(q.value(5).toByteArray(),&snapshot,error))
+        return xmpError(error,"XMP ancestry source/version is invalid or changed");
+    XmpMerge::Snapshot ancestor;if(!xmpSnapshotParse(snapshot,&ancestor,error))return false;
+    *out=std::move(ancestor);*token=QJsonObject{{"schema",1},{"source",record.sourceKey},
+        {"size",QString::number(record.photo.identity.sizeBytes)},{"source_sha256",QString::fromLatin1(record.photo.identity.sha256)},
+        {"sidecar_sha256",q.value(4).toString()},{"snapshot",snapshot}};
+    if(q.next())return xmpError(error,"Ambiguous XMP ancestry row");return true;
+}
+bool xmpReadRecord(QSqlDatabase &db,const QString &folder,const QString &writer,
+                   const XmpCapture::Captured &capture,XmpRecord *out,QString *error) {
+    if(!db.isOpen()||!capture.valid()||!capture.target().valid())return xmpError(error,"Missing captured XMP or writable catalog context");
+    const auto t=capture.target();
+    if(ProjectDatabase::normalizedSourcePath(folder,t.projectLocator)!=ProjectDatabase::normalizedSourcePath(folder,folder))
+        return xmpError(error,"The reviewed catalog changed");
+    XmpRecord next;next.writerId=writer;next.projectLocator=folder;next.storageKey=t.storageKey;next.sourceKey=t.sourceKey;
+    next.sidecarLocator=capture.locator();next.sidecarSha256=capture.sha256();next.target=t;
+    if(next.sidecarLocator.isEmpty()||!xmpHash(next.sidecarSha256))return xmpError(error,"Invalid captured sidecar provenance");
+    SourceFamily family;if(!readSourceFamily(db,folder,t.sourceKey,&family,error)||!family.photoKeys.contains(t.storageKey))
+        return xmpError(error,"The reviewed source/version was removed");
+    QJsonObject mapping;
+    if(validCopyKey(t.storageKey)) {
+        if(t.copyKey!=t.storageKey||!family.copies.contains(t.storageKey))return xmpError(error,"Virtual copy source mapping changed");
+        mapping=family.copies.value(t.storageKey);
+        if(mapping.value("source").toString()!=t.sourceKey)return xmpError(error,"Virtual copy source changed");
+    } else if(!t.copyKey.isEmpty()||t.storageKey!=t.sourceKey||!family.originals.contains(t.storageKey))
+        return xmpError(error,"Original photo source mapping changed");
+    QHash<QString,StoredIdentity> identities;bool hasIdentity=false;ProjectDatabase::OriginalIdentity identity;
+    if(!readIdentities(db,&identities,&hasIdentity,error)||!identityForSource(identities,folder,t.sourceKey,&identity,error)
+        ||!identity.isKnown()||QString::fromLatin1(identity.sha256)!=t.sourceIdentity)
+        return xmpError(error,"A verified saved original identity is required for XMP review");
+    QSqlQuery q(db);q.prepare("SELECT adjustment_json,imported_at FROM photos WHERE path=?");q.addBindValue(t.storageKey);
+    if(!q.exec()||!q.next())return xmpError(error,"The reviewed photo no longer exists");
+    QJsonObject raw;if(!xmpObject(q.value(0).toByteArray(),&raw,error))return false;
+    const QString imported=q.value(1).toString();if(q.next())return xmpError(error,"Ambiguous photo version");q.finish();
+    auto develop=raw;const auto historyValue=develop.take("_history");auto state=AdjustmentState::fromJson(develop);
+    if((!develop.isEmpty()&&state.toJson()!=develop)||!state.look.error.isEmpty()||!LookProfiles::engineCompatible(state.look))
+        return xmpError(error,"Unsupported stored Develop intent; refusing to discard fields");
+    EditHistory history;
+    if(!historyValue.isUndefined()&&(!historyValue.isObject()||!history.restore(historyValue.toObject(),state)))
+        return xmpError(error,"Invalid stored edit history");
+    history.initialize(state);state=history.entries()[history.cursor()].state;
+    CatalogTags tags;PhotoTimeline timeline;timeline.importedAt=std::max(qint64(0),PhotoTimeline::sqlImportTime(imported));
+    int rating=0;QString flag="none";bool exists=false;QJsonObject tagsJson=tags.toJson(),datesJson=timeline.toJson();
+    if(!tableExists(db,"catalog_tags",&exists,error))return false;
+    if(exists) {
+        q.prepare("SELECT json FROM catalog_tags WHERE path=?");q.addBindValue(t.storageKey);
+        if(!q.exec())return xmpError(error,q.lastError().text());
+        if(q.next()&&(!xmpObject(q.value(0).toByteArray(),&tagsJson,error)||!CatalogTags::fromJson(tagsJson,&tags)))return false;q.finish();
+    }
+    if(!tableExists(db,"catalog_dates",&exists,error))return false;
+    if(exists) {
+        q.prepare("SELECT json FROM catalog_dates WHERE path=?");q.addBindValue(t.storageKey);
+        if(!q.exec())return xmpError(error,q.lastError().text());
+        if(q.next()&&(!xmpObject(q.value(0).toByteArray(),&datesJson,error)||!PhotoTimeline::fromJson(datesJson,&timeline)))return false;q.finish();
+    }
+    if(!tableExists(db,"curation",&exists,error))return false;
+    if(exists) {
+        q.prepare("SELECT rating,flag,typeof(rating) FROM curation WHERE path=?");q.addBindValue(t.storageKey);
+        if(!q.exec())return xmpError(error,q.lastError().text());
+        if(q.next()) {
+            bool validInteger=false;const qint64 storedRating=q.value(0).toLongLong(&validInteger);flag=q.value(1).toString();
+            if(q.value(2).toString()!="integer"||!validInteger||storedRating<0||storedRating>5||!QStringList{"none","pick","reject"}.contains(flag))
+                return xmpError(error,"Invalid stored rating/flag");
+            rating=int(storedRating);
+        }q.finish();
+    }
+    next.photo={t.sourceKey,state,rating,flag,history,tags,t.copyKey,mapping.value("name").toString(),timeline,t.sourceKey,identity};
+    QJsonValue ancestorToken;if(!xmpAncestor(db,next,&next.ancestor,&ancestorToken,error))return false;
+    const QJsonObject token{{"writer",writer},{"project",folder},{"target",xmpTargetJson(t)},
+        {"sidecar_locator",next.sidecarLocator},{"sidecar_sha256",QString::fromLatin1(next.sidecarSha256)},
+        {"sidecar_bytes",QString::number(capture.byteCount())},{"stored_develop_history",raw},{"imported",imported},
+        {"mapping",mapping},{"tags",tagsJson},{"timeline",datesJson},{"rating",rating},{"flag",flag},
+        {"original_size",QString::number(identity.sizeBytes)},{"original_sha256",QString::fromLatin1(identity.sha256)},{"ancestor",ancestorToken}};
+    next.recordToken=QCryptographicHash::hash(xmpBytes(token),QCryptographicHash::Sha256).toHex();
+    const XmpMerge::Snapshot catalog{state,tags,rating,flag};
+    if(!XmpMerge::analyze(QString::fromLatin1(next.recordToken),next.ancestor,catalog,capture.document(),&next.plan,error))return false;
+    next.valid=true;*out=std::move(next);return true;
+}
+bool xmpSameReview(const XmpRecord &expected,const XmpRecord &current) {
+    return expected.valid&&expected.writerId==current.writerId&&expected.projectLocator==current.projectLocator
+        &&expected.storageKey==current.storageKey&&expected.sourceKey==current.sourceKey
+        &&expected.target==current.target&&expected.sidecarLocator==current.sidecarLocator
+        &&expected.sidecarSha256==current.sidecarSha256&&xmpHash(expected.recordToken)&&expected.recordToken==current.recordToken;
+}
+bool xmpCommit(QSqlDatabase &db,const QString &folder,const QString &writer,const XmpCapture::Captured &capture,
+               const XmpRecord &expected,const QVector<XmpMerge::Resolution> &choices,XmpRecord *saved,QString *error) {
+    XmpRecord current;
+    {XmpTransaction read(db);if(!read.begin(error)||!xmpReadRecord(db,folder,writer,capture,&current,error)||!read.commit(error))return false;}
+    if(!xmpSameReview(expected,current))return xmpError(error,"The catalog, source, sidecar or history changed; review again");
+    const XmpMerge::Snapshot catalog{current.photo.adjustments,current.photo.tags,current.photo.rating,current.photo.flag};
+    XmpSidecar::Document patch;
+    if(!XmpMerge::resolve(current.plan,QString::fromLatin1(current.recordToken),catalog,choices,&patch,error))return false;
+    auto next=current.photo;
+    if(patch.hasRating)next.rating=patch.rating;if(patch.hasFlag)next.flag=patch.flag;
+    if(patch.hasKeywords)next.tags.keywords=patch.tags.keywords;if(patch.hasLabel)next.tags.label=patch.tags.label;
+    if(patch.hasAlbums)next.tags.albums=patch.tags.albums;
+    const bool developChanged=patch.hasAdjustments&&patch.adjustments.toJson()!=next.adjustments.toJson();
+    if(developChanged) {next.adjustments=patch.adjustments;next.history.record(next.adjustments,"xmp_merge");next.history.finish();next.timeline.editedAt=QDateTime::currentMSecsSinceEpoch();}
+    const auto incoming=capture.document();const bool full=incoming.hasAdjustments&&incoming.hasRating&&incoming.hasFlag&&incoming.hasKeywords&&incoming.hasLabel&&incoming.hasAlbums;
+    QStringList tables{"curation","catalog_tags"};if(developChanged)tables<<"catalog_dates";if(full)tables<<"xmp_ancestry";
+    // Consistent backups run outside a transaction. Re-read and recheck the
+    // complete token inside the write transaction after any migration backup.
+    for(const auto &table:tables)if(!backupBeforeTable(db,folder,table,error))return false;
+    XmpTransaction transaction(db);if(!transaction.begin(error))return false;XmpRecord atWrite;
+    if(!xmpReadRecord(db,folder,writer,capture,&atWrite,error))return false;
+    if(!xmpSameReview(expected,atWrite))return xmpError(error,"The catalog changed while preparing its backup; review again");
+    QSqlQuery q(db);
+    auto exec=[&](const QString &sql,const QVariantList &values=QVariantList{}) {
+        if(!q.prepare(sql))return xmpError(error,q.lastError().text());
+        for(const auto &value:values)q.addBindValue(value);
+        return q.exec()||xmpError(error,q.lastError().text());
+    };
+    if(!exec("CREATE TABLE IF NOT EXISTS curation(path TEXT PRIMARY KEY,rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject')))")
+        ||!exec("CREATE TABLE IF NOT EXISTS catalog_tags(path TEXT PRIMARY KEY,json TEXT NOT NULL)"))return false;
+    if(developChanged) {
+        auto photoJson=next.adjustments.toJson();photoJson.insert("_history",next.history.toJson());
+        if(!exec("UPDATE photos SET adjustment_json=? WHERE path=?",{QString::fromUtf8(xmpBytes(photoJson)),current.storageKey}))return false;
+        if(q.numRowsAffected()!=1)return xmpError(error,"The reviewed photo was removed");
+        if(!exec("CREATE TABLE IF NOT EXISTS catalog_dates(path TEXT PRIMARY KEY,json TEXT NOT NULL)")
+            ||!exec("INSERT INTO catalog_dates(path,json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET json=excluded.json",{current.storageKey,QString::fromUtf8(xmpBytes(next.timeline.toJson()))}))return false;
+    }
+    if(!exec("INSERT INTO curation(path,rating,flag) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET rating=excluded.rating,flag=excluded.flag",{current.storageKey,next.rating,next.flag})
+        ||!exec("INSERT INTO catalog_tags(path,json) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET json=excluded.json",{current.storageKey,QString::fromUtf8(xmpBytes(next.tags.toJson()))}))return false;
+    if(full) {
+        const auto snapshot=xmpSnapshotJson({incoming.adjustments,incoming.tags,incoming.rating,incoming.flag});XmpMerge::Snapshot checked;
+        if(!xmpSnapshotParse(snapshot,&checked,error))return false;
+        if(!exec("CREATE TABLE IF NOT EXISTS xmp_ancestry(version_key TEXT NOT NULL,locator TEXT NOT NULL,schema INTEGER NOT NULL CHECK(schema=1),source_key TEXT NOT NULL,size_bytes INTEGER NOT NULL,source_sha256 TEXT NOT NULL,sidecar_sha256 TEXT NOT NULL,snapshot_json TEXT NOT NULL,PRIMARY KEY(version_key,locator))")
+            ||!exec("INSERT INTO xmp_ancestry(version_key,locator,schema,source_key,size_bytes,source_sha256,sidecar_sha256,snapshot_json) VALUES(?,?,1,?,?,?,?,?) ON CONFLICT(version_key,locator) DO UPDATE SET schema=excluded.schema,source_key=excluded.source_key,size_bytes=excluded.size_bytes,source_sha256=excluded.source_sha256,sidecar_sha256=excluded.sidecar_sha256,snapshot_json=excluded.snapshot_json",
+                {current.storageKey,current.sidecarLocator,current.sourceKey,next.identity.sizeBytes,QString::fromLatin1(next.identity.sha256),QString::fromLatin1(capture.sha256()),QString::fromUtf8(xmpBytes(snapshot))}))return false;
+    }
+    q.finish();if(!transaction.commit(error))return false;
+    // The durable result remains true even if a later read fails; callers must
+    // reload instead of treating a committed merge as an uncommitted retry.
+    XmpTransaction reload(db);
+    if(!reload.begin(error)||!xmpReadRecord(db,folder,writer,capture,saved,error)||!reload.commit(error)) {
+        *saved={};*error="XMP merge committed; reload the catalog: "+*error;
+    }
+    return true;
+}
+}
+
+bool ProjectDatabase::reviewCapturedXmp(const XmpCapture::Captured &capture,QObject *context,XmpReviewDone done) {
+    if(QThread::currentThread()!=thread()||!m_open||!context||context->thread()!=thread()||!done||!capture.valid())return false;
+    const auto state=m_state;const auto folder=m_projectPath;const QPointer<QObject> guard(context);
+    return QMetaObject::invokeMethod(m_worker,[this,state,folder,capture,guard,done=std::move(done)] {
+        XmpRecord record;QString error;bool pendingError=false;
+        {QMutexLocker lock(&state->mutex);pendingError=!state->error.isEmpty();}
+        auto db=QSqlDatabase::database(state->connectionName,false);
+        if(pendingError)error="Resolve pending catalog save failures before reviewing XMP";
+        else {
+            XmpTransaction transaction(db);
+            const bool ok=transaction.begin(&error)&&xmpReadRecord(db,folder,state->connectionName,capture,&record,&error)&&transaction.commit(&error);
+            if(!ok){record={};if(error.isEmpty())error="Cannot read a valid XMP review snapshot";}
+        }
+        QMetaObject::invokeMethod(this,[guard,done,record=std::move(record),error] {if(guard)done(record,error);},Qt::QueuedConnection);
+    },Qt::QueuedConnection);
+}
+bool ProjectDatabase::commitCapturedXmp(const XmpCapture::Captured &capture,const XmpReviewRecord &expected,
+                                        const QVector<XmpMerge::Resolution> &choices,QObject *context,XmpCommitDone done) {
+    if(QThread::currentThread()!=thread()||!m_open||!context||context->thread()!=thread()||!done||!capture.valid()||!expected.valid)return false;
+    const auto state=m_state;const auto folder=m_projectPath;const QPointer<QObject> guard(context);
+    return QMetaObject::invokeMethod(m_worker,[this,state,folder,capture,expected,choices,guard,done=std::move(done)] {
+        XmpRecord record;QString error;bool committed=false,pendingError=false;
+        {QMutexLocker lock(&state->mutex);pendingError=!state->error.isEmpty();}
+        auto db=QSqlDatabase::database(state->connectionName,false);
+        if(pendingError)error="Resolve pending catalog save failures before merging XMP";
+        else committed=xmpCommit(db,folder,state->connectionName,capture,expected,choices,&record,&error);
+        if(!committed&&error.isEmpty())error="XMP merge was not committed";
+        if(committed) {
+            ActionTrace::instance().record("xmp_merge_sql_committed",{{"project",folder},{"storage_key",capture.target().storageKey},
+                {"source_identity",capture.target().sourceIdentity},{"sequence",QString::number(capture.target().sequence)},
+                {"controller",capture.target().controller.toString(QUuid::WithoutBraces)},
+                {"sidecar_sha256",QString::fromLatin1(capture.sha256())},{"record_valid_after_commit",record.valid},
+                {"SQL_thread",QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()),16)}});
+            emit saved(1);
+        }
+        // Refusal belongs to this explicit merge callback. The generic
+        // autosave writeFailed handler would requeue old GUI rows and could
+        // overwrite the very concurrent change which invalidated the review.
+        QMetaObject::invokeMethod(this,[guard,done,committed,record=std::move(record),error] {if(guard)done(committed,record,error);},Qt::QueuedConnection);
+    },Qt::QueuedConnection);
 }

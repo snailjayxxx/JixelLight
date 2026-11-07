@@ -34,8 +34,13 @@ class FullScopesCache;
 class AnalysisFrameCache;
 class ScopePlotCache;
 namespace XmpSidecar { struct Document; }
+class QDialog;
+class QProgressDialog;
+#include <QPointer>
+#include <QUuid>
 
 class PhotoController final : public QObject {
+    friend class XmpControllerTests;
     friend void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
@@ -422,6 +427,12 @@ public:
     Q_INVOKABLE void openPresetImportDialog(const QString &replacementName = {});
     Q_INVOKABLE bool exportXmp(const QUrl &destination);
     Q_INVOKABLE bool importXmp(const QUrl &source);
+    Q_PROPERTY(bool xmpMergeBusy READ xmpMergeBusy NOTIFY xmpMergeChanged)
+    bool xmpMergeBusy() const;
+    // Explicit project merge: starts an asynchronous read/review. A true
+    // return means queued, never saved. Legacy explicit session import stays.
+    Q_INVOKABLE bool requestXmpMerge(const QUrl &source);
+    Q_INVOKABLE bool cancelXmpMerge();
     Q_INVOKABLE void openXmpExportDialog();
     Q_INVOKABLE void openXmpImportDialog();
     Q_INVOKABLE void undo();
@@ -445,6 +456,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void xmpMergeChanged();
     void brushDrawingChanged();
     void brushCapacityWarningChanged();
     void brushRecoveryChanged();
@@ -675,6 +687,46 @@ private:
     // A dialog previews the exact parsed XMP snapshot which is later applied.
     // Never re-read an external file after the user has confirmed its impact.
     bool applyParsedXmp(const XmpSidecar::Document &document);
+    struct XmpSourceRequest {
+        XmpCapture::Request capture;
+        ProjectDatabase::OriginalIdentity original;
+        XmpCapture::Captured alreadyCaptured;
+        QThread *ownerThread = nullptr;
+        bool verifyOnly = false;
+    };
+    struct XmpSourceResult {
+        XmpCapture::Captured sidecar;
+        ProjectDatabase::OriginalIdentity actualOriginal;
+        QString error;
+        bool workerThread = false;
+    };
+    enum class XmpMergePhase { Reading, Reviewing, Verifying, Committing, ReloadRequired };
+    struct XmpMergeSession {
+        XmpCapture::Target target;
+        QString originalPath;
+        ProjectDatabase::OriginalIdentity original;
+        XmpCapture::Captured sidecar;
+        ProjectDatabase::XmpReviewRecord review;
+        QVector<XmpMerge::Resolution> choices;
+        QJsonObject guiBefore;
+        QHash<QString, QString> deferredCaptureTimes;
+        QPointer<QDialog> dialog;
+        QPointer<QProgressDialog> progress;
+        XmpMergePhase phase = XmpMergePhase::Reading;
+    };
+    std::unique_ptr<XmpMergeSession> m_xmpMerge;
+    std::unique_ptr<LatestJob<XmpSourceRequest, XmpSourceResult>> m_xmpSourceJob;
+    QUuid m_xmpOwner = QUuid::createUuid();
+    quint64 m_xmpSequence = 0;
+    XmpCapture::Target xmpMergeTarget() const;
+    QJsonObject xmpMergeGuiSnapshot() const;
+    bool xmpMergeCurrent() const;
+    void initializeXmpMerge();
+    void shutdownXmpMerge();
+    void finishXmpMerge(const QString &message, bool applyDeferredMetadata = false);
+    void showXmpMergeProgress(const QString &message, bool cancelable);
+    void showXmpMergeReview(ProjectDatabase::XmpReviewRecord);
+    void commitXmpMergeAfterVerification();
     void persistAndApply(const QString &action, const QVariantMap &details = {});
     void setStatus(const QString &message);
     QString uiText(const QString &zh, const QString &en) const;

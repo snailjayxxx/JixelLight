@@ -189,6 +189,7 @@ void PhotoController::cancelRelink() {
     ++m_nextRelinkId; m_relinkRequest.reset(); m_relinkBusy=false; m_relinkPreview.clear(); emit relinkChanged();
 }
 bool PhotoController::beginRelink(const QString &versionKey,const QUrl &candidate,const QString &catalogToken) {
+    if (xmpMergeBusy()) return false;
     if(!catalogToken.isEmpty() && catalogToken!=relinkCatalogToken())return false;
     if(!m_project.isOpen() || !candidate.isLocalFile() || exportBusy() || copyImportBusy())return false;
     const auto entry=std::find_if(m_photos.cbegin(),m_photos.cend(),[&](const auto &p){return p.storageKey()==versionKey;});
@@ -209,6 +210,7 @@ bool PhotoController::beginRelink(const QString &versionKey,const QUrl &candidat
     m_relinkJob->submit(*m_relinkRequest); emit relinkChanged(); return true;
 }
 bool PhotoController::confirmRelink(const QString &requestId,bool acknowledgeUnknownIdentity) {
+    if (xmpMergeBusy()) return false;
     if(!m_relinkRequest || m_relinkBusy || requestId!=QString::number(m_relinkRequest->id)
         || m_relinkPreview.value("status").toString()!="ready" || m_relinkRequest->epoch!=m_catalogEpoch
         || familyVersionKeys(m_relinkRequest->sourcePath)!=m_relinkRequest->versionKeys

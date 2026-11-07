@@ -62,6 +62,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *paren
     initializeJobs();
     m_nativeBrush=std::make_unique<NativeBrushController>(this);
     initializeRelinkJobs();
+    initializeXmpMerge();
     initializeLookJobs();
     m_diagnosticTimer.setSingleShot(true);
     connect(&m_diagnosticTimer, &QTimer::timeout, this, [this] {
@@ -133,7 +134,7 @@ QString PhotoController::pipelineDescription() const {
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
 AdjustmentState *PhotoController::mutableCurrentState() {
-    if (!currentSourceAvailable()) return nullptr;
+    if (xmpMergeBusy() || !currentSourceAvailable()) return nullptr;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state);
     return &photo.state;
@@ -199,7 +200,7 @@ GeometryState PhotoController::previewGeometry() const {
     return geometry;
 }
 bool PhotoController::beginCrop() {
-    if (!hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
+    if (xmpMergeBusy() || !hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
     finishInteraction(); m_cropEditing = true;
     m_zoom = 0; m_centerX = m_centerY = .5;
     emit cropEditingChanged(); prepareCurrent(); return true;
@@ -228,6 +229,7 @@ QStringList PhotoController::currentKeywords() const { return hasImage() ? m_pho
 QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
 QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
 bool PhotoController::createVirtualCopy(const QString &name) {
+    if (xmpMergeBusy()) return false;
     if (!hasImage() || !flushEdits()) return false;
     auto copy = m_photos[m_currentIndex];
     const auto title = name.trimmed().isEmpty() ? QStringLiteral("Version %1").arg(m_photos.size()+1) : name.trimmed();
@@ -248,6 +250,7 @@ bool PhotoController::createVirtualCopy(const QString &name) {
 }
 
 bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+    if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const auto title = name.trimmed(); QStringList checked{title};
     if (!CatalogTags::normalize(&checked,1) || checked.size() != 1 || checked[0] != title) return false;
@@ -261,6 +264,7 @@ bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
     return true;
 }
 bool PhotoController::removeCurrentVirtualCopy() {
+    if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const int removed = m_currentIndex; const auto photo = m_photos[removed];
     if (m_project.isOpen() && !m_project.removeVirtualCopy(photo.copyKey)) {
@@ -283,6 +287,7 @@ bool PhotoController::removeCurrentVirtualCopy() {
 }
 
 bool PhotoController::setPhotoSelection(const QVariantList &indices) {
+    if (xmpMergeBusy()) return false;
     QSet<int> selected;
     for (const auto &value : indices) {
         bool valid = false; const int index = value.toInt(&valid);
@@ -292,6 +297,7 @@ bool PhotoController::setPhotoSelection(const QVariantList &indices) {
     m_selectedPhotos = selected; emit libraryChanged(); return true;
 }
 bool PhotoController::setSelectionRating(int rating) {
+    if (xmpMergeBusy()) return false;
     if (rating < 0 || rating > 5 || m_selectedPhotos.isEmpty()) return false;
     for (int index : m_selectedPhotos) {
         auto &photo = m_photos[index]; photo.rating = rating;
@@ -301,6 +307,7 @@ bool PhotoController::setSelectionRating(int rating) {
     ActionTrace::instance().record("selection_rating", {{"count",m_selectedPhotos.size()},{"rating",rating}}); return true;
 }
 bool PhotoController::setSelectionFlag(const QString &flag) {
+    if (xmpMergeBusy()) return false;
     if ((flag != "none" && flag != "pick" && flag != "reject") || m_selectedPhotos.isEmpty()) return false;
     for (int index : m_selectedPhotos) {
         auto &photo = m_photos[index]; photo.flag = flag;
@@ -310,6 +317,7 @@ bool PhotoController::setSelectionFlag(const QString &flag) {
     ActionTrace::instance().record("selection_flag", {{"count",m_selectedPhotos.size()},{"flag",flag}}); return true;
 }
 bool PhotoController::updateSelectedTags(const QString &operation, const QString &value) {
+    if (xmpMergeBusy()) return false;
     if (m_selectedPhotos.isEmpty()) return false;
     QHash<int, CatalogTags> staged;
     for (int index : m_selectedPhotos) {
@@ -358,6 +366,7 @@ bool PhotoController::saveNamedPreset(const QString &name) {
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
 bool PhotoController::applyNamedPreset(const QString &name) {
+    if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
     if (!presets.load(&error) || !presets.get(name, &state)) {
@@ -426,6 +435,7 @@ bool PhotoController::exportXmp(const QUrl &destination) {
     setStatus(uiText("XMP 已导出：", "XMP exported: ")+destination.toLocalFile()); return true;
 }
 bool PhotoController::importXmp(const QUrl &source) {
+    if (xmpMergeBusy()) return false;
     if (!hasImage() || !source.isLocalFile()) return false;
     XmpSidecar::Document document; QString error;
     if (!XmpSidecar::read(source.toLocalFile(),&document,&error)) {
@@ -434,6 +444,7 @@ bool PhotoController::importXmp(const QUrl &source) {
     return applyParsedXmp(document);
 }
 bool PhotoController::applyParsedXmp(const XmpSidecar::Document &document) {
+    if (xmpMergeBusy()) return false;
     if (!hasImage() || (document.hasAdjustments && !currentSourceAvailable())) return false;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state); photo.history.finish();
@@ -462,7 +473,9 @@ void PhotoController::openXmpExportDialog() {
         exportXmp(QUrl::fromLocalFile(path.endsWith(".xmp",Qt::CaseInsensitive) ? path : path+".xmp"));
 }
 void PhotoController::openXmpImportDialog() {
-    if (!hasImage()) return;
+    if (xmpMergeBusy() || !hasImage()) return;
+    const auto catalogBefore=m_catalogEpoch,photoBefore=m_photoEpoch;
+    const auto projectBefore=m_project.projectPath(),fileBefore=currentFile();
     const auto key = m_photos[m_currentIndex].storageKey();
     const auto companion = XmpSidecar::discoverCompanion(currentFile());
     // Discovery is metadata-only. Never silently apply an external XMP to a
@@ -480,8 +493,11 @@ void PhotoController::openXmpImportDialog() {
         selection,"XMP (*.xmp *.XMP)");
     // QFileDialog runs a nested event loop; the selected project/photo may
     // have changed before it returns. Never preview an XMP for another version.
-    if (path.isEmpty() || !hasImage()
+    if (path.isEmpty() || !hasImage() || catalogBefore!=m_catalogEpoch || photoBefore!=m_photoEpoch
+        || projectBefore!=m_project.projectPath() || fileBefore!=currentFile()
         || key != m_photos[m_currentIndex].storageKey()) return;
+    if (m_project.isOpen()) { requestXmpMerge(QUrl::fromLocalFile(path)); return; }
+    // Untitled-session explicit import retains its previous warning/semantics.
     XmpSidecar::Document parsed; QString error;
     if (!XmpSidecar::read(path, &parsed, &error)) {
         setStatus(uiText("XMP 导入失败：", "XMP import failed: ") + error);
@@ -529,8 +545,8 @@ void PhotoController::openXmpImportDialog() {
     applyParsedXmp(parsed);
 }
 
-bool PhotoController::canUndo() const { return currentSourceAvailable() && m_photos[m_currentIndex].history.canUndo(); }
-bool PhotoController::canRedo() const { return currentSourceAvailable() && m_photos[m_currentIndex].history.canRedo(); }
+bool PhotoController::canUndo() const { return !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canUndo(); }
+bool PhotoController::canRedo() const { return !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canRedo(); }
 QVariantList PhotoController::editHistory() const {
     QVariantList out;
     if (!hasImage()) return out;
@@ -900,6 +916,7 @@ void PhotoController::resetCurve(int channel) {
 }
 
 bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
+    if (xmpMergeBusy()) return false;
     if (path.isEmpty()) return false;
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
@@ -1023,6 +1040,7 @@ void PhotoController::cancelImportNamePreview() {
     ++m_importNameRevision; emit importNamePreviewChanged();
 }
 bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart) {
+    if (xmpMergeBusy()) return false;
     if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
     QStringList sources;
     for (const auto &value : urls) {
@@ -1053,6 +1071,10 @@ void PhotoController::openCopyImportDialog() {
 }
 void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel(); }
 bool PhotoController::prepareToClose() {
+    if (m_xmpMerge) {
+        if (m_xmpMerge->phase==XmpMergePhase::ReloadRequired) return m_project.flush();
+        if (!cancelXmpMerge()) return false;
+    }
     m_copyImportQueue->stopAndCollect();
     return flushEdits();
 }
@@ -1074,6 +1096,7 @@ void PhotoController::importFiles(const QVariantList &urls) {
 }
 
 void PhotoController::selectPhoto(int index) {
+    if (xmpMergeBusy()) return;
     if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
     m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
     if (index == m_currentIndex && (!hasImage() || m_photos[index].available==sourceReadable(m_photos[index]))) return;
@@ -1260,6 +1283,7 @@ bool PhotoController::openProject(const QUrl &url) {
 }
 
 void PhotoController::setRating(int rating) {
+    if (xmpMergeBusy()) return;
     if (!hasImage()) return;
     rating = std::clamp(rating, 0, 5);
     auto &photo = m_photos[m_currentIndex];
@@ -1274,6 +1298,7 @@ void PhotoController::setRating(int rating) {
     emit libraryChanged(); emit curationChanged();
 }
 void PhotoController::setFlag(const QString &flag) {
+    if (xmpMergeBusy()) return;
     if (!hasImage() || (flag != QStringLiteral("none") && flag != QStringLiteral("pick") && flag != QStringLiteral("reject"))) return;
     auto &photo = m_photos[m_currentIndex];
     if (photo.flag == flag) return;
@@ -1310,6 +1335,7 @@ void PhotoController::pasteAdjustments() {
 }
 
 bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+    if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
     auto *state=mutableCurrentState();
     AdjustmentTransfer::apply(*state,m_clipboard,groups);
@@ -1324,6 +1350,7 @@ void PhotoController::syncAdjustmentsToAll() {
 }
 
 int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+    if (xmpMergeBusy()) return -1;
     if (!currentSourceAvailable() || !AdjustmentTransfer::validGroups(groups)) return -1;
     for(int i=0;i<m_photos.size();++i)
         if(i!=m_currentIndex && (!selectedOnly || m_selectedPhotos.contains(i)) && !m_photos[i].available)return -1;
@@ -1687,6 +1714,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    shutdownXmpMerge();
     m_nativeBrush.reset();
     // The QML engine owns the image provider and may already have destroyed it.
     // Join transient workers without dereferencing that external provider here.
@@ -1771,6 +1799,14 @@ void PhotoController::initializeJobs() {
             return result;
         }, [this](const CatalogDateRequest &request, QHash<QString,QString> result) {
             if (m_closing || request.epoch != m_catalogEpoch) return;
+            if (m_xmpMerge) {
+                for (auto i=result.constBegin();i!=result.constEnd();++i)
+                    m_xmpMerge->deferredCaptureTimes.insert(i.key(),i.value());
+                ActionTrace::instance().record("xmp_merge_metadata_deferred",{{"project",m_project.projectPath()},
+                    {"photos",result.size()},{"catalog_epoch",QString::number(m_catalogEpoch)},
+                    {"photo_epoch",QString::number(m_photoEpoch)}});
+                return;
+            }
             bool changed = false;
             for (auto &photo : m_photos) if (result.contains(photo.path)) {
                 const auto captured = PhotoTimeline::cameraTime(result.value(photo.path));
@@ -1984,6 +2020,7 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
+    if (xmpMergeBusy()) return;
     cancelBrushStroke();
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     emit libraryChanged();
@@ -2041,6 +2078,9 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
 }
 
 void PhotoController::updateCaptureTime(const QString &path, const QString &time) {
+    // Background camera metadata must not enqueue an old Develop/history row
+    // after the authorized merge. Successful delivery resumes on the new row.
+    if (m_xmpMerge) { m_xmpMerge->deferredCaptureTimes.insert(path,time); return; }
     const auto captured = PhotoTimeline::cameraTime(time); bool changed = false;
     for (auto &photo : m_photos) if (photo.path == path && (!photo.timeline.captureChecked || photo.timeline.captureTime != captured)) {
         photo.timeline.captureChecked = true; photo.timeline.captureTime = captured;
@@ -2061,6 +2101,7 @@ void PhotoController::markPhotoDirty(const PhotoEntry &photo) {
     if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
 }
 void PhotoController::enqueueEdits() {
+    if (xmpMergeBusy()) return;
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     if (!m_project.isOpen()) return;
     if (!m_dirtyEdits.isEmpty() && m_project.updateBatch(m_dirtyEdits, m_dirtyHistories,m_dirtyDates)) { m_dirtyEdits.clear(); m_dirtyHistories.clear(); m_dirtyDates.clear(); }
@@ -2068,6 +2109,7 @@ void PhotoController::enqueueEdits() {
     if (!m_dirtyTags.isEmpty() && m_project.updateTagsBatch(m_dirtyTags)) m_dirtyTags.clear();
 }
 bool PhotoController::flushEdits() {
+    if (xmpMergeBusy()) return false;
     enqueueEdits();
     if (!m_project.isOpen()) return true;
     const bool ok = m_project.flush();

@@ -87,7 +87,7 @@ QSize PhotoController::brushFrameSize() const {
         BrushRenderRequest::geometrySize(m_fullSource.size(),m_photos[m_currentIndex].state.geometry);
 }
 bool PhotoController::brushReady() const {
-    return currentSourceAvailable()&&m_sourceIsFull&&!m_fullSource.isNull()&&previewReady()
+    return !xmpMergeBusy()&&currentSourceAvailable()&&m_sourceIsFull&&!m_fullSource.isNull()&&previewReady()
         &&!m_loading&&!m_preparing&&!m_rendering&&!m_interacting&&!m_cropEditing
         &&qint64(m_fullSource.width())*m_fullSource.height()<=BrushRenderRequest::MaxSourcePixels
         &&!brushFrameSize().isEmpty();

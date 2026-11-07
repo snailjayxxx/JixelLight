@@ -2,6 +2,7 @@
 #include "core/look/LookProfiles.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include <QDir>
+#include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -99,11 +100,11 @@ XmpSidecar::Companion XmpSidecar::discoverCompanion(const QString &photoPath) {
     return result;
 }
 
-bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
+namespace {
+bool parseDevice(QIODevice &file, XmpSidecar::Document *out, QString *error,
+                 const std::atomic_bool *cancel) {
     if (error) error->clear();
     if (!out) return fail(error, "Missing XMP destination");
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly) || file.size() > Limit) return fail(error, "Cannot read XMP (64 MiB limit)");
     // Never expand external entities or a document type. Depth and item limits
     // also apply inside unrecognized namespaces; no skipCurrentElement bypass.
     QXmlStreamReader xml(&file); xml.setEntityExpansionLimit(1024);
@@ -119,6 +120,7 @@ bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
         seen.insert(key); values.insert(key,value); return true;
     };
     while (!xml.atEnd()) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) return fail(error, "XMP read cancelled");
         const auto token = xml.readNext();
         if (file.pos() > Limit) return fail(error,"XMP exceeds 64 MiB");
         if (token == QXmlStreamReader::DTD || token == QXmlStreamReader::EntityReference)
@@ -177,7 +179,7 @@ bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
         }
     }
     if (xml.hasError() || !rdfSeen || !descriptionSeen) return fail(error,"Malformed XMP: "+xml.errorString());
-    Document result;
+    XmpSidecar::Document result;
     if (values.contains("snapshot") && !snapshot(values.value("snapshot"),&result,error)) return false;
     if (values.contains("Rating")) {
         bool ok = false; const double number = values.value("Rating").trimmed().toDouble(&ok);
@@ -205,6 +207,27 @@ bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
     if (!result.hasAdjustments && !result.hasRating && !result.hasFlag && !result.hasKeywords && !result.hasLabel)
         return fail(error,"No supported metadata or JixelLight adjustments in XMP");
     *out = result; return true;
+}
+
+} // namespace
+
+bool XmpSidecar::read(const QString &path, Document *out, QString *error) {
+    if (error) error->clear();
+    if (!out) return fail(error, "Missing XMP destination");
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > Limit) return fail(error, "Cannot read XMP (64 MiB limit)");
+    return parseDevice(file, out, error, nullptr);
+}
+
+bool XmpSidecar::readBytes(const QByteArray &bytes, Document *out, QString *error,
+                           const std::atomic_bool *cancel) {
+    if (error) error->clear();
+    if (!out) return fail(error, "Missing XMP destination");
+    if (bytes.size() > Limit) return fail(error, "Cannot read XMP (64 MiB limit)");
+    QBuffer file;
+    file.setData(bytes);
+    if (!file.open(QIODevice::ReadOnly)) return fail(error, "Cannot open captured XMP bytes");
+    return parseDevice(file, out, error, cancel);
 }
 
 XmpSidecar::ImportImpact XmpSidecar::previewChanges(

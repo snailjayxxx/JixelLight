@@ -34,3 +34,5 @@ void startNativeBrushDeliverySmokeRun(PhotoController *,QQuickWindow *,const QSt
 void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
 void startNativeBrushMonitorSmokeRun(PhotoController *,QQuickWindow *,const QString &);
+
+void startXmpMergeSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

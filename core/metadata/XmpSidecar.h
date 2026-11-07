@@ -2,6 +2,8 @@
 #include "core/library/CatalogTags.h"
 #include "core/pipeline/AdjustmentState.h"
 #include <QStringList>
+#include <QByteArray>
+#include <atomic>
 
 // An explicit import patch: absent standard properties leave existing values
 // alone. JixelLight snapshots carry the complete state, never Adobe CRS edits.
@@ -42,6 +44,9 @@ struct ImportImpact {
 ImportImpact previewChanges(const Document &incoming, const AdjustmentState &current,
                             const CatalogTags &tags, int rating, const QString &flag);
 bool read(const QString &path, Document *out, QString *error);
+// Parse the same bounded bytes captured on a worker, without a second file read.
+bool readBytes(const QByteArray &bytes, Document *out, QString *error,
+               const std::atomic_bool *cancel = nullptr);
 bool writeNew(const QString &path, const AdjustmentState &state, const CatalogTags &tags,
               int rating, const QString &flag, QString *error);
 }

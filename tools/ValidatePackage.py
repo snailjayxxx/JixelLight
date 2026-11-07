@@ -20,6 +20,7 @@ from ValidateBrushStabilization import validate_brush_stabilization
 from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
 from ValidateNativeBrush import validate_native_brush
+from ValidateXmpMerge import validate_xmp_merge
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -262,6 +263,13 @@ def main() -> int:
         results.append({'mode': 'develop-cli', 'passed': code == 0, 'returncode': code,
                         'sdk_paths_removed': True,
                         'executable_sha256': hashlib.sha256(cli.read_bytes()).hexdigest() if cli.is_file() else None})
+    # BEGIN XMP full-App package modes; all original63 remain in their exact order.
+    with tempfile.TemporaryDirectory(prefix='jixellight-xmp-package-') as xmp_temp:
+        for language in ('en_US', 'zh_CN'):
+            label = 'xmp-merge-' + language
+            results.append(validate_xmp_merge(executable, environment, Path(xmp_temp) / language,
+                reports / (label + '.json'), language, expected_commit=results[0].get('source_commit')))
+    # END XMP full-App package modes.
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),

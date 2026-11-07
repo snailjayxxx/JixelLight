@@ -120,6 +120,20 @@ jobs:
             python tools/ValidateNativeBrush.py "$EXE" "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
           done
           python tools/ValidateNativeBrush.py "$EXE" gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --expected-commit "$STAMP"
+      - name: Bilingual normal-App XMP review and durable import
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestXmpMergeEvidence.py' -v
+          for LANGUAGE in en_US zh_CN; do
+            python tools/ValidateXmpMerge.py "$EXE" "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
+          done
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         shell: bash
         run: |
@@ -373,6 +387,7 @@ jobs:
           path: |
             build/*-results.txt
             build/native-brush-monitor.json
+            build/xmp-controller-native/
             build/brush-pressure-input/
             build/edit-recipe-native/
             build/qsb-depfile-test/
@@ -493,6 +508,13 @@ jobs:
             xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
           done
           xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --expected-commit "$STAMP"
+      - name: Bilingual normal-App XMP review and durable import
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestXmpMergeEvidence.py' -v
+          for LANGUAGE in en_US zh_CN; do
+            xvfb-run -a python tools/ValidateXmpMerge.py ./build/bin/JixelLight "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
+          done
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -669,6 +691,7 @@ jobs:
           path: |
             build/*-results.txt
             build/native-brush-monitor.json
+            build/xmp-controller-native/
             build/brush-pressure-input/
             build/edit-recipe-native/
             build/qsb-depfile-test/

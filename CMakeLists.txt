@@ -52,6 +52,10 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/PhotoControllerXmp.cpp
+    app/XmpMergeReviewDialog.cpp
+    core/metadata/XmpMerge.cpp
+    core/metadata/XmpCapture.cpp
     app/NativeBrushController.cpp
     core/gpu/brush/NativeBrushSource.cpp
     core/gpu/brush/NativeBrushUploadAdmission.cpp
@@ -116,7 +120,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -380,3 +384,19 @@ set_target_properties(JixelLightNativeBrushMonitorTests PROPERTIES WIN32_EXECUTA
 add_test(NAME native-brush-monitor COMMAND JixelLightNativeBrushMonitorTests -o native-brush-monitor-results.txt,txt -o -,txt)
 set_tests_properties(native-brush-monitor PROPERTIES TIMEOUT 120
     ENVIRONMENT "JIXELLIGHT_NATIVE_MONITOR_REPORT=${CMAKE_BINARY_DIR}/native-brush-monitor.json")
+
+# BEGIN XMP normal-controller native coverage; the original70 names remain unchanged.
+qt_add_executable(JixelLightXmpControllerTests tests/XmpControllerTests.cpp)
+target_link_libraries(JixelLightXmpControllerTests PRIVATE JixelLightCore Qt6::Test Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::Sql Qt6::Concurrent)
+set_target_properties(JixelLightXmpControllerTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME xmp-controller-merge COMMAND JixelLightXmpControllerTests -o xmp-controller-results.txt,txt -o -,txt)
+if(WIN32)
+    set(JIXELLIGHT_XMP_COMPONENT_QPA windows)
+elseif(APPLE)
+    set(JIXELLIGHT_XMP_COMPONENT_QPA cocoa)
+else()
+    set(JIXELLIGHT_XMP_COMPONENT_QPA offscreen)
+endif()
+set_tests_properties(xmp-controller-merge PROPERTIES TIMEOUT 120
+    ENVIRONMENT "QT_QPA_PLATFORM=${JIXELLIGHT_XMP_COMPONENT_QPA};JIXEL_XMP_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/xmp-controller-native;JIXELLIGHT_FORCE_CPU=1")
+# END XMP normal-controller native coverage.
