@@ -25,7 +25,7 @@ jobs:
             triplet: x64-windows-static-md
             # CI337 reached90m after its47-mode manifest, cancelling final packaging.
             # Individual GUI and export/reference deadlines remain unchanged.
-            job_timeout: 105
+            job_timeout: 120
           - os: macos-15
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static
