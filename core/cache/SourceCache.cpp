@@ -18,6 +18,21 @@
 #include <cmath>
 #include <libraw/libraw.h>
 
+namespace {
+QMutex sourceRevisionMutex;
+QHash<QString,quint64> sourceRevisions;
+quint64 nextSourceRevision=0;
+QString revisionPath(const QString &path) {
+    const QFileInfo info(path);
+    auto key=info.canonicalFilePath();
+    if (key.isEmpty()) key=QDir::cleanPath(info.absoluteFilePath());
+#ifdef Q_OS_WIN
+    key=key.toCaseFolded();
+#endif
+    return key;
+}
+}
+
 SourceCache::SourceCache(qint64 memoryBytes, QString directory) {
     if (memoryBytes <= 0) {
         bool ok = false; int mb = qEnvironmentVariableIntValue("JIXELLIGHT_CACHE_MB", &ok);
@@ -36,7 +51,13 @@ QString SourceCache::fileKey(const QString &path) {
     field(QByteArray(ProcessingPlan::EngineVersion));
     field(QByteArrayLiteral("disk-schema-4:RGBA64-native-endian"));
     field(QByteArray(LibRaw::version()));
-    field(info.canonicalFilePath().toUtf8());
+    const auto pathIdentity=revisionPath(path);
+    field(pathIdentity.toUtf8());
+    {
+        QMutexLocker lock(&sourceRevisionMutex);
+        const auto revision=sourceRevisions.value(pathIdentity);
+        if (revision) field(QByteArrayLiteral("explicit-relink:")+QByteArray::number(revision));
+    }
     field(QByteArray::number(info.size()));
     field(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
     field(QByteArrayLiteral("LibRaw:AHD:WBcamera:highlight1:adjustmax0.75:ProPhoto:16:linear"));
@@ -47,12 +68,32 @@ QString SourceCache::fileKey(const QString &path) {
     }
     return QString::fromLatin1(hash.result().toHex());
 }
+void SourceCache::invalidatePath(const QString &path) {
+    const auto oldKey=fileKey(path);
+    const auto pathIdentity=revisionPath(path);
+    {
+        QMutexLocker lock(&sourceRevisionMutex);
+        sourceRevisions.insert(pathIdentity,++nextSourceRevision);
+    }
+    {
+        QMutexLocker lock(&m_mutex);
+        m_memory.remove(oldKey);
+    }
+    // Invalidation follows cancellation of this controller's source tasks.
+    // Their cancelled tokens prevent a late disk-preview publication.
+    QMutexLocker lock(&m_diskMutex);
+    if (!oldKey.isEmpty()) QFile::remove(QDir(m_diskDirectory).filePath(oldKey+".jlpv"));
+}
 SourceData SourceCache::get(const QString &key) {
     QMutexLocker lock(&m_mutex);
     if (const auto *entry = m_memory.object(key)) { PerformanceRecorder::count("decoded_cache_hit"); return *entry; }
     PerformanceRecorder::count("decoded_cache_miss"); return {};
 }
 void SourceCache::put(const SourceData &source) {
+    // A future camera-linear frame must carry a decoder/profile signature,
+    // never alias the legacy 16-bit source key in the shared memory LRU.
+    // Use storeFloatScene() instead of the RGBA64 source API.
+    if (source.image.format()==QImage::Format_RGBA32FPx4) return;
     if (source.image.isNull() || !source.fullResolution || source.key.isEmpty()) return;
     const auto bytes = source.image.sizeInBytes();
     QMutexLocker lock(&m_mutex);
@@ -86,6 +127,9 @@ SourceData SourceCache::diskPreview(const QString &key) {
     return result;
 }
 void SourceCache::storeDiskPreview(const SourceData &source, const CancelToken &token) {
+    // A scene-linear float source cannot be persisted safely using the old
+    // RGBA64 .jlpv format; its >1 and negative values would be silently lost.
+    if (source.image.format()==QImage::Format_RGBA32FPx4) return;
     if (source.key.size()!=64 || source.image.isNull() || cancelled(token)) return;
     PerformanceSpan timer("disk_preview_write");
     QImage preview = source.image;
@@ -116,18 +160,19 @@ void SourceCache::trimDisk() {
         if (QFile::remove(it->absoluteFilePath())) total-=it->size();
     }
 }
-SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken &token,
-                      const std::function<void(SourceData)> &partial) {
+namespace {
+SourceData loadSourceImpl(SourceCache *cache, const QString &path, const CancelToken &token,
+                         const std::function<void(SourceData)> &partial) {
     SourceData out;
     try {
         PerformanceSpan total("source_load");
         out.key = SourceCache::fileKey(path);
         if (out.key.isEmpty()) { out.error = "File not found"; return out; }
-        auto cached = cache.get(out.key);
+        auto cached = cache ? cache->get(out.key) : SourceData{};
         if (!cached.image.isNull()) return cached;
         const bool raw = RawDecoder::isRawFile(path);
-        if (partial) {
-            auto disk = cache.diskPreview(out.key);
+        if (partial && cache) {
+            auto disk = cache->diskPreview(out.key);
             if (!disk.image.isNull() && !cancelled(token)) partial(disk);
             else if (raw) {
                 auto thumb = RawDecoder::thumbnail(path,token);
@@ -171,10 +216,18 @@ SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken
         out.metadata["pixelHeight"] = out.image.height();
         out.metadata["workingSpace"] = "Linear ProPhoto RGB";
         out.image.setText("JixelLightWorkingSpace","Linear ProPhoto RGB");
-        cache.put(out);
+        if (cache) cache->put(out);
         if (partial && !cancelled(token)) partial(out);
-        cache.storeDiskPreview(out,token);
+        if (cache) cache->storeDiskPreview(out,token);
     } catch (const std::exception &e) { out.image={}; out.error=QString::fromUtf8(e.what()); }
     catch (...) { out.image={}; out.error="Unknown source load failure"; }
     return out;
+}
+}
+SourceData loadSource(SourceCache &cache, const QString &path, const CancelToken &token,
+                      const std::function<void(SourceData)> &partial) {
+    return loadSourceImpl(&cache,path,token,partial);
+}
+SourceData loadSourceFresh(const QString &path, const CancelToken &token) {
+    return loadSourceImpl(nullptr,path,token,{});
 }

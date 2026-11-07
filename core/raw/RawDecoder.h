@@ -2,7 +2,10 @@
 
 #include <QImage>
 #include <QString>
+#include <QJsonObject>
 #include "core/async/LatestJob.h"
+#include "core/raw/SensorLinearMosaic.h"
+#include "core/raw/SensorFloatDevelop.h"
 
 struct RawMetadata {
     QString make;
@@ -20,11 +23,31 @@ struct RawMetadata {
     bool highlightBlendEnabled = false;
     int highlightMode = 1;
     float adjustMaximumThreshold = 0.75f;
+    // Diagnostic opt-in only. Real RAW development never depends on the
+    // pre-demosaic sensor audit and remains the accepted RGBA64 path.
+    bool captureSensorAudit = false;
+    QJsonObject sensorAudit;
 };
 
 class RawDecoder final {
 public:
     static bool isRawFile(const QString &path);
     static QImage decode(const QString &path, QString *errorMessage = nullptr, RawMetadata *metadata = nullptr, const CancelToken &cancel = {});
+    // Explicit calibrated CFA tile experiment only; never called by normal rendering.
+    static SensorLinearMosaic::Tile calibratedMosaicTile(const QString &path,
+        const SensorLinearMosaic::Calibration &calibration, const QRect &rawRoi,
+        QString *errorMessage=nullptr, const CancelToken &cancel={});
+    // Explicit laboratory float scene only, requires sensor+color calibration.
+    static SensorFloatDevelop::Frame calibratedFloatTile(
+        const QString &path,const SensorLinearMosaic::Calibration &sensor,
+        const SensorFloatDevelop::Profile &profile,const QRect &sampleRoi,
+        const QRect &outputRoi,QString *errorMessage=nullptr,
+        const CancelToken &cancel={});
+    // Laboratory-only pre-demosaic source inspection: verifies the entire
+    // original SHA-256 and unpacks only a bounded single-plane RAW mosaic.
+    // Never materializes or exports scene RGB, never modifies the normal RAW path.
+    static QJsonObject inspectUnpacked(const QString &path,
+        const QByteArray &expectedSha256,QString *errorMessage=nullptr,
+        const CancelToken &cancel={});
     static QImage thumbnail(const QString &path, const CancelToken &cancel = {});
 };

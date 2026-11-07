@@ -11,10 +11,12 @@ struct PrepareRequest {
     QSize viewport{1600, 1000};
     double zoom = 0, centerX = .5, centerY = .5;
     bool fullResolution = false;
+    GeometryState geometry;
 };
 struct PreparedPreview {
     QImage normal, fast, gpu;
     QSizeF displayPixels;
+    QRectF frameRect{0,0,1,1}; // Normalized region in the complete post-geometry image.
     bool viewportOnly = false;
     QString error;
 };
@@ -24,10 +26,12 @@ struct RenderRequest {
     quint64 revision = 0;
     bool fast = false;
 };
+struct RenderedFrame {QImage image;QString error;bool retryableBudget=false;};
 struct ScopeRequest {
     QImage image;
     ProcessingPlan plan;
     quint64 revision = 0;
     bool fullResolution = false;
+    GeometryState geometry;
 };
 PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken &cancel);

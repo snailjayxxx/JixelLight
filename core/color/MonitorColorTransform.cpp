@@ -13,6 +13,12 @@
 
 #include <lcms2.h>
 
+#if defined(Q_OS_MACOS)
+#include <QGuiApplication>
+#include <QThread>
+#include <qpa/qplatformscreen.h>
+#endif
+
 #if defined(Q_OS_WIN)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -71,6 +77,17 @@ Rgb sampleLut(const QImage &atlas,int n,float r,float g,float b) {
 }
 
 namespace MonitorColorTransform {
+MonitorColorProfile profileFromColorSpace(const QColorSpace &space,const QString &screenName) {
+    MonitorColorProfile result;
+    if(!space.isValid())return result;
+    const auto bytes=space.iccProfile();QString description;
+    if(bytes.isEmpty()||!ColorManagement::validateIcc(bytes,&description))return result;
+    result.icc=bytes;
+    result.key=QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex());
+    result.description=description.isEmpty()?screenName:description;
+    result.valid=true;return result;
+}
+
 MonitorColorProfile profileForScreen(QScreen *screen) {
     MonitorColorProfile result;
 #if defined(Q_OS_WIN)
@@ -114,6 +131,14 @@ MonitorColorProfile profileForScreen(QScreen *screen) {
     result.description = description.isEmpty() ? screen->name() : description;
     result.key = QString::fromLatin1(QCryptographicHash::hash(result.icc, QCryptographicHash::Sha256).toHex());
     result.valid = true;
+#elif defined(Q_OS_MACOS)
+    // Qt6.8.3 Cocoa stores the ICC from this exact NSScreen's colorSpace in
+    // QPlatformScreen. Using that mapping avoids guessing from geometry/name
+    // or using the primary display when the window is on another screen.
+    // The public QCocoaScreen native interface first appears in Qt6.11.
+    if(!qGuiApp||QThread::currentThread()!=qGuiApp->thread()||!screen
+        ||QGuiApplication::platformName()!=QStringLiteral("cocoa"))return result;
+    if(auto *platform=screen->handle())return profileFromColorSpace(platform->colorSpace(),screen->name());
 #else
     Q_UNUSED(screen);
 #endif

@@ -1,6 +1,6 @@
 #version 440
 layout(local_size_x=16,local_size_y=16) in;
-layout(std140,binding=0) uniform Plan {vec4 p[37];};
+layout(std140,binding=0) uniform Plan {vec4 p[40];};
 layout(rgba32f,binding=1) readonly uniform image2D baseImage;
 layout(rgba32f,binding=2) writeonly uniform image2D horizontalImage;
 float luminanceAt(ivec2 c){vec3 v=imageLoad(baseImage,c).rgb;precise float y=(.2126*v.r+.7152*v.g)+.0722*v.b;return y;}

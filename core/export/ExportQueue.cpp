@@ -3,12 +3,21 @@
 #include "core/metadata/MetadataReader.h"
 #include "core/export/ExportQueue.h"
 #include "core/export/JpegExporter.h"
+#include "core/export/PngExporter.h"
+#include "core/export/RasterExporter.h"
+#include "core/pipeline/BrushRenderRequest.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
+#include <QFileInfo>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
 #include <algorithm>
 #include <cmath>
 
-ExportQueue::ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent) : QObject(parent),m_cache(std::move(cache)) {
+ExportQueue::ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget)
+    : QObject(parent),m_cache(std::move(cache)),m_brushBudget(std::move(brushBudget)) {
     m_pool.setMaxThreadCount(1);
     connect(&m_watcher,&QFutureWatcher<QVector<ExportResult>>::finished,this,[this] {
         int succeeded=0,failed=0;
@@ -32,7 +41,8 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
     m_cancel=std::make_shared<std::atomic_bool>(false);
     const auto token=m_cancel,interactive=m_interactive;
     const auto cache=m_cache;
-    m_watcher.setFuture(QtConcurrent::run(&m_pool,[this,requests=std::move(requests),token,interactive,cache] {
+    const auto brushBudget=m_brushBudget;
+    m_watcher.setFuture(QtConcurrent::run(&m_pool,[this,requests=std::move(requests),token,interactive,cache,brushBudget] {
         QVector<ExportResult> results;
         std::future<SourceData> next;
         try {
@@ -62,10 +72,44 @@ bool ExportQueue::start(QVector<ExportRequest> requests) {
                     metadata.value("rawBaselineExposure",0.0)).toDouble();
                 if(!std::isfinite(rawBaseExposure))rawBaseExposure=0.0;
                 rawBaseExposure=std::clamp(rawBaseExposure,-8.0,8.0);
-                if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,request.destination,request.space,request.quality,token,&result.error,
-                    [this,index,total=requests.size(),file=request.sourcePath](int percent) {
-                        QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);
-                    },interactive,rawSource,float(rawBaseExposure));
+                QString destination=request.destination;
+                std::unique_ptr<QTemporaryDir> staging;
+                if (request.newFileOnly) {
+                    const QFileInfo target(destination);
+                    if (target.exists() || target.isSymLink()) {
+                        result.error="Destination already exists"; results.push_back(result); continue;
+                    }
+                    staging=std::make_unique<QTemporaryDir>(target.absoluteDir().filePath(".jixellight-export-XXXXXX"));
+                    if (!staging->isValid()) {
+                        result.error="Cannot create export staging directory"; results.push_back(result); continue;
+                    }
+                    destination=staging->filePath(target.fileName());
+                }
+                const auto suffix=QFileInfo(request.destination).suffix().toLower();
+                const bool raster=QStringList{"png","tif","tiff","webp"}.contains(suffix);
+                const auto format=suffix=="png"?RasterFormat::Png16:suffix=="webp"?RasterFormat::WebP8:RasterFormat::Tiff16;
+                const auto reportProgress=[this,index,total=requests.size(),file=request.sourcePath](int percent) {
+                    QMetaObject::invokeMethod(this,[this,index,total,percent,file] { emit progress(index,int(total),percent,file); },Qt::QueuedConnection);
+                };
+                if(!source.image.isNull()&&BrushMaskTileRaster::anyEnabled(state.brushMasks)) {
+                    BrushRenderRequest::Spec spec;spec.output=request.space;spec.rawSource=rawSource;spec.rawBaseExposureStops=float(rawBaseExposure);
+                    spec.layout=raster?BrushRenderRequest::Layout::Whole:BrushRenderRequest::Layout::Stripes128;
+                    auto admitted=BrushRenderRequest::create(source.image,state,spec,token,&result.error,brushBudget);
+                    if(admitted)result.ok=raster
+                        ?exportRaster(*admitted,destination,format,request.quality,token,&result.error)
+                        :exportJpegTiled(*admitted,destination,request.quality,token,&result.error,reportProgress,interactive);
+                }else if (!source.image.isNull() && raster)
+                    result.ok=exportRaster(source.image,state,destination,request.space,
+                        format,
+                        request.quality,token,&result.error,rawSource,float(rawBaseExposure));
+                else if (!source.image.isNull()) result.ok=exportJpegTiled(source.image,state,destination,request.space,request.quality,token,&result.error,
+                    reportProgress,interactive,rawSource,float(rawBaseExposure));
+                if (result.ok && request.newFileOnly) {
+                    QFile publication(destination);
+                    const QFileInfo target(request.destination);
+                    result.ok=!cancelled(token) && !target.exists() && !target.isSymLink() && publication.rename(request.destination);
+                    if (!result.ok) result.error=cancelled(token)?QString("Export cancelled"):QString("Cannot publish a new destination: ")+publication.errorString();
+                }
                 results.push_back(result);
             }
             if (next.valid()) next.get();

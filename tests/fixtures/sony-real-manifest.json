@@ -76,19 +76,22 @@
       "id": "sony-a7-iv-01",
       "raw": "sony_a7_iv_01.arw",
       "jpeg": "sony_a7_iv_01.jpg",
-      "role": "train"
+      "role": "train",
+      "auditRequired": true
     },
     {
       "id": "sony-a7-iv-04",
       "raw": "sony_a7_iv_04.arw",
       "jpeg": "sony_a7_iv_04.jpg",
-      "role": "train"
+      "role": "train",
+      "auditRequired": true
     },
     {
       "id": "sony-a7-iv-07",
       "raw": "sony_a7_iv_07.arw",
       "jpeg": "sony_a7_iv_07.jpg",
-      "role": "validation"
+      "role": "validation",
+      "auditRequired": true
     }
   ],
   "independentOracle": "ExifTool numeric Sony tags from original files, acquired 2026-09-07; compare to native Exiv2 results."
