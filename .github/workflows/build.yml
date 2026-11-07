@@ -31,7 +31,7 @@ jobs:
             triplet: arm64-osx-static
             # Run301 completed native validation before the 75-minute aggregate
             # limit interrupted packaging. Individual validation limits stay fixed.
-            job_timeout: 105
+            job_timeout: 120
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     env:
