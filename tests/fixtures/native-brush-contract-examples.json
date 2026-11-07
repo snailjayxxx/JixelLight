@@ -1,0 +1,3811 @@
+{
+  "synthetic_contract_examples_not_execution_evidence": true,
+  "description": "Report shapes with synthetic paths, roles, targets and commit. Never use these examples as native or installed-package acceptance. The route active-delivery field is a new formal contract requirement.",
+  "modes": {
+    "route": {
+      "actual_dpr": 1,
+      "actual_qpa": "cocoa",
+      "backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "captures": [
+        {
+          "height": 920,
+          "path": "owned-schema:85984a3fa0eb943daf4b56dd",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:d0d93f1180fa41fa330d39fc",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:18126e70d4696e08f9791705",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:44376b41f2efdedee565c207",
+          "width": 1540
+        }
+      ],
+      "checks": {
+        "CPU_canonical_reused_after_owner_retirement": true,
+        "actual_threaded_GUI_RHI_worker_roles": true,
+        "hidden_window_retired_old_RHI_generation": true,
+        "native_diagnostic_32_samples_original_CPU_RGB40_alpha_exact": true,
+        "native_source_uploaded_once": true,
+        "no_CPU_colour_or_mask_upload": true,
+        "normal_no_finish": true,
+        "original_monitor_presentation": true,
+        "physical_source_key_shared_across_delivery_versions": true,
+        "redo_reentered_native_route": true,
+        "two_native_compute_dispatches": true,
+        "undo_preserved_original_intent": true,
+        "virtual_copy_distinct_actual_delivery": true
+      },
+      "elapsed_ms": 1985,
+      "error": "",
+      "full_frame_CPU_comparison": false,
+      "last_trace": {
+        "catalog": "owned-schema:aae496ed8791c812be00c9f4",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_frame_native": true,
+        "current_requested_revision": 13,
+        "frame_worker_thread": "0951a63dd",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+        "monitor_lut_key": "identity-srgb",
+        "normal_finish_calls": 0,
+        "owner_epoch": 2,
+        "parameter_revision": 13,
+        "photo": "owned-schema:0cb6c932132a24ae527d465e",
+        "prepare_generation": 3,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 4,
+        "rhi_thread": "3af687ba9",
+        "source_cache_key": "1133871366145",
+        "source_uploads": 1,
+        "source_worker_thread": "89c220203",
+        "version": "jixel-copy:e27aa39d-b8d5-444a-a525-76451f46ba4f",
+        "current_delivery_matches": true
+      },
+      "observations": [
+        {
+          "catalog": "owned-schema:aae496ed8791c812be00c9f4",
+          "colour_dispatches": 1,
+          "control_readback_bytes": 12,
+          "coverage_dispatches": 1,
+          "cpu_colour_uploaded": false,
+          "cpu_mask_uploaded": false,
+          "current_frame_native": true,
+          "current_requested_revision": 8,
+          "frame_worker_thread": "0951a63dd",
+          "gui_thread": "d2a9f7409",
+          "histogram_dispatches": 1,
+          "histogram_readback_bytes": 16400,
+          "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+          "monitor_lut_key": "identity-srgb",
+          "normal_finish_calls": 0,
+          "owner_epoch": 1,
+          "parameter_revision": 8,
+          "photo": "owned-schema:0cb6c932132a24ae527d465e",
+          "prepare_generation": 2,
+          "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+          "producer": "native-brush-gpu-compute",
+          "rhi_generation": 1,
+          "rhi_thread": "3af687ba9",
+          "source_cache_key": "1133871366145",
+          "source_uploads": 1,
+          "source_worker_thread": "89c220203",
+          "version": "owned-schema:0cb6c932132a24ae527d465e",
+          "current_delivery_matches": true
+        },
+        {
+          "available": true,
+          "bytes": 4915200,
+          "diagnostic_samples_rgba16": [
+            {
+              "rgba16": [
+                8226,
+                6396,
+                4933,
+                65535
+              ],
+              "x": 17,
+              "y": 29
+            },
+            {
+              "rgba16": [
+                17587,
+                14795,
+                14931,
+                65535
+              ],
+              "x": 166,
+              "y": 112
+            },
+            {
+              "rgba16": [
+                26914,
+                23112,
+                25019,
+                65535
+              ],
+              "x": 315,
+              "y": 195
+            },
+            {
+              "rgba16": [
+                36321,
+                31426,
+                35086,
+                65535
+              ],
+              "x": 464,
+              "y": 278
+            },
+            {
+              "rgba16": [
+                45673,
+                39763,
+                3229,
+                65535
+              ],
+              "x": 613,
+              "y": 361
+            },
+            {
+              "rgba16": [
+                17282,
+                39776,
+                25156,
+                65535
+              ],
+              "x": 122,
+              "y": 444
+            },
+            {
+              "rgba16": [
+                23275,
+                11169,
+                17471,
+                65535
+              ],
+              "x": 271,
+              "y": 47
+            },
+            {
+              "rgba16": [
+                32687,
+                19458,
+                27542,
+                65535
+              ],
+              "x": 420,
+              "y": 130
+            },
+            {
+              "rgba16": [
+                42055,
+                27782,
+                37613,
+                65535
+              ],
+              "x": 569,
+              "y": 213
+            },
+            {
+              "rgba16": [
+                13674,
+                27814,
+                17607,
+                65535
+              ],
+              "x": 78,
+              "y": 296
+            },
+            {
+              "rgba16": [
+                23038,
+                36130,
+                27692,
+                65535
+              ],
+              "x": 227,
+              "y": 379
+            },
+            {
+              "rgba16": [
+                32427,
+                44465,
+                37756,
+                65535
+              ],
+              "x": 376,
+              "y": 462
+            },
+            {
+              "rgba16": [
+                38426,
+                15805,
+                30075,
+                65535
+              ],
+              "x": 525,
+              "y": 65
+            },
+            {
+              "rgba16": [
+                10063,
+                15827,
+                10112,
+                65535
+              ],
+              "x": 34,
+              "y": 148
+            },
+            {
+              "rgba16": [
+                19421,
+                24146,
+                20132,
+                65535
+              ],
+              "x": 183,
+              "y": 231
+            },
+            {
+              "rgba16": [
+                28775,
+                32499,
+                30219,
+                65535
+              ],
+              "x": 332,
+              "y": 314
+            },
+            {
+              "rgba16": [
+                38140,
+                40821,
+                40285,
+                65535
+              ],
+              "x": 481,
+              "y": 397
+            },
+            {
+              "rgba16": [
+                44154,
+                12155,
+                32607,
+                65535
+              ],
+              "x": 630,
+              "y": 0
+            },
+            {
+              "rgba16": [
+                15789,
+                12214,
+                12612,
+                65535
+              ],
+              "x": 139,
+              "y": 83
+            },
+            {
+              "rgba16": [
+                25155,
+                20522,
+                22667,
+                65535
+              ],
+              "x": 288,
+              "y": 166
+            },
+            {
+              "rgba16": [
+                34503,
+                28851,
+                32758,
+                65535
+              ],
+              "x": 437,
+              "y": 249
+            },
+            {
+              "rgba16": [
+                43877,
+                37161,
+                42826,
+                65535
+              ],
+              "x": 586,
+              "y": 332
+            },
+            {
+              "rgba16": [
+                15497,
+                37184,
+                22804,
+                65535
+              ],
+              "x": 95,
+              "y": 415
+            },
+            {
+              "rgba16": [
+                21529,
+                8515,
+                15118,
+                65535
+              ],
+              "x": 244,
+              "y": 18
+            },
+            {
+              "rgba16": [
+                30893,
+                16877,
+                25209,
+                65535
+              ],
+              "x": 393,
+              "y": 101
+            },
+            {
+              "rgba16": [
+                40251,
+                25192,
+                35280,
+                65535
+              ],
+              "x": 542,
+              "y": 184
+            },
+            {
+              "rgba16": [
+                11877,
+                25229,
+                15253,
+                65535
+              ],
+              "x": 51,
+              "y": 267
+            },
+            {
+              "rgba16": [
+                21214,
+                33544,
+                25344,
+                65535
+              ],
+              "x": 200,
+              "y": 350
+            },
+            {
+              "rgba16": [
+                30642,
+                41866,
+                35415,
+                65535
+              ],
+              "x": 349,
+              "y": 433
+            },
+            {
+              "rgba16": [
+                36624,
+                13248,
+                27719,
+                65535
+              ],
+              "x": 498,
+              "y": 36
+            },
+            {
+              "rgba16": [
+                8182,
+                13271,
+                7694,
+                65535
+              ],
+              "x": 7,
+              "y": 119
+            },
+            {
+              "rgba16": [
+                17582,
+                21576,
+                17788,
+                65535
+              ],
+              "x": 156,
+              "y": 202
+            }
+          ],
+          "encoding": "encoded RGB",
+          "height": 480,
+          "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+          "monitor_icc": false,
+          "nonfinite_rgba": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "output_space": "srgb",
+          "parameter_revision": 8,
+          "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+          "pixel_sha256": "28f57882f9f6ead35a2480222c567080a057d6a5aae8f847e22969efddd0db05",
+          "pixels": 307200,
+          "producer": "native-brush-gpu-compute",
+          "ranges_rgba": [
+            [
+              0.10467688739299774,
+              0.7172961235046387
+            ],
+            [
+              0.06004425138235092,
+              0.7476157546043396
+            ],
+            [
+              0.04385443031787872,
+              0.686610221862793
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "source_cache_key": "1133871366145",
+          "stage": "working-output",
+          "width": 640
+        },
+        {
+          "CPU_error": "",
+          "diagnostic_samples": 32,
+          "max_RGB16_error": 0,
+          "max_alpha16_error": 0
+        },
+        {
+          "catalog": "owned-schema:aae496ed8791c812be00c9f4",
+          "colour_dispatches": 1,
+          "control_readback_bytes": 12,
+          "coverage_dispatches": 1,
+          "cpu_colour_uploaded": false,
+          "cpu_mask_uploaded": false,
+          "current_frame_native": true,
+          "current_requested_revision": 10,
+          "frame_worker_thread": "0951a63dd",
+          "gui_thread": "d2a9f7409",
+          "histogram_dispatches": 1,
+          "histogram_readback_bytes": 16400,
+          "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+          "monitor_lut_key": "identity-srgb",
+          "normal_finish_calls": 0,
+          "owner_epoch": 1,
+          "parameter_revision": 10,
+          "photo": "owned-schema:0cb6c932132a24ae527d465e",
+          "prepare_generation": 2,
+          "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+          "producer": "native-brush-gpu-compute",
+          "rhi_generation": 2,
+          "rhi_thread": "3af687ba9",
+          "source_cache_key": "1133871366145",
+          "source_uploads": 1,
+          "source_worker_thread": "89c220203",
+          "version": "owned-schema:0cb6c932132a24ae527d465e",
+          "current_delivery_matches": true
+        },
+        {
+          "catalog": "owned-schema:aae496ed8791c812be00c9f4",
+          "colour_dispatches": 1,
+          "control_readback_bytes": 12,
+          "coverage_dispatches": 1,
+          "cpu_colour_uploaded": false,
+          "cpu_mask_uploaded": false,
+          "current_frame_native": true,
+          "current_requested_revision": 13,
+          "frame_worker_thread": "0951a63dd",
+          "gui_thread": "d2a9f7409",
+          "histogram_dispatches": 1,
+          "histogram_readback_bytes": 16400,
+          "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+          "monitor_lut_key": "identity-srgb",
+          "normal_finish_calls": 0,
+          "owner_epoch": 2,
+          "parameter_revision": 13,
+          "photo": "owned-schema:0cb6c932132a24ae527d465e",
+          "prepare_generation": 3,
+          "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+          "producer": "native-brush-gpu-compute",
+          "rhi_generation": 3,
+          "rhi_thread": "3af687ba9",
+          "source_cache_key": "1133871366145",
+          "source_uploads": 1,
+          "source_worker_thread": "89c220203",
+          "version": "jixel-copy:e27aa39d-b8d5-444a-a525-76451f46ba4f",
+          "current_delivery_matches": true
+        },
+        {
+          "catalog": "owned-schema:aae496ed8791c812be00c9f4",
+          "colour_dispatches": 1,
+          "control_readback_bytes": 12,
+          "coverage_dispatches": 1,
+          "cpu_colour_uploaded": false,
+          "cpu_mask_uploaded": false,
+          "current_frame_native": true,
+          "current_requested_revision": 13,
+          "frame_worker_thread": "0951a63dd",
+          "gui_thread": "d2a9f7409",
+          "histogram_dispatches": 1,
+          "histogram_readback_bytes": 16400,
+          "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+          "monitor_lut_key": "identity-srgb",
+          "normal_finish_calls": 0,
+          "owner_epoch": 2,
+          "parameter_revision": 13,
+          "photo": "owned-schema:0cb6c932132a24ae527d465e",
+          "prepare_generation": 3,
+          "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+          "producer": "native-brush-gpu-compute",
+          "rhi_generation": 4,
+          "rhi_thread": "3af687ba9",
+          "source_cache_key": "1133871366145",
+          "source_uploads": 1,
+          "source_worker_thread": "89c220203",
+          "version": "jixel-copy:e27aa39d-b8d5-444a-a525-76451f46ba4f",
+          "current_delivery_matches": true
+        }
+      ],
+      "passed": true,
+      "phase": 8,
+      "physical_tablet": false,
+      "real_RAW": false,
+      "source_commit": "d00dcaf",
+      "source_unchanged": true
+    },
+    "delivery": {
+      "active_case": "",
+      "actual_DPR": 1,
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device",
+      "actual_qpa": "cocoa",
+      "all_F0_F6_complete": false,
+      "captures": [
+        {
+          "height": 920,
+          "path": "owned-schema:98f29740b33c72588830b7f2",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:d83997c58d61431435daf73c",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:9bf970a9277b2c357bd06b5f",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:7aab928b8f3123489728d0d3",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:2bb034aa2dba43d839a7e778",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:ff531ff5dc1bce7b628e6fc0",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:6528f66383172beb1c7b82f4",
+          "width": 1540
+        }
+      ],
+      "completed_cases": [
+        {
+          "after": {
+            "catalog": "owned-schema:c792f1c5222f8935715c900f",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 1,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 7,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 7,
+              "last_submitted_revision": 7,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 7,
+            "photo": "owned-schema:94a9f7032adb7c521a579e35",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 2,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:94a9f7032adb7c521a579e35"
+          },
+          "before": {
+            "catalog": "owned-schema:c792f1c5222f8935715c900f",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 0,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 7,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 7,
+              "last_submitted_revision": 7,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 7,
+            "photo": "owned-schema:94a9f7032adb7c521a579e35",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 1,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:94a9f7032adb7c521a579e35"
+          },
+          "direct_capture_serial_retained": true,
+          "name": "cache",
+          "no_new_canonical_capture_and_cache_hit": true,
+          "old_GPU_owner_released": true,
+          "passed": true
+        },
+        {
+          "CPU_samples": 32,
+          "GUI_rejections_before": 0,
+          "actual_Qt_MetaCall_interleave": true,
+          "actual_diagnostic": {
+            "available": true,
+            "bytes": 4259840,
+            "diagnostic_samples_rgba16": [
+              {
+                "rgba16": [
+                  6222,
+                  5200,
+                  8866,
+                  65535
+                ],
+                "x": 17,
+                "y": 29
+              },
+              {
+                "rgba16": [
+                  14259,
+                  12751,
+                  17088,
+                  65535
+                ],
+                "x": 166,
+                "y": 112
+              },
+              {
+                "rgba16": [
+                  22258,
+                  20313,
+                  25286,
+                  65535
+                ],
+                "x": 315,
+                "y": 195
+              },
+              {
+                "rgba16": [
+                  30235,
+                  27840,
+                  33524,
+                  65535
+                ],
+                "x": 464,
+                "y": 278
+              },
+              {
+                "rgba16": [
+                  38225,
+                  35365,
+                  41728,
+                  65535
+                ],
+                "x": 613,
+                "y": 361
+              },
+              {
+                "rgba16": [
+                  10735,
+                  6297,
+                  11848,
+                  65535
+                ],
+                "x": 122,
+                "y": 28
+              },
+              {
+                "rgba16": [
+                  18731,
+                  13882,
+                  20071,
+                  65535
+                ],
+                "x": 271,
+                "y": 111
+              },
+              {
+                "rgba16": [
+                  28325,
+                  22665,
+                  29955,
+                  65535
+                ],
+                "x": 420,
+                "y": 194
+              },
+              {
+                "rgba16": [
+                  34738,
+                  28899,
+                  36505,
+                  65535
+                ],
+                "x": 569,
+                "y": 277
+              },
+              {
+                "rgba16": [
+                  15183,
+                  29400,
+                  26172,
+                  65535
+                ],
+                "x": 78,
+                "y": 360
+              },
+              {
+                "rgba16": [
+                  15250,
+                  7415,
+                  14836,
+                  65535
+                ],
+                "x": 227,
+                "y": 27
+              },
+              {
+                "rgba16": [
+                  23261,
+                  14956,
+                  23050,
+                  65535
+                ],
+                "x": 376,
+                "y": 110
+              },
+              {
+                "rgba16": [
+                  31243,
+                  22471,
+                  31295,
+                  65535
+                ],
+                "x": 525,
+                "y": 193
+              },
+              {
+                "rgba16": [
+                  11683,
+                  22955,
+                  20931,
+                  65535
+                ],
+                "x": 34,
+                "y": 276
+              },
+              {
+                "rgba16": [
+                  19676,
+                  30494,
+                  29176,
+                  65535
+                ],
+                "x": 183,
+                "y": 359
+              },
+              {
+                "rgba16": [
+                  19767,
+                  8492,
+                  17836,
+                  65535
+                ],
+                "x": 332,
+                "y": 26
+              },
+              {
+                "rgba16": [
+                  27723,
+                  16037,
+                  26057,
+                  65535
+                ],
+                "x": 481,
+                "y": 109
+              },
+              {
+                "rgba16": [
+                  35722,
+                  23548,
+                  34296,
+                  65535
+                ],
+                "x": 630,
+                "y": 192
+              },
+              {
+                "rgba16": [
+                  16205,
+                  24054,
+                  23953,
+                  65535
+                ],
+                "x": 139,
+                "y": 275
+              },
+              {
+                "rgba16": [
+                  24162,
+                  31581,
+                  32170,
+                  65535
+                ],
+                "x": 288,
+                "y": 358
+              },
+              {
+                "rgba16": [
+                  24247,
+                  9532,
+                  20843,
+                  65535
+                ],
+                "x": 437,
+                "y": 25
+              },
+              {
+                "rgba16": [
+                  32250,
+                  17084,
+                  29067,
+                  65535
+                ],
+                "x": 586,
+                "y": 108
+              },
+              {
+                "rgba16": [
+                  12759,
+                  17591,
+                  18738,
+                  65535
+                ],
+                "x": 95,
+                "y": 191
+              },
+              {
+                "rgba16": [
+                  20683,
+                  25129,
+                  26965,
+                  65535
+                ],
+                "x": 244,
+                "y": 274
+              },
+              {
+                "rgba16": [
+                  28665,
+                  32650,
+                  35166,
+                  65535
+                ],
+                "x": 393,
+                "y": 357
+              },
+              {
+                "rgba16": [
+                  28753,
+                  10651,
+                  23826,
+                  65535
+                ],
+                "x": 542,
+                "y": 24
+              },
+              {
+                "rgba16": [
+                  9179,
+                  11183,
+                  13518,
+                  65535
+                ],
+                "x": 51,
+                "y": 107
+              },
+              {
+                "rgba16": [
+                  17231,
+                  18728,
+                  21764,
+                  65535
+                ],
+                "x": 200,
+                "y": 190
+              },
+              {
+                "rgba16": [
+                  25189,
+                  26218,
+                  29949,
+                  65535
+                ],
+                "x": 349,
+                "y": 273
+              },
+              {
+                "rgba16": [
+                  33164,
+                  33757,
+                  38161,
+                  65535
+                ],
+                "x": 498,
+                "y": 356
+              },
+              {
+                "rgba16": [
+                  5647,
+                  4707,
+                  8267,
+                  65535
+                ],
+                "x": 7,
+                "y": 23
+              },
+              {
+                "rgba16": [
+                  13746,
+                  12218,
+                  16517,
+                  65535
+                ],
+                "x": 156,
+                "y": 106
+              }
+            ],
+            "encoding": "encoded RGB",
+            "height": 416,
+            "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+            "monitor_icc": false,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "output_space": "srgb",
+            "parameter_revision": 9,
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "55cef40a8aaad86aec0ae1f98ddcd53282fd2ea68192dea49ea34d05e8942105",
+            "pixels": 266240,
+            "producer": "native-brush-gpu-compute",
+            "ranges_rgba": [
+              [
+                0.07446402311325073,
+                0.6159151792526245
+              ],
+              [
+                0.045365072786808014,
+                0.6024872064590454
+              ],
+              [
+                0.10595864802598953,
+                0.687037467956543
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "source_cache_key": "1159641169921",
+            "stage": "working-output",
+            "width": 640
+          },
+          "latest_revision": 9,
+          "max_RGB16_error": 0,
+          "max_alpha16_error": 0,
+          "name": "revision",
+          "obsolete_facts": {
+            "GUI_accepted": 2,
+            "GUI_rejected": 1,
+            "compute_submissions": 3,
+            "enqueue_intents": 3,
+            "last_enqueue_revision": 9,
+            "last_submitted_revision": 9,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 0
+          },
+          "obsolete_revision": 8,
+          "passed": true
+        },
+        {
+          "GUI_accepted_before": 2,
+          "GUI_rejected_before": 1,
+          "actual_Qt_MetaCall_interleave": true,
+          "after": {
+            "catalog": "owned-schema:c792f1c5222f8935715c900f",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 1,
+            "controller_source_captures": 2,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 15,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 15,
+              "last_submitted_revision": 15,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "ecce267d783552ba1f02388d1861262b24f73a544b6c7522aeb8f568bd3846eb",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 2,
+            "parameter_revision": 15,
+            "photo": "owned-schema:7b73e017146cbd766e37704c",
+            "prepare_generation": 3,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 3,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "9272834392065",
+            "source_capture_serial": 2,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:7b73e017146cbd766e37704c"
+          },
+          "before": {
+            "catalog": "owned-schema:c792f1c5222f8935715c900f",
+            "colour_dispatches": 3,
+            "control_readback_bytes": 28,
+            "controller_source_cache_hits": 1,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 3,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 9,
+            "delivery_facts": {
+              "GUI_accepted": 2,
+              "GUI_rejected": 1,
+              "compute_submissions": 3,
+              "enqueue_intents": 3,
+              "last_enqueue_revision": 9,
+              "last_submitted_revision": 9,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "diagnostic": {
+              "available": true,
+              "bytes": 4259840,
+              "diagnostic_samples_rgba16": [
+                {
+                  "rgba16": [
+                    6222,
+                    5200,
+                    8866,
+                    65535
+                  ],
+                  "x": 17,
+                  "y": 29
+                },
+                {
+                  "rgba16": [
+                    14259,
+                    12751,
+                    17088,
+                    65535
+                  ],
+                  "x": 166,
+                  "y": 112
+                },
+                {
+                  "rgba16": [
+                    22258,
+                    20313,
+                    25286,
+                    65535
+                  ],
+                  "x": 315,
+                  "y": 195
+                },
+                {
+                  "rgba16": [
+                    30235,
+                    27840,
+                    33524,
+                    65535
+                  ],
+                  "x": 464,
+                  "y": 278
+                },
+                {
+                  "rgba16": [
+                    38225,
+                    35365,
+                    41728,
+                    65535
+                  ],
+                  "x": 613,
+                  "y": 361
+                },
+                {
+                  "rgba16": [
+                    10735,
+                    6297,
+                    11848,
+                    65535
+                  ],
+                  "x": 122,
+                  "y": 28
+                },
+                {
+                  "rgba16": [
+                    18731,
+                    13882,
+                    20071,
+                    65535
+                  ],
+                  "x": 271,
+                  "y": 111
+                },
+                {
+                  "rgba16": [
+                    28325,
+                    22665,
+                    29955,
+                    65535
+                  ],
+                  "x": 420,
+                  "y": 194
+                },
+                {
+                  "rgba16": [
+                    34738,
+                    28899,
+                    36505,
+                    65535
+                  ],
+                  "x": 569,
+                  "y": 277
+                },
+                {
+                  "rgba16": [
+                    15183,
+                    29400,
+                    26172,
+                    65535
+                  ],
+                  "x": 78,
+                  "y": 360
+                },
+                {
+                  "rgba16": [
+                    15250,
+                    7415,
+                    14836,
+                    65535
+                  ],
+                  "x": 227,
+                  "y": 27
+                },
+                {
+                  "rgba16": [
+                    23261,
+                    14956,
+                    23050,
+                    65535
+                  ],
+                  "x": 376,
+                  "y": 110
+                },
+                {
+                  "rgba16": [
+                    31243,
+                    22471,
+                    31295,
+                    65535
+                  ],
+                  "x": 525,
+                  "y": 193
+                },
+                {
+                  "rgba16": [
+                    11683,
+                    22955,
+                    20931,
+                    65535
+                  ],
+                  "x": 34,
+                  "y": 276
+                },
+                {
+                  "rgba16": [
+                    19676,
+                    30494,
+                    29176,
+                    65535
+                  ],
+                  "x": 183,
+                  "y": 359
+                },
+                {
+                  "rgba16": [
+                    19767,
+                    8492,
+                    17836,
+                    65535
+                  ],
+                  "x": 332,
+                  "y": 26
+                },
+                {
+                  "rgba16": [
+                    27723,
+                    16037,
+                    26057,
+                    65535
+                  ],
+                  "x": 481,
+                  "y": 109
+                },
+                {
+                  "rgba16": [
+                    35722,
+                    23548,
+                    34296,
+                    65535
+                  ],
+                  "x": 630,
+                  "y": 192
+                },
+                {
+                  "rgba16": [
+                    16205,
+                    24054,
+                    23953,
+                    65535
+                  ],
+                  "x": 139,
+                  "y": 275
+                },
+                {
+                  "rgba16": [
+                    24162,
+                    31581,
+                    32170,
+                    65535
+                  ],
+                  "x": 288,
+                  "y": 358
+                },
+                {
+                  "rgba16": [
+                    24247,
+                    9532,
+                    20843,
+                    65535
+                  ],
+                  "x": 437,
+                  "y": 25
+                },
+                {
+                  "rgba16": [
+                    32250,
+                    17084,
+                    29067,
+                    65535
+                  ],
+                  "x": 586,
+                  "y": 108
+                },
+                {
+                  "rgba16": [
+                    12759,
+                    17591,
+                    18738,
+                    65535
+                  ],
+                  "x": 95,
+                  "y": 191
+                },
+                {
+                  "rgba16": [
+                    20683,
+                    25129,
+                    26965,
+                    65535
+                  ],
+                  "x": 244,
+                  "y": 274
+                },
+                {
+                  "rgba16": [
+                    28665,
+                    32650,
+                    35166,
+                    65535
+                  ],
+                  "x": 393,
+                  "y": 357
+                },
+                {
+                  "rgba16": [
+                    28753,
+                    10651,
+                    23826,
+                    65535
+                  ],
+                  "x": 542,
+                  "y": 24
+                },
+                {
+                  "rgba16": [
+                    9179,
+                    11183,
+                    13518,
+                    65535
+                  ],
+                  "x": 51,
+                  "y": 107
+                },
+                {
+                  "rgba16": [
+                    17231,
+                    18728,
+                    21764,
+                    65535
+                  ],
+                  "x": 200,
+                  "y": 190
+                },
+                {
+                  "rgba16": [
+                    25189,
+                    26218,
+                    29949,
+                    65535
+                  ],
+                  "x": 349,
+                  "y": 273
+                },
+                {
+                  "rgba16": [
+                    33164,
+                    33757,
+                    38161,
+                    65535
+                  ],
+                  "x": 498,
+                  "y": 356
+                },
+                {
+                  "rgba16": [
+                    5647,
+                    4707,
+                    8267,
+                    65535
+                  ],
+                  "x": 7,
+                  "y": 23
+                },
+                {
+                  "rgba16": [
+                    13746,
+                    12218,
+                    16517,
+                    65535
+                  ],
+                  "x": 156,
+                  "y": 106
+                }
+              ],
+              "encoding": "encoded RGB",
+              "height": 416,
+              "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+              "monitor_icc": false,
+              "nonfinite_rgba": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "output_space": "srgb",
+              "parameter_revision": 9,
+              "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+              "pixel_sha256": "55cef40a8aaad86aec0ae1f98ddcd53282fd2ea68192dea49ea34d05e8942105",
+              "pixels": 266240,
+              "producer": "native-brush-gpu-compute",
+              "ranges_rgba": [
+                [
+                  0.07446402311325073,
+                  0.6159151792526245
+                ],
+                [
+                  0.045365072786808014,
+                  0.6024872064590454
+                ],
+                [
+                  0.10595864802598953,
+                  0.687037467956543
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "source_cache_key": "1159641169921",
+              "stage": "working-output",
+              "width": 640
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 3,
+            "histogram_readback_bytes": 49200,
+            "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 9,
+            "photo": "owned-schema:94a9f7032adb7c521a579e35",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 2,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:94a9f7032adb7c521a579e35"
+          },
+          "name": "photo",
+          "obsolete_context_inactive": true,
+          "obsolete_facts": {
+            "GUI_accepted": 2,
+            "GUI_rejected": 2,
+            "compute_submissions": 4,
+            "enqueue_intents": 4,
+            "last_enqueue_revision": 10,
+            "last_submitted_revision": 10,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 1
+          },
+          "old_GPU_owner_released": true,
+          "passed": true
+        },
+        {
+          "GUI_accepted_before": 1,
+          "GUI_rejected_before": 0,
+          "actual_Qt_MetaCall_interleave": true,
+          "after": {
+            "catalog": "owned-schema:6144e5fc3046ced63ac1d38b",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 2,
+            "controller_source_captures": 2,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 16,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 16,
+              "last_submitted_revision": 16,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "ecce267d783552ba1f02388d1861262b24f73a544b6c7522aeb8f568bd3846eb",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 2,
+            "parameter_revision": 16,
+            "photo": "owned-schema:7b73e017146cbd766e37704c",
+            "prepare_generation": 3,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 4,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "9272834392065",
+            "source_capture_serial": 2,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:7b73e017146cbd766e37704c"
+          },
+          "before": {
+            "catalog": "owned-schema:c792f1c5222f8935715c900f",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 1,
+            "controller_source_captures": 2,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 15,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 15,
+              "last_submitted_revision": 15,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "9bd863834",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "ecce267d783552ba1f02388d1861262b24f73a544b6c7522aeb8f568bd3846eb",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 2,
+            "parameter_revision": 15,
+            "photo": "owned-schema:7b73e017146cbd766e37704c",
+            "prepare_generation": 3,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 3,
+            "rhi_thread": "bf144b35a",
+            "source_cache_key": "9272834392065",
+            "source_capture_serial": 2,
+            "source_uploads": 1,
+            "source_worker_thread": "3a15caa64",
+            "version": "owned-schema:7b73e017146cbd766e37704c"
+          },
+          "name": "project",
+          "obsolete_context_inactive": true,
+          "obsolete_facts": {
+            "GUI_accepted": 1,
+            "GUI_rejected": 1,
+            "compute_submissions": 2,
+            "enqueue_intents": 2,
+            "last_enqueue_revision": 16,
+            "last_submitted_revision": 16,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 1
+          },
+          "old_GPU_owner_released": true,
+          "passed": true
+        },
+        {
+          "actual_diagnostic": {
+            "available": true,
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "bytes": 5767168,
+            "encoding": "encoded RGB",
+            "height": 512,
+            "monitor_icc": false,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "output_space": "srgb",
+            "parameter_revision": 17,
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "1788de88aee5fce2ecb966c4f75ff6dbd40e442fde7914181cd38193a227ba19",
+            "pixels": 360448,
+            "producer": "cpu-reference-upload",
+            "ranges_rgba": [
+              [
+                0.15176622569561005,
+                0.7967956066131592
+              ],
+              [
+                0.043732356280088425,
+                0.7781948447227478
+              ],
+              [
+                0.10577554255723953,
+                0.8811322450637817
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "source_cache_key": "9272834392065",
+            "stage": "working-output",
+            "width": 704
+          },
+          "entire_small_frame_float4_bit_exact": true,
+          "expected_CPU": {
+            "available": true,
+            "bytes": 5767168,
+            "height": 512,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "1788de88aee5fce2ecb966c4f75ff6dbd40e442fde7914181cd38193a227ba19",
+            "pixels": 360448,
+            "ranges_rgba": [
+              [
+                0.15176622569561005,
+                0.7967956066131592
+              ],
+              [
+                0.043732356280088425,
+                0.7781948447227478
+              ],
+              [
+                0.10577554255723953,
+                0.8811322450637817
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "width": 704
+          },
+          "name": "hard",
+          "passed": true,
+          "pixels_compared": 360448,
+          "producer": "cpu-reference-upload"
+        },
+        {
+          "actual_diagnostic": {
+            "available": true,
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "bytes": 5767168,
+            "encoding": "encoded RGB",
+            "height": 512,
+            "monitor_icc": false,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "output_space": "srgb",
+            "parameter_revision": 21,
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "23c1cd7e9b63098697dddd15fe72d47870c67f8468c41039f8a450ad67f7f042",
+            "pixels": 360448,
+            "producer": "cpu-reference-upload",
+            "ranges_rgba": [
+              [
+                0.1885252147912979,
+                0.8358434438705444
+              ],
+              [
+                0.14551003277301788,
+                0.8584268093109131
+              ],
+              [
+                0.16798657178878784,
+                0.806668221950531
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "source_cache_key": "9272834392065",
+            "stage": "working-output",
+            "width": 704
+          },
+          "entire_small_frame_float4_bit_exact": true,
+          "expected_CPU": {
+            "available": true,
+            "bytes": 5767168,
+            "height": 512,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "23c1cd7e9b63098697dddd15fe72d47870c67f8468c41039f8a450ad67f7f042",
+            "pixels": 360448,
+            "ranges_rgba": [
+              [
+                0.1885252147912979,
+                0.8358434438705444
+              ],
+              [
+                0.14551003277301788,
+                0.8584268093109131
+              ],
+              [
+                0.16798657178878784,
+                0.806668221950531
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "width": 704
+          },
+          "name": "detail",
+          "passed": true,
+          "pixels_compared": 360448,
+          "producer": "cpu-reference-upload"
+        },
+        {
+          "actual_diagnostic": {
+            "available": true,
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "bytes": 5767168,
+            "encoding": "encoded RGB",
+            "height": 512,
+            "monitor_icc": false,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "output_space": "srgb",
+            "parameter_revision": 23,
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "e597b574dc9731b67d44ba87495f5ef4b13070e19943a9eb768f77449da17df7",
+            "pixels": 360448,
+            "producer": "cpu-reference-upload",
+            "ranges_rgba": [
+              [
+                0.13682764768600464,
+                0.6772716641426086
+              ],
+              [
+                0.046784162521362305,
+                0.7255512475967407
+              ],
+              [
+                0.11680781096220016,
+                0.6831769347190857
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "source_cache_key": "9272834392065",
+            "stage": "working-output",
+            "width": 704
+          },
+          "entire_small_frame_float4_bit_exact": true,
+          "expected_CPU": {
+            "available": true,
+            "bytes": 5767168,
+            "height": 512,
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "pixel_sha256": "e597b574dc9731b67d44ba87495f5ef4b13070e19943a9eb768f77449da17df7",
+            "pixels": 360448,
+            "ranges_rgba": [
+              [
+                0.13682764768600464,
+                0.6772716641426086
+              ],
+              [
+                0.046784162521362305,
+                0.7255512475967407
+              ],
+              [
+                0.11680781096220016,
+                0.6831769347190857
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "width": 704
+          },
+          "name": "lut",
+          "passed": true,
+          "pixels_compared": 360448,
+          "producer": "cpu-reference-upload"
+        }
+      ],
+      "elapsed_ms": 4826,
+      "error": "",
+      "last_event_filter_fired": true,
+      "last_obsolete_delivery_facts": {
+        "GUI_accepted": 1,
+        "GUI_rejected": 1,
+        "compute_submissions": 2,
+        "enqueue_intents": 2,
+        "last_enqueue_revision": 16,
+        "last_submitted_revision": 16,
+        "render_retired_blocked": 0,
+        "retired_owners_released": 1
+      },
+      "last_trace": {
+        "catalog": "owned-schema:6144e5fc3046ced63ac1d38b",
+        "cpu_reference_uploaded": true,
+        "current_delivery_matches": true,
+        "current_frame_native": false,
+        "current_requested_revision": 23,
+        "delivery_facts": {
+          "GUI_accepted": 3,
+          "GUI_rejected": 0,
+          "compute_submissions": 3,
+          "enqueue_intents": 3,
+          "last_enqueue_revision": 22,
+          "last_submitted_revision": 22,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 3
+        },
+        "diagnostic": {
+          "available": true,
+          "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+          "bytes": 5767168,
+          "encoding": "encoded RGB",
+          "height": 512,
+          "monitor_icc": false,
+          "nonfinite_rgba": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "output_space": "srgb",
+          "parameter_revision": 23,
+          "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+          "pixel_sha256": "e597b574dc9731b67d44ba87495f5ef4b13070e19943a9eb768f77449da17df7",
+          "pixels": 360448,
+          "producer": "cpu-reference-upload",
+          "ranges_rgba": [
+            [
+              0.13682764768600464,
+              0.6772716641426086
+            ],
+            [
+              0.046784162521362305,
+              0.7255512475967407
+            ],
+            [
+              0.11680781096220016,
+              0.6831769347190857
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "source_cache_key": "9272834392065",
+          "stage": "working-output",
+          "width": 704
+        },
+        "owner_epoch": 2,
+        "parameter_revision": 23,
+        "photo": "owned-schema:7b73e017146cbd766e37704c",
+        "pipeline_method": "original processAdmittedBrush/CPU reference",
+        "producer": "cpu-reference-upload",
+        "source_cache_key": "9272834392065",
+        "version": "owned-schema:7b73e017146cbd766e37704c"
+      },
+      "nonidentity_ICC": false,
+      "observations": [
+        {
+          "catalog": "owned-schema:c792f1c5222f8935715c900f",
+          "colour_dispatches": 3,
+          "control_readback_bytes": 28,
+          "controller_source_cache_hits": 1,
+          "controller_source_captures": 1,
+          "coverage_dispatches": 3,
+          "cpu_colour_uploaded": false,
+          "cpu_mask_uploaded": false,
+          "current_delivery_matches": true,
+          "current_frame_native": true,
+          "current_requested_revision": 9,
+          "delivery_facts": {
+            "GUI_accepted": 2,
+            "GUI_rejected": 1,
+            "compute_submissions": 3,
+            "enqueue_intents": 3,
+            "last_enqueue_revision": 9,
+            "last_submitted_revision": 9,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 0
+          },
+          "frame_worker_thread": "9bd863834",
+          "gui_thread": "d2a9f7409",
+          "histogram_dispatches": 3,
+          "histogram_readback_bytes": 49200,
+          "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+          "monitor_lut_key": "identity-srgb",
+          "normal_finish_calls": 0,
+          "owner_epoch": 1,
+          "parameter_revision": 9,
+          "photo": "owned-schema:94a9f7032adb7c521a579e35",
+          "prepare_generation": 2,
+          "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+          "producer": "native-brush-gpu-compute",
+          "rhi_generation": 2,
+          "rhi_thread": "bf144b35a",
+          "source_cache_key": "1159641169921",
+          "source_capture_serial": 1,
+          "source_uploads": 1,
+          "source_worker_thread": "3a15caa64",
+          "version": "owned-schema:94a9f7032adb7c521a579e35"
+        },
+        {
+          "catalog": "owned-schema:6144e5fc3046ced63ac1d38b",
+          "cpu_reference_uploaded": true,
+          "current_delivery_matches": true,
+          "current_frame_native": false,
+          "current_requested_revision": 17,
+          "delivery_facts": {
+            "GUI_accepted": 1,
+            "GUI_rejected": 0,
+            "compute_submissions": 1,
+            "enqueue_intents": 1,
+            "last_enqueue_revision": 16,
+            "last_submitted_revision": 16,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 1
+          },
+          "owner_epoch": 2,
+          "parameter_revision": 17,
+          "photo": "owned-schema:7b73e017146cbd766e37704c",
+          "pipeline_method": "original processAdmittedBrush/CPU reference",
+          "producer": "cpu-reference-upload",
+          "source_cache_key": "9272834392065",
+          "version": "owned-schema:7b73e017146cbd766e37704c"
+        },
+        {
+          "catalog": "owned-schema:6144e5fc3046ced63ac1d38b",
+          "cpu_reference_uploaded": true,
+          "current_delivery_matches": true,
+          "current_frame_native": false,
+          "current_requested_revision": 21,
+          "delivery_facts": {
+            "GUI_accepted": 2,
+            "GUI_rejected": 0,
+            "compute_submissions": 2,
+            "enqueue_intents": 2,
+            "last_enqueue_revision": 18,
+            "last_submitted_revision": 18,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 2
+          },
+          "owner_epoch": 2,
+          "parameter_revision": 21,
+          "photo": "owned-schema:7b73e017146cbd766e37704c",
+          "pipeline_method": "original processAdmittedBrush/CPU reference",
+          "producer": "cpu-reference-upload",
+          "source_cache_key": "9272834392065",
+          "version": "owned-schema:7b73e017146cbd766e37704c"
+        },
+        {
+          "catalog": "owned-schema:6144e5fc3046ced63ac1d38b",
+          "cpu_reference_uploaded": true,
+          "current_delivery_matches": true,
+          "current_frame_native": false,
+          "current_requested_revision": 23,
+          "delivery_facts": {
+            "GUI_accepted": 3,
+            "GUI_rejected": 0,
+            "compute_submissions": 3,
+            "enqueue_intents": 3,
+            "last_enqueue_revision": 22,
+            "last_submitted_revision": 22,
+            "render_retired_blocked": 0,
+            "retired_owners_released": 3
+          },
+          "owner_epoch": 2,
+          "parameter_revision": 23,
+          "photo": "owned-schema:7b73e017146cbd766e37704c",
+          "pipeline_method": "original processAdmittedBrush/CPU reference",
+          "producer": "cpu-reference-upload",
+          "source_cache_key": "9272834392065",
+          "version": "owned-schema:7b73e017146cbd766e37704c"
+        }
+      ],
+      "owned_source_count": 2,
+      "passed": true,
+      "phase": 2,
+      "physical_device_loss_or_OOM": false,
+      "product_or_QA_owner_wait": false,
+      "real_RAW": false,
+      "selected_cases": [
+        "cache",
+        "revision",
+        "photo",
+        "project",
+        "hard",
+        "detail",
+        "lut"
+      ],
+      "source_commit": "d00dcaf",
+      "synthesized_producer_callback": false,
+      "two_owned_sources_unchanged": true
+    },
+    "pending": {
+      "active_case": "",
+      "actual_DPR": 1,
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_qpa": "cocoa",
+      "all_F0_F6_complete": false,
+      "captures": [
+        {
+          "height": 920,
+          "path": "owned-schema:7472bc497dabb58ec6721183",
+          "width": 1540
+        }
+      ],
+      "completed_cases": [
+        {
+          "GUI_accepted_before": 1,
+          "actual_GUI_photo_selection": true,
+          "actual_afterFrameEnd_before_publication": true,
+          "after": {
+            "catalog": "owned-schema:43ef4ad9f003a16cfe682ded",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 0,
+            "controller_source_captures": 2,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 12,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 12,
+              "last_submitted_revision": 12,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "b06cc20f3",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "50f4e9c636f10fefa2a4493c4ce9e750de8d2cb22e46708dbeb812c3ca6780fd",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 2,
+            "parameter_revision": 12,
+            "photo": "owned-schema:2dfa6537d2075f248c48aab5",
+            "prepare_generation": 3,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 2,
+            "rhi_thread": "b82291f4e",
+            "source_cache_key": "1262720385025",
+            "source_capture_serial": 2,
+            "source_uploads": 1,
+            "source_worker_thread": "a0b85ab74",
+            "version": "owned-schema:2dfa6537d2075f248c48aab5"
+          },
+          "at_signal": {
+            "callback_thread": "b82291f4e",
+            "compute_recorded_before_publication": true,
+            "product_facts_at_signal": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 2,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 7,
+              "last_submitted_revision": 8,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "recorded_revision": 8,
+            "window_signal": "afterFrameEnd"
+          },
+          "before": {
+            "catalog": "owned-schema:43ef4ad9f003a16cfe682ded",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 0,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 7,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 7,
+              "last_submitted_revision": 7,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "b06cc20f3",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "ff8af118a8506f49de1a2f72b4013b5c54afbf963ba42e53e6ab31872ed2df4a",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 7,
+            "photo": "owned-schema:42990f3c58f9deef8240f556",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 1,
+            "rhi_thread": "b82291f4e",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "a0b85ab74",
+            "version": "owned-schema:42990f3c58f9deef8240f556"
+          },
+          "name": "pending",
+          "obsolete_context_inactive": true,
+          "old_GPU_owner_released": true,
+          "old_facts": {
+            "GUI_accepted": 1,
+            "GUI_rejected": 0,
+            "compute_submissions": 2,
+            "enqueue_intents": 1,
+            "last_enqueue_revision": 7,
+            "last_submitted_revision": 8,
+            "render_retired_blocked": 1,
+            "retired_owners_released": 1
+          },
+          "passed": true,
+          "physical_GPU_busy_or_device_loss_claim": false
+        }
+      ],
+      "elapsed_ms": 1263,
+      "error": "",
+      "last_event_filter_fired": false,
+      "last_obsolete_delivery_facts": {
+        "GUI_accepted": 1,
+        "GUI_rejected": 0,
+        "compute_submissions": 2,
+        "enqueue_intents": 1,
+        "last_enqueue_revision": 7,
+        "last_submitted_revision": 8,
+        "render_retired_blocked": 1,
+        "retired_owners_released": 1
+      },
+      "last_trace": {
+        "catalog": "owned-schema:43ef4ad9f003a16cfe682ded",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 0,
+        "controller_source_captures": 2,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 12,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 12,
+          "last_submitted_revision": 12,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "frame_worker_thread": "b06cc20f3",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "50f4e9c636f10fefa2a4493c4ce9e750de8d2cb22e46708dbeb812c3ca6780fd",
+        "monitor_lut_key": "identity-srgb",
+        "normal_finish_calls": 0,
+        "owner_epoch": 2,
+        "parameter_revision": 12,
+        "photo": "owned-schema:2dfa6537d2075f248c48aab5",
+        "prepare_generation": 3,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 2,
+        "rhi_thread": "b82291f4e",
+        "source_cache_key": "1262720385025",
+        "source_capture_serial": 2,
+        "source_uploads": 1,
+        "source_worker_thread": "a0b85ab74",
+        "version": "owned-schema:2dfa6537d2075f248c48aab5"
+      },
+      "nonidentity_ICC": false,
+      "observations": [],
+      "owned_source_count": 2,
+      "passed": true,
+      "phase": 2,
+      "physical_device_loss_or_OOM": false,
+      "product_or_QA_owner_wait": false,
+      "real_RAW": false,
+      "selected_cases": [
+        "pending"
+      ],
+      "source_commit": "d00dcaf",
+      "synthesized_producer_callback": false,
+      "two_owned_sources_unchanged": true
+    },
+    "retired-render": {
+      "active_case": "",
+      "actual_DPR": 1,
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_qpa": "cocoa",
+      "all_F0_F6_complete": false,
+      "captures": [
+        {
+          "height": 920,
+          "path": "owned-schema:8eb48d1b2699f41133b7ac2a",
+          "width": 1540
+        }
+      ],
+      "completed_cases": [
+        {
+          "actual_GUI_race_or_physical_loss_claim": false,
+          "actual_renderer_retired_guard_executed": true,
+          "after": {
+            "catalog": "owned-schema:7aaa8c688cf99c09df1c4b79",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 1,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 9,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 9,
+              "last_submitted_revision": 9,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "d62a85ce2",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "a349ce433a6b5a544b5c11de90fea4cfd33f87cf809e4907b6cf07cd1497e05c",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 9,
+            "photo": "owned-schema:5035f9c8fc563321ea347c13",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 2,
+            "rhi_thread": "2b792704a",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "298e924c4",
+            "version": "owned-schema:5035f9c8fc563321ea347c13"
+          },
+          "at_signal": {
+            "callback_thread": "2b792704a",
+            "context_was_active": true,
+            "controlled_atomic_context_retirement": true,
+            "product_facts_at_signal": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 8,
+              "last_submitted_revision": 8,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "window_signal": "afterSynchronizing"
+          },
+          "before": {
+            "catalog": "owned-schema:7aaa8c688cf99c09df1c4b79",
+            "colour_dispatches": 1,
+            "control_readback_bytes": 12,
+            "controller_source_cache_hits": 0,
+            "controller_source_captures": 1,
+            "coverage_dispatches": 1,
+            "cpu_colour_uploaded": false,
+            "cpu_mask_uploaded": false,
+            "current_delivery_matches": true,
+            "current_frame_native": true,
+            "current_requested_revision": 8,
+            "delivery_facts": {
+              "GUI_accepted": 1,
+              "GUI_rejected": 0,
+              "compute_submissions": 1,
+              "enqueue_intents": 1,
+              "last_enqueue_revision": 8,
+              "last_submitted_revision": 8,
+              "render_retired_blocked": 0,
+              "retired_owners_released": 0
+            },
+            "frame_worker_thread": "d62a85ce2",
+            "gui_thread": "d2a9f7409",
+            "histogram_dispatches": 1,
+            "histogram_readback_bytes": 16400,
+            "input_source_key": "a349ce433a6b5a544b5c11de90fea4cfd33f87cf809e4907b6cf07cd1497e05c",
+            "monitor_lut_key": "identity-srgb",
+            "normal_finish_calls": 0,
+            "owner_epoch": 1,
+            "parameter_revision": 8,
+            "photo": "owned-schema:5035f9c8fc563321ea347c13",
+            "prepare_generation": 2,
+            "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+            "producer": "native-brush-gpu-compute",
+            "rhi_generation": 1,
+            "rhi_thread": "2b792704a",
+            "source_cache_key": "1159641169921",
+            "source_capture_serial": 1,
+            "source_uploads": 1,
+            "source_worker_thread": "298e924c4",
+            "version": "owned-schema:5035f9c8fc563321ea347c13"
+          },
+          "controlled_atomic_transport_injection": true,
+          "name": "retired-render",
+          "obsolete_context_inactive": true,
+          "old_GPU_owner_released": true,
+          "old_facts": {
+            "GUI_accepted": 1,
+            "GUI_rejected": 0,
+            "compute_submissions": 1,
+            "enqueue_intents": 1,
+            "last_enqueue_revision": 8,
+            "last_submitted_revision": 8,
+            "render_retired_blocked": 1,
+            "retired_owners_released": 1
+          },
+          "passed": true,
+          "actual_afterSynchronizing_before_item_render": true
+        }
+      ],
+      "elapsed_ms": 458,
+      "error": "",
+      "last_event_filter_fired": false,
+      "last_obsolete_delivery_facts": {
+        "GUI_accepted": 1,
+        "GUI_rejected": 0,
+        "compute_submissions": 1,
+        "enqueue_intents": 1,
+        "last_enqueue_revision": 8,
+        "last_submitted_revision": 8,
+        "render_retired_blocked": 1,
+        "retired_owners_released": 1
+      },
+      "last_trace": {
+        "catalog": "owned-schema:7aaa8c688cf99c09df1c4b79",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 1,
+        "controller_source_captures": 1,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 9,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 9,
+          "last_submitted_revision": 9,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "frame_worker_thread": "d62a85ce2",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "a349ce433a6b5a544b5c11de90fea4cfd33f87cf809e4907b6cf07cd1497e05c",
+        "monitor_lut_key": "identity-srgb",
+        "normal_finish_calls": 0,
+        "owner_epoch": 1,
+        "parameter_revision": 9,
+        "photo": "owned-schema:5035f9c8fc563321ea347c13",
+        "prepare_generation": 2,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 2,
+        "rhi_thread": "2b792704a",
+        "source_cache_key": "1159641169921",
+        "source_capture_serial": 1,
+        "source_uploads": 1,
+        "source_worker_thread": "298e924c4",
+        "version": "owned-schema:5035f9c8fc563321ea347c13"
+      },
+      "nonidentity_ICC": false,
+      "observations": [],
+      "owned_source_count": 2,
+      "passed": true,
+      "phase": 2,
+      "physical_device_loss_or_OOM": false,
+      "product_or_QA_owner_wait": false,
+      "real_RAW": false,
+      "selected_cases": [
+        "retired-render"
+      ],
+      "source_commit": "d00dcaf",
+      "synthesized_producer_callback": false,
+      "two_owned_sources_unchanged": true
+    },
+    "monitor": {
+      "GUI_deadline_ms": 60000,
+      "OS_monitor_profile_or_preferences_changed": false,
+      "Root_modified": false,
+      "actual_DPR": 1,
+      "actual_afterFrameEnd_RHI_thread": "dd97b75ed",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_controller_QtQuick_native_frame": true,
+      "actual_qpa": "cocoa",
+      "budget_limit_bytes": 3221225472,
+      "captures": [
+        {
+          "height": 920,
+          "path": "owned-schema:ec2244495c22ff4b583b6054",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:63b4953e6141a5bc48110e9b",
+          "width": 1540
+        },
+        {
+          "height": 920,
+          "path": "owned-schema:674d8eec96a55f3cc957abb8",
+          "width": 1540
+        }
+      ],
+      "controlled_owned_monitor_selection": true,
+      "elapsed_ms": 687,
+      "error": "",
+      "final_trace": {
+        "catalog": "owned-schema:b0ab2fabe4bead7a31cc1e71",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 0,
+        "controller_source_captures": 1,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 7,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 7,
+          "last_submitted_revision": 7,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "frame_worker_thread": "a9f35fe29",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "bf9e43de48309184af01a7dc40ebdf09a017be64c1ef0cff1da66ceef565e9c9",
+        "monitor_lut_key": "icc:2b3aa1645779a9e634744faf9b01e9102b0c9b88fd6deced7934df86b949af7e",
+        "normal_finish_calls": 0,
+        "owner_epoch": 1,
+        "parameter_revision": 7,
+        "photo": "owned-schema:ce27a367e04cd62ed5bef425",
+        "prepare_generation": 2,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 1,
+        "rhi_thread": "dd97b75ed",
+        "source_cache_key": "1116691496961",
+        "source_capture_serial": 1,
+        "source_uploads": 1,
+        "source_worker_thread": "ef2cb740f",
+        "version": "owned-schema:ce27a367e04cd62ed5bef425"
+      },
+      "full_RAW_or_all_backend_or_package_acceptance": false,
+      "identity_P3_identity": [
+        {
+          "frames_since_selection": 9,
+          "max_RGBA8_error": 0,
+          "profile": "identity",
+          "profile_key": "owned-native-identity",
+          "sample_points": [
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.75
+            },
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.2
+            },
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.12,
+              "v": 0.8
+            }
+          ],
+          "source_revision_state_and_compute_count_unchanged": true
+        },
+        {
+          "frames_since_selection": 4,
+          "max_RGBA8_error": 0,
+          "profile": "DisplayP3",
+          "profile_key": "owned-icc:1c885889209cbac6d1476be366fa05a7a696abd324c5c354327e0ab87ad5179a",
+          "sample_points": [
+            {
+              "actual_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "expected_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.75
+            },
+            {
+              "actual_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "expected_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.2
+            },
+            {
+              "actual_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "expected_RGBA8": [
+                79,
+                150,
+                209,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.12,
+              "v": 0.8
+            }
+          ],
+          "source_revision_state_and_compute_count_unchanged": true
+        },
+        {
+          "frames_since_selection": 3,
+          "max_RGBA8_error": 0,
+          "profile": "identity",
+          "profile_key": "owned-native-identity",
+          "sample_points": [
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.75
+            },
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.8,
+              "v": 0.2
+            },
+            {
+              "actual_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "expected_RGBA8": [
+                47,
+                152,
+                214,
+                255
+              ],
+              "max_error": 0,
+              "u": 0.12,
+              "v": 0.8
+            }
+          ],
+          "source_revision_state_and_compute_count_unchanged": true
+        }
+      ],
+      "initial_trace": {
+        "catalog": "owned-schema:b0ab2fabe4bead7a31cc1e71",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 0,
+        "controller_source_captures": 1,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 7,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 7,
+          "last_submitted_revision": 7,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "frame_worker_thread": "a9f35fe29",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "bf9e43de48309184af01a7dc40ebdf09a017be64c1ef0cff1da66ceef565e9c9",
+        "monitor_lut_key": "icc:2b3aa1645779a9e634744faf9b01e9102b0c9b88fd6deced7934df86b949af7e",
+        "normal_finish_calls": 0,
+        "owner_epoch": 1,
+        "parameter_revision": 7,
+        "photo": "owned-schema:ce27a367e04cd62ed5bef425",
+        "prepare_generation": 2,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 1,
+        "rhi_thread": "dd97b75ed",
+        "source_cache_key": "1116691496961",
+        "source_capture_serial": 1,
+        "source_uploads": 1,
+        "source_worker_thread": "ef2cb740f",
+        "version": "owned-schema:ce27a367e04cd62ed5bef425"
+      },
+      "initial_trace_monitor_key_is_initial_publication_snapshot": true,
+      "owned_source_unchanged": true,
+      "passed": true,
+      "peak_operation_reserved_bytes": 83165184,
+      "phase": 4,
+      "physical_nonidentity_monitor_calibration": false,
+      "reference_worker": "81550267c",
+      "source_commit": "d00dcaf",
+      "source_sha256": "7f0361914d82603af37f096439494201e2042de548dde744dbf46e801cbe902e"
+    },
+    "sony": {
+      "Root_native_GPU_accepted": false,
+      "actual_DPR": 0.5,
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_qpa": "cocoa",
+      "all_backend_or_package_accepted": false,
+      "captures": [
+        {
+          "height": 354,
+          "label": "waveform",
+          "path": "owned-schema:698ed9106d2d06f66dc2ae65",
+          "sha256": "c980be18ab0a1deb7d9f6759a352a08833bf86aa19c9c891e48de30a2ee0c2ce",
+          "width": 195
+        },
+        {
+          "height": 354,
+          "label": "parade",
+          "path": "owned-schema:b87a022ca8826369ae8f48d8",
+          "sha256": "64aa549ef417a117e182438d9fd9b58a76071fd0cec2e1b4692eec306e029c44",
+          "width": 195
+        },
+        {
+          "height": 354,
+          "label": "vectorscope",
+          "path": "owned-schema:89103fd7d11cde9e172d9640",
+          "sha256": "5330ca5eaee61be00212d40011ccea0fa9adf938ef540bf071b513df14eb0433",
+          "width": 195
+        }
+      ],
+      "checks": {
+        "actual_current_target_source_revision": true,
+        "actual_native_source_two_dispatches_no_CPU_upload": true,
+        "complete_CPU_scope_rank_survives_native_preview": true,
+        "distinct_GUI_RHI_CPU_worker_roles": true,
+        "explicit_Look_off_supported_native_policy": true,
+        "full_original_CPU_histogram_exact_at_parade": true,
+        "full_original_CPU_histogram_exact_at_vectorscope": true,
+        "full_original_CPU_histogram_exact_at_waveform": true,
+        "full_original_CPU_parade_image_exact": true,
+        "full_original_CPU_vectorscope_image_exact": true,
+        "full_original_CPU_waveform_image_exact": true,
+        "independent_CPU_reference_not_on_GUI_or_RHI": true,
+        "native_preview_samples_original_RGB40_alpha_exact": true,
+        "ordinary_native_finish_zero": true
+      },
+      "diagnostic": {
+        "available": true,
+        "bytes": 2069760,
+        "diagnostic_samples_rgba16": [
+          {
+            "rgba16": [
+              27004,
+              24699,
+              22142,
+              65535
+            ],
+            "x": 17,
+            "y": 29
+          },
+          {
+            "rgba16": [
+              22805,
+              21675,
+              19950,
+              65535
+            ],
+            "x": 166,
+            "y": 112
+          },
+          {
+            "rgba16": [
+              6908,
+              6382,
+              6758,
+              65535
+            ],
+            "x": 315,
+            "y": 195
+          },
+          {
+            "rgba16": [
+              27540,
+              24866,
+              21473,
+              65535
+            ],
+            "x": 24,
+            "y": 278
+          },
+          {
+            "rgba16": [
+              38655,
+              36131,
+              33273,
+              65535
+            ],
+            "x": 173,
+            "y": 67
+          },
+          {
+            "rgba16": [
+              32027,
+              28672,
+              24746,
+              65535
+            ],
+            "x": 322,
+            "y": 150
+          },
+          {
+            "rgba16": [
+              22879,
+              20905,
+              18187,
+              65535
+            ],
+            "x": 31,
+            "y": 233
+          },
+          {
+            "rgba16": [
+              33843,
+              31376,
+              28762,
+              65535
+            ],
+            "x": 180,
+            "y": 22
+          },
+          {
+            "rgba16": [
+              28289,
+              25271,
+              21167,
+              65535
+            ],
+            "x": 329,
+            "y": 105
+          },
+          {
+            "rgba16": [
+              22480,
+              20401,
+              17890,
+              65535
+            ],
+            "x": 38,
+            "y": 188
+          },
+          {
+            "rgba16": [
+              44217,
+              42633,
+              41708,
+              65535
+            ],
+            "x": 187,
+            "y": 271
+          },
+          {
+            "rgba16": [
+              36126,
+              33277,
+              28940,
+              65535
+            ],
+            "x": 336,
+            "y": 60
+          },
+          {
+            "rgba16": [
+              24934,
+              22100,
+              19438,
+              65535
+            ],
+            "x": 45,
+            "y": 143
+          },
+          {
+            "rgba16": [
+              29933,
+              28201,
+              24665,
+              65535
+            ],
+            "x": 194,
+            "y": 226
+          },
+          {
+            "rgba16": [
+              35300,
+              32455,
+              28651,
+              65535
+            ],
+            "x": 343,
+            "y": 15
+          },
+          {
+            "rgba16": [
+              27060,
+              24905,
+              20453,
+              65535
+            ],
+            "x": 52,
+            "y": 98
+          },
+          {
+            "rgba16": [
+              30847,
+              28991,
+              25242,
+              65535
+            ],
+            "x": 201,
+            "y": 181
+          },
+          {
+            "rgba16": [
+              27664,
+              25682,
+              23056,
+              65535
+            ],
+            "x": 350,
+            "y": 264
+          },
+          {
+            "rgba16": [
+              38982,
+              35407,
+              31452,
+              65535
+            ],
+            "x": 59,
+            "y": 53
+          },
+          {
+            "rgba16": [
+              40413,
+              38526,
+              34887,
+              65535
+            ],
+            "x": 208,
+            "y": 136
+          },
+          {
+            "rgba16": [
+              31819,
+              29453,
+              26578,
+              65535
+            ],
+            "x": 357,
+            "y": 219
+          },
+          {
+            "rgba16": [
+              18250,
+              17841,
+              16008,
+              65535
+            ],
+            "x": 66,
+            "y": 8
+          },
+          {
+            "rgba16": [
+              40628,
+              37143,
+              33866,
+              65535
+            ],
+            "x": 215,
+            "y": 91
+          },
+          {
+            "rgba16": [
+              31179,
+              28485,
+              25527,
+              65535
+            ],
+            "x": 364,
+            "y": 174
+          },
+          {
+            "rgba16": [
+              24877,
+              23235,
+              20567,
+              65535
+            ],
+            "x": 73,
+            "y": 257
+          },
+          {
+            "rgba16": [
+              50849,
+              46807,
+              40730,
+              65535
+            ],
+            "x": 222,
+            "y": 46
+          },
+          {
+            "rgba16": [
+              34783,
+              32230,
+              28453,
+              65535
+            ],
+            "x": 371,
+            "y": 129
+          },
+          {
+            "rgba16": [
+              21438,
+              19876,
+              17702,
+              65535
+            ],
+            "x": 80,
+            "y": 212
+          },
+          {
+            "rgba16": [
+              41606,
+              38074,
+              35010,
+              65535
+            ],
+            "x": 229,
+            "y": 1
+          },
+          {
+            "rgba16": [
+              11590,
+              9876,
+              7544,
+              65535
+            ],
+            "x": 378,
+            "y": 84
+          },
+          {
+            "rgba16": [
+              9359,
+              8742,
+              7768,
+              65535
+            ],
+            "x": 87,
+            "y": 167
+          },
+          {
+            "rgba16": [
+              39436,
+              37646,
+              37983,
+              65535
+            ],
+            "x": 236,
+            "y": 250
+          }
+        ],
+        "encoding": "encoded RGB",
+        "height": 294,
+        "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+        "monitor_icc": false,
+        "nonfinite_rgba": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "output_space": "srgb",
+        "parameter_revision": 8,
+        "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+        "pixel_sha256": "8ebabbc50089089f9649f89d17981c6a0c38c5d6a1a8ceb841aaea71558ff9e5",
+        "pixels": 129360,
+        "producer": "native-brush-gpu-compute",
+        "ranges_rgba": [
+          [
+            0.02516212686896324,
+            1
+          ],
+          [
+            0.037323568016290665,
+            0.9073777198791504
+          ],
+          [
+            0.021789882332086563,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ],
+        "source_cache_key": "1172526071809",
+        "stage": "working-output",
+        "width": 440
+      },
+      "elapsed_ms": 71113,
+      "error": "",
+      "explicit_supported_Look_mode": "off",
+      "export_deadline_ms": 120000,
+      "export_elapsed_ms": 61262,
+      "external_pixel_verification_pending": true,
+      "external_source_verification_pending": true,
+      "full_native_frame_CPU_comparison": false,
+      "full_unfiltered_raw_jitter_fixed": false,
+      "gui_and_export_write_passed": true,
+      "gui_deadline_ms": 60000,
+      "gui_elapsed_ms": 9851,
+      "histogram_bins_per_channel": [
+        1024,
+        1024,
+        1024,
+        1024
+      ],
+      "independent_original_CPU_reference_ms": 2681,
+      "independent_original_CPU_reference_thread": "76e86e370",
+      "initial_import_Look_mode": "as-shot",
+      "last_trace": {
+        "catalog": "owned-schema:3bf1c2b9c8dc28b24124007c",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 0,
+        "controller_source_captures": 1,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 8,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 8,
+          "last_submitted_revision": 8,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "diagnostic": {
+          "available": true,
+          "bytes": 2069760,
+          "diagnostic_samples_rgba16": [
+            {
+              "rgba16": [
+                27004,
+                24699,
+                22142,
+                65535
+              ],
+              "x": 17,
+              "y": 29
+            },
+            {
+              "rgba16": [
+                22805,
+                21675,
+                19950,
+                65535
+              ],
+              "x": 166,
+              "y": 112
+            },
+            {
+              "rgba16": [
+                6908,
+                6382,
+                6758,
+                65535
+              ],
+              "x": 315,
+              "y": 195
+            },
+            {
+              "rgba16": [
+                27540,
+                24866,
+                21473,
+                65535
+              ],
+              "x": 24,
+              "y": 278
+            },
+            {
+              "rgba16": [
+                38655,
+                36131,
+                33273,
+                65535
+              ],
+              "x": 173,
+              "y": 67
+            },
+            {
+              "rgba16": [
+                32027,
+                28672,
+                24746,
+                65535
+              ],
+              "x": 322,
+              "y": 150
+            },
+            {
+              "rgba16": [
+                22879,
+                20905,
+                18187,
+                65535
+              ],
+              "x": 31,
+              "y": 233
+            },
+            {
+              "rgba16": [
+                33843,
+                31376,
+                28762,
+                65535
+              ],
+              "x": 180,
+              "y": 22
+            },
+            {
+              "rgba16": [
+                28289,
+                25271,
+                21167,
+                65535
+              ],
+              "x": 329,
+              "y": 105
+            },
+            {
+              "rgba16": [
+                22480,
+                20401,
+                17890,
+                65535
+              ],
+              "x": 38,
+              "y": 188
+            },
+            {
+              "rgba16": [
+                44217,
+                42633,
+                41708,
+                65535
+              ],
+              "x": 187,
+              "y": 271
+            },
+            {
+              "rgba16": [
+                36126,
+                33277,
+                28940,
+                65535
+              ],
+              "x": 336,
+              "y": 60
+            },
+            {
+              "rgba16": [
+                24934,
+                22100,
+                19438,
+                65535
+              ],
+              "x": 45,
+              "y": 143
+            },
+            {
+              "rgba16": [
+                29933,
+                28201,
+                24665,
+                65535
+              ],
+              "x": 194,
+              "y": 226
+            },
+            {
+              "rgba16": [
+                35300,
+                32455,
+                28651,
+                65535
+              ],
+              "x": 343,
+              "y": 15
+            },
+            {
+              "rgba16": [
+                27060,
+                24905,
+                20453,
+                65535
+              ],
+              "x": 52,
+              "y": 98
+            },
+            {
+              "rgba16": [
+                30847,
+                28991,
+                25242,
+                65535
+              ],
+              "x": 201,
+              "y": 181
+            },
+            {
+              "rgba16": [
+                27664,
+                25682,
+                23056,
+                65535
+              ],
+              "x": 350,
+              "y": 264
+            },
+            {
+              "rgba16": [
+                38982,
+                35407,
+                31452,
+                65535
+              ],
+              "x": 59,
+              "y": 53
+            },
+            {
+              "rgba16": [
+                40413,
+                38526,
+                34887,
+                65535
+              ],
+              "x": 208,
+              "y": 136
+            },
+            {
+              "rgba16": [
+                31819,
+                29453,
+                26578,
+                65535
+              ],
+              "x": 357,
+              "y": 219
+            },
+            {
+              "rgba16": [
+                18250,
+                17841,
+                16008,
+                65535
+              ],
+              "x": 66,
+              "y": 8
+            },
+            {
+              "rgba16": [
+                40628,
+                37143,
+                33866,
+                65535
+              ],
+              "x": 215,
+              "y": 91
+            },
+            {
+              "rgba16": [
+                31179,
+                28485,
+                25527,
+                65535
+              ],
+              "x": 364,
+              "y": 174
+            },
+            {
+              "rgba16": [
+                24877,
+                23235,
+                20567,
+                65535
+              ],
+              "x": 73,
+              "y": 257
+            },
+            {
+              "rgba16": [
+                50849,
+                46807,
+                40730,
+                65535
+              ],
+              "x": 222,
+              "y": 46
+            },
+            {
+              "rgba16": [
+                34783,
+                32230,
+                28453,
+                65535
+              ],
+              "x": 371,
+              "y": 129
+            },
+            {
+              "rgba16": [
+                21438,
+                19876,
+                17702,
+                65535
+              ],
+              "x": 80,
+              "y": 212
+            },
+            {
+              "rgba16": [
+                41606,
+                38074,
+                35010,
+                65535
+              ],
+              "x": 229,
+              "y": 1
+            },
+            {
+              "rgba16": [
+                11590,
+                9876,
+                7544,
+                65535
+              ],
+              "x": 378,
+              "y": 84
+            },
+            {
+              "rgba16": [
+                9359,
+                8742,
+                7768,
+                65535
+              ],
+              "x": 87,
+              "y": 167
+            },
+            {
+              "rgba16": [
+                39436,
+                37646,
+                37983,
+                65535
+              ],
+              "x": 236,
+              "y": 250
+            }
+          ],
+          "encoding": "encoded RGB",
+          "height": 294,
+          "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+          "monitor_icc": false,
+          "nonfinite_rgba": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "output_space": "srgb",
+          "parameter_revision": 8,
+          "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+          "pixel_sha256": "8ebabbc50089089f9649f89d17981c6a0c38c5d6a1a8ceb841aaea71558ff9e5",
+          "pixels": 129360,
+          "producer": "native-brush-gpu-compute",
+          "ranges_rgba": [
+            [
+              0.02516212686896324,
+              1
+            ],
+            [
+              0.037323568016290665,
+              0.9073777198791504
+            ],
+            [
+              0.021789882332086563,
+              1
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "source_cache_key": "1172526071809",
+          "stage": "working-output",
+          "width": 440
+        },
+        "frame_worker_thread": "510d45888",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+        "monitor_lut_key": "identity-srgb",
+        "normal_finish_calls": 0,
+        "owner_epoch": 1,
+        "parameter_revision": 8,
+        "photo": "owned-schema:29ace4bf1d7eb5481e37aed6",
+        "prepare_generation": 2,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 1,
+        "rhi_thread": "44be66518",
+        "source_cache_key": "1172526071809",
+        "source_capture_serial": 1,
+        "source_uploads": 1,
+        "source_worker_thread": "9880e8503",
+        "version": "owned-schema:29ace4bf1d7eb5481e37aed6"
+      },
+      "native_comparison_samples": 32,
+      "native_float_RAW_decoder": false,
+      "native_preview_sample_RGB16_max_error": 0,
+      "native_preview_sample_alpha16_max_error": 0,
+      "native_trace": {
+        "catalog": "owned-schema:3bf1c2b9c8dc28b24124007c",
+        "colour_dispatches": 1,
+        "control_readback_bytes": 12,
+        "controller_source_cache_hits": 0,
+        "controller_source_captures": 1,
+        "coverage_dispatches": 1,
+        "cpu_colour_uploaded": false,
+        "cpu_mask_uploaded": false,
+        "current_delivery_matches": true,
+        "current_frame_native": true,
+        "current_requested_revision": 8,
+        "delivery_facts": {
+          "GUI_accepted": 1,
+          "GUI_rejected": 0,
+          "compute_submissions": 1,
+          "enqueue_intents": 1,
+          "last_enqueue_revision": 8,
+          "last_submitted_revision": 8,
+          "render_retired_blocked": 0,
+          "retired_owners_released": 0
+        },
+        "frame_worker_thread": "510d45888",
+        "gui_thread": "d2a9f7409",
+        "histogram_dispatches": 1,
+        "histogram_readback_bytes": 16400,
+        "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+        "monitor_lut_key": "identity-srgb",
+        "normal_finish_calls": 0,
+        "owner_epoch": 1,
+        "parameter_revision": 8,
+        "photo": "owned-schema:29ace4bf1d7eb5481e37aed6",
+        "prepare_generation": 2,
+        "presentation": "original monitor LUT, manual interpolation, scene-graph premultiplication",
+        "producer": "native-brush-gpu-compute",
+        "rhi_generation": 1,
+        "rhi_thread": "44be66518",
+        "source_cache_key": "1172526071809",
+        "source_capture_serial": 1,
+        "source_uploads": 1,
+        "source_worker_thread": "9880e8503",
+        "version": "owned-schema:29ace4bf1d7eb5481e37aed6"
+      },
+      "nonidentity_monitor_ICC_verified": false,
+      "operation_budget_bytes": 3221225472,
+      "operation_end_charged_bytes": 8306432,
+      "operation_peak_reserved_bytes": 1705450240,
+      "original_CPU_plot_pixels": 32947264,
+      "original_CPU_scope_pixels": 32947264,
+      "passed": false,
+      "phase": 6,
+      "phases": [
+        {
+          "elapsed_ms": 714,
+          "phase": 0
+        },
+        {
+          "elapsed_ms": 2316,
+          "phase": 1
+        },
+        {
+          "elapsed_ms": 2387,
+          "phase": 2
+        },
+        {
+          "elapsed_ms": 4911,
+          "phase": 3
+        },
+        {
+          "elapsed_ms": 8997,
+          "phase": 4
+        },
+        {
+          "elapsed_ms": 9461,
+          "phase": 5
+        },
+        {
+          "elapsed_ms": 9861,
+          "phase": 6
+        }
+      ],
+      "physical_tablet_verified": false,
+      "settings_isolated": true,
+      "source_bytes": 69120000,
+      "source_commit": "d00dcaf",
+      "source_is_raw": true,
+      "source_pixels": 32947264,
+      "source_sha256": "aa12ae9ef42a8254afc11daddb706dee7d2f0cd7b869f44f377c4470fd7fdc4d",
+      "source_unchanged": false,
+      "three_plot_proofs": [
+        {
+          "histogram_exact": true,
+          "image_exact": true,
+          "mode": "waveform",
+          "pixels": 32947264,
+          "revision": 8,
+          "scope_rank": 1
+        },
+        {
+          "histogram_exact": true,
+          "image_exact": true,
+          "mode": "parade",
+          "pixels": 32947264,
+          "revision": 8,
+          "scope_rank": 1
+        },
+        {
+          "histogram_exact": true,
+          "image_exact": true,
+          "mode": "vectorscope",
+          "pixels": 32947264,
+          "revision": 8,
+          "scope_rank": 1
+        }
+      ]
+    }
+  }
+}

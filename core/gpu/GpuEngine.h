@@ -1,6 +1,7 @@
 #pragma once
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/BrushRenderRequest.h"
+#include "core/gpu/brush/NativeBrushUpload.h"
 #include <rhi/qrhi.h>
 #include <QElapsedTimer>
 #include <QImage>
@@ -28,6 +29,8 @@ public:
     // Qt Quick composites premultiplied monitor-device RGB. Keep draw() and
     // the working output texture straight for diagnostic/scopes/export users.
     bool drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target);
+    bool drawExternalWorkingTexture(QRhiCommandBuffer *,QRhiRenderTarget *,QRhiTexture *);
+    NativeBrush::ShaderBytes nativeBrushShaders() const;
     bool captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, const FrameReady &ready,
                              QString *error = nullptr, qint64 budget = 64 * 1024 * 1024);
     // Display color management is intentionally downstream of m_output so it
@@ -47,8 +50,8 @@ private:
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
     bool ensureDetail();
-    bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha);
-    bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha);
+    bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input);
+    bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input=nullptr);
     bool ensureDisplayColorResources();
     bool buildCompute(std::unique_ptr<QRhiComputePipeline> &pipeline,
                       QRhiShaderResourceBindings *bindings, const QString &name);
@@ -73,6 +76,7 @@ private:
     QRhiRenderPassDescriptor *m_displayPass = nullptr;
     int m_displaySamples = 0;
     bool m_displayPremultipliedAlpha = false;
+    quint64 m_displayTextureId = 0;
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
     QImage m_displayColorLut;

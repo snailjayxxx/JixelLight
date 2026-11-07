@@ -14,6 +14,7 @@ class QQuickWindow;
 #include <algorithm>
 #include <cmath>
 #include "core/preview/PreviewTasks.h"
+#include "app/NativeBrushController.h"
 #include "core/async/LatestFrameJob.h"
 #include "core/export/ExportQueue.h"
 #include "core/import/CopyImportQueue.h"
@@ -35,6 +36,7 @@ class ScopePlotCache;
 namespace XmpSidecar { struct Document; }
 
 class PhotoController final : public QObject {
+    friend void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     Q_OBJECT
@@ -208,6 +210,15 @@ public:
     Q_INVOKABLE QPointF maskCanvasPoint(double x,double y,double width,double height) const;
     qulonglong renderRevision() const { return m_requestedRevision; }
     QImage gpuSource() const { return m_preparing ? QImage{} : m_gpuSource; }
+    NativeBrushView nativeBrushView() const;
+    void nativeBrushRhiReady(const std::shared_ptr<std::atomic_bool>&,NativeBrush::SourceCapabilities,NativeBrush::DomainRetirement);
+    void nativeBrushSuspend(bool);
+    void nativeBrushLegacyPresented(quint64,qint64,const NativeBrush::DeliveryTarget &,QJsonObject,const QString &);
+    void nativeBrushFailed(const std::shared_ptr<std::atomic_bool> &,const QString &);
+    void nativeBrushPresented(const std::shared_ptr<std::atomic_bool>&,const NativeBrush::FrameStamp&,quint64,QJsonObject,const QString&);
+    void nativeBrushHistogram(const std::shared_ptr<std::atomic_bool>&,const std::shared_ptr<NativeBrush::HistogramReply>&);
+    bool nativeBrushMatches(const std::shared_ptr<std::atomic_bool>&,const NativeBrush::FrameStamp&,quint64) const;
+    Q_INVOKABLE QJsonObject nativeBrushTrace() const;
     float rawBaseExposureStops() const {
         if (!currentIsRaw()) return 0.0f;
         bool ok = false;
@@ -459,6 +470,8 @@ signals:
     void exportFinished(int succeeded, int failed, bool cancelled);
 
 private:
+    friend class NativeBrushController;
+    std::unique_ptr<NativeBrushController> m_nativeBrush;
     struct BugSnapshot {
         quint64 request = 0, revision = 0, photoEpoch = 0;
         bool requestGpu = false;

@@ -1,0 +1,66 @@
+#version 440
+layout(local_size_x=16,local_size_y=16,local_size_z=1) in;
+layout(std140,binding=0) uniform Plan { ivec4 tile; ivec4 counts; };
+struct Dab {
+    vec4 centerRadiusPeak;
+    vec4 shape;
+    vec4 residual;
+    vec4 edge;
+    ivec4 bounds;
+    ivec4 group;
+};
+layout(std430,binding=1) readonly buffer Dabs { Dab dabs[]; };
+layout(std430,binding=2) writeonly buffer Result { float exposure[]; };
+layout(std430,binding=3) readonly buffer TileSpans { ivec4 spans[]; };
+float composite(float layer,float stroke,int mode) {
+    return mode==1 ? layer*(1.0-stroke) : 1.0-(1.0-layer)*(1.0-stroke);
+}
+void main() {
+    ivec2 localPosition=ivec2(gl_GlobalInvocationID.xy);
+    if(localPosition.x>=tile.z||localPosition.y>=tile.w) return;
+    int index=localPosition.y*tile.z+localPosition.x;
+    ivec2 pixel=tile.xy+localPosition;
+    float stops=0.0,layer=0.0,stroke=0.0,ev=0.0;
+    int lastLayer=-1,lastStroke=-1,lastMode=0;
+    ivec2 localPixel=pixel-tile.xy;
+    ivec2 cell=localPixel/128;
+    ivec4 span=spans[cell.y*counts.y+cell.x];
+    for(int i=span.x;i<span.x+span.y;++i) {
+        Dab d=dabs[i];
+        if(d.group.x!=lastLayer || d.group.y!=lastStroke) {
+            if(lastStroke>=0) layer=composite(layer,stroke,lastMode);
+            stroke=0.0;
+            if(d.group.x!=lastLayer) {stops+=ev*layer;layer=0.0;ev=d.shape.y;}
+            lastLayer=d.group.x;lastStroke=d.group.y;lastMode=d.group.z;
+        }
+        if(pixel.x<d.bounds.x || pixel.y<d.bounds.y || pixel.x>d.bounds.z || pixel.y>d.bounds.w)
+            continue;
+        if(stroke>=d.centerRadiusPeak.w) continue;
+        // Double-single distance: avoid subtracting nearly equal radial/hardness
+        // floats across a thin soft edge. All square residuals use explicit FMA.
+        precise vec2 high=vec2(pixel)-d.centerRadiusPeak.xy;
+        precise vec2 z=high-vec2(pixel);
+        precise vec2 low=(vec2(pixel)-(high-z))+(-d.centerRadiusPeak.xy-z)-d.residual.xy;
+        precise vec2 squares=high*high;
+        precise vec2 errors=fma(high,high,-squares)+2.0*high*low+low*low;
+        precise float sum=squares.x+squares.y;
+        precise float sz=sum-squares.x;
+        precise float sumError=(squares.x-(sum-sz))+(squares.y-sz)+errors.x+errors.y;
+        precise float distance=sqrt(sum);
+        precise float distanceLow=0.0;
+        if(distance>0.0) distanceLow=(fma(-distance,distance,sum)+sumError)*(0.5/distance);
+        precise float edgeDistance=(distance-d.centerRadiusPeak.z)+(distanceLow-d.residual.w);
+        if(edgeDistance>=0.0) continue;
+        precise float feather=1.0;
+        if(d.shape.w==0.0) {
+            precise float softDistance=(distance-d.edge.x)+(distanceLow-d.edge.y);
+            if(softDistance>0.0) {
+                precise float t=softDistance*d.edge.z;
+                feather=1.0-t*t*(3.0-2.0*t);
+            }
+        }
+        stroke=max(stroke,d.centerRadiusPeak.w*feather);
+    }
+    if(lastStroke>=0) layer=composite(layer,stroke,lastMode);
+    exposure[index]=stops+ev*layer;
+}

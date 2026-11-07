@@ -5,6 +5,7 @@
 #include <QString>
 
 class QScreen;
+class QColorSpace;
 
 struct MonitorColorProfile {
     QByteArray icc;
@@ -18,6 +19,9 @@ namespace MonitorColorTransform {
 // The display path is intentionally separate from the image-processing path:
 // this profile/LUT must never affect export pixels, histograms, or RAW fitting.
 MonitorColorProfile profileForScreen(QScreen *screen);
+// Validate a value supplied by the platform. No display settings or image
+// processing state are modified; invalid/non-RGB profiles remain unavailable.
+MonitorColorProfile profileFromColorSpace(const QColorSpace &,const QString &screenName={});
 QImage identityLut(int size = 33);
 QImage srgbToMonitorLut(const QByteArray &monitorIcc, int size = 33,
                         QString *errorMessage = nullptr);

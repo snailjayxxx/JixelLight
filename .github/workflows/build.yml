@@ -104,6 +104,22 @@ jobs:
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
+      - name: Native committed preview delivery monitor and exact Sony export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          VERIFY=$(find build/bin -type f \( -name JixelLightBrushPressureExportVerifier -o -name JixelLightBrushPressureExportVerifier.exe \) | head -1)
+          test -f "$EXE" && test -n "$VERIFY"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestNativeBrushEvidence.py' -v
+          for CASE in route delivery pending retired-render monitor; do
+            python tools/ValidateNativeBrush.py "$EXE" "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
+          done
+          python tools/ValidateNativeBrush.py "$EXE" gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --expected-commit "$STAMP"
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         shell: bash
         run: |
@@ -356,6 +372,7 @@ jobs:
           name: validation-${{ runner.os }}
           path: |
             build/*-results.txt
+            build/native-brush-monitor.json
             build/brush-pressure-input/
             build/edit-recipe-native/
             build/qsb-depfile-test/
@@ -466,6 +483,16 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
         run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: Native committed preview delivery monitor and exact Sony export
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestNativeBrushEvidence.py' -v
+          for CASE in route delivery pending retired-render monitor; do
+            xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
+          done
+          xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --expected-commit "$STAMP"
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -641,6 +668,7 @@ jobs:
           name: validation-Linux
           path: |
             build/*-results.txt
+            build/native-brush-monitor.json
             build/brush-pressure-input/
             build/edit-recipe-native/
             build/qsb-depfile-test/

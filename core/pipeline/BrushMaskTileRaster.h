@@ -18,6 +18,7 @@
 // buffers. render keeps its original signed-HDR RGBA input-validation and
 // double-precision gain semantics. Both APIs publish results atomically.
 // Production RAW/GUI enabled brush editing remains gated pending future work.
+namespace NativeBrush { class FrameAdmission; }
 namespace BrushMaskTileRaster {
 
 constexpr int MaxTileEdge = 128;
@@ -208,6 +209,7 @@ private:
     std::shared_ptr<const Prepared> prepared_;
     friend bool detail::planFrameBounded(const BrushMaskDocument::Document &,int,int,Rect,
                           FramePlan *,const std::atomic_bool *,NormalizedFrame,std::size_t,std::size_t);
+    friend class NativeBrush::FrameAdmission;
     friend bool exposureOnly(const FramePlan &,std::size_t,ExposureOutput *,const std::atomic_bool *);
 };
 

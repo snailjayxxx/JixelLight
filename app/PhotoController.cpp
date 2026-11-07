@@ -60,6 +60,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *paren
     m_statusMessage = uiText(QStringLiteral("就绪"), QStringLiteral("Ready"));
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
+    m_nativeBrush=std::make_unique<NativeBrushController>(this);
     initializeRelinkJobs();
     initializeLookJobs();
     m_diagnosticTimer.setSingleShot(true);
@@ -1640,6 +1641,9 @@ void PhotoController::gpuDiagnosticReady(quint64 request, QJsonObject output) {
         && (output.value("parameter_revision").toInteger(-1) != qint64(m_pendingBug->revision)
             || output.value("source_cache_key").toString() != QString::number(m_pendingBug->gpuSource.cacheKey())))
         output = {{"available", false}, {"error", "GPU response does not match the frozen revision and source"}};
+    if(m_nativeBrush&&(output.value("producer").toString()=="native-brush-gpu-compute"||output.value("producer").toString()=="cpu-reference-upload")){
+        auto trace=m_nativeBrush->trace();trace.insert("diagnostic",output);m_nativeBrush->trace(std::move(trace));
+    }
     finishBugReport(std::move(output));
 }
 
@@ -1683,6 +1687,7 @@ void PhotoController::setStatus(const QString &message) {
 
 PhotoController::~PhotoController() {
     m_closing = true;
+    m_nativeBrush.reset();
     // The QML engine owns the image provider and may already have destroyed it.
     // Join transient workers without dereferencing that external provider here.
     m_brushPreviewScheduleTimer.stop();m_brushPreviewRetryTimer.stop();m_brushGesture.reset();m_brushPreviewJob.reset();

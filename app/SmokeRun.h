@@ -26,3 +26,11 @@ void startEditRecipeClipboardSmokeRun(PhotoController *,QQuickWindow *,const QSt
 
 void startOnePixelBrushStabilizationSmokeRun(PhotoController *,QQuickWindow *,const QString &,bool transparent,bool erase);
 void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startNativeBrushRouteSmokeRun(PhotoController *,QQuickWindow *,const QString &);
+
+void startNativeBrushDeliverySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &focus);
+
+void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startNativeBrushMonitorSmokeRun(PhotoController *,QQuickWindow *,const QString &);

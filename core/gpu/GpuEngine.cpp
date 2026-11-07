@@ -331,9 +331,10 @@ bool GpuEngine::ensureDisplayColorResources() {
     return true;
 }
 
-bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha) {
+bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input) {
+    if(!input)return false;
     if (!ensureDisplayColorResources()) return false;
-    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount() && m_displayPremultipliedAlpha == premultipliedAlpha) return true;
+    if (m_display && m_displayPass == target->renderPassDescriptor() && m_displaySamples == target->sampleCount() && m_displayPremultipliedAlpha == premultipliedAlpha && m_displayTextureId==input->globalResourceId()) return true;
     m_display.reset(); m_displayBindings.reset();
     if (!m_sampler) {
         m_sampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
@@ -347,7 +348,7 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha) 
     m_uploadVertices = true;
     m_displayBindings.reset(m_rhi->newShaderResourceBindings());
     m_displayBindings->setBindings({
-        QRhiShaderResourceBinding::sampledTexture(0, QRhiShaderResourceBinding::FragmentStage, m_output.get(), m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(0, QRhiShaderResourceBinding::FragmentStage, input, m_sampler.get()),
         QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, m_displayLutTexture.get(), m_displayLutSampler.get())
     });
     if (!m_displayBindings->create()) return fail(QStringLiteral("GPU display bindings failed"));
@@ -372,13 +373,19 @@ bool GpuEngine::createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha) 
         m_display->setTargetBlends({blend});
     }
     if (!m_display->create()) return fail(QStringLiteral("GPU display pipeline failed"));
-    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount(); m_displayPremultipliedAlpha=premultipliedAlpha;
+    m_displayPass = target->renderPassDescriptor(); m_displaySamples = target->sampleCount(); m_displayPremultipliedAlpha=premultipliedAlpha; m_displayTextureId=input->globalResourceId();
     return true;
 }
 bool GpuEngine::draw(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,false);}
 bool GpuEngine::drawForSceneGraph(QRhiCommandBuffer *cb, QRhiRenderTarget *target) {return drawImpl(cb,target,true);}
-bool GpuEngine::drawImpl(QRhiCommandBuffer *cb, QRhiRenderTarget *target,bool premultipliedAlpha) {
-    if (!m_output || !createDisplay(target,premultipliedAlpha)) return false;
+bool GpuEngine::drawExternalWorkingTexture(QRhiCommandBuffer *cb,QRhiRenderTarget *target,QRhiTexture *input) {return drawImpl(cb,target,true,input);}
+NativeBrush::ShaderBytes GpuEngine::nativeBrushShaders() const {
+    const auto bytes=[](QString name){QFile f(QStringLiteral(":/jixellight/")+name+QStringLiteral(".qsb"));return f.open(QIODevice::ReadOnly)?f.readAll():QByteArray{};};
+    return {bytes("brush_mask_coverage.comp"),bytes("brush_pipeline.comp"),bytes("histogram.comp"),bytes("histogram_reduce.comp")};
+}
+bool GpuEngine::drawImpl(QRhiCommandBuffer *cb, QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *external) {
+    auto *input=external?external:m_output.get();
+    if (!input || !createDisplay(target,premultipliedAlpha,input)) return false;
     QRhiResourceUpdateBatch *updates = nullptr;
     const auto ensureUpdates=[&]() {
         if (!updates) updates=m_rhi->nextResourceUpdateBatch();

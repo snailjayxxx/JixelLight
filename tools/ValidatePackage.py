@@ -19,6 +19,7 @@ from ValidateBrushRecovery import validate_brush_recovery
 from ValidateBrushStabilization import validate_brush_stabilization
 from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
+from ValidateNativeBrush import validate_native_brush
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -202,6 +203,16 @@ def main() -> int:
         relink_home = Path(temp) / 'source-relink'
         relink_home.mkdir()
         results.append(validate_relink(executable, environment, relink_home, reports / 'source-relink.json'))
+        # BEGIN native committed-preview package modes (the original57 stay)
+        for case in ('route', 'delivery', 'pending', 'retired-render', 'monitor'):
+            label = 'native-brush-' + case
+            results.append(validate_native_brush(executable, environment, Path(temp) / label,
+                reports / (label + '.json'), case, expected_commit=results[0].get('source_commit')))
+        if args.sony_brush_raw:
+            results.append(validate_native_brush(executable, environment, Path(temp) / 'native-brush-sony',
+                reports / 'native-brush-sony.json', 'sony', raw=args.sony_brush_raw.resolve(),
+                verifier=pressure_verifier, expected_commit=results[0].get('source_commit')))
+        # END native committed-preview package modes
     sony_check = None
     if args.sony_probe:
         probe = args.sony_probe.resolve()

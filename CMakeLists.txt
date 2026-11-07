@@ -52,6 +52,11 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     app/PhotoController.cpp
+    app/NativeBrushController.cpp
+    core/gpu/brush/NativeBrushSource.cpp
+    core/gpu/brush/NativeBrushUploadAdmission.cpp
+    core/gpu/brush/NativeBrushFrame.cpp
+    core/gpu/brush/NativeBrushSourceJob.cpp
     app/BrushController.cpp
     app/RelinkController.cpp
     app/LookController.cpp
@@ -108,7 +113,10 @@ target_link_libraries(JixelLightCore PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Q
 if(WIN32)
     target_link_libraries(JixelLightCore PRIVATE psapi gdi32 user32)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+if(APPLE)
+    target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
+endif()
+qt_add_executable(JixelLight app/main.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -122,9 +130,12 @@ foreach(file IN LISTS QML_SOURCES)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
 endforeach()
 qt_add_qml_module(JixelLight URI JixelLight VERSION 1.0 QML_FILES ${QML_SOURCES})
-add_library(JixelLightGpu STATIC core/gpu/GpuEngine.cpp)
+add_library(JixelLightGpu STATIC core/gpu/GpuEngine.cpp
+    core/gpu/brush/NativeBrushUpload.cpp core/gpu/brush/NativeBrushFrames.cpp
+    core/gpu/brush/NativeBrushHistogram.cpp core/gpu/brush/NativeBrushDiagnostics.cpp)
 target_link_libraries(JixelLightGpu PUBLIC JixelLightCore Qt6::GuiPrivate)
 set(JIXELLIGHT_SHADER_SOURCES
+    shaders/brush_mask_coverage.comp shaders/brush_pipeline.comp
     shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
     shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
 qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
@@ -354,3 +365,15 @@ set_tests_properties(brush-pressure-input PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightBrushPressureExportVerifier tools/BrushPressureExportVerifier.cpp)
 target_link_libraries(JixelLightBrushPressureExportVerifier PRIVATE JixelLightCore)
 set_target_properties(JixelLightBrushPressureExportVerifier PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+
+# Native working-output/monitor presentation regression. All existing tests stay.
+qt_add_executable(JixelLightNativeBrushMonitorTests tests/NativeBrushMonitorTests.cpp)
+target_link_libraries(JixelLightNativeBrushMonitorTests PRIVATE JixelLightGpu Qt6::Test Qt6::GuiPrivate)
+if(APPLE)
+    target_sources(JixelLightNativeBrushMonitorTests PRIVATE tests/MacMonitorProfileWitness.mm)
+    target_link_libraries(JixelLightNativeBrushMonitorTests PRIVATE "-framework AppKit")
+endif()
+set_target_properties(JixelLightNativeBrushMonitorTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME native-brush-monitor COMMAND JixelLightNativeBrushMonitorTests -o native-brush-monitor-results.txt,txt -o -,txt)
+set_tests_properties(native-brush-monitor PROPERTIES TIMEOUT 120
+    ENVIRONMENT "JIXELLIGHT_NATIVE_MONITOR_REPORT=${CMAKE_BINARY_DIR}/native-brush-monitor.json")

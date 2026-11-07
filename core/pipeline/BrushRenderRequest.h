@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+namespace NativeBrush { class BudgetAccess; }
 enum class BrushAdmissionFailure { None, Cancelled, Invalid, BudgetUnavailable };
 
 // A separate admission boundary. Existing research APIs keep their 2 Mi cap.
@@ -20,6 +21,7 @@ private:
     struct Reservation;
     std::shared_ptr<Accounting> m_accounting;
     std::shared_ptr<const void> reserve(qint64 bytes);
+    friend class NativeBrush::BudgetAccess;
     friend class BrushRenderRequest;
 };
 
