@@ -225,9 +225,14 @@ void startNativeBrushDeliverySmokeRun(PhotoController *c,QQuickWindow *window,co
         if(s->phase==13){
             if(c->diagnosticBusy())return;const auto diag=c->nativeBrushTrace().value("diagnostic").toObject();QString error;auto req=BrushRenderRequest::createPrepared(s->frozenSource,s->frozenPlan,BrushRenderRequest::Layout::Whole,{},&error,c->brushRenderBudget());const auto ref=req?req->render({},&error):BrushImageLease{};
             const auto fp=ref?FloatFrameFingerprint::capture(ImagePipeline::floatSource(ref.image())):QJsonObject{};
-            const bool exact=ref&&fp.value("available").toBool()&&diag.value("available").toBool()&&diag.value("producer").toString()=="cpu-reference-upload"&&diag.value("pixel_sha256")==fp.value("pixel_sha256")&&diag.value("pixels")==fp.value("pixels")&&diag.value("nonfinite_rgba")==fp.value("nonfinite_rgba")&&diag.value("parameter_revision").toInteger()==qint64(s->expectedRevision);
+            const QSize frame=req?req->frameSize():QSize{};const QRect region=req?req->region():QRect{};
+            const bool whole=req&&req->layout()==BrushRenderRequest::Layout::Whole&&region==QRect(QPoint{},frame)&&frame==s->frozenSource.size();
+            const QJsonObject requestGeometry{{"prepared_request",true},{"whole_frame_region",whole},{"source_width",s->frozenSource.width()},{"source_height",s->frozenSource.height()},
+                {"frame_width",frame.width()},{"frame_height",frame.height()},{"region_x",region.x()},{"region_y",region.y()},{"region_width",region.width()},{"region_height",region.height()},
+                {"source_cache_key",QString::number(s->frozenSource.cacheKey())},{"parameter_revision",qint64(s->expectedRevision)}};
+            const bool exact=whole&&ref&&fp.value("available").toBool()&&diag.value("available").toBool()&&diag.value("producer").toString()=="cpu-reference-upload"&&diag.value("pixel_sha256")==fp.value("pixel_sha256")&&diag.value("pixels")==fp.value("pixels")&&diag.value("width").toInt()==frame.width()&&diag.value("height").toInt()==frame.height()&&fp.value("width").toInt()==frame.width()&&fp.value("height").toInt()==frame.height()&&diag.value("nonfinite_rgba")==fp.value("nonfinite_rgba")&&diag.value("parameter_revision").toInteger()==qint64(s->expectedRevision)&&diag.value("source_cache_key")==requestGeometry.value("source_cache_key");
             s->frozenSource={};if(!exact){s->observations.append(QJsonObject{{"expected_CPU",fp},{"actual",diag},{"error",error}});finish("Complete original CPU fallback FP32 readback was not bit-exact");return;}
-            if(!capture("complete-CPU-"+s->name)){finish("Fallback capture failed");return;}complete({{"producer","cpu-reference-upload"},{"entire_small_frame_float4_bit_exact",true},{"pixels_compared",fp.value("pixels")},{"expected_CPU",fp},{"actual_diagnostic",diag}});return;
+            if(!capture("complete-CPU-"+s->name)){finish("Fallback capture failed");return;}complete({{"producer","cpu-reference-upload"},{"entire_small_frame_float4_bit_exact",true},{"pixels_compared",fp.value("pixels")},{"request_geometry",requestGeometry},{"expected_CPU",fp},{"actual_diagnostic",diag}});return;
         }
     });
     window->setProperty("workspaceIndex",1);c->setGpuEnabled(true);

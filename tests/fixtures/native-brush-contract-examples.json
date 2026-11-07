@@ -5,7 +5,7 @@
     "route": {
       "actual_dpr": 1,
       "actual_qpa": "cocoa",
-      "backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "backend": "GPU · Metal · schema-device · native brush",
       "captures": [
         {
           "height": 920,
@@ -577,7 +577,7 @@
     "delivery": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device",
+      "actual_backend": "GPU · Metal · schema-device",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -1671,7 +1671,7 @@
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "backend": "GPU · Metal · schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1747,12 +1747,26 @@
           "name": "hard",
           "passed": true,
           "pixels_compared": 360448,
-          "producer": "cpu-reference-upload"
+          "producer": "cpu-reference-upload",
+          "request_geometry": {
+            "prepared_request": true,
+            "whole_frame_region": true,
+            "source_width": 704,
+            "source_height": 512,
+            "frame_width": 704,
+            "frame_height": 512,
+            "region_x": 0,
+            "region_y": 0,
+            "region_width": 704,
+            "region_height": 512,
+            "source_cache_key": "9272834392065",
+            "parameter_revision": 17
+          }
         },
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "backend": "GPU · Metal · schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1828,12 +1842,26 @@
           "name": "detail",
           "passed": true,
           "pixels_compared": 360448,
-          "producer": "cpu-reference-upload"
+          "producer": "cpu-reference-upload",
+          "request_geometry": {
+            "prepared_request": true,
+            "whole_frame_region": true,
+            "source_width": 704,
+            "source_height": 512,
+            "frame_width": 704,
+            "frame_height": 512,
+            "region_x": 0,
+            "region_y": 0,
+            "region_width": 704,
+            "region_height": 512,
+            "source_cache_key": "9272834392065",
+            "parameter_revision": 21
+          }
         },
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+            "backend": "GPU · Metal · schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1909,7 +1937,21 @@
           "name": "lut",
           "passed": true,
           "pixels_compared": 360448,
-          "producer": "cpu-reference-upload"
+          "producer": "cpu-reference-upload",
+          "request_geometry": {
+            "prepared_request": true,
+            "whole_frame_region": true,
+            "source_width": 704,
+            "source_height": 512,
+            "frame_width": 704,
+            "frame_height": 512,
+            "region_x": 0,
+            "region_y": 0,
+            "region_width": 704,
+            "region_height": 512,
+            "source_cache_key": "9272834392065",
+            "parameter_revision": 23
+          }
         }
       ],
       "elapsed_ms": 4826,
@@ -1943,7 +1985,7 @@
         },
         "diagnostic": {
           "available": true,
-          "backend": "GPU \u00b7 Metal \u00b7 schema-device",
+          "backend": "GPU · Metal · schema-device",
           "bytes": 5767168,
           "encoding": "encoded RGB",
           "height": 512,
@@ -2130,7 +2172,7 @@
     "pending": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_backend": "GPU · Metal · schema-device · native brush",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -2338,7 +2380,7 @@
     "retired-render": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_backend": "GPU · Metal · schema-device · native brush",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -2549,7 +2591,7 @@
       "Root_modified": false,
       "actual_DPR": 1,
       "actual_afterFrameEnd_RHI_thread": "dd97b75ed",
-      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_backend": "GPU · Metal · schema-device · native brush",
       "actual_controller_QtQuick_native_frame": true,
       "actual_qpa": "cocoa",
       "budget_limit_bytes": 3221225472,
@@ -2855,7 +2897,7 @@
     "sony": {
       "Root_native_GPU_accepted": false,
       "actual_DPR": 0.5,
-      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
+      "actual_backend": "GPU · Metal · schema-device · native brush",
       "actual_qpa": "cocoa",
       "all_backend_or_package_accepted": false,
       "captures": [

@@ -141,6 +141,36 @@ def route(data):
     captures(data, 4)
 
 
+def complete_cpu_fallback(row):
+    geometry = row["request_geometry"]
+    flags(geometry, ["prepared_request", "whole_frame_region"])
+    for key in ("source_width", "source_height", "frame_width", "frame_height", "region_width", "region_height"):
+        number(geometry[key], 1, 16384, integer=True)
+    for key in ("region_x", "region_y"):
+        number(geometry[key], 0, 0, integer=True)
+    width, height = geometry["frame_width"], geometry["frame_height"]
+    assert geometry["source_width"] == geometry["region_width"] == width
+    assert geometry["source_height"] == geometry["region_height"] == height
+    pixels = width * height
+    number(pixels, 1, 32 * 1024**2, integer=True)
+    number(row["pixels_compared"], pixels, pixels, integer=True)
+    number(geometry["parameter_revision"], 1, integer=True)
+    assert type(geometry["source_cache_key"]) is str and geometry["source_cache_key"]
+    actual, expected = row["actual_diagnostic"], row["expected_CPU"]
+    assert actual["available"] is True and expected["available"] is True
+    assert actual["producer"] == "cpu-reference-upload"
+    for frame in (actual, expected):
+        for key, value in (("width", width), ("height", height), ("pixels", pixels), ("bytes", pixels * 16)):
+            number(frame[key], value, value, integer=True)
+        assert frame["nonfinite_rgba"] == [0] * 4
+        for value in frame["nonfinite_rgba"]:
+            number(value, 0, 0, integer=True)
+    number(actual["parameter_revision"], geometry["parameter_revision"], geometry["parameter_revision"], integer=True)
+    assert actual["source_cache_key"] == geometry["source_cache_key"]
+    assert actual["pixel_sha256"] == expected["pixel_sha256"]
+    digest(actual["pixel_sha256"])
+
+
 def delivery(data, mode):
     selected = ["cache", "revision", "photo", "project", "hard", "detail", "lut"] if mode == "delivery" else [mode]
     flags(data, ["passed", "two_owned_sources_unchanged"], ["all_F0_F6_complete", "nonidentity_ICC", "physical_device_loss_or_OOM", "product_or_QA_owner_wait", "real_RAW", "synthesized_producer_callback"])
@@ -155,14 +185,8 @@ def delivery(data, mode):
         if name in ("hard", "detail", "lut"):
             flags(r, ["entire_small_frame_float4_bit_exact"])
             assert r["producer"] == "cpu-reference-upload"
-            number(r["pixels_compared"], 360448, 360448, integer=True)
-            a, e = r["actual_diagnostic"], r["expected_CPU"]
-            assert a["producer"] == "cpu-reference-upload" and a["available"] is True
-            assert a["pixels"] == e["pixels"] == r["pixels_compared"] and a["bytes"] == e["bytes"] == 16 * r["pixels_compared"]
-            assert a["pixel_sha256"] == e["pixel_sha256"]
-            digest(a["pixel_sha256"])
-            assert a["nonfinite_rgba"] == e["nonfinite_rgba"] == [0] * 4
-            cpu_hashes.append(a["pixel_sha256"])
+            complete_cpu_fallback(r)
+            cpu_hashes.append(r["actual_diagnostic"]["pixel_sha256"])
             continue
         if name == "revision":
             flags(r, ["actual_Qt_MetaCall_interleave"])

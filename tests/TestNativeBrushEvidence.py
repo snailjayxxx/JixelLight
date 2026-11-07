@@ -33,6 +33,57 @@ class NativeBrushContractTests(unittest.TestCase):
     def validate(self, data, mode):
         gate.validate_report(data, mode, expected_commit="d00dcaf0123456789", expected_qpa="cocoa", expected_backend="Metal")
 
+    def test_fallback_covers_frozen_whole_request_at_each_preview_size(self):
+        for width, height in ((704, 512), (522, 380), (640, 416)):
+            d = example("delivery")
+            for row in d["completed_cases"]:
+                if row["name"] not in ("hard", "detail", "lut"):
+                    continue
+                geometry = row["request_geometry"]
+                for key in ("source_width", "frame_width", "region_width"):
+                    geometry[key] = width
+                for key in ("source_height", "frame_height", "region_height"):
+                    geometry[key] = height
+                row["pixels_compared"] = width * height
+                for frame in (row["actual_diagnostic"], row["expected_CPU"]):
+                    frame.update(width=width, height=height, pixels=width * height, bytes=width * height * 16)
+            with self.subTest(width=width, height=height):
+                self.validate(d, "delivery")
+
+    def test_fallback_refuses_missing_or_partial_request_geometry(self):
+        for field, value in (("whole_frame_region", False), ("prepared_request", False), ("region_x", 1), ("region_y", 1), ("region_width", 703), ("region_height", 511), ("source_width", 705), ("frame_height", 511)):
+            d = example("delivery"); row = next(x for x in d["completed_cases"] if x["name"] == "hard")
+            row["request_geometry"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                self.validate(d, "delivery")
+        d = example("delivery"); next(x for x in d["completed_cases"] if x["name"] == "hard").pop("request_geometry")
+        with self.assertRaises(KeyError):
+            self.validate(d, "delivery")
+
+    def test_fallback_refuses_equal_area_wrong_shape_or_stale_request(self):
+        for field, value in (("width", 512), ("height", 704), ("parameter_revision", 1), ("source_cache_key", "different-source")):
+            d = example("delivery"); row = next(x for x in d["completed_cases"] if x["name"] == "hard")
+            row["actual_diagnostic"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                self.validate(d, "delivery")
+        d = example("delivery"); row = next(x for x in d["completed_cases"] if x["name"] == "hard")
+        for frame in (row["actual_diagnostic"], row["expected_CPU"]):
+            frame.update(width=512, height=704)
+        with self.assertRaises(AssertionError):
+            self.validate(d, "delivery")
+
+    def test_fallback_geometry_and_fingerprint_counts_are_typed(self):
+        for field in ("frame_width", "frame_height", "region_x", "region_y", "parameter_revision"):
+            d = example("delivery"); row = next(x for x in d["completed_cases"] if x["name"] == "hard")
+            row["request_geometry"][field] = False
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                self.validate(d, "delivery")
+        for field, value in (("width", True), ("height", "512"), ("pixels", 360448.0), ("bytes", 5767168.0), ("nonfinite_rgba", [False] * 4)):
+            d = example("delivery"); row = next(x for x in d["completed_cases"] if x["name"] == "hard")
+            row["expected_CPU"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                self.validate(d, "delivery")
+
     def test_six_synthetic_examples(self):
         for mode in gate.MODES:
             with self.subTest(mode=mode):
