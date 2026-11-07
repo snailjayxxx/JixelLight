@@ -1,6 +1,9 @@
 # LightCraft fusion implementation progress
 
 
+**F0 M4.9D original XMP streams and native host paths — source-only related validation; new CI required:** Both native artifact uploads now retain each XMP App stdout/stderr. The environment-isolation assertion uses the same native Path representation supplied to the backend. CI350 is genuinely failed and fully independently sealed 6c37ea91: Linux/macOS GHA success remain independently rejected for four missing native-original streams; Windows retains its Python13 host-path fixture failure. Last complete acceptance remains CI3470a7f/773. Other278 sources and all C++/QML/runtime/binaries are unchanged; completed exact-source private controls and M49C binary evidence are adopted without test replay. No fresh App/Core/GUI/RAW/GPU/PNG/full13 or new71/actual65 acceptance is claimed.
+
+
 **F2 M4.9C verified QA file selection — related local passed; new exact-commit CI required:** Both native controller and real-App XMP QA enter the exact owned filename through widget input and require the actual FileDialog accepted signal. Original20 controller observations,71 CTest names,65 modes and all deadlines/numerical/RAW/ICC/memory/scopes/export gates remain. CI349 all three actual jobs/workflow failed and wholea8395c29/928 is completely sealed: Linux/Windows19+1 delayed-picker failures, Mac17+3 normal/delayed-picker refusals. Last complete acceptance stays CI3470a7f/773. Private helperce9c/1304 and Appe72f/2613 are closed components, not Root/CI acceptance. No old successful heavy groups are rerun. Formal freshApp/controller2+Core/Gpu pass singleQt20 and both actual public App cases,8PNG/5840rows/CocoaMetalDPR1;13 parent binaries/Core217/Python13 are accurately adopted. Localfull71/actual65/newCI remain pending.
 
 Development branch: `design/lightcraft-fusion-20261008`; PR #16 remains Draft.

@@ -33,7 +33,7 @@ class XmpWrapperControls(unittest.TestCase):
  def test_environment_isolation_all_platforms_without_Sony_scale(self):
   for platform,qpa,backend in [('darwin','cocoa','Metal'),('win32','windows','Direct3D 11'),('linux','xcb','OpenGL')]:
    env,a,b=x.backend_environment({'QT_SCALE_FACTOR':'.5','JIXELLIGHT_FORCE_CPU':'1','JIXELLIGHT_PRIVATE_QML_ROOT':'unsafe','CUSTOM':'keep'},Path('/owned'), 'xmp-merge',platform)
-   self.assertEqual((a,b),(qpa,backend));self.assertEqual(env['QT_QPA_PLATFORM'],qpa);self.assertEqual(env['QSG_RENDER_LOOP'],'threaded');self.assertEqual(env['HOME'],'/owned');self.assertNotIn('QT_SCALE_FACTOR',env);self.assertNotIn('JIXELLIGHT_FORCE_CPU',env);self.assertNotIn('JIXELLIGHT_PRIVATE_QML_ROOT',env);self.assertEqual(env['CUSTOM'],'keep')
+   self.assertEqual((a,b),(qpa,backend));self.assertEqual(env['QT_QPA_PLATFORM'],qpa);self.assertEqual(env['QSG_RENDER_LOOP'],'threaded');self.assertEqual(env['HOME'],str(Path('/owned')));self.assertNotIn('QT_SCALE_FACTOR',env);self.assertNotIn('JIXELLIGHT_FORCE_CPU',env);self.assertNotIn('JIXELLIGHT_PRIVATE_QML_ROOT',env);self.assertEqual(env['CUSTOM'],'keep')
  def test_malformed_expected_commit_refuses_before_outputs(self):
   with tempfile.TemporaryDirectory()as temp:
    p=Path(temp);exe=p/'app';exe.write_bytes(b'app')

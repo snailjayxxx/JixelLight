@@ -403,6 +403,8 @@ jobs:
             gui-*.json
             gui-*.png
             gui-*.log
+            gui-xmp-merge-*.json.stdout
+            gui-xmp-merge-*.json.stderr
             diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
@@ -705,5 +707,7 @@ jobs:
             gui-*.json
             gui-*.png
             gui-*.log
+            gui-xmp-merge-*.json.stdout
+            gui-xmp-merge-*.json.stderr
             diagnostic-validation/
             raw-render-matrix.log
