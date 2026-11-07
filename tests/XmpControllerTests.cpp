@@ -28,6 +28,8 @@
 #include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrentRun>
 #include <functional>
+#include <QLineEdit>
+#include <QInputMethodEvent>
 #include <stdexcept>
 
 namespace {
@@ -68,7 +70,20 @@ struct XmpFilePicker {
       accepted=true;timer.stop();qInfo()<<"XMP_FILE_PICKER_V1 accepted=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;
     });}
     ++visibleTicks;if(!select||visibleTicks<minVisibleTicks)return;
-    ++attempts;d->selectFile(path);QMetaObject::invokeMethod(d,"accept",Qt::DirectConnection);return;
+    ++attempts;
+    // Qt6.8.3 selectFile leaves a visible focused filename editor unchanged.
+    // Enter the owned path through its widget input event, then require the
+    // actual selected file and the real accepted signal. No fabricated result.
+    auto *fileName=d->findChild<QLineEdit*>("fileNameEdit");
+    if(!fileName)return;
+    if(fileName->text()!=path) {
+     fileName->setFocus(Qt::OtherFocusReason);fileName->selectAll();
+     QInputMethodEvent input;input.setCommitString(path);
+     QCoreApplication::sendEvent(fileName,&input);
+    }
+    if(d->selectedFiles()!=QStringList{path})return;
+    qInfo()<<"XMP_PICKER_WIDGET_INPUT_V1 actual_selected_owned_path=true";
+    QMetaObject::invokeMethod(d,"accept",Qt::DirectConnection);return;
    }
   });
  }

@@ -1,0 +1,17 @@
+# F2 M4.9C verified QA file selection
+
+Both native controller and real-App XMP QA enter the owned full path through the actual filename widget input event, verify selectedFiles equals the owned locator, and require the real accepted signal. The normal App sets filePicked only in that signal handler. The10s owned selector deadline,60s GUI/120s wrapper, original20 controller observations,71 CTest names and65 modes are preserved. No user-facing product/parser/SQL/RAW/RHI/colour/menu or limit changes are included.
+
+## Original failures remain closed
+
+CI34942395718750 at e7a/tree922e is genuinely failed, independently sealed a8395c29350d6db72c498c4a1e3ed955a295c3b61353b2e86ba1e93fba2335f2/928 files/three original FULL/three partial ZIPs. Actual checkout13aa2884cfe1d7c7b7713e1952e3f95126c222de matches tree922e. Linux74fb/307 and Windows40a3/308 retain19+1 delayed-picker failures at line197, including original expiries1997/1999 and1958/1960. Mac eb4f/293 retains17+3 normal/delayed-picker failures at lines119/197, not the old CI348 timeout. Later native/App/RAW/actual65/shipping steps are absent. No original is repaired or filled by private/parent evidence. Whole closure checked sealed bytes/source/true terminal state without platform audit replay. CI3470a7f/773 remains the last complete acceptance.
+
+## Isolated source and accurate scope
+
+Helperce9c31fb/1304 supplies new Linux1+3 and Cocoa4 observations, not a single Qt20. Original delayed-picker diagnostic failure and pre-compile mount refusal remain. The dedicated diagnostic VM is stopped and the default context/profile is unchanged. The real-App follow-up e72fc5a8/2613 compiles only one App QA TU and reuses46 exact link inputs; English/Chinese public wrappers pass on Cocoa/Metal/DPR1 with6PNG/4760rows. Existing12scope negatives and all parent source/binary/failure bytes are sealed. The Info text was not echoed to captured streams; raw acceptance is tied to the sole accepted-signal flag assignment and source/object/bin proofs. The original metadata expectation refusal is retained, no App/PNG replay.
+
+## Formal local and publication
+
+Actual formal Root configure/build50311/65959ms pass with two fresh App/controller targets and Core/Gpu archives,13 accurately adopted binaries. One complete nativeQt20 passes with zero failure/skip/blacklist, internal3200ms/CTest4187ms. Public English/Chinese App wrappers pass on Cocoa/Metal/DPR1: GUI483/492ms, outer3238/2445ms. Native2 PNGs are first fully verified; App6 use the wrapper's first complete CRC/SHA/row proof, total8 captures/5840rows. Compiled precommite7a1f6f and actual working source280 are separately bound. Core217/Python13 retain accurate c574 source/bin evidence through the unchanged M49B lineage, with no old heavy reruns. This is related local acceptance, not a full71/all-backend/actual65/shipping or new-CI acceptance. Other278 source bytes remain exact, the original20 method bodies/names and all71/65 limits are preserved.
+
+All original Core217 single-zero/Performance39 row-pending-worker-null witness/Qt24-live8/Sony23/native32/monitorQt5 and original methods,45/60/120s/real RAW/exactPNG16ICC/RGB40-exact-alpha/32Mi/shared3GiB/full statistics/three plots/export requirements remain. Linux60/Windows120/Mac120 aggregate budgets are unchanged. Physical tablet/deviceLoss/OOM/monitor calibration/allSony/full rawjitter/nativeFP32RAW/combined metadataUndo/readonly-catalog/physical commit errors and fullF0-F6 remain unaccepted.

@@ -15,6 +15,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeyEvent>
+#include <QLineEdit>
+#include <QInputMethodEvent>
+#include <QPointer>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -149,14 +152,34 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
         if(s->phase==0) {
             if(c->loading()||c->rendering()||!c->previewReady()||s->frames.load(std::memory_order_acquire)==0)return;
             s->phase=1;
-            QTimer::singleShot(0,c,[=]{
-                for(auto *widget:QApplication::topLevelWidgets())if(auto *picker=qobject_cast<QFileDialog*>(widget)) {
-                    picker->selectFile(s->sidecar);
-                    QTimer::singleShot(0,c,[=]{auto *box=picker->findChild<QDialogButtonBox*>();auto *open=box?box->button(QDialogButtonBox::Open):nullptr;
-                        if(!open||!open->isEnabled()){finish("Normal file picker has no enabled Open action");return;}s->filePicked=true;click(open);});return;
+            auto *pickerTimer=new QTimer(c);pickerTimer->setInterval(5);
+            const auto pickerStart=s->clock.elapsed();
+            auto observed=std::make_shared<QPointer<QFileDialog>>();
+            QObject::connect(pickerTimer,&QTimer::timeout,c,[=]{
+                if(s->finished||s->filePicked){pickerTimer->stop();return;}
+                if(s->clock.elapsed()-pickerStart>=10000){pickerTimer->stop();finish("Normal owned file picker did not actually accept within10seconds");return;}
+                for(auto *widget:QApplication::topLevelWidgets())if(auto *picker=qobject_cast<QFileDialog*>(widget);picker&&picker->isVisible()) {
+                    if(*observed!=picker) {
+                        *observed=picker;
+                        QObject::connect(picker,&QDialog::accepted,c,[=]{
+                            if(picker->selectedFiles()!=QStringList{s->sidecar}){finish("Normal file picker accepted a different owned target");return;}
+                            s->filePicked=true;pickerTimer->stop();
+                            qInfo()<<"XMP_APP_PICKER_INPUT_V1 actual_owned_path_and_accepted_signal=true";
+                        });
+                    }
+                    auto *fileName=picker->findChild<QLineEdit*>("fileNameEdit");
+                    if(!fileName)return;
+                    if(fileName->text()!=s->sidecar) {
+                        fileName->setFocus(Qt::OtherFocusReason);fileName->selectAll();
+                        QInputMethodEvent input;input.setCommitString(s->sidecar);QCoreApplication::sendEvent(fileName,&input);
+                    }
+                    if(picker->selectedFiles()!=QStringList{s->sidecar})return;
+                    auto *box=picker->findChild<QDialogButtonBox*>();auto *open=box?box->button(QDialogButtonBox::Open):nullptr;
+                    if(open&&open->isEnabled())click(open);
+                    return;
                 }
-                finish("Normal XMP file picker was not created");
             });
+            pickerTimer->start();
             c->openXmpImportDialog();s->normalActionReturned=true;return;
         }
         if(s->phase==1) {
