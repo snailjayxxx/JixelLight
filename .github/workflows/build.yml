@@ -398,6 +398,7 @@ jobs:
           name: validation-${{ runner.os }}
           path: |
             build/*-results.txt
+            build/brush-preview-admission-worker-results.json
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/
@@ -712,6 +713,7 @@ jobs:
           name: validation-Linux
           path: |
             build/*-results.txt
+            build/brush-preview-admission-worker-results.json
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/

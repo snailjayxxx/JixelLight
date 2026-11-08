@@ -78,6 +78,8 @@ public:
     // Control-state UI preflight only. This never authorizes pixel work;
     // rendering still needs a separately reserved one-use owned request.
     static bool preflightGesture(const QSize &source,const ProcessingPlan &plan,QString *error=nullptr);
+    static bool preflightGesture(const QSize &source,const ProcessingPlan &plan,
+        const CancelToken &cancel,QString *error);
     BrushRenderRequest(const BrushRenderRequest &)=delete;
     BrushRenderRequest &operator=(const BrushRenderRequest &)=delete;
     QSize size() const { return m_region.size(); }

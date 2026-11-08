@@ -168,14 +168,18 @@ QSize BrushRenderRequest::geometrySize(const QSize &source,const GeometryState &
     return outputSize(source,geometry);
 }
 bool BrushRenderRequest::preflightGesture(const QSize &source,const ProcessingPlan &plan,QString *error) {
+    return preflightGesture(source,plan,CancelToken{},error);
+}
+bool BrushRenderRequest::preflightGesture(const QSize &source,const ProcessingPlan &plan,const CancelToken &cancel,QString *error) {
     if(error)error->clear();
+    if(cancelled(cancel))return fail(error,"Cancelled");
     if(!BrushMaskGeometry::validFrame(source.width(),source.height())||qint64(source.width())*source.height()>MaxSourcePixels)
         return fail(error,"Brush source exceeds the admitted geometry limit");
     if(!validPreparedPlan(plan,error))return false;
     if(!validState(*plan.m_brushIntent))return fail(error,"Invalid brush gesture state");
     const auto size=geometrySize(source,plan.m_brushIntent->geometry);
     if(size.isEmpty())return fail(error,"Invalid brush gesture geometry");
-    return ImagePipeline::preflightAdmittedBrush(size,plan,QRect(QPoint{},size),128,{},error);
+    return ImagePipeline::preflightAdmittedBrush(size,plan,QRect(QPoint{},size),128,cancel,error);
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {

@@ -5,6 +5,7 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QThread>
 #include <QUuid>
 #include <limits>
 
@@ -140,10 +141,25 @@ void PhotoController::initializeBrushPreview() {
     m_brushPreviewRetryTimer.setSingleShot(true);m_brushPreviewRetryTimer.setInterval(40);
     connect(&m_brushPreviewRetryTimer,&QTimer::timeout,this,&PhotoController::requestBrushPreview);
     const auto budget=m_brushBudget;
+    const auto ownerThread=QThread::currentThreadId();
     m_brushPreviewJob=std::make_unique<LatestFrameJob<BrushPreviewRequest,RenderedFrame>>(
-        [budget](const BrushPreviewRequest &request,const CancelToken &cancel) {
+        [budget,ownerThread](const BrushPreviewRequest &request,const CancelToken &cancel) {
             RenderedFrame result;BrushAdmissionFailure reason=BrushAdmissionFailure::None;
-            auto admitted=BrushRenderRequest::createPrepared(request.source,request.plan,
+            QElapsedTimer timing;timing.start();
+            const bool allowed=BrushRenderRequest::preflightGesture(request.fullSourceSize,request.plan,cancel,&result.error);
+            PerformanceRecorder::sample("brush_live_full_preflight",timing.nsecsElapsed()/1.0e6,
+                {{"worker_thread",QThread::currentThreadId()!=ownerThread},
+                 {"thread_id",QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()))},
+                 {"owner_thread_id",QString::number(reinterpret_cast<quintptr>(ownerThread))},
+                 {"gesture",QString::number(request.gesture)},{"sample",QString::number(request.sample)},
+                 {"source_cache_key",QString::number(request.source.cacheKey())},
+                 {"full_source_width",request.fullSourceSize.width()},{"full_source_height",request.fullSourceSize.height()},
+                 {"preview_frame_x",request.previewFrameRect.x()},{"preview_frame_y",request.previewFrameRect.y()},
+                 {"preview_frame_width",request.previewFrameRect.width()},{"preview_frame_height",request.previewFrameRect.height()},
+                 {"admission_passed",allowed},{"cancelled",cancelled(cancel)},{"reason",result.error}});
+            if(!allowed)return result;
+            auto plan=request.plan;plan.setFrameRect(request.previewFrameRect);
+            auto admitted=BrushRenderRequest::createPrepared(request.source,plan,
                 BrushRenderRequest::Layout::Whole,cancel,&result.error,budget,&reason);
             if(admitted){auto lease=admitted->render(cancel,&result.error);if(lease)result.image=lease.sharedImage();}
             result.retryableBudget=reason==BrushAdmissionFailure::BudgetUnavailable;return result;
@@ -196,9 +212,8 @@ void PhotoController::requestBrushPreview() {
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
         auto plan=ProcessingPlan::compile(resolved,ImagePipeline::InputEncoding::LinearProPhoto,
             ColorManagement::OutputSpace::SRgb,currentIsRaw(),rawBaseExposureStops());
-        QString error;if(!BrushRenderRequest::preflightGesture(m_fullSource.size(),plan,&error))return;
-        plan.setFrameRect(m_previewFrameRect);
-        m_brushPreviewJob->submit({m_previewSource,std::move(plan),m_brushGesture->gesture,m_brushGesture->sample});
+        m_brushPreviewJob->submit({m_previewSource,std::move(plan),m_brushGesture->gesture,m_brushGesture->sample,
+            m_fullSource.size(),m_previewFrameRect});
     }catch(...){/* A refused preview never changes or commits a gesture. */}
 }
 bool PhotoController::beginBrushStroke(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure) {

@@ -620,6 +620,7 @@ private:
     void retryBudgetJobs(bool afterExport=false);
     friend class BrushScopeRoutingTests;
     friend class BrushLivePreviewTests;
+    friend class BrushPreviewAdmissionWorkerTests;
     struct BrushGesture {
         QString photoKey,layer,newLayer;
         quint64 catalog=0,epoch=0,generation=0,revision=0,gesture=0,sample=0;
@@ -639,7 +640,7 @@ private:
     QString commitBrushGesture(std::unique_ptr<BrushGesture> gesture);
     bool brushGestureCurrent() const;
     bool brushGestureCurrent(const BrushGesture &gesture) const;
-    struct BrushPreviewRequest {QImage source;ProcessingPlan plan;quint64 gesture=0,sample=0;};
+    struct BrushPreviewRequest {QImage source;ProcessingPlan plan;quint64 gesture=0,sample=0;QSize fullSourceSize;QRectF previewFrameRect;};
     std::unique_ptr<LatestFrameJob<BrushPreviewRequest,RenderedFrame>> m_brushPreviewJob;
     quint64 m_brushGestureSerial=0,m_brushPreviewSerial=0,m_brushPreviewSample=0;
     QString m_brushPreviewId;
