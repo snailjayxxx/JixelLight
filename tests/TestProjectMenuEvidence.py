@@ -60,7 +60,7 @@ class ProjectMenuEvidenceControls(unittest.TestCase):
         self.assertEqual(evidence.decode_report('{"ordinary":1.25}')['ordinary'],1.25)
 
     def test_command_and_every_output_suffix_refuse_existing_aliases(self):
-        self.assertEqual(wrapper.command(Path('/owned/App'),Path('/owned/raw.json')),['/owned/App','--project-menu-layout-smoke-report','/owned/raw.json'])
+        self.assertEqual(wrapper.command(Path('/owned/App'),Path('/owned/raw.json')),[str(Path('/owned/App')),'--project-menu-layout-smoke-report',str(Path('/owned/raw.json'))])
         with tempfile.TemporaryDirectory()as directory:
             base=Path(directory);exe=base/'App';exe.write_bytes(b'owned input');home=base/'home';report=base/'report.json'
             self.assertEqual(len(wrapper.outputs(report)),8)
