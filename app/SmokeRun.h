@@ -36,3 +36,5 @@ void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString
 void startNativeBrushMonitorSmokeRun(PhotoController *,QQuickWindow *,const QString &);
 
 void startXmpMergeSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startProjectMenuLayoutSmokeRun(PhotoController *,QQuickWindow *,const QString &);

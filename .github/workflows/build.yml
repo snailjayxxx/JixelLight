@@ -134,6 +134,18 @@ jobs:
           for LANGUAGE in en_US zh_CN; do
             python tools/ValidateXmpMerge.py "$EXE" "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
           done
+      - name: Bilingual anchored project-menu layout
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestProjectMenuEvidence.py' -v
+          python tools/ValidateProjectMenu.py "$EXE" gui-project-menu-layout.json --expected-commit "$STAMP"
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         shell: bash
         run: |
@@ -405,6 +417,8 @@ jobs:
             gui-*.log
             gui-xmp-merge-*.json.stdout
             gui-xmp-merge-*.json.stderr
+            gui-project-menu-layout.json.stdout
+            gui-project-menu-layout.json.stderr
             diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
@@ -517,6 +531,12 @@ jobs:
           for LANGUAGE in en_US zh_CN; do
             xvfb-run -a python tools/ValidateXmpMerge.py ./build/bin/JixelLight "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
           done
+      - name: Bilingual anchored project-menu layout
+        shell: bash
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestProjectMenuEvidence.py' -v
+          xvfb-run -a python tools/ValidateProjectMenu.py ./build/bin/JixelLight gui-project-menu-layout.json --expected-commit "$STAMP"
       - name: Canvas local-mask pointer smoke (independent synthetic GUI)
         env:
           QT_QPA_PLATFORM: offscreen
@@ -709,5 +729,7 @@ jobs:
             gui-*.log
             gui-xmp-merge-*.json.stdout
             gui-xmp-merge-*.json.stderr
+            gui-project-menu-layout.json.stdout
+            gui-project-menu-layout.json.stderr
             diagnostic-validation/
             raw-render-matrix.log

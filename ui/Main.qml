@@ -640,6 +640,22 @@ ApplicationWindow {
         background: Rectangle { color: "#171c23"; border.color: "#303943" }
         Menu {
             id: projectActions
+            objectName: "projectActionsMenu"
+            parent: projectMenuButton
+            x: 0
+            y: projectMenuButton.height
+            // Measure localized labels with their actual style font and padding.
+            // Keep the menu inside compact windows without a fixed text width.
+            property real actionContentsWidth: {
+                let widest = 0
+                for (let i = 0; i < count; ++i) {
+                    const action = itemAt(i)
+                    if (action && action.contentItem)
+                        widest = Math.max(widest, action.contentItem.implicitWidth + action.leftPadding + action.rightPadding)
+                }
+                return widest
+            }
+            width: Math.min(window.width - 24, Math.max(200, Math.ceil(actionContentsWidth) + leftPadding + rightPadding))
             MenuItem { text: window.t("新建项目", "New Project"); enabled: !photoController.copyImportBusy; onTriggered: projectFolder.open() }
             MenuItem { text: window.t("打开已有项目", "Open Existing Project"); enabled: !photoController.copyImportBusy; onTriggered: openProjectFolder.open() }
             MenuSeparator {}
@@ -704,9 +720,10 @@ ApplicationWindow {
             }
             ToolSeparator {}
             ToolButton {
+                id: projectMenuButton
                 objectName: "projectMenuButton"
                 text: window.t("项目 ▾", "Project ▾")
-                onClicked: projectActions.popup()
+                onClicked: projectActions.open()
             }
             ToolButton {
                 id: importButton

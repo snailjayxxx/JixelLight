@@ -21,6 +21,7 @@ from ValidateShortcutHelp import validate_shortcut_help
 from ValidateEditRecipe import run as validate_edit_recipe
 from ValidateNativeBrush import validate_native_brush
 from ValidateXmpMerge import validate_xmp_merge
+from ValidateProjectMenu import validate_project_menu
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -270,6 +271,11 @@ def main() -> int:
             results.append(validate_xmp_merge(executable, environment, Path(xmp_temp) / language,
                 reports / (label + '.json'), language, expected_commit=results[0].get('source_commit')))
     # END XMP full-App package modes.
+    # BEGIN project-menu-layout package mode; all original65 remain byte-exact.
+    with tempfile.TemporaryDirectory(prefix='jixellight-menu-package-') as menu_temp:
+        results.append(validate_project_menu(executable, environment, Path(menu_temp),
+            reports / 'project-menu-layout.json', expected_commit=results[0].get('source_commit')))
+    # END project-menu-layout package mode.
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),

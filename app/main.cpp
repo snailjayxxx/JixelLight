@@ -43,6 +43,7 @@ int main(int argc, char *argv[]) {
     QQuickStyle::setStyle("Fusion");
     QCommandLineParser arguments;arguments.setApplicationDescription("JixelLight RAW editor");
     arguments.addHelpOption();arguments.addVersionOption();
+    arguments.addOption({"project-menu-layout-smoke-report", "Validate localized project-menu layout and anchored pointer presentation without importing a photo", "file"});
     arguments.addPositionalArgument("photos", "Photographs to import", "[photos...]");
     arguments.addOption({"xmp-merge-smoke-report", "Validate normal XMP review and durable merge in the actual application using owned fixtures", "file"});
     arguments.addOption({"xmp-merge-smoke-language", "Language for the owned XMP application validation", "language", "en_US"});
@@ -80,13 +81,21 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"transparent-one-pixel-brush-stabilization-smoke-report", "Validate explicit one pixel input on transparent owned pixels", "file"});
     arguments.addOption({"sony-one-pixel-brush-pressure-canvas-smoke-report", "Validate explicit one pixel pen input on pinned Sony RAW and exact export", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("xmp-merge-smoke-report"))+int(arguments.isSet("native-brush-monitor-smoke-report"))+int(arguments.isSet("native-brush-sony-smoke-report"))+int(arguments.isSet("native-brush-delivery-smoke-report"))+int(arguments.isSet("native-brush-route-smoke-report"))+int(arguments.isSet("one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("project-menu-layout-smoke-report"))+int(arguments.isSet("xmp-merge-smoke-report"))+int(arguments.isSet("native-brush-monitor-smoke-report"))+int(arguments.isSet("native-brush-sony-smoke-report"))+int(arguments.isSet("native-brush-delivery-smoke-report"))+int(arguments.isSet("native-brush-route-smoke-report"))+int(arguments.isSet("one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("brush-recovery-smoke-report"))+int(arguments.isSet("transparent-brush-recovery-smoke-report"))
         +int(arguments.isSet("brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-brush-stabilization-smoke-report"));
     if(smokeModes>1)return 2;
+    if(arguments.isSet("project-menu-layout-smoke-report")) {
+        for(const QString &option:arguments.optionNames())if(option!="project-menu-layout-smoke-report")return 2;
+        if(!arguments.positionalArguments().isEmpty()||arguments.isSet("screenshot"))return 2;
+        const QFileInfo output(arguments.value("project-menu-layout-smoke-report"));
+        if(output.suffix().compare("json",Qt::CaseInsensitive)!=0||output.exists()||output.isSymLink()||!QFileInfo(output.absolutePath()).isDir())return 2;
+        for(int i=0;i<4;++i){const QFileInfo image(output.absoluteFilePath()+".case-"+QString::number(i)+".png");if(image.exists()||image.isSymLink())return 2;}
+    }
+
     if(arguments.isSet("xmp-merge-smoke-language")&&!arguments.isSet("xmp-merge-smoke-report"))return 2;
     if(arguments.isSet("xmp-merge-smoke-report")) {
         if(!arguments.positionalArguments().isEmpty()||arguments.isSet("screenshot")
@@ -180,6 +189,7 @@ int main(int argc, char *argv[]) {
 
     QVariantList photos;
     for (const QString &path:arguments.positionalArguments()) photos.push_back(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+    if(arguments.isSet("project-menu-layout-smoke-report")){if(!window||!photos.isEmpty())return 2;startProjectMenuLayoutSmokeRun(&controller,window,arguments.value("project-menu-layout-smoke-report"));return app.exec();}
     if(arguments.isSet("xmp-merge-smoke-report")){if(!window||!photos.isEmpty())return 2;startXmpMergeSmokeRun(&controller,window,arguments.value("xmp-merge-smoke-report"),arguments.value("xmp-merge-smoke-language"));return app.exec();}
     if(arguments.isSet("native-brush-monitor-smoke-report")){if(!window||!photos.isEmpty())return 2;startNativeBrushMonitorSmokeRun(&controller,window,arguments.value("native-brush-monitor-smoke-report"));return app.exec();}
     if(arguments.isSet("native-brush-sony-smoke-report")){if(!window||photos.size()!=1)return 2;startNativeBrushSonySmokeRun(&controller,window,photos.front().toUrl().toLocalFile(),arguments.value("native-brush-sony-smoke-report"));return app.exec();}
