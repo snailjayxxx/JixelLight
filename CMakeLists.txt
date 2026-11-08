@@ -400,3 +400,11 @@ endif()
 set_tests_properties(xmp-controller-merge PROPERTIES TIMEOUT 120
     ENVIRONMENT "QT_QPA_PLATFORM=${JIXELLIGHT_XMP_COMPONENT_QPA};JIXEL_XMP_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/xmp-controller-native;JIXELLIGHT_FORCE_CPU=1")
 # END XMP normal-controller native coverage.
+
+# BEGIN curation snapshot storage domains; preserve the original71 CTest order.
+qt_add_executable(JixelLightCurationDomainTests tests/TestCurationDomain.cpp)
+target_link_libraries(JixelLightCurationDomainTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightCurationDomainTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME curation-domain-snapshot COMMAND JixelLightCurationDomainTests -o curation-domain-results.txt,txt -o -,txt)
+set_tests_properties(curation-domain-snapshot PROPERTIES TIMEOUT 120)
+# END curation snapshot storage domains.

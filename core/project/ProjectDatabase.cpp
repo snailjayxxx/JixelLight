@@ -343,7 +343,7 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                 }
                 QSqlQuery query(db);
                 QString querySql=hasCuration
-                    ? QStringLiteral("SELECT p.path,p.adjustment_json,COALESCE(c.rating,0),COALESCE(c.flag,'none'),p.imported_at FROM photos p LEFT JOIN curation c ON c.path=p.path")
+                    ? QStringLiteral("SELECT p.path,p.adjustment_json,c.rating,c.flag,p.imported_at,c.path,typeof(c.rating),typeof(c.flag) FROM photos p LEFT JOIN curation c ON c.path=p.path")
                     : QStringLiteral("SELECT p.path,p.adjustment_json,p.imported_at FROM photos p");
                 if(hasIdentities)querySql+=" LEFT JOIN original_identity i ON i.source_key=p.path";
                 querySql+=" ORDER BY CASE WHEN p.path LIKE 'jixel-copy:%' THEN 1 ELSE 0 END,p.imported_at,";
@@ -362,9 +362,27 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                         error = QStringLiteral("Invalid adjustment JSON for project photo");
                         break;
                     }
-                    const int rating = hasCuration ? std::clamp(query.value(2).toInt(), 0, 5) : 0;
-                    QString flag = hasCuration ? query.value(3).toString() : QStringLiteral("none");
-                    if (flag != QStringLiteral("pick") && flag != QStringLiteral("reject")) flag = QStringLiteral("none");
+                    int rating = 0;
+                    QString flag = QStringLiteral("none");
+                    // An absent LEFT JOIN row keeps legacy defaults. A present
+                    // row must retain its exact stored intent: never narrow a
+                    // wide integer, coalesce NULL or sanitize an unknown flag.
+                    if (hasCuration && !query.value(5).isNull()) {
+                        bool validInteger = false;
+                        const qint64 storedRating = query.value(2).toLongLong(&validInteger);
+                        const QString storedFlag = query.value(3).toString();
+                        if (query.value(6).toString() != QStringLiteral("integer") || !validInteger
+                            || storedRating < 0 || storedRating > 5
+                            || query.value(7).toString() != QStringLiteral("text")
+                            || (storedFlag != QStringLiteral("none") && storedFlag != QStringLiteral("pick")
+                                && storedFlag != QStringLiteral("reject"))) {
+                            ready = false;
+                            error = QStringLiteral("Invalid stored rating/flag for project photo");
+                            break;
+                        }
+                        rating = int(storedRating);
+                        flag = storedFlag;
+                    }
                     auto adjustments = AdjustmentState::fromJson(doc.object());
                     if (!AdjustmentState::validBrushMaskJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported brush mask draft for project photo"); break;
