@@ -68,6 +68,8 @@ struct State {
     bool durableFullRecord=false,UIFullRecord=false,developUndo=false,storedUndo=false,annotationsPreserved=false;
     QJsonObject storedAfter,UIAfter,storedUndoRow;QJsonArray captures,sourceEvents,sqlEvents,publicationEvents;
     QString reviewTitle,reviewNotice;int conflictChoices=0;quint64 appliedStartFrame=0,undoStartFrame=0;
+    qint64 inputChecks=0,inputWaitChecks=0,pendingPrepareFlagSignals=0;
+    QJsonObject beforePickerInput,beforeOpenInput;
     std::atomic<quint64> frames{0};std::atomic<quintptr> renderThread{0};
 };
 }
@@ -75,6 +77,30 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
     auto fixture=std::make_shared<QTemporaryDir>(QDir::tempPath()+"/JixelLight-XMP-App-XXXXXX");
     auto s=std::make_shared<State>();s->clock.start();s->guiThread=threadID();s->incoming.look.mode="off";s->incoming.exposure=1.25;
     auto *timer=new QTimer(c);timer->setInterval(10);
+    // Observe the actual protected input state on the GUI owner. A visible
+    // preview may precede a newer prepare job; it is not an import-ready flag.
+    QObject::connect(c,&PhotoController::scopePlotChanged,c,[=] {
+        if(c->m_preparing)++s->pendingPrepareFlagSignals;
+    },Qt::DirectConnection);
+    const auto inputReady=[=](QJsonObject *capture) {
+        ++s->inputChecks;
+        const bool image=c->hasImage();
+        const bool available=image&&c->m_photos[c->m_currentIndex].available;
+        const bool identity=image&&c->m_photos[c->m_currentIndex].identity.isKnown();
+        const QJsonObject state{{"closing",c->m_closing},{"loading",c->m_loading},{"prepare_pending",c->m_preparing},
+            {"brush_gesture",bool(c->m_brushGesture)},{"brush_recovery",bool(c->m_brushRecovery)},
+            {"crop_editing",c->m_cropEditing},{"calibration_busy",c->m_calibrationBusy},{"relink_busy",c->m_relinkBusy},
+            {"copy_import_busy",c->copyImportBusy()},{"xmp_merge_busy",c->xmpMergeBusy()},
+            {"has_image",image},{"project_open",c->m_project.isOpen()},{"original_available",available},{"original_identity_known",identity},
+            {"prepare_generation",qint64(c->m_prepareGeneration)},{"request_revision",qint64(c->m_requestedRevision)},
+            {"catalog_epoch",qint64(c->m_catalogEpoch)},{"photo_epoch",qint64(c->m_photoEpoch)}};
+        const bool ready=!c->m_closing&&!c->m_loading&&!c->m_preparing&&!c->m_brushGesture&&!c->m_brushRecovery
+            &&!c->m_cropEditing&&!c->m_calibrationBusy&&!c->m_relinkBusy&&!c->copyImportBusy()&&!c->xmpMergeBusy()
+            &&image&&c->m_project.isOpen()&&available&&identity;
+        if(!ready)++s->inputWaitChecks;
+        if(capture)*capture=state;
+        return ready;
+    };
     const auto addCapture=[=](const QString &kind,const QImage &image) {
         const QString path=QFileInfo(reportPath).absoluteFilePath()+"."+kind+".png";
         if(!saveNew(image,path))return false;
@@ -102,7 +128,8 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
         const bool passed=error.isEmpty()&&s->phase==7&&s->filePicked&&s->busyObserved&&s->allChoices
             &&s->durableFullRecord&&s->UIFullRecord&&s->developUndo&&s->storedUndo&&s->annotationsPreserved
             &&roles&&originalUnchanged&&sidecarUnchanged&&s->captures.size()==3&&s->clock.elapsed()<60000
-            &&budget.limit==3LL*1024*1024*1024&&budget.peak<=budget.limit;
+            &&budget.limit==3LL*1024*1024*1024&&budget.peak<=budget.limit
+            &&s->inputChecks>=2&&s->pendingPrepareFlagSignals>0&&!s->beforePickerInput.isEmpty()&&!s->beforeOpenInput.isEmpty();
         const QJsonObject result{{"schema",1},{"mode","xmp-normal-App-merge"},{"passed",passed},{"error",error},{"phase",s->phase},
             {"elapsed_ms",s->clock.elapsed()},{"GUI_deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"language",language},{"actual_qpa",QGuiApplication::platformName()},{"actual_scene_backend",sceneBackend(window)},
@@ -111,6 +138,9 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
             {"afterFrameEnd_count",qint64(s->frames.load(std::memory_order_acquire))},
             {"normal_App_main_and_QML_window",true},{"normal_import_method_called",true},{"QML_menu_pointer_exercised",false},
             {"file_picker_accepted",s->filePicked},{"review_widget_pointer_and_key_input",s->allChoices},{"busy_observed",s->busyObserved},
+            {"input_preparation_readiness",QJsonObject{{"checks",s->inputChecks},{"wait_checks",s->inputWaitChecks},
+                {"actual_pending_prepare_flag_signals",s->pendingPrepareFlagSignals},{"before_picker",s->beforePickerInput},{"before_open_click",s->beforeOpenInput},
+                {"pending_flag_is_not_physical_device_or_worker_completion_proof",true}}},
             {"original_source_SHA256",s->originalSHA},{"sidecar_SHA256",s->sidecarSHA},{"original_unchanged",originalUnchanged},{"sidecar_unchanged",sidecarUnchanged},
             {"review_title",s->reviewTitle},{"review_notice",s->reviewNotice},{"conflict_choices",s->conflictChoices},
             {"expected_Develop",s->incoming.toJson()},{"stored_after",s->storedAfter},{"UI_after",s->UIAfter},
@@ -150,7 +180,10 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
     QObject::connect(timer,&QTimer::timeout,c,[=,keep=fixture] {
         Q_UNUSED(keep);if(s->clock.elapsed()>=60000){finish("Actual XMP application exceeded original60-second boundary");return;}
         if(s->phase==0) {
-            if(c->loading()||c->rendering()||!c->previewReady()||s->frames.load(std::memory_order_acquire)==0)return;
+            QJsonObject readiness;
+            if(!inputReady(&readiness)||c->loading()||c->rendering()||!c->previewReady()||s->frames.load(std::memory_order_acquire)==0)return;
+            s->beforePickerInput=readiness;
+            qInfo()<<"XMP_APP_INPUT_READY_V1 before_picker"<<readiness.value("prepare_pending").toBool()<<readiness.value("prepare_generation").toInteger();
             s->phase=1;
             auto *pickerTimer=new QTimer(c);pickerTimer->setInterval(5);
             const auto pickerStart=s->clock.elapsed();
@@ -175,7 +208,12 @@ void startXmpMergeSmokeRun(PhotoController *c,QQuickWindow *window,const QString
                     }
                     if(picker->selectedFiles()!=QStringList{s->sidecar})return;
                     auto *box=picker->findChild<QDialogButtonBox*>();auto *open=box?box->button(QDialogButtonBox::Open):nullptr;
-                    if(open&&open->isEnabled())click(open);
+                    if(open&&open->isEnabled()) {
+                        QJsonObject readiness;if(!inputReady(&readiness))return;
+                        s->beforeOpenInput=readiness;
+                        qInfo()<<"XMP_APP_INPUT_READY_V1 before_open_click"<<readiness.value("prepare_pending").toBool()<<readiness.value("prepare_generation").toInteger();
+                        click(open);
+                    }
                     return;
                 }
             });

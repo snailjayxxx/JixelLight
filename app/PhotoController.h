@@ -41,6 +41,7 @@ class QProgressDialog;
 
 class PhotoController final : public QObject {
     friend class XmpControllerTests;
+    friend void startXmpMergeSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startNativeBrushSonySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
     friend void startSonyOnePixelBrushPressureCanvasSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
