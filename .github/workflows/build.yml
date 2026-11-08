@@ -399,6 +399,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-preview-admission-worker-results.json
+            build/brush-tile-lowerbound-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/
@@ -714,6 +715,7 @@ jobs:
           path: |
             build/*-results.txt
             build/brush-preview-admission-worker-results.json
+            build/brush-tile-lowerbound-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/

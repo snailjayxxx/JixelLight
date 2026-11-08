@@ -424,3 +424,19 @@ else()
 endif()
 set_tests_properties(curation-domain-snapshot PROPERTIES TIMEOUT 120)
 # END curation snapshot storage domains.
+
+# Normal planned CPU tile coverage; preserve original73 registrations.
+set(JIXELLIGHT_BRUSH_TILE_RUNTIME "${CMAKE_CURRENT_BINARY_DIR}/brush-tile-lowerbound-owned")
+file(MAKE_DIRECTORY "${JIXELLIGHT_BRUSH_TILE_RUNTIME}")
+qt_add_executable(JixelLightBrushTileLowerBoundTests tests/BrushTileLowerBoundTests.cpp
+    tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp)
+target_link_libraries(JixelLightBrushTileLowerBoundTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightBrushTileLowerBoundTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+if(MSVC)
+    set_source_files_properties(tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+else()
+    set_source_files_properties(tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+add_test(NAME brush-tile-lowerbounds COMMAND JixelLightBrushTileLowerBoundTests -o brush-tile-lowerbound-results.txt,txt -o -,txt)
+set_tests_properties(brush-tile-lowerbounds PROPERTIES TIMEOUT 120
+    ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXEL_BRUSH_TILE_EVIDENCE_PATH=${JIXELLIGHT_BRUSH_TILE_RUNTIME}/brush-tile-lowerbound-results.json")

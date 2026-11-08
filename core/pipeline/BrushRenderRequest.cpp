@@ -125,7 +125,8 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     const int halo=LookDetail::halo({detail.x,detail.y,detail.z,detail.w});
     const auto expanded=region.adjusted(-halo,-halo,halo,halo).intersected(QRect(QPoint{},frameSize));
     const qint64 expandedPixels=qint64(expanded.width())*expanded.height();
-    constexpr qint64 fixed=64LL*1024*1024+32LL*384*1024;
+    constexpr qint64 fixed=64LL*1024*1024
+        +32LL*(384LL*1024+qint64(BrushMaskTileRaster::MaxCpuTileScratchExtraBytes));
     const auto capacity=plan.state.look.lut?plan.state.look.lut->rgb.capacity():std::size_t(0);
     if(capacity>std::size_t((std::numeric_limits<qint64>::max()-fixed)/sizeof(float)))return -1;
     const qint64 retainedLut=qint64(capacity)*sizeof(float);

@@ -2,7 +2,9 @@
 
 #include "core/pipeline/BrushMaskDocument.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bitset>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -72,7 +74,22 @@ struct ExposureOutput {
     std::size_t visitedDabPixels=0;
 };
 
+struct CpuTileExecutionStats {
+    std::size_t skippedScalarComparisons=0,refreshedBlocks=0,strokeResets=0;
+    std::size_t candidateVisits=0,summaryBufferBoundBytes=0;
+    bool indexed=false;
+};
+
 namespace detail {
+// Current-stroke/current-tile summaries only. Original max-alpha updates
+// never decrease, so a previously observed minimum stays conservative.
+struct StrokeBlockLowerBounds {
+    static constexpr int BlockWidth=8;
+    static constexpr std::size_t MaxBlocks=MaxTileEdge*((MaxTileEdge+BlockWidth-1)/BlockWidth);
+    std::array<double,MaxBlocks> lower;
+    std::bitset<MaxBlocks> touched;
+    void reset() { lower.fill(0.0);touched.reset(); }
+};
 // Shared integer candidate rectangle: planning and rasterization must charge
 // exactly the same work, including bounding-box pixels outside the circle.
 struct CandidateBounds {
@@ -132,6 +149,57 @@ inline bool accumulateDab(const CandidateBounds &bounds,
     }
     return true;
 }
+inline bool accumulateDabBlocks(const CandidateBounds &bounds,
+                               BrushMaskGeometry::Style style,double pressure,
+                               Rect tile,std::vector<double> &strokeAlpha,
+                               std::size_t &visited,const std::atomic_bool *cancel,
+                               StrokeBlockLowerBounds &summary,CpuTileExecutionStats *stats) {
+    const auto [left,top,right,bottom,cx,cy,radius]=bounds;
+    const std::size_t area=bounds.area();
+    if (!area) return true;
+    // A computational shortcut never discounts admitted candidate work.
+    if (area>MaxDabPixelVisits-visited) return false;
+    visited+=area;
+    const double peakAlpha=style.opacity*pressure;
+    const int blocksPerRow=(tile.width+StrokeBlockLowerBounds::BlockWidth-1)
+        /StrokeBlockLowerBounds::BlockWidth;
+    for (int y=top;y<=bottom;++y) {
+        if (stopped(cancel)) return false;
+        const std::size_t row=std::size_t(y-tile.y)*std::size_t(tile.width);
+        for (int x=left;x<=right;) {
+            const int column=x-tile.x;
+            const std::size_t block=std::size_t(y-tile.y)*blocksPerRow+column/8;
+            if (column%8==0 && x+7<=right && column+7<tile.width) {
+                if (summary.lower[block]<peakAlpha && summary.touched[block]) {
+                    const auto first=strokeAlpha.begin()+std::ptrdiff_t(row+column);
+                    summary.lower[block]=*std::min_element(first,first+8);
+                    if (stats) ++stats->refreshedBlocks;
+                }
+                if (summary.lower[block]>=peakAlpha) {
+                    if (stats) stats->skippedScalarComparisons+=8;
+                    x+=8;
+                    continue;
+                }
+            }
+            const std::size_t offset=row+std::size_t(column);
+            if (strokeAlpha[offset]<peakAlpha) {
+                const double radial=std::hypot(x-cx,y-cy)/radius;
+                if (radial<1) {
+                    double feather=1;
+                    if (radial>style.hardness && style.hardness<1) {
+                        const double t=(radial-style.hardness)/(1-style.hardness);
+                        feather=1-t*t*(3-2*t);
+                    }
+                    const double alpha=style.opacity*pressure*feather;
+                    strokeAlpha[offset]=std::max(strokeAlpha[offset],alpha);
+                    summary.touched.set(block);
+                }
+            }
+            ++x;
+        }
+    }
+    return true;
+}
 inline bool calculateCoverage(const BrushMaskDocument::Document &document,
                               int frameWidth,int frameHeight,Rect tile,Coverage *out,
                               const std::atomic_bool *cancel,NormalizedFrame frame) {
@@ -175,6 +243,11 @@ inline bool calculateCoverage(const BrushMaskDocument::Document &document,
 }
 } // namespace detail
 
+// Reserve one worst-case summary for each of the original32 CPU workers.
+// This is scratch, never persistent source/plan/document state.
+constexpr std::size_t MaxCpuTileSummaryBytes=sizeof(detail::StrokeBlockLowerBounds);
+constexpr std::size_t MaxCpuTileScratchExtraBytes=MaxCpuTileSummaryBytes+sizeof(CpuTileExecutionStats);
+
 struct PlannedTile { Rect rect; std::size_t candidateVisits=0; };
 class FramePlan;
 namespace detail {
@@ -211,6 +284,7 @@ private:
                           FramePlan *,const std::atomic_bool *,NormalizedFrame,std::size_t,std::size_t);
     friend class NativeBrush::FrameAdmission;
     friend bool exposureOnly(const FramePlan &,std::size_t,ExposureOutput *,const std::atomic_bool *);
+    friend bool exposureOnly(const FramePlan &,std::size_t,ExposureOutput *,const std::atomic_bool *,CpuTileExecutionStats *);
 };
 
 // Preflight the complete requested region before any pixel rasterization or
@@ -310,7 +384,7 @@ inline bool planFrame(const BrushMaskDocument::Document &document,int width,int 
 // geometry/work counts: compare it with the immutable private snapshot before
 // touching output. The original document API remains the unindexed oracle.
 inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
-                         ExposureOutput *out,const std::atomic_bool *cancel=nullptr) {
+                         ExposureOutput *out,const std::atomic_bool *cancel,CpuTileExecutionStats *stats) {
     if (!out || stopped(cancel) || !plan.prepared_) return false;
     const auto &prepared=*plan.prepared_;
     if (plan.tiles.size()!=prepared.tiles.size() || tileIndex>=prepared.tiles.size()
@@ -321,6 +395,8 @@ inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
         || summary.rect.width!=tile.rect.width || summary.rect.height!=tile.rect.height
         || summary.candidateVisits!=tile.candidateVisits) return false;
     detail::Coverage coverage;
+    CpuTileExecutionStats measured;
+    measured.indexed=prepared.indexed;
     if (!prepared.indexed) {
         if (!detail::calculateCoverage(prepared.document,prepared.width,prepared.height,
                                       tile.rect,&coverage,cancel,prepared.frame)) return false;
@@ -332,6 +408,8 @@ inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
         // max/union/add ordering for every contributing group and dab.
         if (!refs.empty()) {
             std::vector<double> layerAlpha(count),strokeAlpha(count);
+            detail::StrokeBlockLowerBounds summary;
+            measured.summaryBufferBoundBytes=MaxCpuTileSummaryBytes;
             std::size_t i=0;
             while (i<refs.size()) {
                 if (stopped(cancel)) return false;
@@ -343,13 +421,16 @@ inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
                     const auto strokeIndex=refs[i].stroke;
                     const auto &stroke=layer.strokes[strokeIndex];
                     std::fill(strokeAlpha.begin(),strokeAlpha.end(),0.0);
+                    summary.reset();
+                    ++measured.strokeResets;
                     do {
                         if (stopped(cancel)) return false;
                         const auto &dab=stroke.dabs[refs[i].dab];
                         const auto bounds=detail::candidateBounds(dab,stroke.style,
                             prepared.width,prepared.height,tile.rect,prepared.frame);
-                        if (!detail::accumulateDab(bounds,stroke.style,dab.pressure,tile.rect,
-                                                 strokeAlpha,coverage.visitedDabPixels,cancel)) return false;
+                        if (!detail::accumulateDabBlocks(bounds,stroke.style,dab.pressure,tile.rect,
+                                                 strokeAlpha,coverage.visitedDabPixels,cancel,summary,
+                                                 stats?&measured:nullptr)) return false;
                         ++i;
                     } while (i<refs.size() && refs[i].layer==layerIndex && refs[i].stroke==strokeIndex);
                     for (std::size_t p=0;p<count;++p)
@@ -371,7 +452,15 @@ inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
     }
     if (stopped(cancel)) return false;
     *out=std::move(ready);
+    measured.candidateVisits=coverage.visitedDabPixels;
+    if (stats) *stats=measured;
     return true;
+}
+
+// Retain the original four-argument API and function-pointer type.
+inline bool exposureOnly(const FramePlan &plan,std::size_t tileIndex,
+                         ExposureOutput *out,const std::atomic_bool *cancel=nullptr) {
+    return exposureOnly(plan,tileIndex,out,cancel,nullptr);
 }
 
 // Only computes scalar exposure weights, with no pixel/alpha input and no
