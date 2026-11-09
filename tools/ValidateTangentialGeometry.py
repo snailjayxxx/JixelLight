@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import struct
@@ -29,6 +29,15 @@ def finite(value):
 
 def positive_id(value):
     return isinstance(value,str) and re.fullmatch(r'[0-9]+',value) is not None and int(value)>0
+
+def same_recorded_source(actual, expected, qpa):
+    if not isinstance(actual, str) or not isinstance(expected, str) or not actual or not expected:
+        return False
+    if actual == expected:
+        return True
+    return (qpa == 'windows' and PureWindowsPath(actual).is_absolute()
+            and PureWindowsPath(expected).is_absolute()
+            and actual.replace('\\', '/') == expected.replace('\\', '/'))
 
 def validate_report(data, mode, qpa, expected_commit=None):
     require(mode in ('cpu','gpu') and qpa in ('xcb','windows','cocoa'), 'mode/QPA')
@@ -78,7 +87,7 @@ def validate_report(data, mode, qpa, expected_commit=None):
     for p in pointers:
         require(p['QPA_mouse_route'] is True and positive_id(p['source_key']) and positive_id(p['render_revision'])
                 and positive_id(p['post_event_render_revision']) and int(p['post_event_render_revision'])>=int(p['render_revision'])
-                and positive_id(p['GUI_thread_id']) and p['file']==data['source_path'], 'pre-event actual target/source/revision/GUI owner')
+                and positive_id(p['GUI_thread_id']) and same_recorded_source(p['file'],data['source_path'],qpa), 'pre-event actual target/source/revision/GUI owner')
         require(isinstance(p['post_event_source_key'],str) and p['post_event_source_key'].isdecimal(), 'honest post event source invalidation')
         require(all(finite(p[k])for k in ('local_x','local_y','global_x','global_y')) and integer(p['at_ms']) and p['at_ms']<data['elapsed_ms'], 'finite pointer coordinates/time')
     require(len({p['GUI_thread_id']for p in pointers})==1 and [p['at_ms']for p in pointers]==sorted(p['at_ms']for p in pointers), 'single GUI owner and ordered pointers')
@@ -88,6 +97,47 @@ def validate_report(data, mode, qpa, expected_commit=None):
             and all(finite(x) and x>0 for x in sig[2:]), 'actual stable frame/source/revision')
     diagnostic=data['diagnostic'];require(positive_id(diagnostic['source_key']) and positive_id(diagnostic['request_revision'])
         and re.fullmatch(r'[0-9a-f]{64}',diagnostic['sha256']) is not None, 'frozen diagnostic source/request')
+    return True
+
+def qt_round_positive(value):
+    require(finite(value) and value > 0, 'positive actual window coordinate')
+    return math.floor(value + .5)
+
+def validate_window_evidence(data):
+    admission=data['window_capture_admission'];dpr=data['DPR'];pointers=data['pointers']
+    require(admission['accepted'] is True and admission['input_started'] is False
+            and type(admission['phase']) is int and admission['phase']==0, 'window admitted before any input')
+    require(finite(dpr) and dpr > 0 and finite(admission['DPR']) and admission['DPR']==dpr, 'same actual admitted DPR')
+    require(all(integer(admission[k],1) for k in ('logical_width','logical_height','physical_width','physical_height')), 'typed positive window bounds')
+    logical=[admission['logical_width'],admission['logical_height']];physical=[admission['physical_width'],admission['physical_height']]
+    require(physical==[qt_round_positive(v*dpr) for v in logical] and physical[0]*physical[1]*4<=64*1024*1024, 'complete bounded actual window pixels')
+    initial,observed=(admission[k]for k in ('initial_logical_size','first_observed_physical_size'))
+    require(all(type(v) is list and len(v)==2 and all(integer(x,1)for x in v)for v in (initial,observed)), 'actual initial window and observed drawable')
+    count=admission['resize_count'];require(type(count) is int and 0<=count<=1, 'at most one pre-input host fit')
+    if count:
+        initial_pixels=[qt_round_positive(v*dpr)for v in initial]
+        require(all(a<=b for a,b in zip(observed,initial_pixels)) and observed!=initial_pixels
+                and logical==[qt_round_positive(v/dpr)for v in observed] and physical==observed, 'one contained exact drawable fit')
+    else:
+        require(initial==logical and observed==physical, 'no hidden resize or substituted capture')
+    require(integer(admission['presented_frames'],3) and positive_id(admission['source_key'])
+            and positive_id(admission['render_revision']) and admission['GUI_thread_id']==pointers[0]['GUI_thread_id'], 'actual pre-input frames/source/revision/GUI owner')
+    phases=data['phase_checkpoints'];require(len(phases)==14 and [p['phase']for p in phases]==list(range(14)), 'whole phase timeline for window capture')
+    require(integer(admission['at_ms']) and phases[0]['at_ms']<=admission['at_ms']<=phases[1]['at_ms']
+            and admission['at_ms']<=pointers[0]['at_ms'], 'admission precedes actual first pointer')
+    captures=data['window_captures'];require(type(captures) is list and len(captures)==4, 'four complete actual window captures')
+    for capture,role,phase in zip(captures,('active','undo','redo','reset'),(4,7,8,9)):
+        require(capture['role']==role and type(capture['phase']) is int and capture['phase']==phase, 'ordered actual window capture phase')
+        require(all(type(capture[k]) is int and capture[k]==admission[k]for k in ('logical_width','logical_height','physical_width','physical_height'))
+                and finite(capture['DPR']) and capture['DPR']==dpr and type(capture['image_bits_per_pixel']) is int and capture['image_bits_per_pixel']==32, 'same complete admitted current surface')
+        require(capture['path']==data['source_path'].removesuffix('.source.png')+'.'+role+'.png', 'owned actual capture path')
+        warmup=[w for w in data['stable_presented_warmups']if w['phase']==phase][-1]
+        require(capture['source_key']==warmup['signature'][0] and capture['render_revision']==warmup['signature'][1]
+                and positive_id(capture['source_key']) and positive_id(capture['render_revision'])
+                and capture['GUI_thread_id']==admission['GUI_thread_id'] and integer(capture['presented_frames'],3), 'capture belongs to actual stable phase/source/revision/GUI owner')
+        require(integer(capture['at_ms']) and phases[phase]['at_ms']<=capture['at_ms']<=phases[phase+1]['at_ms']
+                and capture['at_ms']<=data['elapsed_ms'], 'actual capture inside its phase')
+    require(pointers[1]['at_ms']<=captures[0]['at_ms'] and captures[2]['at_ms']<=pointers[2]['at_ms']<=captures[3]['at_ms'], 'captures retain pointer/reset order')
     return True
 
 def validate_tangential(binary, environment, home, report, mode, *, expected_commit=None):
@@ -123,7 +173,7 @@ def validate_tangential(binary, environment, home, report, mode, *, expected_com
         with stdout.open('xb')as out,stderr.open('xb')as err:
             try:code=subprocess.run(argv,cwd=home,env=env,stdout=out,stderr=err,timeout=75).returncode
             except subprocess.TimeoutExpired:code=124
-        result['returncode']=code;data=json.loads(native.read_text());result['report']=data;require(code==0,'App process exit');validate_report(data,mode,qpa,expected_commit)
+        result['returncode']=code;data=json.loads(native.read_text());result['report']=data;require(code==0,'App process exit');validate_report(data,mode,qpa,expected_commit);validate_window_evidence(data)
         text=stderr.read_text(errors='replace')+stdout.read_text(errors='replace');errors=[x for x in text.splitlines()if any(k in x for k in ('TypeError:','ReferenceError:','Unable to assign [undefined]'))];result['qml_runtime_errors']=errors;require(not errors,'QML runtime error')
         base=str(native);source=Path(base+'.source.png');require(data['source_path']==str(source) and not source.is_symlink(),'owned source')
         images={};pixels={}
@@ -139,7 +189,7 @@ def validate_tangential(binary, environment, home, report, mode, *, expected_com
                 else:require(decoded[6::8]==pixels['geometry'][6::8] and decoded[7::8]==pixels['geometry'][7::8],'every exact geometry alpha')
             else:
                 phase={'active':4,'undo':7,'redo':8,'reset':9}[role];warmup=[w for w in data['stable_presented_warmups']if w['phase']==phase][-1];sig=warmup['signature']
-                require(row['width']==round(sig[2]*data['DPR']) and row['height']==round(sig[3]*data['DPR']) and row['depth']==8,'actual complete presented window/DPR')
+                require(row['width']==qt_round_positive(sig[2]*data['DPR']) and row['height']==qt_round_positive(sig[3]*data['DPR']) and row['depth']==8,'actual complete presented window/DPR')
             with Path(base+'.'+role+'-byte-proof.json').open('x')as f:json.dump(row,f,indent=2);f.write('\n')
         diagnostic=Path(base+'.diagnostic.zip');require(data['diagnostic']['path']==str(diagnostic) and not diagnostic.is_symlink() and file_sha(diagnostic)==data['diagnostic']['sha256'],'frozen original ZIP')
         with zipfile.ZipFile(diagnostic)as archive:
