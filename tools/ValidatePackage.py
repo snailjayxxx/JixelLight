@@ -22,6 +22,7 @@ from ValidateEditRecipe import run as validate_edit_recipe
 from ValidateNativeBrush import validate_native_brush
 from ValidateXmpMerge import validate_xmp_merge
 from ValidateProjectMenu import validate_project_menu
+from ValidateRawPressureQpa import validate_raw_qpa
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -276,6 +277,12 @@ def main() -> int:
         results.append(validate_project_menu(executable, environment, Path(menu_temp),
             reports / 'project-menu-layout.json', expected_commit=results[0].get('source_commit')))
     # END project-menu-layout package mode.
+    # Two finite raw-QPA contexts follow the complete original66-mode prefix.
+    with tempfile.TemporaryDirectory(prefix='jixellight-raw-qpa-package-') as raw_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_raw_qpa(executable, environment, Path(raw_temp) / mode,
+                reports / ('raw-qpa-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'raw_fixture_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),

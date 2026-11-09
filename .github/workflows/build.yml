@@ -134,6 +134,19 @@ jobs:
           for LANGUAGE in en_US zh_CN; do
             python tools/ValidateXmpMerge.py "$EXE" "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
           done
+      - name: Finite raw pressure QPA Paint and Erase
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -421,6 +434,7 @@ jobs:
             gui-xmp-merge-*.json.stderr
             gui-project-menu-layout.json.stdout
             gui-project-menu-layout.json.stderr
+            gui-raw-qpa-*
             diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
@@ -533,6 +547,15 @@ jobs:
           for LANGUAGE in en_US zh_CN; do
             xvfb-run -a python tools/ValidateXmpMerge.py ./build/bin/JixelLight "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
           done
+      - name: Finite raw pressure QPA Paint and Erase
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -735,5 +758,6 @@ jobs:
             gui-xmp-merge-*.json.stderr
             gui-project-menu-layout.json.stdout
             gui-project-menu-layout.json.stderr
+            gui-raw-qpa-*
             diagnostic-validation/
             raw-render-matrix.log

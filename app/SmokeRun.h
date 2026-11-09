@@ -38,3 +38,5 @@ void startNativeBrushMonitorSmokeRun(PhotoController *,QQuickWindow *,const QStr
 void startXmpMergeSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
 void startProjectMenuLayoutSmokeRun(PhotoController *,QQuickWindow *,const QString &);
+
+void startRawPressureEventSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

@@ -621,6 +621,7 @@ private:
     friend class BrushScopeRoutingTests;
     friend class BrushLivePreviewTests;
     friend class BrushPreviewAdmissionWorkerTests;
+    friend class RawPressureEventProbe;
     struct BrushGesture {
         QString photoKey,layer,newLayer;
         quint64 catalog=0,epoch=0,generation=0,revision=0,gesture=0,sample=0;
