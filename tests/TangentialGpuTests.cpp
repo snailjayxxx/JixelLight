@@ -158,5 +158,10 @@ private slots:
         QVERIFY(json("complete-current-GPU-proof.json",{{"passed",passed},{"actual_case_count",cases.size()},{"pixels",qint64(pixels)},{"max_RGB16_error",maximum},{"failures",failures},{"cases",cases},{"full_plot_images",plots},{"source_scope","explicit synthetic integer/FP32 tangential geometry, not native FP32 RAW decode"}}));QVERIFY(passed);
     }
 };
-QTEST_MAIN(TangentialGpuTests)
+int main(int argc,char **argv) {
+    // Same required compute context as the existing cross-platform GpuTests.
+    QSurfaceFormat format;format.setVersion(4,3);format.setProfile(QSurfaceFormat::CoreProfile);QSurfaceFormat::setDefaultFormat(format);
+    QGuiApplication app(argc,argv);
+    TangentialGpuTests tests;return QTest::qExec(&tests,argc,argv);
+}
 #include "TangentialGpuTests.moc"

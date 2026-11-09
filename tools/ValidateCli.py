@@ -88,7 +88,16 @@ def main():
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
-        assert len(next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']) == 5
+        geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
+        assert geometry_parameters == [
+            {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
+            {'name': 'perspectiveVertical', 'minimum': -.4, 'maximum': .4},
+            {'name': 'distortion', 'minimum': -.3, 'maximum': .3},
+            {'name': 'redCa', 'minimum': -2, 'maximum': 2},
+            {'name': 'blueCa', 'minimum': -2, 'maximum': 2},
+            {'name': 'tangentialP1', 'minimum': -.02, 'maximum': .02},
+            {'name': 'tangentialP2', 'minimum': -.02, 'maximum': .02},
+        ]
         assert schema['batch']['schema'] == 1 and schema['batch']['maximum_jobs'] == 1000
         assert schema['catalog']['name_template']['missing_capture_time'] == 'reject whole plan'
         assert schema['catalog']['selected_keys']['repeatable'] and schema['catalog']['selected_keys']['maximum_keys'] == 1000
@@ -179,6 +188,37 @@ def main():
         result = json.loads(run('--commands', commands, source, reset).stdout)
         assert result['adjustments']['geometry']['schema'] == 1
         assert struct.unpack('>II', reset.read_bytes()[16:24]) == (4, 2)
+        tangential = [{'command': 'geometry.set', 'parameter': key, 'value': value}
+                      for key, value in {'tangentialP1': .012, 'tangentialP2': -.009}.items()]
+        commands.write_text(json.dumps(tangential))
+        tangential_png = root / 'tangential.png'
+        tangential_result = json.loads(run('--commands', commands, source, tangential_png).stdout)
+        geometry = tangential_result['adjustments']['geometry']
+        assert geometry['schema'] == 4 and geometry['tangentialP1'] == .012 and geometry['tangentialP2'] == -.009
+        state_project = root / 'tangential-state.jlp'
+        state_project.mkdir()
+        state_db = state_project / 'Project.db'
+        with open_database(state_db) as db:
+            db.executescript("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);"
+                             "INSERT INTO meta VALUES('project_name','Tangential state');"
+                             "CREATE TABLE photos(path TEXT PRIMARY KEY, imported_at TEXT DEFAULT CURRENT_TIMESTAMP, adjustment_json TEXT);")
+            db.execute('INSERT INTO photos(path,adjustment_json) VALUES(?,?)',
+                       ('../original.png', json.dumps(tangential_result['adjustments'])))
+        state_db_hash = hashlib.sha256(state_db.read_bytes()).hexdigest()
+        state_output = root / 'tangential-state-output'
+        state_output.mkdir()
+        state_report = json.loads(run('--catalog', state_project, '--output-dir', state_output).stdout)
+        assert state_report['ok'] and state_report['completed'] == 1 and state_report['failed'] == 0
+        assert state_report['results'][0]['adjustments']['geometry'] == geometry
+        state_png = Path(state_report['results'][0]['destination'])
+        assert hashlib.sha256(state_db.read_bytes()).hexdigest() == state_db_hash
+        assert sorted(path.name for path in state_project.iterdir()) == ['Project.db']
+        assert png16_pixels(tangential_png) == png16_pixels(state_png)
+        commands.write_text(json.dumps(tangential + [{'command': 'geometry.resetCorrections'}]))
+        tangential_reset = root / 'tangential-reset.png'
+        reset_result = json.loads(run('--commands', commands, source, tangential_reset).stdout)
+        assert reset_result['adjustments']['geometry']['schema'] == 1
+        assert png16_pixels(tangential_reset) == png16_pixels(reset)
         vignette = [{'command': 'develop.set', 'parameter': key, 'value': value}
                     for key, value in {'vignetteAmount': -1.8, 'vignetteMidpoint': .3, 'vignetteFeather': .6}.items()]
         exposure = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1}]
@@ -295,6 +335,10 @@ def main():
             {'command': 'geometry.set', 'parameter': 'distortion', 'value': -.301},
             {'command': 'geometry.set', 'parameter': 'redCa', 'value': 2.01},
             {'command': 'geometry.set', 'parameter': 'blueCa', 'value': '1'},
+            {'command': 'geometry.set', 'parameter': 'tangentialP1', 'value': -.020001},
+            {'command': 'geometry.set', 'parameter': 'tangentialP1', 'value': .020001},
+            {'command': 'geometry.set', 'parameter': 'tangentialP2', 'value': True},
+            {'command': 'geometry.set', 'parameter': 'tangentialP2', 'value': '0.01'},
             {'command': 'geometry.set', 'parameter': 'unknown', 'value': 0},
             {'command': 'geometry.resetCorrections', 'extra': 1},
             {'command': 'vignette.reset', 'extra': 1},
