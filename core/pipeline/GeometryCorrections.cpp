@@ -30,6 +30,12 @@ struct Mapping {
     double radial(QPointF p) const {
         return radiusSquared>0 ? 1+state.distortion*(p.x()*p.x()+p.y()*p.y())/radiusSquared : 1;
     }
+    QPointF tangential(QPointF p) const {
+        if (radiusSquared==0) return {};
+        const double radius=std::sqrt(radiusSquared),x=p.x(),y=p.y();
+        return {(2*state.tangentialP1*x*y+state.tangentialP2*(3*x*x+y*y))/radius,
+                (state.tangentialP1*(x*x+3*y*y)+2*state.tangentialP2*x*y)/radius};
+    }
     bool fits(double scale) const {
         double maxX=0,maxY=0;
         // A homography with positive denominator maps the rectangle to a
@@ -45,6 +51,20 @@ struct Mapping {
         // r² <= 1 also keeps 1+3*k*r² positive throughout the accepted domain.
         const double radialBound=radiusSquared>0 ? 1+std::max(0.0,state.distortion)*(maxX*maxX+maxY*maxY)/radiusSquared : 1;
         const double caBound=1+std::max({0.0,state.redCa,state.blueCa})/100;
+        if (state.hasTangential() && radiusSquared>0) {
+            const double radius=std::sqrt(radiusSquared),u=maxX/radius,v=maxY/radius;
+            const double a=std::abs(state.tangentialP1),b=std::abs(state.tangentialP2);
+            // Whole-rectangle component bounds, including curved edges and all CA channels.
+            const double tx=radius*(2*a*u*v+b*(3*u*u+v*v));
+            const double ty=radius*(a*(u*u+3*v*v)+2*b*u*v);
+            // Symmetric lens Jacobian: its positive radial lower eigenvalue must
+            // exceed a conservative tangential spectral norm on the convex domain.
+            const double off=2*a*u+2*b*v;
+            const double norm=std::max(2*a*v+6*b*u+off,6*a*v+2*b*u+off);
+            const double radialMinimum=1+3*std::min(0.0,state.distortion)*(u*u+v*v);
+            if (radialMinimum<=norm+1e-12) return false;
+            return (maxX*radialBound+tx)*caBound<=cx && (maxY*radialBound+ty)*caBound<=cy;
+        }
         return maxX*radialBound*caBound<=cx && maxY*radialBound*caBound<=cy;
     }
 };
@@ -117,7 +137,10 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
             for (int x=0;x<result.width();++x) {
                 if ((x%256==0 && cancelled(cancel)) || invalid.load(std::memory_order_relaxed)) return;
                 const auto p=map.project(x-ox,y-oy);
-                const double factor=map.radial(p),rx=p.x()*factor,ry=p.y()*factor;
+                const double factor=map.radial(p);
+                double rx=p.x()*factor,ry=p.y()*factor;
+                // Preserve the exact historical arithmetic path when both new values are zero.
+                if (hasTangential()) { const auto offset=map.tangential(p); rx+=offset.x(); ry+=offset.y(); }
                 const auto green=sampleFloat(input,map.cx+rx,map.cy+ry,invalid);
                 const auto red=redCa==0 ? green
                     : sampleFloat(input,map.cx+rx*(1+redCa/100),map.cy+ry*(1+redCa/100),invalid);
@@ -142,7 +165,10 @@ QImage GeometryState::resampleCorrections(const QImage &source,const CancelToken
         for (int x=0;x<result.width();++x) {
             if ((x%256==0 && cancelled(cancel)) || invalid.load(std::memory_order_relaxed)) return;
             const auto p=map.project(x-ox,y-oy);
-            const double factor=map.radial(p),rx=p.x()*factor,ry=p.y()*factor;
+            const double factor=map.radial(p);
+                double rx=p.x()*factor,ry=p.y()*factor;
+                // Preserve the exact historical arithmetic path when both new values are zero.
+                if (hasTangential()) { const auto offset=map.tangential(p); rx+=offset.x(); ry+=offset.y(); }
             const auto green=sample(input,map.cx+rx,map.cy+ry,invalid);
             const auto red=redCa==0 ? green : sample(input,map.cx+rx*(1+redCa/100),map.cy+ry*(1+redCa/100),invalid);
             const auto blue=blueCa==0 ? green : sample(input,map.cx+rx*(1+blueCa/100),map.cy+ry*(1+blueCa/100),invalid);

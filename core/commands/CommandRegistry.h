@@ -14,12 +14,14 @@ struct CommandRegistry {
     struct Parameter { const char *name; double AdjustmentState::*member; double minimum, maximum; };
     struct GeometryParameter { const char *name; double GeometryState::*member; double minimum, maximum; };
     static const auto &geometryParameters() {
-        static const std::array<GeometryParameter,5> descriptors{{
+        static const std::array<GeometryParameter,7> descriptors{{
             {"perspectiveHorizontal",&GeometryState::perspectiveHorizontal,-.4,.4},
             {"perspectiveVertical",&GeometryState::perspectiveVertical,-.4,.4},
             {"distortion",&GeometryState::distortion,-.3,.3},
             {"redCa",&GeometryState::redCa,-2,2},
-            {"blueCa",&GeometryState::blueCa,-2,2}
+            {"blueCa",&GeometryState::blueCa,-2,2},
+            {"tangentialP1",&GeometryState::tangentialP1,-.02,.02},
+            {"tangentialP2",&GeometryState::tangentialP2,-.02,.02}
         }};
         return descriptors;
     }

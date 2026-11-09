@@ -40,3 +40,5 @@ void startXmpMergeSmokeRun(PhotoController *,QQuickWindow *,const QString &,cons
 void startProjectMenuLayoutSmokeRun(PhotoController *,QQuickWindow *,const QString &);
 
 void startRawPressureEventSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startTangentialGeometrySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

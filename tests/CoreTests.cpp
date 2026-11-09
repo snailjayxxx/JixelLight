@@ -5109,7 +5109,7 @@ private slots:
         for (double v : {.01,.08,.13}) QVERIFY(c.setGeometryAdjustment("perspectiveHorizontal",v)); c.finishInteraction();
         QCOMPARE(c.editHistory().size(),initial+1);
         for (const auto &p : CommandRegistry::geometryParameters()) { QVERIFY(c.setGeometryAdjustment(p.name,p.minimum/2)); c.finishInteraction(); }
-        auto saved=c.geometry(); QCOMPARE(saved["schema"].toInt(),3);
+        auto saved=c.geometry(); QCOMPARE(saved["schema"].toInt(),4);
         QVERIFY(!c.setGeometryAdjustment("redCa",2.01)); QCOMPARE(c.geometry(),saved);
         c.setExactScopes(true); auto geometry=GeometryState::fromJson(QJsonObject::fromVariantMap(saved)); const auto size=geometry.correctedSize(image.size());
         QTRY_COMPARE_WITH_TIMEOUT(c.scopesPixelCount(),quint64(size.width())*size.height(),10000);
@@ -5151,7 +5151,7 @@ private slots:
                 QJsonObject{{"command","geometry.set"},{"parameter","redCa"},{"value",1},{"extra",1}},QJsonObject{{"command","geometry.resetCorrections"},{"extra",1}}}) {
             QVERIFY(!CommandRegistry::execute(state,command)); QCOMPARE(state.toJson(),before);
         }
-        auto future=state.geometry.toJson(); future["schema"]=4; QVERIFY(!GeometryState::validJson(future));
+        auto future=state.geometry.toJson(); future["schema"]=5; QVERIFY(!GeometryState::validJson(future));
         QVERIFY(CommandRegistry::execute(state,{{"command","geometry.resetCorrections"}}));
         QCOMPARE(state.geometry.toJson()["schema"].toInt(),2); QCOMPARE(state.geometry.straighten,5.0); QCOMPARE(state.geometry.crop,QRectF(.1,.2,.6,.7)); QCOMPARE(state.geometry.quarterTurns,1);
     }

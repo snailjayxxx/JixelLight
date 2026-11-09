@@ -14,17 +14,20 @@ struct GeometryState {
     double straighten = 0; // Clockwise degrees before quarter-turns and flips.
     double perspectiveHorizontal = 0, perspectiveVertical = 0; // Projective slopes, [-.4,.4].
     double distortion = 0; // Inverse radial coefficient at the source corner, [-.3,.3].
+    // Manual inverse-map coefficients, normalized by source corner radius; not camera intrinsics.
+    double tangentialP1 = 0, tangentialP2 = 0; // [-.02,.02], explicit/default zero.
     double redCa = 0, blueCa = 0; // Radial magnification delta in percent, [-2,2].
     int quarterTurns = 0;
     bool flipHorizontal = false, flipVertical = false;
     QJsonObject toJson() const {
-        QJsonObject json{{"schema",hasCorrections() ? 3 : straighten == 0 ? 1 : 2},{"x",crop.x()},{"y",crop.y()},{"width",crop.width()},{"height",crop.height()},
+        QJsonObject json{{"schema",hasTangential() ? 4 : hasCorrections() ? 3 : straighten == 0 ? 1 : 2},{"x",crop.x()},{"y",crop.y()},{"width",crop.width()},{"height",crop.height()},
                 {"quarterTurns",quarterTurns},{"flipHorizontal",flipHorizontal},{"flipVertical",flipVertical}};
         if (straighten != 0 || hasCorrections()) json.insert("straighten",straighten);
         if (hasCorrections()) {
             json.insert("perspectiveHorizontal",perspectiveHorizontal); json.insert("perspectiveVertical",perspectiveVertical);
             json.insert("distortion",distortion); json.insert("redCa",redCa); json.insert("blueCa",blueCa);
         }
+        if (hasTangential()) { json.insert("tangentialP1",tangentialP1); json.insert("tangentialP2",tangentialP2); }
         return json;
     }
     static bool validStraighten(double value) { return std::isfinite(value) && value>=-45 && value<=45; }
@@ -32,15 +35,18 @@ struct GeometryState {
         if (!std::isfinite(value)) return false;
         if (parameter=="perspectiveHorizontal" || parameter=="perspectiveVertical") return value>=-.4 && value<=.4;
         if (parameter=="distortion") return value>=-.3 && value<=.3;
+        if (parameter=="tangentialP1" || parameter=="tangentialP2") return value>=-.02 && value<=.02;
         if (parameter=="redCa" || parameter=="blueCa") return value>=-2 && value<=2;
         return false;
     }
+    bool hasTangential() const { return tangentialP1!=0 || tangentialP2!=0; }
     bool hasCorrections() const {
-        return perspectiveHorizontal!=0 || perspectiveVertical!=0 || distortion!=0 || redCa!=0 || blueCa!=0;
+        return perspectiveHorizontal!=0 || perspectiveVertical!=0 || distortion!=0 || redCa!=0 || blueCa!=0 || hasTangential();
     }
     bool validCorrections() const {
         return validCorrection("perspectiveHorizontal",perspectiveHorizontal) && validCorrection("perspectiveVertical",perspectiveVertical)
-            && validCorrection("distortion",distortion) && validCorrection("redCa",redCa) && validCorrection("blueCa",blueCa);
+            && validCorrection("distortion",distortion) && validCorrection("redCa",redCa) && validCorrection("blueCa",blueCa)
+            && validCorrection("tangentialP1",tangentialP1) && validCorrection("tangentialP2",tangentialP2);
     }
     static bool validCrop(double x,double y,double width,double height) {
         return std::isfinite(x)&&std::isfinite(y)&&std::isfinite(width)&&std::isfinite(height)
@@ -48,16 +54,21 @@ struct GeometryState {
     }
     static GeometryState fromJson(const QJsonObject &json) {
         GeometryState state;
-        if(json.isEmpty() || (json["schema"].toDouble()!=1 && json["schema"].toDouble()!=2 && json["schema"].toDouble()!=3))return state;
+        if(json.isEmpty() || (json["schema"].toDouble()!=1 && json["schema"].toDouble()!=2 && json["schema"].toDouble()!=3 && json["schema"].toDouble()!=4))return state;
         if (json["schema"].toInt()>=2) {
             if (!json["straighten"].isDouble() || !validStraighten(json["straighten"].toDouble())) return state;
             state.straighten=json["straighten"].toDouble();
         }
-        if (json["schema"].toInt()==3) {
+        if (json["schema"].toInt()>=3) {
             for (const auto *key : {"perspectiveHorizontal","perspectiveVertical","distortion","redCa","blueCa"})
                 if (!json[key].isDouble() || !validCorrection(key,json[key].toDouble())) return {};
             state.perspectiveHorizontal=json["perspectiveHorizontal"].toDouble(); state.perspectiveVertical=json["perspectiveVertical"].toDouble();
             state.distortion=json["distortion"].toDouble(); state.redCa=json["redCa"].toDouble(); state.blueCa=json["blueCa"].toDouble();
+        }
+        if (json["schema"].toInt()==4) {
+            for (const auto *key : {"tangentialP1","tangentialP2"})
+                if (!json[key].isDouble() || !validCorrection(key,json[key].toDouble())) return {};
+            state.tangentialP1=json["tangentialP1"].toDouble(); state.tangentialP2=json["tangentialP2"].toDouble();
         }
         const double x=json["x"].toDouble(),y=json["y"].toDouble(),w=json["width"].toDouble(1),h=json["height"].toDouble(1);
         if(validCrop(x,y,w,h))state.crop={x,y,w,h};

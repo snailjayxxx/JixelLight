@@ -120,7 +120,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -440,3 +440,24 @@ endif()
 add_test(NAME brush-tile-lowerbounds COMMAND JixelLightBrushTileLowerBoundTests -o brush-tile-lowerbound-results.txt,txt -o -,txt)
 set_tests_properties(brush-tile-lowerbounds PROPERTIES TIMEOUT 120
     ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXEL_BRUSH_TILE_EVIDENCE_PATH=${JIXELLIGHT_BRUSH_TILE_RUNTIME}/brush-tile-lowerbound-results.json")
+
+# Manual tangential geometry uses actual Core default arithmetic. The test-only
+# row observation copy preserves Core/App cancellation and numerical bodies.
+qt_add_executable(JixelLightTangentialGeometryTests tests/TangentialGeometryTests.cpp
+    tests/tangential_oracle/LegacyGeometryState.cpp tests/tangential_oracle/LegacyGeometryCorrections.cpp
+    core/pipeline/GeometryCorrections.cpp)
+target_compile_definitions(JixelLightTangentialGeometryTests PRIVATE JIXELLIGHT_GEOMETRY_TEST_PROGRESS=1)
+target_link_libraries(JixelLightTangentialGeometryTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightTangentialGeometryTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+set(JIXELLIGHT_TANGENTIAL_RUNTIME "${CMAKE_BINARY_DIR}/tangential-geometry-owned")
+file(MAKE_DIRECTORY "${JIXELLIGHT_TANGENTIAL_RUNTIME}")
+add_test(NAME tangential-geometry COMMAND JixelLightTangentialGeometryTests -o tangential-geometry-results.txt,txt -o -,txt)
+set_tests_properties(tangential-geometry PROPERTIES TIMEOUT 120
+    ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXEL_TANGENTIAL_EVIDENCE_PATH=${JIXELLIGHT_TANGENTIAL_RUNTIME}/tangential-geometry-results.json")
+
+# Tangential geometry output on actual compute and full plot references.
+qt_add_executable(JixelLightTangentialGpuTests tests/TangentialGpuTests.cpp)
+target_link_libraries(JixelLightTangentialGpuTests PRIVATE JixelLightGpu Qt6::Test)
+set_target_properties(JixelLightTangentialGpuTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME tangential-gpu COMMAND JixelLightTangentialGpuTests -o tangential-gpu-results.txt,txt -o -,txt)
+set_tests_properties(tangential-gpu PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_REQUIRE_GPU=1;JIXELLIGHT_TANGENTIAL_GPU_EVIDENCE=${CMAKE_BINARY_DIR}/tangential-gpu-owned")

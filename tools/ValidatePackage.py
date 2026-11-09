@@ -23,6 +23,7 @@ from ValidateNativeBrush import validate_native_brush
 from ValidateXmpMerge import validate_xmp_merge
 from ValidateProjectMenu import validate_project_menu
 from ValidateRawPressureQpa import validate_raw_qpa
+from ValidateTangentialGeometry import validate_tangential
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -282,6 +283,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_raw_qpa(executable, environment, Path(raw_temp) / mode,
                 reports / ('raw-qpa-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Complete original68 modes precede the two complete tangential App contexts.
+    with tempfile.TemporaryDirectory(prefix='jixellight-tangential-package-') as tangential_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_tangential(executable, environment, Path(tangential_temp) / mode,
+                reports / ('tangential-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

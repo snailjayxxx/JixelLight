@@ -20,6 +20,7 @@ inline bool validGroups(const QStringList &groups) {
 }
 inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QStringList &groups) {
     if (!validGroups(groups)
+        || (groups.contains("geometry") && !GeometryState::validJson(source.geometry.toJson()))
         || (groups.contains("masks") &&
             (!BrushMaskDocument::validDocument(source.brushMasks)
              || !AdjustmentState::validBrushMaskJson(source.toJson()))))

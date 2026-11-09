@@ -244,7 +244,7 @@ Rectangle {
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
                 x: 10
-                width: Math.max(280, toolScroll.availableWidth - 20)
+                width: Math.max(240, toolScroll.availableWidth - 20)
                 spacing: 6
 
                 Label { text: root.t("裁切 / 拉直 / 旋转（CPU）", "CROP / STRAIGHTEN / ROTATE (CPU)"); color: "#a3b2c1"; font.bold: true }
@@ -301,7 +301,9 @@ Rectangle {
                             { key: "perspectiveVertical", zh: "纵向透视", en: "Vertical", limit: .4, scale: 100, decimals: 1 },
                             { key: "distortion", zh: "畸变", en: "Distortion", limit: .3, scale: 100, decimals: 1 },
                             { key: "redCa", zh: "红色色差", en: "Red CA", limit: 2, scale: 1, decimals: 2 },
-                            { key: "blueCa", zh: "蓝色色差", en: "Blue CA", limit: 2, scale: 1, decimals: 2 }
+                            { key: "blueCa", zh: "蓝色色差", en: "Blue CA", limit: 2, scale: 1, decimals: 2 },
+                            { key: "tangentialP1", zh: "切向 1", en: "Tangent 1", limit: .02, scale: 100, decimals: 1 },
+                            { key: "tangentialP2", zh: "切向 2", en: "Tangent 2", limit: .02, scale: 100, decimals: 1 }
                         ]
                         delegate: RowLayout {
                             required property var modelData
@@ -314,7 +316,7 @@ Rectangle {
                                 onMoved: root.controller.setGeometryAdjustment(modelData.key, Number(value.toFixed(modelData.scale===100 ? 3 : 2)))
                                 onPressedChanged: if (!pressed) root.controller.finishInteraction()
                             }
-                            Label { text: (Number(root.controller.geometry[modelData.key] || 0)*modelData.scale).toFixed(modelData.decimals)+"%"; color: "#aeb9c7"; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
+                            Label { objectName: "geometryValue_"+modelData.key; text: (Number(root.controller.geometry[modelData.key] || 0)*modelData.scale).toFixed(modelData.decimals)+"%"; color: "#aeb9c7"; Layout.preferredWidth: 48; horizontalAlignment: Text.AlignRight }
                         }
                     }
                     Button {
@@ -324,7 +326,7 @@ Rectangle {
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#738293"; font.pixelSize: 10
-                        text: root.t("手动校正，自动收边。红／蓝色差调整相对绿通道的径向倍率；不使用镜头配置文件。", "Manual correction with automatic edge trim. Red / blue CA sets radial magnification relative to green; no lens profile is applied.")
+                        text: root.t("手动校正，自动收边。切向 1／2 调整镜头偏心形变；红／蓝色差相对绿通道调整倍率。不使用镜头配置文件。", "Manual correction trims edges. Tangent 1 / 2 adjusts decentering; red / blue CA scales relative to green. No lens profile is applied.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
