@@ -62,6 +62,7 @@ private:
     std::shared_ptr<BrushRenderBudget> m_budget;
     std::shared_ptr<const void> m_charge;
     QImage m_pixels;
+    ImagePipeline::FloatSourceFacts m_floatFacts;
     SourceDescription m_description;
     QByteArray m_key, m_digest;
     qint64 m_bytes = 0;

@@ -93,3 +93,8 @@ is a risk addressed by the cap, not a measured cause. Native test bodies,
 order, precision, memory and individual/aggregate deadlines are unchanged.
 Local complete-feature validation remains tied to commit `deaf9f1`; this
 workflow-only follow-up still requires its own actual CI execution.
+
+The later [float-source numerical correction](F0_FLOAT_SOURCE_NUMERIC_POLICY_STAGE_M54.md)
+adds an explicit CPU policy for signed linear ProPhoto input targeting ProPhoto.
+The historical56-compute breakdown above belongs to the original sharpening
+stage; current signed-HDR ProPhoto checks require and report that CPU policy.

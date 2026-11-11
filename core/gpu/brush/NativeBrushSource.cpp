@@ -43,7 +43,7 @@ CanonicalSource::Ptr CanonicalSource::capture(const QImage &image, SourceDescrip
         source->m_budget = std::move(budget); source->m_charge = std::move(charge); source->m_bytes = bytes;
         source->m_description = std::move(description); source->m_preparedOn=QThread::currentThreadId(); source->m_pixels = image.copy();
         if (source->m_pixels.isNull()) return fail(SourceFailure::Allocation);
-        if (image.format() == QImage::Format_RGBA32FPx4 && !ImagePipeline::validFloatSource(source->m_pixels, cancel))
+        if (image.format() == QImage::Format_RGBA32FPx4 && !ImagePipeline::validFloatSource(source->m_pixels, cancel,&source->m_floatFacts))
             return fail(cancelled(cancel) ? SourceFailure::Cancelled : SourceFailure::Invalid);
         QCryptographicHash hash(QCryptographicHash::Sha256);
         const int rowBytes = image.width() * (image.format() == QImage::Format_RGBA64 ? 8 : 16);

@@ -7,6 +7,7 @@
 
 struct ProcessingPlan;
 class BrushRenderRequest;
+class RenderedPreviewCache;
 class ImagePipeline {
 public:
     enum class InputEncoding { SRgb, LinearProPhoto };
@@ -19,7 +20,8 @@ public:
     // display range [0,1], or carry negative out-of-gamut color channels.
     // Alpha must be finite and within [0,1]; no pre-tone RGB clipping.
     static constexpr float MaxLinearInputMagnitude = 65536.0f;
-    static bool validFloatSource(const QImage &source,const CancelToken &cancel = {});
+    struct FloatSourceFacts {bool nearZeroAlpha=false,negativeRgb=false;};
+    static bool validFloatSource(const QImage &source,const CancelToken &cancel = {},FloatSourceFacts *facts=nullptr);
     static QImage rgba64Source(const QImage &source,const CancelToken &cancel = {});
     static QImage process(const QImage &source, const AdjustmentState &state,
                           InputEncoding encoding = InputEncoding::SRgb,
@@ -41,6 +43,11 @@ public:
                                             const CancelToken &cancel = {});
 private:
     friend class BrushRenderRequest;
+    friend class RenderedPreviewCache;
+    // Immutable preview-only stage reuse. Brush admission, exports, exact
+    // scopes and diagnostic captures always keep their reference paths.
+    static QImage preparePreviewDenoiseInput(const QImage &,const ProcessingPlan &,const CancelToken &);
+    static QImage processPreviewWithDenoiseInput(const QImage &,const QImage &,const ProcessingPlan &,const CancelToken &);
     static bool preflightAdmittedBrush(const QSize &frameSize,const ProcessingPlan &plan,const QRect &region,
                                       int stripeHeight,const CancelToken &cancel,QString *error);
     static QImage renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,
