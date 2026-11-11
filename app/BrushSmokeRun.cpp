@@ -153,7 +153,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         bool selectedDelete=false;int guideBaseInk=0,guideInk=0,selectedDelta=0;QColor selectedBefore;QJsonObject strokeReduced;
         bool revealed=false,manualScroll=false,manualLocale=false,localeRequest=false;int revealHistory=0,revealWaitTicks=0;QJsonObject revealMasks;QRectF revealFrame;
         bool capacity=false,capacityRecovery=false,capacityTargets=false,capacityExisting=false;int capacityHistory=0;
-        QJsonObject capacityProbe,capacityFull,capacityRemoved;QJsonArray capacityCases,capacityReadyCases;
+        QJsonObject capacityProbe,capacityFull,capacityRemoved,capacityRemovalControl;QJsonArray capacityCases,capacityReadyCases;
         double layerExposure=0;QJsonObject layers,extended,edited,reduced,sole;
     };
     auto s=std::make_shared<State>();s->clock.start();auto dir=std::make_shared<QTemporaryDir>();
@@ -202,6 +202,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             {"capacity_guard",s->capacity&&s->capacityRecovery&&s->capacityTargets},{"capacity_probe",s->capacityProbe},
             {"capacity_target_specific",s->capacityTargets},{"capacity_recovery",s->capacityRecovery},
             {"capacity_cases",s->capacityCases},{"capacity_ready_cases",s->capacityReadyCases},
+            {"capacity_removal_control",s->capacityRemovalControl},
             {"full_scopes",s->scopes},{"scope_pixels",qint64(c->scopesPixelCount())},{"gpu_active",c->gpuActive()},
             {"backend",c->processingBackend()},{"producer","cpu-reference"},{"native_gpu_brush",false},{"native_float_raw_decoder",false}};
         QSaveFile output(reportPath);const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -707,7 +708,13 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             if(++s->settle<3)return;s->capacityHistory=cursor(c);
             s->capacityRemoved=s->capacityFull;auto layers=s->capacityRemoved["layers"].toArray();auto layer=layers[0].toObject();auto strokes=layer["strokes"].toArray();
             strokes.removeLast();layer["strokes"]=strokes;layers[0]=layer;s->capacityRemoved["layers"]=layers;
-            if(!click(window,child(window->contentItem(),"removeLastBrushStroke"))||masks(c)!=s->capacityRemoved||cursor(c)!=s->capacityHistory+1){finish("Native removal did not free exact document capacity");return;}
+            auto *remove=child(window->contentItem(),"removeLastBrushStroke"),*flick=toolFlick(window);
+            const auto bounds=remove&&flick?remove->mapRectToItem(flick,{0,0,remove->width(),remove->height()}):QRectF{};
+            const bool visible=remove&&flick&&exposed(window,remove)&&bounds.left()>=-1&&bounds.top()>=-1
+                &&bounds.right()<=flick->width()+1&&bounds.bottom()<=flick->height()+1;
+            s->capacityRemovalControl={{"fully_visible",visible},{"x",bounds.x()},{"y",bounds.y()},
+                {"width",bounds.width()},{"height",bounds.height()},{"viewport_width",flick?flick->width():0},{"viewport_height",flick?flick->height():0}};
+            if(!visible||!click(window,remove)||masks(c)!=s->capacityRemoved||cursor(c)!=s->capacityHistory+1){finish("Native removal did not free exact document capacity");return;}
             s->phase=44;s->settle=0;
         }else if(s->phase==44) {
             if(!previewDisplayedReady(c,window)||++s->settle<3)return;

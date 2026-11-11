@@ -816,6 +816,12 @@ Rectangle {
                             ToolTip.text: root.t("擦除仅影响所选已有图层；每笔可独立撤销。","Erase affects only the selected existing layer; each stroke has one Undo step.")
                         }
                     }
+                    Flow {
+                        Layout.fillWidth: true; spacing: 6
+                        CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
+                        Button { objectName: "removeLastBrushStroke"; text: root.t("删除末笔","Remove last stroke"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeLastBrushStroke(root.currentBrush.id) }
+                        Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
+                    }
                     AdjustmentSlider {
                         id: brushExposureControl
                         Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
@@ -851,12 +857,7 @@ Rectangle {
                         }
                         Item { Layout.fillWidth: true }
                     }
-                    Flow {
-                        Layout.fillWidth: true; spacing: 6
-                        CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
-                        Button { objectName: "removeLastBrushStroke"; text: root.t("删除末笔","Remove last stroke"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeLastBrushStroke(root.currentBrush.id) }
-                        Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
-                    }
+
                     RowLayout {
                         Layout.fillWidth: true; Layout.minimumWidth: 0
                         ComboBox {

@@ -27,9 +27,10 @@ object identities, actions, pressure settings and edit semantics are retained.
 The first normal-App CPU probe genuinely fails after the initial reflow:
 additional rows put Local EV below the compact waveform viewport. Moving the
 slider beside the primary controls fixes that product layout issue. The final
-normal CPU and Metal/native-brush Apps pass their entire35-phase Paint/Erase,
+normal CPU and Metal/native-brush Apps pass their complete Paint/Erase,
 Undo/Redo, reopen, language, exact-scope and manual/automatic-scroll workflows
-in8,464/9,504ms respectively. Both retain2,659,021 full-scope pixels and place
+in8,464/9,504ms respectively, reaching terminal phase35. That phase number
+is not a count of stages. Both retain2,659,021 full-scope pixels and place
 Local EV at71..84 within the160px tool viewport. Their actual English control
 captures and six bilingual300/320/350px feature-panel PNGs are visually
 reviewed. These prepublication scoped observations do not establish shipping
