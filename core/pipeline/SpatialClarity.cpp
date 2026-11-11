@@ -13,18 +13,23 @@ bool SpatialClarity::valid(Parameters p) {
 int SpatialClarity::halo(Parameters p) {
     return valid(p)&&p.amount!=0?int(std::ceil(p.radius)):0;
 }
+std::array<float,49> SpatialClarity::kernelWeights(float radius) {
+    std::array<float,49> weights{};
+    if(!std::isfinite(radius)||radius<0||radius>24)return weights;
+    const int extent=int(std::ceil(radius));const float sigma=std::max(.01f,.5f*radius);
+    for(int i=-extent;i<=extent;++i) {
+        const float edge=std::clamp(radius+1-std::abs(float(i)),0.f,1.f);
+        weights[size_t(i+extent)]=edge*std::exp(-float(i*i)/(2*sigma*sigma));
+    }
+    return weights;
+}
 QImage SpatialClarity::apply(QImage linear,Parameters p,Transform toLab,Transform fromLab,
                             const CancelToken &cancel,bool parallel) {
     if(linear.isNull()||linear.format()!=QImage::Format_RGBA32FPx4||!valid(p)
         ||!toLab||!fromLab||cancelled(cancel))return {};
     if(p.amount==0||p.radius==0)return linear;
     const int width=linear.width(),height=linear.height(),extent=halo(p);
-    const float sigma=std::max(.01f,.5f*p.radius);
-    std::array<float,49> weights{};
-    for(int i=-extent;i<=extent;++i) {
-        const float edge=std::clamp(p.radius+1-std::abs(float(i)),0.f,1.f);
-        weights[size_t(i+extent)]=edge*std::exp(-float(i*i)/(2*sigma*sigma));
-    }
+    const auto weights=kernelWeights(p.radius);
     using Horizontal=std::array<float,3>; // Relative sum, alpha sum, local reference.
     std::vector<float> guide;
     std::vector<Horizontal> horizontal;

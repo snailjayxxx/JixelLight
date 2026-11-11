@@ -122,7 +122,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -144,6 +144,7 @@ set(JIXELLIGHT_SHADER_SOURCES
     shaders/brush_mask_coverage.comp shaders/brush_pipeline.comp
     shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
     shaders/denoise_prepare.comp shaders/denoise_filter.comp
+    shaders/clarity_prepare.comp shaders/clarity_horizontal.comp shaders/clarity_filter.comp
     shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
 qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)
@@ -238,10 +239,10 @@ foreach(format png16 tiff16 webp8)
 endforeach()
 add_test(NAME brush-large-jpeg COMMAND JixelLightLargeBrushTests sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu:paint -o brush-large-jpeg-results.txt,txt -o -,txt)
 set_tests_properties(brush-large-jpeg PROPERTIES TIMEOUT 120)
-# A test-only compiled copy provides a row observation seam; Core/App never
-# define the probe and retain the original cancellation and pixel algorithm.
-qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp core/pipeline/GeometryCorrections.cpp)
-target_compile_definitions(JixelLightPerformanceTests PRIVATE JIXELLIGHT_GEOMETRY_TEST_PROGRESS=1)
+# Test-only compiled copies observe completed geometry rows and brush tiles;
+# Core/App never define the probes and retain the original pixel algorithms.
+qt_add_executable(JixelLightPerformanceTests tests/PerformanceTests.cpp tests/LegacyPipeline.cpp core/pipeline/GeometryCorrections.cpp core/pipeline/ImagePipeline.cpp)
+target_compile_definitions(JixelLightPerformanceTests PRIVATE JIXELLIGHT_GEOMETRY_TEST_PROGRESS=1 JIXELLIGHT_BRUSH_FRAME_TEST_PROGRESS=1)
 target_link_libraries(JixelLightPerformanceTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME performance-correctness COMMAND JixelLightPerformanceTests -o performance-results.txt,txt -o -,txt)
 qt_add_executable(JixelLightBenchmark tools/Benchmark.cpp tests/LegacyPipeline.cpp)

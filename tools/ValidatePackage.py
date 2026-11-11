@@ -25,6 +25,7 @@ from ValidateProjectMenu import validate_project_menu
 from ValidateRawPressureQpa import validate_raw_qpa
 from ValidateTangentialGeometry import validate_tangential
 from ValidateDenoise import validate_denoise
+from ValidateClarity import validate_clarity
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -296,6 +297,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_denoise(executable, environment, Path(denoise_temp) / mode,
                 reports / ('denoise-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Complete original72 modes precede the signed-clarity full-App contexts.
+    with tempfile.TemporaryDirectory(prefix='jixellight-clarity-package-') as clarity_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_clarity(executable, environment, Path(clarity_temp) / mode,
+                reports / ('clarity-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

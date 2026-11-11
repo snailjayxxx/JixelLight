@@ -655,7 +655,7 @@ Rectangle {
                     Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
                         objectName: "clarityToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
-                        text: (root.clarityExpanded ? "▾ " : "▸ ") + root.t("清晰度 · CPU", "CLARITY · CPU")
+                        text: (root.clarityExpanded ? "▾ " : "▸ ") + root.t("清晰度", "CLARITY")
                         onClicked: root.clarityExpanded = !root.clarityExpanded
                     }
                     Button {

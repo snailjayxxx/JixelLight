@@ -1,0 +1,30 @@
+#version 440
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[55];};
+layout(rgba32f,binding=1) readonly uniform image2D sourceImage;
+layout(rgba32f,binding=2) readonly uniform image2D guideImage;
+layout(rgba32f,binding=3) readonly uniform image2D horizontalImage;
+layout(rgba32f,binding=4) writeonly uniform image2D linearImage;
+layout(std140,binding=5) uniform Kernel {vec4 weights[13];};
+#include "denoise_common.glsl"
+float weightAt(int n){return weights[n/4][n%4];}
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+    vec4 original=imageLoad(sourceImage,c),center=imageLoad(guideImage,c);
+    precise vec3 linear=p[54].z>0.0?original.rgb:dnInput(original.rgb);
+    if(center.a>1.e-20&&p[54].y>0.0) {
+        int extent=int(ceil(p[54].y));precise float value=0.0,alpha=0.0;
+        for(int i=-extent;i<=extent;++i) {
+            vec3 sampleValue=imageLoad(horizontalImage,ivec2(c.x,clamp(c.y+i,0,size.y-1))).rgb;
+            precise float weight=weightAt(i+extent);
+            value+=weight*(sampleValue.x+(sampleValue.z-center.r)*sampleValue.y);alpha+=weight*sampleValue.y;
+        }
+        if(alpha>1.e-20) {
+            precise float midtone=clamp(center.r,0.0,1.0);
+            precise float delta=-.6*p[54].x*(value/alpha)*(4.0*midtone*(1.0-midtone));
+            if(delta!=0.0)linear=dnToPro(dnFromLab(center.rgb+vec3(delta,0,0)));
+        }
+    }
+    imageStore(linearImage,c,vec4(linear,original.a));
+}
