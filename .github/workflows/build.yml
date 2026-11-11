@@ -36,9 +36,48 @@ jobs:
     timeout-minutes: ${{ matrix.job_timeout }}
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
+      JIXELLIGHT_VALIDATION_ARTIFACT_PATHS: |
+        build/*-results.txt
+        build/brush-preview-admission-worker-results.json
+        build/brush-tile-lowerbound-owned
+        build/tangential-geometry-owned
+        build/tangential-gpu-owned
+        build/grain-owned
+        build/sharpen-owned
+        build/denoise-owned
+        build/native-brush-monitor.json
+        build/xmp-controller-native/
+        build/brush-pressure-input/
+        build/edit-recipe-native/
+        build/qsb-depfile-test/
+        build/tests.xml
+        build/sony-real-reports/
+        build/raw-render-matrix/
+        build/sensor-evidence.json
+        build/float-raw-readiness.json
+        build/offline-raw-probe.json
+        build/Testing/Temporary/LastTest.log
+        gpu-validation.txt
+        display-color-gpu-validation.txt
+        gui-*.json
+        gui-*.png
+        gui-*.log
+        gui-xmp-merge-*.json.stdout
+        gui-xmp-merge-*.json.stderr
+        gui-project-menu-layout.json.stdout
+        gui-project-menu-layout.json.stderr
+        gui-raw-qpa-*
+        gui-tangential-*
+        gui-denoise-*
+        diagnostic-validation/
+        benchmark.json
+        raw-render-matrix.log
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
+      - name: Validate strict artifact-delivery gate
+        shell: bash
+        run: python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -430,48 +469,8 @@ jobs:
                   print('\n=== ' + str(path) + ' ===', flush=True)
                   print(path.read_text(encoding='utf-8-sig', errors='replace')[:50000], flush=True)
           PY
-      - name: Upload validation reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-${{ runner.os }}
-          path: |
-            build/*-results.txt
-            build/brush-preview-admission-worker-results.json
-            build/brush-tile-lowerbound-owned
-            build/tangential-geometry-owned
-            build/tangential-gpu-owned
-            build/grain-owned
-            build/sharpen-owned
-            build/denoise-owned
-            build/native-brush-monitor.json
-            build/xmp-controller-native/
-            build/brush-pressure-input/
-            build/edit-recipe-native/
-            build/qsb-depfile-test/
-            build/tests.xml
-            build/sony-real-reports/
-            build/raw-render-matrix/
-            build/sensor-evidence.json
-            build/float-raw-readiness.json
-            build/offline-raw-probe.json
-            build/Testing/Temporary/LastTest.log
-            gpu-validation.txt
-            display-color-gpu-validation.txt
-            gui-*.json
-            gui-*.png
-            gui-*.log
-            gui-xmp-merge-*.json.stdout
-            gui-xmp-merge-*.json.stderr
-            gui-project-menu-layout.json.stdout
-            gui-project-menu-layout.json.stderr
-            gui-raw-qpa-*
-            gui-tangential-*
-            gui-denoise-*
-            diagnostic-validation/
-            benchmark.json
-            raw-render-matrix.log
       - name: Deploy and validate Windows package
+        id: package_windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -498,6 +497,7 @@ jobs:
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
           Get-FileHash JixelLight-Windows-x64.zip -Algorithm SHA256 | Format-List
       - name: Deploy and validate macOS package
+        id: package_macos
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -513,31 +513,176 @@ jobs:
           python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli" --sony-brush-raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --pressure-export-verifier "$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
-      - name: Upload packaging validation
+      - name: Upload validation reports
+        id: validation_upload
         if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ runner.os }}
+          path: ${{ env.JIXELLIGHT_VALIDATION_ARTIFACT_PATHS }}
+          if-no-files-found: error
+      - name: Upload validation reports transport retry 1
+        id: validation_upload_retry
+        if: ${{ !cancelled() && (steps.validation_upload.outcome == 'failure' || steps.validation_upload.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ runner.os }}-transport-retry1
+          path: ${{ env.JIXELLIGHT_VALIDATION_ARTIFACT_PATHS }}
+          if-no-files-found: error
+      - name: Upload packaging validation
+        id: package_upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: package-validation-${{ runner.os }}
           path: package-validation
-          if-no-files-found: ignore
+          if-no-files-found: error
+      - name: Upload packaging validation transport retry 1
+        id: package_upload_retry
+        if: ${{ !cancelled() && (steps.package_upload.outcome == 'failure' || steps.package_upload.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-validation-${{ runner.os }}-transport-retry1
+          path: package-validation
+          if-no-files-found: error
       - name: Upload Windows artifact
-        if: runner.os == 'Windows'
+        id: shipping_windows
+        if: ${{ !cancelled() && steps.package_windows.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: JixelLight-Windows-x64.zip
+          if-no-files-found: error
+      - name: Upload Windows artifact transport retry 1
+        id: shipping_windows_retry
+        if: ${{ !cancelled() && (steps.shipping_windows.outcome == 'failure' || steps.shipping_windows.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-transport-retry1
+          path: JixelLight-Windows-x64.zip
+          if-no-files-found: error
       - name: Upload macOS artifact
-        if: runner.os == 'macOS'
+        id: shipping_macos
+        if: ${{ !cancelled() && steps.package_macos.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: JixelLight-macOS-arm64.zip
+          if-no-files-found: error
+      - name: Upload macOS artifact transport retry 1
+        id: shipping_macos_retry
+        if: ${{ !cancelled() && (steps.shipping_macos.outcome == 'failure' || steps.shipping_macos.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-transport-retry1
+          path: JixelLight-macOS-arm64.zip
+          if-no-files-found: error
+      - name: Require product success and complete artifact delivery
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        env:
+          JIXELLIGHT_PRIOR_JOB_STATUS: ${{ job.status }}
+          JIXELLIGHT_PACKAGE_GATE: ${{ runner.os == 'Windows' && steps.package_windows.outcome || steps.package_macos.outcome }}
+          JIXELLIGHT_ARTIFACT_DELIVERY: |
+            {
+              "validation": {
+                "primary": {
+                  "outcome": "${{ steps.validation_upload.outcome }}",
+                  "id": "${{ steps.validation_upload.outputs.artifact-id }}",
+                  "digest": "${{ steps.validation_upload.outputs.artifact-digest }}"
+                },
+                "retry": {
+                  "outcome": "${{ steps.validation_upload_retry.outcome }}",
+                  "id": "${{ steps.validation_upload_retry.outputs.artifact-id }}",
+                  "digest": "${{ steps.validation_upload_retry.outputs.artifact-digest }}"
+                }
+              },
+              "package": {
+                "primary": {
+                  "outcome": "${{ steps.package_upload.outcome }}",
+                  "id": "${{ steps.package_upload.outputs.artifact-id }}",
+                  "digest": "${{ steps.package_upload.outputs.artifact-digest }}"
+                },
+                "retry": {
+                  "outcome": "${{ steps.package_upload_retry.outcome }}",
+                  "id": "${{ steps.package_upload_retry.outputs.artifact-id }}",
+                  "digest": "${{ steps.package_upload_retry.outputs.artifact-digest }}"
+                }
+              },
+              "shipping": {
+                "primary": {
+                  "outcome": "${{ runner.os == 'Windows' && steps.shipping_windows.outcome || steps.shipping_macos.outcome }}",
+                  "id": "${{ runner.os == 'Windows' && steps.shipping_windows.outputs.artifact-id || steps.shipping_macos.outputs.artifact-id }}",
+                  "digest": "${{ runner.os == 'Windows' && steps.shipping_windows.outputs.artifact-digest || steps.shipping_macos.outputs.artifact-digest }}"
+                },
+                "retry": {
+                  "outcome": "${{ runner.os == 'Windows' && steps.shipping_windows_retry.outcome || steps.shipping_macos_retry.outcome }}",
+                  "id": "${{ runner.os == 'Windows' && steps.shipping_windows_retry.outputs.artifact-id || steps.shipping_macos_retry.outputs.artifact-id }}",
+                  "digest": "${{ runner.os == 'Windows' && steps.shipping_windows_retry.outputs.artifact-digest || steps.shipping_macos_retry.outputs.artifact-digest }}"
+                }
+              }
+            }
+        run: |
+          python tools/ValidateArtifactDelivery.py --platform "$RUNNER_OS" --prior-job-status "$JIXELLIGHT_PRIOR_JOB_STATUS" --package-gate "$JIXELLIGHT_PACKAGE_GATE" --report artifact-delivery.json
   linux-gpu:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      JIXELLIGHT_VALIDATION_ARTIFACT_PATHS: |
+        build/*-results.txt
+        build/brush-preview-admission-worker-results.json
+        build/brush-tile-lowerbound-owned
+        build/tangential-geometry-owned
+        build/tangential-gpu-owned
+        build/grain-owned
+        build/sharpen-owned
+        build/denoise-owned
+        build/native-brush-monitor.json
+        build/xmp-controller-native/
+        build/brush-pressure-input/
+        build/edit-recipe-native/
+        build/qsb-depfile-test/
+        build/tests.xml
+        build/sony-real-reports/
+        build/raw-render-matrix/
+        build/sensor-evidence.json
+        build/float-raw-readiness.json
+        build/offline-raw-probe.json
+        build/Testing/Temporary/LastTest.log
+        gui-*.json
+        gui-*.png
+        gui-*.log
+        gui-xmp-merge-*.json.stdout
+        gui-xmp-merge-*.json.stderr
+        gui-project-menu-layout.json.stdout
+        gui-project-menu-layout.json.stderr
+        gui-raw-qpa-*
+        gui-tangential-*
+        gui-denoise-*
+        diagnostic-validation/
+        raw-render-matrix.log
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
+      - name: Validate strict artifact-delivery gate
+        shell: bash
+        run: python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
       - name: Native dependencies and headless GPU validation
         run: |
           # The runner's Azure mirror failed DNS before any product build in CI364.
@@ -788,40 +933,45 @@ jobs:
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
+        id: validation_upload
         if: always()
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: validation-Linux
-          path: |
-            build/*-results.txt
-            build/brush-preview-admission-worker-results.json
-            build/brush-tile-lowerbound-owned
-            build/tangential-geometry-owned
-            build/tangential-gpu-owned
-            build/grain-owned
-            build/sharpen-owned
-            build/denoise-owned
-            build/native-brush-monitor.json
-            build/xmp-controller-native/
-            build/brush-pressure-input/
-            build/edit-recipe-native/
-            build/qsb-depfile-test/
-            build/tests.xml
-            build/sony-real-reports/
-            build/raw-render-matrix/
-            build/sensor-evidence.json
-            build/float-raw-readiness.json
-            build/offline-raw-probe.json
-            build/Testing/Temporary/LastTest.log
-            gui-*.json
-            gui-*.png
-            gui-*.log
-            gui-xmp-merge-*.json.stdout
-            gui-xmp-merge-*.json.stderr
-            gui-project-menu-layout.json.stdout
-            gui-project-menu-layout.json.stderr
-            gui-raw-qpa-*
-            gui-tangential-*
-            gui-denoise-*
-            diagnostic-validation/
-            raw-render-matrix.log
+          path: ${{ env.JIXELLIGHT_VALIDATION_ARTIFACT_PATHS }}
+          if-no-files-found: error
+      - name: Upload validation reports transport retry 1
+        id: validation_upload_retry
+        if: ${{ !cancelled() && (steps.validation_upload.outcome == 'failure' || steps.validation_upload.outcome == 'cancelled') }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-Linux-transport-retry1
+          path: ${{ env.JIXELLIGHT_VALIDATION_ARTIFACT_PATHS }}
+          if-no-files-found: error
+      - name: Require product success and complete artifact delivery
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        env:
+          JIXELLIGHT_PRIOR_JOB_STATUS: ${{ job.status }}
+          JIXELLIGHT_PACKAGE_GATE: ''
+          JIXELLIGHT_ARTIFACT_DELIVERY: |
+            {
+              "validation": {
+                "primary": {
+                  "outcome": "${{ steps.validation_upload.outcome }}",
+                  "id": "${{ steps.validation_upload.outputs.artifact-id }}",
+                  "digest": "${{ steps.validation_upload.outputs.artifact-digest }}"
+                },
+                "retry": {
+                  "outcome": "${{ steps.validation_upload_retry.outcome }}",
+                  "id": "${{ steps.validation_upload_retry.outputs.artifact-id }}",
+                  "digest": "${{ steps.validation_upload_retry.outputs.artifact-digest }}"
+                }
+              }
+            }
+        run: |
+          python tools/ValidateArtifactDelivery.py --platform "$RUNNER_OS" --prior-job-status "$JIXELLIGHT_PRIOR_JOB_STATUS" --package-gate "$JIXELLIGHT_PACKAGE_GATE" --report artifact-delivery.json
