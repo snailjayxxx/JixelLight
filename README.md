@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 已通过 CI 的基线 `9c1c4f2`（CI #362）已在 Windows、macOS、Linux 各通过 76 项 CTest。新增胶片颗粒与独立锐化已覆盖预览、示波器、导出和持久化；本轮完整回归通过 77/78 项，唯一的 XMP 窗口就绪时序问题已定位并修正，正重新验收。窄面板和展开的画笔控件也已修正并通过正常 CPU/Metal 应用验证。CI #365 正在运行，新增修正仍须完整回归及跨平台验收。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[颗粒](docs/F4_FILM_GRAIN_STAGE_M50.md)、[锐化](docs/F4_INDEPENDENT_SHARPEN_STAGE_M51.md)和[界面及验证修正](docs/F4_DETAIL_PANEL_QA_STAGE_M51A.md)。
+> **开发进度（2026-11-12）：** 已通过 CI 的基线 `9c1c4f2`（CI #362）已在 Windows、macOS、Linux 各通过 76 项 CTest。新增胶片颗粒与独立锐化已覆盖预览、示波器、导出和持久化；修复 XMP 就绪时序及窄面板布局后，功能提交 `6cbea77` 在本机通过 78/78 项完整回归，正常 CPU/Metal 画笔工作流也通过。CI #364/#365 的 Linux 在产品编译前因软件源 DNS 失败；软件源修复已加入，跨平台及打包验收仍待完成。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[颗粒](docs/F4_FILM_GRAIN_STAGE_M50.md)、[锐化](docs/F4_INDEPENDENT_SHARPEN_STAGE_M51.md)和[界面及验证修正](docs/F4_DETAIL_PANEL_QA_STAGE_M51A.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

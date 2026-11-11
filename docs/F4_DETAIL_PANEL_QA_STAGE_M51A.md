@@ -52,3 +52,17 @@ and [Ubuntu archive](https://archive.ubuntu.com/ubuntu/). No insecure APT flags,
 dependency substitutions, product precision/memory limits or test skips are
 introduced. Complete current-commit78-test and three-platform/package gates
 remain required.
+
+The complete local run at `6cbea77d8bd25a7fb6078232524f8c8c84b983cc`
+now passes78/78 CTests in720.44s from a clean committed worktree, including
+Core217, GPU39, Performance39, XMP20, film-grain12 and independent-sharpen14,
+each with zero failed/skipped/blacklisted Qt observations. It includes real
+DNG/Sony fixtures, all existing brush/RAW/ICC/export gates and the corrected
+picker check. Original `deaf9f1`77/78 and its separate rerun remain unchanged.
+This is full local acceptance of6cbea77, not current three-platform shipping.
+
+CI365's Linux job130651321410 also fails before compilation with the same
+Azure DNS error; its complete original log is retained. Windows/macOS are
+still running at this entry. The following publication changes documentation
+only relative to the locally validated6cbea77 product/workflow sources; its
+fresh current-commit CI must validate the actual mirror repair and packages.
