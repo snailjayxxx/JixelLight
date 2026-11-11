@@ -257,6 +257,30 @@ private slots:
         QVERIFY(controller.loadLookProfile(currentProfile));
     }
 
+    void portableCommandsKeepImportedLutEditingSeparateFromJsonPayloads() {
+        QTemporaryDir dir;const auto imagePath=dir.filePath("source.png");QVERIFY(fixture(47,43).save(imagePath));
+        const auto lut=LookLut::identity(3);LookState imported;imported.mode="calibrated";imported.code="ST";imported.lut=lut;
+        const auto profile=dir.filePath("imported.jlook.json");QFile file(profile);QVERIFY(file.open(QIODevice::WriteOnly));
+        const auto bytes=QJsonDocument(QJsonObject{{"format","JixelLightLook"},{"version",1},{"look",imported.toJson()}}).toJson();
+        QCOMPARE(file.write(bytes),qint64(bytes.size()));file.close();
+        PhotoController controller(nullptr);controller.setGpuEnabled(false);QVERIFY(controller.importFile(QUrl::fromLocalFile(imagePath)));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.previewReady()&&!controller.loading(),10000);
+        QVERIFY(controller.loadLookProfile(QUrl::fromLocalFile(profile)));const auto digest=controller.lookState()["lutDigest"].toString();QVERIFY(!digest.isEmpty());
+        controller.setLookMode("off");QCOMPARE(controller.lookState()["mode"].toString(),QString("off"));
+        controller.setLookStrength(.25);controller.setLookMode("manual");controller.setLookParameter("clarity",2.6);controller.finishInteraction();
+        QCOMPARE(controller.lookState()["mode"].toString(),QString("calibrated"));QCOMPARE(controller.lookState()["lutDigest"].toString(),digest);
+        QCOMPARE(controller.lookState()["strength"].toDouble(),.25);QCOMPARE(controller.lookState()["parameters"].toMap()["clarity"].toDouble(),3.);
+        const QJsonArray edits{QJsonObject{{"command","look.parameter"},{"parameter","fade"},{"value",3.2}},
+            QJsonObject{{"command","look.strength"},{"value",.4}}};
+        QVERIFY(controller.executeEditCommands(edits.toVariantList()));QCOMPARE(controller.lookState()["lutDigest"].toString(),digest);
+        const auto before=controller.lookState();const auto history=controller.editHistory();
+        QVERIFY(!controller.executeEditCommand({{"command","look.mode"},{"mode","calibrated"}}));
+        QVERIFY(!controller.executeEditCommand({{"command","look.mode"},{"mode","manual"},{"lut",lut->toJson().toVariantMap()}}));
+        QCOMPARE(controller.lookState(),before);QCOMPARE(controller.editHistory(),history);
+        controller.setLookCode("FL");QCOMPARE(controller.lookState()["mode"].toString(),QString("manual"));QVERIFY(!controller.lookState().contains("lutDigest"));
+        controller.undo();QCOMPARE(controller.lookState()["lutDigest"].toString(),digest);
+    }
+
     void controllerReferenceProfileAndProtectedSource() {
         QTemporaryDir dir;const auto first=dir.filePath("first.png"),second=dir.filePath("second.png"),ref=dir.filePath("reference.jpg");
         QVERIFY(fixture().save(first));QVERIFY(fixture(147,141).save(second));QVERIFY(fixture().save(ref,"JPEG"));

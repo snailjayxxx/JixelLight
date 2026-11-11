@@ -66,7 +66,44 @@ def validate(exe: Path, manifest: Path, output: Path) -> int:
             check(report['referencePixelCount'] == report['reference']['width'] * report['reference']['height'], 'Reference histogram counts')
             check(fit['heldoutRmseAfter'] < .05 and fit['heldoutRmseAfter'] < fit['heldoutRmseBefore'] * .98, 'Single-image held-out error gate')
             check(report['asShot']['parameters'] == expected['parameters'], 'As-shot values lost')
-            summary['scenes'].append({'id': pair['id'], 'metrics': fit, 'model': report['decoderModel']})
+            portable = report.get('portableLookCommands', {})
+            check(portable.get('passed') is True, 'Real Sony portable Look command pixels failed')
+            check({case['case'] for case in portable.get('cases', [])} == {
+                'off', 'as_shot', 'manual', 'strength', 'detail', 'materialized_parameter', 'reset'},
+                'Portable Look command coverage is incomplete')
+            for case in portable['cases']:
+                check(case['applied'] and case['exact_pixels'] and case['effective_values_match']
+                      and case['symbolic_intent_preserved'] and case['pixels'] > 0,
+                      f'Portable Look case failed: {case["case"]}')
+                check(case['output']['pixel_sha256'] == case['reference']['pixel_sha256'],
+                      f'Portable Look pixel fingerprints disagree: {case["case"]}')
+            check(portable['invalid_batch_atomic'] and portable['lut_injection_rejected']
+                  and portable['jpeg_as_shot_rejected'], 'Portable Look strict refusal failed')
+            oracle = report.get('portableCliReference', {})
+            check(oracle.get('saved') is True, oracle.get('error', 'Missing real CLI oracle'))
+            cli = exe.with_name('JixelLightCli' + exe.suffix)
+            check(cli.is_file(), 'Build JixelLightCli before real Sony validation')
+            commands = [
+                {'command': 'look.mode', 'mode': 'as_shot'},
+                {'command': 'look.strength', 'value': .4},
+                {'command': 'look.parameter', 'parameter': 'clarity', 'value': 4.6},
+                {'command': 'develop.set', 'parameter': 'exposure', 'value': .3},
+                {'command': 'geometry.crop', 'x': .1, 'y': .1, 'width': .04, 'height': .04},
+            ]
+            command_file = scene / 'portable-cli-commands.json'
+            command_file.write_text(json.dumps(commands), encoding='utf-8')
+            actual = scene / 'portable-cli-actual.png'
+            actual.unlink(missing_ok=True)
+            run(cli, ['--commands', str(command_file), str(root / pair['raw']), str(actual)],
+                scene / 'portable-cli.log')
+            comparison_file = scene / 'portable-cli-comparison.json'
+            run(exe, ['--compare-portable-png', str(scene / oracle['file']), str(actual), str(comparison_file)],
+                scene / 'portable-cli-comparison.log')
+            comparison = json.loads(comparison_file.read_text(encoding='utf-8'))
+            check(comparison['passed'] and comparison['exact_pixels'] and comparison['icc_equal']
+                  and comparison['pixels'] > 0, 'Real Sony CLI output differs from direct CPU oracle')
+            summary['scenes'].append({'id': pair['id'], 'metrics': fit, 'model': report['decoderModel'],
+                                     'portableLookCommands': portable, 'portableCliPixels': comparison})
             # Do not redistribute copyrighted review photographs in test artifacts.
             for picture in scene.glob('*.png'):
                 picture.unlink()

@@ -1,5 +1,6 @@
 #include "core/look/LookProfiles.h"
 #include "core/look/SonyLookMetadata.h"
+#include "core/pipeline/ProcessingPlan.h"
 #include <algorithm>
 #include <cmath>
 
@@ -21,6 +22,52 @@ double parameter(const LookState &l,const QString &key,double fallback=0) {
 }
 }
 QVariantList LookProfiles::catalog(){QVariantList l;for(const auto &p:presets)l<<QVariantMap{{"code",p.code},{"calibration","approximation"}};return l;}
+QStringList LookProfiles::commandCodes() {
+    QStringList codes; for(const auto &p:presets) codes.append(QLatin1String(p.code)); return codes;
+}
+QVariantList LookProfiles::commandParameters() {
+    QVariantList parameters;
+    for(const auto &name:SonyLookMetadata::parameterNames()) {
+        const auto range=SonyLookMetadata::parameterRange(name);
+        parameters.append(QVariantMap{{"name",name},{"minimum",range.first},{"maximum",range.second},
+            {"default",name=="sharpnessRange"?3:0},{"value_policy","round_then_clamp"}});
+    }
+    return parameters;
+}
+bool LookProfiles::normalizeCommandCode(const QString &input,QString *code,QString *error) {
+    if(error)error->clear();
+    bool valid=!input.isEmpty() && input.size()<=32;
+    for(const auto character:input) if(character.category()==QChar::Other_Control) valid=false;
+    const auto normalized=valid ? SonyLookMetadata::normalize(input):QString{};
+    if(!code || normalized.isEmpty()) {
+        if(error)*error="Unknown or invalid Sony Look code";
+        return false;
+    }
+    *code=normalized; return true;
+}
+bool LookProfiles::normalizeCommandStrength(double input,double *strength,QString *error) {
+    if(error)error->clear();
+    if(!strength || !std::isfinite(input)) {
+        if(error)*error="Look strength must be finite";
+        return false;
+    }
+    *strength=std::clamp(input,0.,1.); return true;
+}
+bool LookProfiles::normalizeCommandParameter(const QString &name,double input,double *value,QString *error) {
+    if(error)error->clear();
+    if(!value || !std::isfinite(input) || !SonyLookMetadata::parameterNames().contains(name)) {
+        if(error)*error="Unknown Look parameter or nonfinite value";
+        return false;
+    }
+    const auto range=SonyLookMetadata::parameterRange(name);
+    *value=std::clamp(std::round(input),double(range.first),double(range.second)); return true;
+}
+bool LookProfiles::engineCompatible(const LookState &look) {
+    if (!look.lut) return true;
+    const auto kind = look.lut->evidence.value("kind").toString();
+    const bool fitted = kind == "image-specific-fit" || kind == "multi-scene-empirical-fit";
+    return !fitted || look.lut->evidence.value("engineVersion").toString() == QLatin1String(ProcessingPlan::EngineVersion);
+}
 bool LookProfiles::active(const LookState &l){return l.mode!="off"&&l.error.isEmpty()&&l.strength>0&&(l.lut||find(l.code));}
 AdjustmentState LookProfiles::resolveAsShot(AdjustmentState state,const QVariantMap &metadata,bool raw){
  if(state.look.mode!="as-shot")return state;

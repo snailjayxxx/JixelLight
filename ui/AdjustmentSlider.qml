@@ -9,11 +9,13 @@ RowLayout {
     property real to: 100
     property real value: 0
     property int decimals: 0
+    property string sliderObjectName: ""
     signal edited(real newValue)
     spacing: 8
 
     Label { text: root.label; Layout.preferredWidth: 74; color: "#d7dde6"; font.pixelSize: 12 }
     Slider {
+        objectName: root.sliderObjectName
         Layout.fillWidth: true; from: root.from; to: root.to; value: root.value
         onMoved: root.edited(value)
         onPressedChanged: if (!pressed) photoController.finishInteraction()

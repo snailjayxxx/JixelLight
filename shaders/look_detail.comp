@@ -1,6 +1,6 @@
 #version 440
 layout(local_size_x=16,local_size_y=16) in;
-layout(std140,binding=0) uniform Plan {vec4 p[37];};
+layout(std140,binding=0) uniform Plan {vec4 p[53];};
 layout(rgba32f,binding=1) readonly uniform image2D baseImage;
 layout(rgba32f,binding=2) readonly uniform image2D horizontalImage;
 layout(rgba32f,binding=3) writeonly uniform image2D outputImage;
@@ -11,6 +11,15 @@ void main(){
  if(p[32].y>0.0)for(int i=-b;i<=b;++i)sb+=imageLoad(horizontalImage,ivec2(c.x,clamp(c.y+i,0,size.y-1))).g;
  vec4 original=imageLoad(baseImage,c);precise float y=(.2126*original.r+.7152*original.g)+.0722*original.b;
  precise float delta=p[32].x*(y-sa/float(2*a+1))+p[32].y*(y-sb/float(2*b+1));
+ if(p[52].x>0.0){
+  precise float sc=0.0,sd=0.0;int extent=int(ceil(p[52].y));
+  for(int i=-extent;i<=extent;++i){
+   vec2 value=imageLoad(horizontalImage,ivec2(c.x,clamp(c.y+i,0,size.y-1))).ba;
+   precise float weight=clamp(p[52].y+1.0-abs(float(i)),0.0,1.0);sc+=weight*value.x;sd+=weight*value.y;
+  }
+  float alpha=floor(clamp(original.a,0.0,1.0)*65535.0+.5);
+  if(alpha>0.0&&sd>1e-12)delta+=p[52].x*(y-sc/sd);
+ }
  vec3 rgb=floor(clamp(original.rgb+vec3(delta),vec3(0),vec3(1))*65535.0+vec3(.5))/65535.0;
  imageStore(outputImage,c,vec4(rgb,original.a));
 }

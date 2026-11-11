@@ -1,0 +1,27 @@
+# F2 M4.9B explicit XMP review actions
+
+Return while choosing a field leaves the review open. Apply and Cancel have no implicit dialog default; their explicit button actions remain, including Space on a focused Apply button and Escape cancellation. The six-field ancestry, full Develop snapshot, source verification, single SQL transaction, history and honest annotation-Undo limits are unchanged. Original/XMP files are not rewritten.
+
+## Preserved failure and evidence
+
+CI348/run42385783482 at5163b637/treeedb6 is genuinely failed and independently sealed: receipt9cac4597d6bb6d3d8568c28086a71e5524bb1cd9a74ac2b1acd5f29f471a1892/989files/three original FULL/three original partial ZIPs. Linux/Windows retain normal bilingual exposure0vs1.25 assertions; Mac retains a120s timeout with only initTestCase, whose phase/cause remains unproven. Later native/App/RAW/actual65/shipping are absent. Whole sealing checked closed bytes/provenance/terminal metadata without repeating platform audits. CI3470a7f/773 remains the last complete acceptance.
+
+The isolated component receipt88e4e5166b246a1e04dadccd2059412a53351a63daa5d2d2ac7d8486e7768184/1945files preserves all original failures and environment refusals. Actual Ubuntu24.04/Qt6.8.3/aarch64 reproduces Return→RejectRole1→cancelled before Apply; it is not the CI x86_64 platform. The fix passes Linux two bilingual observations(Qt4) plus three focused key cases(Qt5), and Cocoa five observations(Qt7) plus two new picker cases(Qt4). These accurate split scopes are not a complete Qt20 report. Product objects/Core archives were reused unchanged during focused checks. The dedicated Linux diagnostic VM is stopped; the default Docker context/profile is unchanged. Raw7 diagnostic PNGs remain preserved; the unrelated metadata-tail refusal and its unpersisted decoder outputs are disclosed, without a formal screenshot claim or decoder replay.
+
+## Native QA and unchanged limits
+
+The old15 controller observations remain, with five added cases: incomplete Return/Escape invariance, completed Return then explicit Space/durable six fields, completed choices then explicit Cancel, real delayed FileDialog acceptance, and bounded unanswered-picker refusal. The normal bilingual picker uses a5ms timer, a10s deadline and the actual accepted signal, with fixture/picker phase QINFO. A timed-out QA picker rejects and fails; it does not manufacture acceptance. This is stricter QA, not a claim that the original Mac timeout cause was reproduced.
+
+The original71 CTest names and120s controller timeout, all Core217/Performance39/Qt24-live8/Sony23/native32/monitor5/Python13 gates, all original65 installed modes/shipping and45/60/120s/RAW/PNG16ICC/RGB40 exact-alpha/32Mi/shared3GiB/full-scopes/export requirements remain. The controller report now requires one complete nativeQt20 (old15+five), including all old methods. Linux componentoffscreen/Appxcb, Windowswindows and Maccocoa stay distinct. No workflow or mode is changed.
+
+## Formal local and publication
+
+Actual formal Root configure/build49264/68723ms pass, compiling a fresh App/controller pair and Core/Gpu archives. Thirteen parent binaries are accurately adopted and all parent15/Core bytes remain protected. The complete native controller report passes20/20 with zero failure/skip/blacklist, internal2588ms/CTest3573ms. English/Chinese public wrappers pass on actualCocoa/Metal/DPR1: GUI540/510ms, outer3487/2741ms. Eight fresh captures close5840 decoded rows (native2 first independently checked; App6 checked once by the wrappers). The precommit macro5163b63 is separately bound to the actual working source280. Core217/Python13 and other heavy evidence retain accurate c574 parent scope and were not rerun. No fresh Core217/Python13, full71 local/backend/actual65 or current new-CI acceptance is claimed. New exact-commit acceptance remains required. Other278 source files are unchanged. No private binary substitutes for Root. New exact-commit three native71 and both actual65 packages/shipping remain necessary.
+
+Physical tablet/device loss/OOM/monitor calibration, all Sony/full raw jitter/nativeFP32RAW/combined metadata Undo/readonly-catalog or physical commit failures and fullF0–F6 completion remain unaccepted.
+
+
+CI349 at e7a/tree922e genuinely failed and is fully sealed a8395c29350d6db72c498c4a1e3ed955a295c3b61353b2e86ba1e93fba2335f2/928 files: all three original FULL/partial ZIPs, actual13aa2884/tree922e. Linux/Windows retain19-pass/one delayed-picker failure, Mac17-pass/three picker failures. Original70/Core217/Performance39/monitor5 are observations, not a complete new71/65 acceptance. The original M49B local adb7 scope remains historical and unchanged. M49C hardens both QA selectors while preserving all original test bodies, real acceptance, source/read-only/atomicity and numerical limits.
+
+
+M49C formal related build now passes one complete Qt20 and both public App wrappers with accurate2fresh/13adopted provenance. It strengthens QA filename input and real acceptance without changing M49B user review semantics. Its8 new captures/5840rows at DPR1 do not rewrite the historical adb7/5840 metrics or any original failed CI report. New exact-commit full71/twoactual65/shipping acceptance remains required.

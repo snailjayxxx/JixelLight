@@ -5,4 +5,7 @@
 namespace LookDetail {
 int halo(const std::array<float,4> &settings);
 QImage apply(const QImage &image,const std::array<float,4> &settings,const CancelToken &cancel={});
+int halo(const std::array<float,4> &settings,const std::array<float,2> &independent);
+QImage apply(const QImage &image,const std::array<float,4> &settings,
+             const std::array<float,2> &independent,const CancelToken &cancel={});
 }

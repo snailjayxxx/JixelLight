@@ -23,11 +23,17 @@ jobs:
           - os: windows-2022
             artifact: JixelLight-Windows-x64
             triplet: x64-windows-static-md
+            # CI337 reached90m after its47-mode manifest, cancelling final packaging.
+            # Individual GUI and export/reference deadlines remain unchanged.
+            job_timeout: 120
           - os: macos-15
             artifact: JixelLight-macOS-arm64
             triplet: arm64-osx-static
+            # Run301 completed native validation before the 75-minute aggregate
+            # limit interrupted packaging. Individual validation limits stay fixed.
+            job_timeout: 180
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.job_timeout }}
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
     steps:
@@ -37,7 +43,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Checkout vcpkg
         uses: actions/checkout@v4
@@ -66,6 +72,8 @@ jobs:
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-
       - name: Configure
         id: configure
         shell: bash
@@ -82,7 +90,7 @@ jobs:
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Build
         id: compile
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Download real RAW test sample
         shell: bash
         run: >-
@@ -96,6 +104,222 @@ jobs:
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
+      - name: Native committed preview delivery monitor and exact Sony export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          VERIFY=$(find build/bin -type f \( -name JixelLightBrushPressureExportVerifier -o -name JixelLightBrushPressureExportVerifier.exe \) | head -1)
+          test -f "$EXE" && test -n "$VERIFY"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestNativeBrushEvidence.py' -v
+          for CASE in route delivery pending retired-render monitor; do
+            python tools/ValidateNativeBrush.py "$EXE" "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
+          done
+          python tools/ValidateNativeBrush.py "$EXE" gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --expected-commit "$STAMP"
+      - name: Bilingual normal-App XMP review and durable import
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestXmpMergeEvidence.py' -v
+          for LANGUAGE in en_US zh_CN; do
+            python tools/ValidateXmpMerge.py "$EXE" "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
+          done
+      - name: Finite raw pressure QPA Paint and Erase
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
+      - name: Manual tangential geometry complete photo App
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestTangentialGeometryEvidence.py' -v
+          python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-gpu.json gpu --expected-commit "$STAMP"
+      - name: Bilingual anchored project-menu layout
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestProjectMenuEvidence.py' -v
+          python tools/ValidateProjectMenu.py "$EXE" gui-project-menu-layout.json --expected-commit "$STAMP"
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          python tools/ValidateMaskCanvas.py "$EXE" gui-mask-canvas.json
+          python tools/ValidateRelink.py "$EXE" gui-source-relink.json
+          python tools/ValidateBrushCanvas.py "$EXE" gui-brush-cpu.json cpu
+          python tools/ValidateBrushCanvas.py "$EXE" gui-brush-gpu.json gpu
+          python tools/ValidateShortcutHelp.py "$EXE" gui-shortcut-help.json
+      - name: Recipe dialog and isolated native clipboard
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            RECIPE_QPA=windows
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            RECIPE_QPA=cocoa
+          fi
+          test -f "$EXE"
+          python tools/ValidateEditRecipe.py "$EXE" build/edit-recipe-native --expected-stamp "$(git rev-parse --short HEAD)" --qpa "$RECIPE_QPA" --dpr 1 --isolated-ci-native
+      - name: Real Sony full-source brush pointer and exact waveform
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
+          python tools/ValidateSonyBrushCanvas.py "$EXE" "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
+      - name: Native ordered Paint Erase workflow and compact English controls
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-cpu.json cpu
+          python tools/ValidateBrushErase.py "$EXE" gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py "$EXE" gui-transparent-brush-erase-cpu.json cpu --transparent
+          python tools/ValidateBrushErase.py "$EXE" gui-transparent-brush-erase-gpu.json gpu --transparent
+          python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+          python tools/ValidateBrushErase.py "$EXE" gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+      - name: Controlled pressure Paint Erase and exact Sony export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            VERIFY=build/bin/Release/JixelLightBrushPressureExportVerifier.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            VERIFY=build/bin/JixelLightBrushPressureExportVerifier
+          fi
+          python -m unittest discover -s tests -p 'TestBrushPressureFailureEvidence.py' -v
+          python tools/ValidateBrushPressure.py "$EXE" gui-brush-pressure-cpu.json cpu
+          python tools/ValidateBrushPressure.py "$EXE" gui-brush-pressure-gpu.json gpu
+          python tools/ValidateBrushPressure.py "$EXE" gui-transparent-brush-pressure-cpu.json cpu --transparent
+          python tools/ValidateBrushPressure.py "$EXE" gui-transparent-brush-pressure-gpu.json gpu --transparent
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY"
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY"
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-cpu.json cpu
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-brush-pressure-edges-gpu.json gpu
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
+          python tools/ValidateBrushPressureEdges.py "$EXE" gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicitly selected Sony pen stabilization and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            VERIFY=build/bin/Release/JixelLightBrushPressureExportVerifier.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            VERIFY=build/bin/JixelLightBrushPressureExportVerifier
+          fi
+          python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony
+      - name: Explicit one-pixel Sony pen choice and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+            VERIFY=build/bin/Release/JixelLightBrushPressureExportVerifier.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+            VERIFY=build/bin/JixelLightBrushPressureExportVerifier
+          fi
+          python -m unittest discover -s tests -p 'TestOnePixelSonyValidation.py' -v
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-one-pixel-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony --one-pixel
+          python tools/ValidateBrushPressure.py "$EXE" gui-sony-one-pixel-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier "$VERIFY" --stabilized-sony --one-pixel
+      - name: Explicit prefix recovery on the actual photo canvas
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python -m unittest discover -s tests -p 'TestBrushRecoveryValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              python tools/ValidateBrushRecovery.py "$EXE" "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+              python tools/ValidateBrushRecovery.py "$EXE" "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+            done
+          done
+      - name: Explicitly selected pen stabilization on the photo canvas
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python -m unittest discover -s tests -p 'TestBrushStabilizationValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-transparent-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+            done
+          done
+      - name: Explicit one-pixel pen choice on the photo canvas
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          python -m unittest discover -s tests -p 'TestOnePixelBrushValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+              python tools/ValidateBrushStabilization.py "$EXE" "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
+            done
+          done
       - name: Real RAW JPEG CPU GPU render matrix
         shell: bash
         env:
@@ -105,6 +329,23 @@ jobs:
           test -n "$MATRIX"
           rm -rf build/raw-render-matrix
           "$MATRIX" "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: Require Direct3D compute and display-ICC validation (WARP)
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.compile.outcome == 'success' }}
         shell: pwsh
@@ -142,6 +383,8 @@ jobs:
         run: |
           $process = Start-Process -FilePath ./build/bin/Release/JixelLight.exe -ArgumentList @('--smoke-report','gui-gpu.json','--screenshot','gui-gpu.png',"$env:RUNNER_TEMP/JixelLight-test.DNG") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw 'GUI Direct3D validation failed' }
+          python tools/ValidateDiagnostic.py ./build/bin/Release/JixelLight.exe --mode gpu
+          if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D diagnostic capture failed' }
       - name: GUI Metal integration
         if: runner.os == 'macOS'
         shell: bash
@@ -152,6 +395,7 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           "$APP/Contents/MacOS/JixelLight" --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/JixelLight-test.DNG"
+          python tools/ValidateDiagnostic.py "$APP/Contents/MacOS/JixelLight" --mode gpu
       - name: Synthetic CPU benchmark
         shell: bash
         run: |
@@ -167,7 +411,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json'),Path('build/offline-raw-probe.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -180,14 +424,36 @@ jobs:
           name: validation-${{ runner.os }}
           path: |
             build/*-results.txt
+            build/brush-preview-admission-worker-results.json
+            build/brush-tile-lowerbound-owned
+            build/tangential-geometry-owned
+            build/tangential-gpu-owned
+            build/grain-owned
+            build/sharpen-owned
+            build/native-brush-monitor.json
+            build/xmp-controller-native/
+            build/brush-pressure-input/
+            build/edit-recipe-native/
+            build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
+            build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gpu-validation.txt
             display-color-gpu-validation.txt
             gui-*.json
             gui-*.png
+            gui-*.log
+            gui-xmp-merge-*.json.stdout
+            gui-xmp-merge-*.json.stderr
+            gui-project-menu-layout.json.stdout
+            gui-project-menu-layout.json.stderr
+            gui-raw-qpa-*
+            gui-tangential-*
+            diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
       - name: Deploy and validate Windows package
@@ -200,12 +466,18 @@ jobs:
           Copy-Item $exe.FullName package/JixelLight.exe
           $probe = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightSonyValidation.exe | Select-Object -First 1
           Copy-Item $probe.FullName package/JixelLightSonyValidation.exe
+          $cli = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightCli.exe | Select-Object -First 1
+          if (-not $cli) { throw 'JixelLightCli.exe not found' }
+          Copy-Item $cli.FullName package/JixelLightCli.exe
+          $pressureVerifier = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightBrushPressureExportVerifier.exe | Select-Object -First 1
+          if (-not $pressureVerifier) { throw 'Pressure export verifier not found' }
+          Copy-Item $pressureVerifier.FullName package/JixelLightBrushPressureExportVerifier.exe
           New-Item -ItemType Directory -Force -Path package/profiles | Out-Null
           Copy-Item build/sony-real-reports/dataset/empirical.jlook.json package/profiles/Sony-ILCE7M4-ST-experimental.jlook.json
           Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
           windeployqt --release --qmldir ui package/JixelLight.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
-          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe
+          python tools/ValidatePackage.py package/JixelLight.exe "$env:RUNNER_TEMP/JixelLight-test.DNG" --sony-probe package/JixelLightSonyValidation.exe --cli package/JixelLightCli.exe --sony-brush-raw "$env:JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --pressure-export-verifier package/JixelLightBrushPressureExportVerifier.exe
           if ($LASTEXITCODE -ne 0) { throw 'Deployed Windows package validation failed' }
           Copy-Item package-validation/manifest.json package/validation-manifest.json
           Compress-Archive -Path package/* -DestinationPath JixelLight-Windows-x64.zip -Force
@@ -217,11 +489,13 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           cp build/bin/JixelLightSonyValidation "$APP/Contents/MacOS/JixelLightSonyValidation"
+          cp build/bin/JixelLightCli "$APP/Contents/MacOS/JixelLightCli"
+          cp build/bin/JixelLightBrushPressureExportVerifier "$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
           mkdir -p "$APP/Contents/Resources/profiles"
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
-          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation"
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation"
+          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli" -executable="$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
+          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli" --sony-brush-raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --pressure-export-verifier "$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload packaging validation
@@ -245,18 +519,24 @@ jobs:
           path: JixelLight-macOS-arm64.zip
   linux-gpu:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
       - name: Native dependencies and headless GPU validation
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libraw-dev liblcms2-dev libexiv2-dev libjpeg-dev libgl-dev libegl-dev libopengl-dev libvulkan-dev libxkbcommon-dev libxcb-cursor0 xvfb mesa-utils
+          # The runner's Azure mirror failed DNS before any product build in CI364.
+          # Keep the Ubuntu suites/signature checks, using the primary archive.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure\.archive\.ubuntu\.com/#archive.ubuntu.com/#g' /etc/apt/apt-mirrors.txt
+          fi
+          native_apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          sudo apt-get "${native_apt_options[@]}" update -qq
+          sudo apt-get "${native_apt_options[@]}" install -y libraw-dev liblcms2-dev libexiv2-dev libjpeg-dev libgl-dev libegl-dev libopengl-dev libvulkan-dev libxkbcommon-dev libxcb-cursor0 xvfb mesa-utils fonts-noto-cjk
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          modules: qtshadertools
+          modules: qtshadertools qtimageformats
           cache: true
       - name: Build
         run: |
@@ -274,6 +554,168 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
         run: xvfb-run -a ctest --test-dir build --output-on-failure --output-junit tests.xml
+      - name: Native committed preview delivery monitor and exact Sony export
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestNativeBrushEvidence.py' -v
+          for CASE in route delivery pending retired-render monitor; do
+            xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight "gui-native-brush-$CASE.json" "$CASE" --expected-commit "$STAMP"
+          done
+          xvfb-run -a python tools/ValidateNativeBrush.py ./build/bin/JixelLight gui-native-brush-sony.json sony --raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --expected-commit "$STAMP"
+      - name: Bilingual normal-App XMP review and durable import
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestXmpMergeEvidence.py' -v
+          for LANGUAGE in en_US zh_CN; do
+            xvfb-run -a python tools/ValidateXmpMerge.py ./build/bin/JixelLight "gui-xmp-merge-$LANGUAGE.json" "$LANGUAGE" --expected-commit "$STAMP"
+          done
+      - name: Finite raw pressure QPA Paint and Erase
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
+      - name: Manual tangential geometry complete photo App
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestTangentialGeometryEvidence.py' -v
+          python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-gpu.json gpu --expected-commit "$STAMP"
+      - name: Bilingual anchored project-menu layout
+        shell: bash
+        run: |
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestProjectMenuEvidence.py' -v
+          xvfb-run -a python tools/ValidateProjectMenu.py ./build/bin/JixelLight gui-project-menu-layout.json --expected-commit "$STAMP"
+      - name: Canvas local-mask pointer smoke (independent synthetic GUI)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateMaskCanvas.py ./build/bin/JixelLight gui-mask-canvas.json
+          python tools/ValidateRelink.py ./build/bin/JixelLight gui-source-relink.json
+          python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushCanvas.py ./build/bin/JixelLight gui-brush-gpu.json gpu
+          python tools/ValidateShortcutHelp.py ./build/bin/JixelLight gui-shortcut-help.json
+      - name: Recipe dialog and isolated X11 clipboard
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a python tools/ValidateEditRecipe.py ./build/bin/JixelLight build/edit-recipe-native --expected-stamp "$(git rev-parse --short HEAD)" --qpa xcb --dpr 1 --isolated-ci-native
+      - name: Real Sony full-source brush pointer and exact waveform
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-cpu.json cpu
+          xvfb-run -a python tools/ValidateSonyBrushCanvas.py ./build/bin/JixelLight "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" gui-sony-brush-gpu.json gpu
+      - name: Native ordered Paint Erase workflow and compact English controls
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-brush-erase-gpu.json gpu
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-transparent-brush-erase-cpu.json cpu --transparent
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-transparent-brush-erase-gpu.json gpu --transparent
+          python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+          xvfb-run -a python tools/ValidateBrushErase.py ./build/bin/JixelLight gui-sony-brush-erase-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw"
+      - name: Controlled pressure Paint Erase and exact Sony export
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestBrushPressureFailureEvidence.py' -v
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-brush-pressure-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-brush-pressure-gpu.json gpu
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-transparent-brush-pressure-cpu.json cpu --transparent
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-transparent-brush-pressure-gpu.json gpu --transparent
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier
+          python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-cpu.json cpu
+          xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-brush-pressure-edges-gpu.json gpu
+          python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-cpu.json cpu --transparent
+          xvfb-run -a python tools/ValidateBrushPressureEdges.py ./build/bin/JixelLight gui-transparent-brush-pressure-edges-gpu.json gpu --transparent
+      - name: Explicitly selected Sony pen stabilization and exact export
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestSonyPenStabilizationValidation.py' -v
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-stabilized-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony
+      - name: Explicit one-pixel Sony pen choice and exact export
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestOnePixelSonyValidation.py' -v
+          python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-one-pixel-brush-pressure-cpu.json cpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony --one-pixel
+          xvfb-run -a python tools/ValidateBrushPressure.py ./build/bin/JixelLight gui-sony-one-pixel-brush-pressure-gpu.json gpu --sony "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --verifier ./build/bin/JixelLightBrushPressureExportVerifier --stabilized-sony --one-pixel
+      - name: Explicit prefix recovery on the actual photo canvas
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestBrushRecoveryValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              if [ "$MODE" = gpu ]; then
+                xvfb-run -a python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                xvfb-run -a python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              else
+                python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                python tools/ValidateBrushRecovery.py ./build/bin/JixelLight "gui-transparent-brush-recovery-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              fi
+            done
+          done
+      - name: Explicitly selected pen stabilization on the photo canvas
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestBrushStabilizationValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              if [ "$MODE" = gpu ]; then
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              else
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent
+              fi
+            done
+          done
+      - name: Explicit one-pixel pen choice on the photo canvas
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestOnePixelBrushValidation.py' -v
+          for MODE in cpu gpu; do
+            for ACTION in paint erase; do
+              ERASE_FLAG=
+              if [ "$ACTION" = erase ]; then ERASE_FLAG=--erase; fi
+              if [ "$MODE" = gpu ]; then
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+                xvfb-run -a python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
+              else
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --one-pixel
+                python tools/ValidateBrushStabilization.py ./build/bin/JixelLight "gui-transparent-one-pixel-brush-stabilization-$ACTION-$MODE.json" "$MODE" $ERASE_FLAG --transparent --one-pixel
+              fi
+            done
+          done
       - name: Real RAW JPEG CPU GPU render matrix
         env:
           QT_QPA_PLATFORM: offscreen
@@ -282,22 +724,43 @@ jobs:
         run: |
           rm -rf build/raw-render-matrix
           xvfb-run -a ./build/bin/JixelLightRawRenderMatrix "$JIXELLIGHT_SONY_FIXTURES" build/raw-render-matrix > raw-render-matrix.log
+      - name: Stage 6C real-sensor evidence and calibration refusal gate
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p 'TestSensorEvidence.py' -v
+          python tools/ValidateSensorEvidence.py tests/fixtures/sony-real-manifest.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json
+      - name: Stage 6C.2 research-only FP32 trial/readiness safety
+        shell: bash
+        run: |
+          TRIAL=$(find build/bin -type f \( -name JixelLightFloatRawTrial -o -name JixelLightFloatRawTrial.exe \) | head -1)
+          test -n "$TRIAL"
+          python tools/ValidateFloatRawTrial.py "$TRIAL" build/sensor-evidence.json build/float-raw-readiness.json
+      - name: Stage 6C.3 verified offline unpacked RAW/JPEG compatibility probe
+        shell: bash
+        run: |
+          PROBE=$(find build/bin -type f \( -name JixelLightOfflineRawProbe -o -name JixelLightOfflineRawProbe.exe \) | head -1)
+          test -n "$PROBE"
+          python tools/ValidateOfflineRawProbe.py "$PROBE" tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES" build/offline-raw-probe.json
       - name: GUI GPU integration
         env:
           QT_QPA_PLATFORM: xcb
           QSG_RHI_BACKEND: opengl
           LIBGL_ALWAYS_SOFTWARE: '1'
           JIXELLIGHT_REQUIRE_GPU: '1'
-        run: xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+        run: |
+          xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
+          xvfb-run -a python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode gpu
       - name: GUI CPU fallback
         env:
           QT_QPA_PLATFORM: offscreen
           JIXELLIGHT_FORCE_CPU: '1'
-        run: ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+        run: |
+          ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
+          python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode cpu
       - name: Print validation summaries
         if: always()
         run: |
-          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json; do
+          for report in build/*-results.txt gui-*.json build/raw-render-matrix/raw-render-matrix.json build/sensor-evidence.json build/float-raw-readiness.json build/offline-raw-probe.json; do
             if test -f "$report"; then echo "=== $report ==="; cat "$report"; fi
           done
       - name: Upload validation reports
@@ -307,10 +770,32 @@ jobs:
           name: validation-Linux
           path: |
             build/*-results.txt
+            build/brush-preview-admission-worker-results.json
+            build/brush-tile-lowerbound-owned
+            build/tangential-geometry-owned
+            build/tangential-gpu-owned
+            build/grain-owned
+            build/sharpen-owned
+            build/native-brush-monitor.json
+            build/xmp-controller-native/
+            build/brush-pressure-input/
+            build/edit-recipe-native/
+            build/qsb-depfile-test/
             build/tests.xml
             build/sony-real-reports/
             build/raw-render-matrix/
+            build/sensor-evidence.json
+            build/float-raw-readiness.json
+            build/offline-raw-probe.json
             build/Testing/Temporary/LastTest.log
             gui-*.json
             gui-*.png
+            gui-*.log
+            gui-xmp-merge-*.json.stdout
+            gui-xmp-merge-*.json.stderr
+            gui-project-menu-layout.json.stdout
+            gui-project-menu-layout.json.stderr
+            gui-raw-qpa-*
+            gui-tangential-*
+            diagnostic-validation/
             raw-render-matrix.log
