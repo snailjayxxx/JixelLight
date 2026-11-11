@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化及明度/颜色降噪已覆盖预览、示波器、导出和持久化。CI #367 的三平台 78/78 与两个安装包各 70 项检查全部通过。新增 QRhi 降噪、CPU 缓存和浮点边界策略的 CI #370 已通过 Linux 81/81，Windows/macOS 及安装包仍在运行。本机正常主界面的降噪滑杆、撤销/重做、项目重开、精确示波器与 PNG16 导出已分别通过 CPU/Metal 检查；新流程将追加到 CI 和安装包检查，不替代原有 70 项。整体 F0–F6 尚未完成。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[降噪主界面验证](docs/F4_DENOISE_NATIVE_WORKFLOW_STAGE_M55.md)、[降噪算法](docs/F4_SPATIAL_DENOISE_STAGE_M52.md)和[浮点边界策略](docs/F0_FLOAT_SOURCE_NUMERIC_POLICY_STAGE_M54.md)。
+> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化、明度/颜色降噪及独立清晰度已覆盖预览、示波器、导出和持久化。清晰度首版明确采用 CPU，并复用原有 64 MiB 预览缓存；本机核心 217、GPU/回退 45、清晰度核心 9 / 工作流 17 项专项检查通过，干净提交 `08be052` 随后通过完整 84/84（821 秒），自身跨平台验证仍待完成。降噪主界面验证已提交草稿 PR #19；该提交后的 CPU/Metal 完整交互、项目重开与 PNG16 导出通过本机检查。较早 CI #367 的三平台 78/78 和两个安装包各 70 项检查全部通过。后续 CI #368/#370/#371 仍分别跟踪，不能将父提交结果视作最新提交验收。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[独立清晰度](docs/F4_SPATIAL_CLARITY_STAGE_M56.md)和[降噪主界面验证](docs/F4_DENOISE_NATIVE_WORKFLOW_STAGE_M55.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

@@ -111,6 +111,27 @@ private:
         }
     }
 private slots:
+    void clarityUsesExplicitCompleteCpuReferencePolicy() {
+        QImage source(39,41,QImage::Format_RGBA32FPx4);
+        const float alpha[]{0,std::numeric_limits<float>::denorm_min(),1.e-19f,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.2f+.08f*std::sin(float(x));p[1]=.3f+.04f*std::cos(float(y));p[2]=.1f;p[3]=alpha[(x+y)%6];
+        }
+        for(int output=0;output<4;++output)for(double amount:{-100.,73.})for(bool denoise:{false,true}) {
+            AdjustmentState state;state.clarityAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
+            state.sharpenAmount=61;state.grainAmount=19;
+            const auto space=ColorManagement::OutputSpace(output);const auto actual=render(source,state,true,ImagePipeline::InputEncoding::LinearProPhoto,space,{0,0,1,1},true);
+            QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
+            const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space));
+            for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
+            QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+            QCOMPARE(actual.diagnostic["spatial_clarity"].toString(),QString("cpu-reference"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("clarity-cpu-stage"));
+            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
+        }
+    }
+
     void spatialDenoiseMatchesCpuAcrossDensities() {
         QImage integer(137,139,QImage::Format_RGBA64),hdr(137,139,QImage::Format_RGBA32FPx4);
         const quint16 alpha16[]{0,1,24576,65535};const float alpha32[]{0,1.e-8f,1.f/65535,.375f,1.f};
@@ -309,7 +330,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,prophotoPolicyOk=false;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,prophotoPolicyOk=false;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -342,9 +363,15 @@ private slots:
                     const auto denoiseFrame=N::FrameAdmission::prepare(result.source,caps,denoise,{"grain-catalog","grain-input","grain-version",1},4,&why);
                     result.denoiseRefused=result.denoiseRefused&&!denoiseFrame&&why==N::FrameFailure::CPUPolicy;
                 }
+                for(double amount:{-100.,73.}) {
+                    auto clarityState=state;clarityState.clarityAmount=amount;
+                    const auto clarity=ProcessingPlan::compile(clarityState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
+                    const auto clarityFrame=N::FrameAdmission::prepare(result.source,caps,clarity,{"grain-catalog","grain-input","grain-version",1},6,&why);
+                    result.clarityRefused=result.clarityRefused&&!clarityFrame&&why==N::FrameFailure::CPUPolicy;
+                }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.prophotoPolicyOk);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.prophotoPolicyOk);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));

@@ -23,6 +23,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         || (groups.contains("effects") && !AdjustmentState::validGrainJson(source.toJson()))
         || (groups.contains("detail") && !AdjustmentState::validSharpenJson(source.toJson()))
         || (groups.contains("detail") && !AdjustmentState::validDenoiseJson(source.toJson()))
+        || (groups.contains("detail") && !AdjustmentState::validClarityJson(source.toJson()))
         || (groups.contains("geometry") && !GeometryState::validJson(source.geometry.toJson()))
         || (groups.contains("masks") &&
             (!BrushMaskDocument::validDocument(source.brushMasks)
@@ -47,7 +48,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.vignetteAmount=source.vignetteAmount; target.vignetteMidpoint=source.vignetteMidpoint; target.vignetteFeather=source.vignetteFeather;
             target.grainAmount=source.grainAmount; target.grainSize=source.grainSize;
         }
-        else if (group=="detail") {target.sharpenAmount=source.sharpenAmount;target.sharpenRadius=source.sharpenRadius;target.denoiseLuma=source.denoiseLuma;target.denoiseChroma=source.denoiseChroma;}
+        else if (group=="detail") {target.sharpenAmount=source.sharpenAmount;target.sharpenRadius=source.sharpenRadius;target.denoiseLuma=source.denoiseLuma;target.denoiseChroma=source.denoiseChroma;target.clarityAmount=source.clarityAmount;}
         else if (group=="masks") {
             target.linearMaskEnabled=source.linearMaskEnabled;
             target.linearMaskExposure=source.linearMaskExposure;

@@ -39,6 +39,7 @@ struct AdjustmentState {
     double grainSize = 1.0;   // .5..4, relative to the post-crop image frame.
     double sharpenAmount = 0.0; // 0..100, independent encoded-luma unsharp mask.
     double sharpenRadius = 3.0; // .5..6 source pixels, after geometry/crop.
+    double clarityAmount = 0.0; // -100..100, pre-tone local midtone contrast.
     double denoiseLuma = 0.0; // 0..100, perceptual lightness noise reduction.
     double denoiseChroma = 0.0; // 0..100, joint-guide color noise reduction.
     // F4 M1: one manual scene-linear graduated exposure mask.
@@ -143,6 +144,8 @@ struct AdjustmentState {
             result["grain"]=QJsonObject{{"schema",1},{"amount",grainAmount},{"size",grainSize}};
         if (sharpenAmount!=0 || sharpenRadius!=3)
             result["sharpen"]=QJsonObject{{"schema",1},{"amount",sharpenAmount},{"radius",sharpenRadius}};
+        if (clarityAmount!=0)
+            result["clarity"]=QJsonObject{{"schema",1},{"amount",clarityAmount}};
         if (denoiseLuma!=0 || denoiseChroma!=0)
             result["denoise"]=QJsonObject{{"schema",1},{"lightness",denoiseLuma},{"chroma",denoiseChroma}};
         const bool hasMix = std::any_of(bwMix.begin(), bwMix.end(), [](double v){ return v != 0.0; });
@@ -224,6 +227,14 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validClarityJson(const QJsonObject &object) {
+        if(!object.contains("clarity"))return true;
+        if(!object["clarity"].isObject())return false;
+        const auto c=object["clarity"].toObject();
+        return c.size()==2&&c["schema"].isDouble()&&c["schema"].toDouble()==1
+            &&c["amount"].isDouble()&&std::isfinite(c["amount"].toDouble())
+            &&c["amount"].toDouble()>=-100&&c["amount"].toDouble()<=100&&c["amount"].toDouble()!=0;
+    }
     static bool validDenoiseJson(const QJsonObject &object) {
         if(!object.contains("denoise"))return true;
         if(!object["denoise"].isObject())return false;
@@ -346,6 +357,7 @@ struct AdjustmentState {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
         }
+        if(o.contains("clarity")&&validClarityJson(o))s.clarityAmount=o["clarity"].toObject()["amount"].toDouble();
         if(o.contains("denoise")&&validDenoiseJson(o)) {
             const auto d=o["denoise"].toObject();s.denoiseLuma=d["lightness"].toDouble();s.denoiseChroma=d["chroma"].toDouble();
         }

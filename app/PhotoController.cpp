@@ -596,6 +596,7 @@ GETTER(grainAmount)
 GETTER(grainSize)
 GETTER(sharpenAmount)
 GETTER(sharpenRadius)
+GETTER(clarityAmount)
 GETTER(denoiseLuma)
 GETTER(denoiseChroma)
 #undef GETTER
@@ -631,7 +632,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -690,6 +691,7 @@ void PhotoController::setAdjustment(const char *name, double value, double Adjus
     const QString action=parameter.startsWith("vignette") ? QStringLiteral("vignette_adjustment")
         : parameter.startsWith("grain") ? QStringLiteral("grain_adjustment")
         : parameter.startsWith("sharpen") ? QStringLiteral("sharpen_adjustment")
+        : parameter.startsWith("clarity") ? QStringLiteral("clarity_adjustment")
         : parameter.startsWith("denoise") ? QStringLiteral("denoise_adjustment") : QStringLiteral("adjustment");
     persistAndApply(action,
         {{"parameter", QString::fromLatin1(name)}, {"value", value}});
@@ -727,6 +729,11 @@ void PhotoController::setSharpenRadius(double v) {setAdjustment("sharpenRadius",
 void PhotoController::resetSharpen() {
     auto *state=mutableCurrentState();if(!state||(state->sharpenAmount==0&&state->sharpenRadius==3))return;
     m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","sharpen.reset"}});persistAndApply("sharpen_reset");
+}
+void PhotoController::setClarityAmount(double value){setAdjustment("clarityAmount",value,&AdjustmentState::clarityAmount);}
+void PhotoController::resetClarity() {
+    auto *state=mutableCurrentState();if(!state||state->clarityAmount==0)return;
+    m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","clarity.reset"}});persistAndApply("clarity_reset");
 }
 void PhotoController::setDenoiseLuma(double v){setAdjustment("denoiseLuma",v,&AdjustmentState::denoiseLuma);}
 void PhotoController::setDenoiseChroma(double v){setAdjustment("denoiseChroma",v,&AdjustmentState::denoiseChroma);}

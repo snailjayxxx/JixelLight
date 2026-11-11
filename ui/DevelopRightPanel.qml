@@ -95,6 +95,7 @@ Rectangle {
     property bool vignetteExpanded: false
     property bool grainExpanded: false
     property bool sharpenExpanded: false
+    property bool clarityExpanded: false
     property bool denoiseExpanded: false
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
@@ -115,6 +116,7 @@ Rectangle {
         property alias vignetteExpanded: root.vignetteExpanded
         property alias grainExpanded: root.grainExpanded
         property alias sharpenExpanded: root.sharpenExpanded
+        property alias clarityExpanded: root.clarityExpanded
         property alias denoiseExpanded: root.denoiseExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
@@ -645,6 +647,31 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("分别平滑明度和彩色噪点；较高强度会柔化细节。",
                             "Smooth lightness and color noise separately. Higher amounts soften fine detail.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    ToolButton {
+                        objectName: "clarityToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.clarityExpanded ? "▾ " : "▸ ") + root.t("清晰度 · CPU", "CLARITY · CPU")
+                        onClicked: root.clarityExpanded = !root.clarityExpanded
+                    }
+                    Button {
+                        objectName: "clarityReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetClarity()
+                    }
+                }
+                ColumnLayout {
+                    objectName: "claritySection"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.clarityExpanded; enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "clarityAmountSlider"; label: root.t("强度", "Amount"); from: -100; to: 100; decimals: 0; value: root.controller.clarityAmount; onEdited: function(newValue) { root.controller.clarityAmount = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("增强或柔化局部中间调反差；保留色彩与透明度。",
+                            "Strengthen or soften local midtone contrast while retaining color and alpha.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

@@ -115,6 +115,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double grainSize READ grainSize WRITE setGrainSize NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenAmount READ sharpenAmount WRITE setSharpenAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenRadius READ sharpenRadius WRITE setSharpenRadius NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double clarityAmount READ clarityAmount WRITE setClarityAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseLuma READ denoiseLuma WRITE setDenoiseLuma NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseChroma READ denoiseChroma WRITE setDenoiseChroma NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
@@ -297,6 +298,7 @@ public:
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     double grainAmount() const; double grainSize() const;
     double sharpenAmount() const; double sharpenRadius() const;
+    double clarityAmount() const;
     double denoiseLuma() const; double denoiseChroma() const;
     QVariantMap linearMask() const {
         const auto state=currentState();
@@ -453,6 +455,8 @@ public:
     Q_INVOKABLE void resetVignette();
     Q_INVOKABLE void resetGrain();
     Q_INVOKABLE void resetSharpen();
+    Q_INVOKABLE void resetClarity();
+    void setClarityAmount(double value);
     Q_INVOKABLE void resetDenoise();
     void setDenoiseLuma(double value); void setDenoiseChroma(double value);
     Q_INVOKABLE void copyAdjustments();
