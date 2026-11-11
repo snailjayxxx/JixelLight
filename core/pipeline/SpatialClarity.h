@@ -13,6 +13,7 @@ using Triple=std::array<float,3>;
 using Transform=Triple (*)(Triple);
 bool valid(Parameters parameters);
 int halo(Parameters parameters);
+std::array<float,49> kernelWeights(float radius);
 // Own/reuse the linear-ProPhoto plane. Only lightness and alpha are buffered;
 // the original chroma is read before each independent center is replaced.
 // Peak stage storage is32 bytes/pixel: linear16 + lightness4 + horizontal12.

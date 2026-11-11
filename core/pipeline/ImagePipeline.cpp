@@ -18,6 +18,9 @@
 #include <QRgba64>
 #include <QElapsedTimer>
 #include <QSemaphore>
+#ifdef JIXELLIGHT_BRUSH_FRAME_TEST_PROGRESS
+#include "tests/BrushFrameProgressProbe.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1009,6 +1012,11 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                         : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
                 }
             }
+#ifdef JIXELLIGHT_BRUSH_FRAME_TEST_PROGRESS
+            // Observation only: the performance test holds a completed tile
+            // before publication, then cancels the owning request.
+            if(tile.candidateVisits!=0)BrushFrameProgressProbe::notify(int(tileIndex),h);
+#endif
             totalVisits.fetch_add(mask.visitedDabPixels,std::memory_order_relaxed);
             if (tile.candidateVisits!=0) rasterized.fetch_add(1,std::memory_order_relaxed);
             return true;

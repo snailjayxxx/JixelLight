@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QSemaphore>
 #include "tests/GeometryProgressProbe.h"
+#include "tests/BrushFrameProgressProbe.h"
 #include <QImage>
 #include <QRgba64>
 #include <QTemporaryDir>
@@ -67,19 +68,31 @@ private slots:
         AdjustmentState state;state.brushMasks.layers={layer};
         const auto source=fixture(1024,1024);
         const auto plan=nonRawLinearPlan(state);
+        const auto before=source.copy();
         auto token=std::make_shared<std::atomic_bool>(false);
-        std::atomic_bool entered{false};
-        auto future=QtConcurrent::run([&] {
-            entered.store(true);
+        QThreadPool cancellationPool;cancellationPool.setMaxThreadCount(1);
+        QSemaphore tileReady,resume;
+        std::atomic_int completedTiles{0},completedRows{0};
+        std::atomic_bool producerOffOwner{false};
+        QThread *const owner=QThread::currentThread();
+        auto future=QtConcurrent::run(&cancellationPool,[&] {
+            producerOffOwner.store(QThread::currentThread()!=owner);
+            BrushFrameProgressProbe::tileCompleted=[&](int,int rows) {
+                const int previous=completedTiles.fetch_add(1);completedRows.fetch_add(rows);
+                if(previous==0) { tileReady.release();resume.acquire(); }
+            };
+            auto clearProbe=qScopeGuard([] { BrushFrameProgressProbe::tileCompleted={}; });
             return ImagePipeline::processWithPlan(source,plan,token,false);
         });
-        QElapsedTimer wait;wait.start();
-        while(!entered.load() && wait.elapsed()<5000) QTest::qWait(1);
-        QTest::qWait(10);
+        const bool sawCompletedTile=tileReady.tryAcquire(1,5000);
         const bool pending=!future.isFinished();
-        token->store(true);future.waitForFinished();
-        QVERIFY(entered.load());QVERIFY(pending);
-        QVERIFY(future.result().isNull());
+        token->store(true);
+        // Release on failed observation too; no assertion can strand a worker.
+        resume.release();future.waitForFinished();
+        QVERIFY(sawCompletedTile);QVERIFY(pending);QVERIFY(producerOffOwner.load());
+        QCOMPARE(completedTiles.load(),1);QVERIFY(completedRows.load()>0);
+        QVERIFY(future.result().isNull());QCOMPARE(source,before);
+        qInfo("BRUSH_FRAME_CANCEL_OBSERVED_V1 completed_tiles=1 pending=true worker=true null=true source_unchanged=true");
         // A subsequent independent request is unaffected by the old token.
         QVERIFY(!ImagePipeline::processWithPlan(fixture(32,24),nonRawLinearPlan(),{},false).isNull());
     }

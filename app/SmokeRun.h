@@ -43,4 +43,5 @@ void startRawPressureEventSmokeRun(PhotoController *,QQuickWindow *,const QStrin
 
 void startTangentialGeometrySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
+void startClaritySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 void startDenoiseSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

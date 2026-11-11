@@ -16,6 +16,7 @@
 #include "core/scopes/ScopesEngine.h"
 #include "core/look/LookProfiles.h"
 #include "core/raw/RawDecoder.h"
+#include "core/cache/SourceCache.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
 #include <QDir>
@@ -111,6 +112,77 @@ private:
         }
     }
 private slots:
+    void clarityMatchesReferenceAcrossSourcesAndDensities() {
+        QImage integer(137,139,QImage::Format_RGBA64),floating(137,139,QImage::Format_RGBA32FPx4);
+        const quint16 alpha16[]{0,655,24576,65535};const float alpha32[]{0,1.e-8f,.375f,1.f};
+        for(int y=0;y<139;++y)for(int x=0;x<137;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,alpha16[(x+y)%4]);
+            auto *pixel=reinterpret_cast<float *>(floating.scanLine(y))+4*x;
+            pixel[0]=-.04f+2.f*x/136.f;pixel[1]=.02f+1.5f*y/138.f;pixel[2]=.1f+1.2f*((x+y)%101)/100.f;pixel[3]=alpha32[(x+y)%4];
+        }
+        int compute=0,cpu=0;
+        for(bool fp32:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)
+        for(double amount:{-73.,87.})for(bool preview:{false,true}) {
+            const auto &source=fp32?floating:integer;AdjustmentState state;state.clarityAmount=amount;
+            state.denoiseLuma=71;state.denoiseChroma=83;state.sharpenAmount=61;state.grainAmount=19;
+            state.look.mode="manual";state.look.code="ST";state.look.parameters={{"sharpness",3},{"clarity",2}};
+            const auto space=ColorManagement::OutputSpace(output);const auto input=ImagePipeline::InputEncoding(encoding);
+            const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);const auto reference=preview?source.size()*4:QSize{};
+            verifyParity(source,state,input,space,true,"spatial clarity",frame,reference);if(QTest::currentTestFailed())return;
+            const bool fallback=space==ColorManagement::OutputSpace::AdobeRgb||(fp32&&encoding==1&&space==ColorManagement::OutputSpace::ProPhotoRgb);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);fallback?++cpu:++compute;
+            const auto actual=render(source,state,false,input,space,frame,true,reference);
+            QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["spatial_clarity"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+        }
+        QCOMPARE(compute,44);QCOMPARE(cpu,20);qInfo()<<"clarity64: actual compute"<<compute<<"explicit CPU policies"<<cpu;
+    }
+    void clarityDarkFieldsFractionalRadiiAndAlphaHoles() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);const float alpha[]{0,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.001f+.015f*float((x*17+y*7)%23)/23;p[1]=.003f+.01f*float((x+y)%13)/13;p[2]=.008f;p[3]=alpha[(x+y)%4];
+            if(p[3]==0){p[0]=64000;p[1]=32000;p[2]=16000;}
+        }
+        for(int output=0;output<4;++output)for(double amount:{-100.,100.})for(bool denoise:{false,true})for(bool tiny:{false,true}) {
+            AdjustmentState state;state.clarityAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"clarity dark/holes",{0,0,1,1},source.size()*(tiny?40:2));
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
+    void clarityResidentStagesTrackCompleteDependencies() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.03f*std::sin(float(x));p[1]=.2f+.02f*std::cos(float(y));p[2]=.12f;p[3]=1;}
+        AdjustmentState state;state.clarityAmount=73;QSize reference;
+        auto encoding=ImagePipeline::InputEncoding::LinearProPhoto;auto outputSpace=ColorManagement::OutputSpace::SRgb;
+        std::array<Float4,3> inputRows{};const std::array<Float4,3> *customRows=nullptr;
+        const auto verify=[&]{verifyParity(source,state,encoding,outputSpace,true,"clarity cache",{0,0,1,1},reference,customRows);QVERIFY(!engine->lastProcessUsedCpuFallback());};
+        verify();auto guide=engine->clarityGuideDispatches(),horizontal=engine->clarityHorizontalDispatches(),filter=engine->clarityFilterDispatches(),uploads=engine->sourceUploads();
+        state.exposure=.3;state.temperature=17;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);QCOMPARE(engine->clarityHorizontalDispatches(),horizontal);QCOMPARE(engine->clarityFilterDispatches(),filter);
+        state.clarityAmount=-49;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);QCOMPARE(engine->clarityHorizontalDispatches(),horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        reference=source.size()*4;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        state.denoiseLuma=77;state.denoiseChroma=83;verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        state.denoiseLuma=91;verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        state.sharpenAmount=61;state.grainAmount=19;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);QCOMPARE(engine->clarityHorizontalDispatches(),horizontal);QCOMPARE(engine->clarityFilterDispatches(),filter);QCOMPARE(engine->sourceUploads(),uploads);
+        auto next=source.copy();source=next;state.clarityAmount=0;state.denoiseLuma=0;state.denoiseChroma=0;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);
+        state.clarityAmount=73;verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);QCOMPARE(engine->sourceUploads(),uploads+1);
+        source=source.copy(0,0,67,71);reference={};verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        encoding=ImagePipeline::InputEncoding::SRgb;verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        const auto matrixPlan=ProcessingPlan::compile(state,encoding,outputSpace);std::copy_n(matrixPlan.data.data()+ProcessingPlan::Input0,3,inputRows.data());inputRows[0].x+=.01f;customRows=&inputRows;
+        verify();QCOMPARE(engine->clarityGuideDispatches(),++guide);QCOMPARE(engine->clarityHorizontalDispatches(),++horizontal);QCOMPARE(engine->clarityFilterDispatches(),++filter);
+        outputSpace=ColorManagement::OutputSpace::DisplayP3;verify();QCOMPARE(engine->clarityGuideDispatches(),guide);QCOMPARE(engine->clarityHorizontalDispatches(),horizontal);QCOMPARE(engine->clarityFilterDispatches(),filter);
+    }
+    void clarityRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const auto source=loaded.image.copy((loaded.image.width()-512)/2,(loaded.image.height()-512)/2,512,512);
+        for(int output=0;output<4;++output)for(bool denoise:{false,true}) {
+            AdjustmentState state;state.clarityAmount=65;if(denoise){state.denoiseLuma=70;state.denoiseChroma=90;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"real Sony clarity");
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
     void clarityUsesExplicitCompleteCpuReferencePolicy() {
         QImage source(39,41,QImage::Format_RGBA32FPx4);
         const float alpha[]{0,std::numeric_limits<float>::denorm_min(),1.e-19f,.01f,.5f,1.f};
@@ -127,7 +199,7 @@ private slots:
             for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
             QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
             QCOMPARE(actual.diagnostic["spatial_clarity"].toString(),QString("cpu-reference"));
-            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("clarity-cpu-stage"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("clarity-near-zero-alpha"));
             const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
         }
     }

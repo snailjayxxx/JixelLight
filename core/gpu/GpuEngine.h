@@ -44,6 +44,9 @@ public:
     quint64 sourceUploads() const { return m_uploads; }
     quint64 denoiseGuideDispatches() const { return m_denoiseGuideDispatches; }
     quint64 denoiseFilterDispatches() const { return m_denoiseFilterDispatches; }
+    quint64 clarityGuideDispatches() const {return m_clarityGuideDispatches;}
+    quint64 clarityHorizontalDispatches() const {return m_clarityHorizontalDispatches;}
+    quint64 clarityFilterDispatches() const {return m_clarityFilterDispatches;}
     quint64 renderedRevision() const { return m_revision; }
     bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }
 private:
@@ -53,6 +56,7 @@ private:
     bool initialize(QSize size);
     bool ensureDetail();
     bool ensureDenoise();
+    bool ensureClarity();
     bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input);
     bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input=nullptr);
     bool ensureDisplayColorResources();
@@ -73,6 +77,19 @@ private:
     std::unique_ptr<QRhiTexture> m_denoiseGuide,m_denoiseLinear;
     std::unique_ptr<QRhiShaderResourceBindings> m_denoisePrepareBindings,m_denoiseFilterBindings,m_denoiseColorBindings,m_denoiseDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_denoisePreparePipeline,m_denoiseFilterPipeline;
+    std::unique_ptr<QRhiTexture> m_clarityGuide,m_clarityHorizontal,m_clarityLinear;
+    std::unique_ptr<QRhiBuffer> m_clarityKernel;
+    std::unique_ptr<QRhiShaderResourceBindings> m_clarityPrepareBindings,m_clarityPrepareDenoisedBindings,
+        m_clarityHorizontalBindings,m_clarityFilterBindings,m_clarityFilterDenoisedBindings,
+        m_clarityColorBindings,m_clarityDetailBindings;
+    std::unique_ptr<QRhiComputePipeline> m_clarityPreparePipeline,m_clarityHorizontalPipeline,m_clarityFilterPipeline;
+    qint64 m_claritySourceKey=0;
+    int m_clarityEncoding=-1;
+    std::array<Float4,3> m_clarityInputRows{};
+    Float4 m_clarityDenoiseSettings{},m_claritySettings{};
+    float m_clarityHorizontalRadius=-1;
+    bool m_clarityGuideValid=false,m_clarityHorizontalValid=false,m_clarityOutputValid=false;
+    quint64 m_clarityGuideDispatches=0,m_clarityHorizontalDispatches=0,m_clarityFilterDispatches=0;
     QString m_lutKey;
     std::unique_ptr<QRhiBuffer> m_uniform, m_partial, m_counts, m_vertices;
     std::unique_ptr<QRhiSampler> m_sampler, m_displayLutSampler;
