@@ -39,6 +39,7 @@ struct AdjustmentState {
     double grainSize = 1.0;   // .5..4, relative to the post-crop image frame.
     double sharpenAmount = 0.0; // 0..100, independent encoded-luma unsharp mask.
     double sharpenRadius = 3.0; // .5..6 source pixels, after geometry/crop.
+    double textureAmount = 0.0; // -100..100, pre-tone medium-frequency detail.
     double clarityAmount = 0.0; // -100..100, pre-tone local midtone contrast.
     double denoiseLuma = 0.0; // 0..100, perceptual lightness noise reduction.
     double denoiseChroma = 0.0; // 0..100, joint-guide color noise reduction.
@@ -144,6 +145,8 @@ struct AdjustmentState {
             result["grain"]=QJsonObject{{"schema",1},{"amount",grainAmount},{"size",grainSize}};
         if (sharpenAmount!=0 || sharpenRadius!=3)
             result["sharpen"]=QJsonObject{{"schema",1},{"amount",sharpenAmount},{"radius",sharpenRadius}};
+        if (textureAmount!=0)
+            result["texture"]=QJsonObject{{"schema",1},{"amount",textureAmount}};
         if (clarityAmount!=0)
             result["clarity"]=QJsonObject{{"schema",1},{"amount",clarityAmount}};
         if (denoiseLuma!=0 || denoiseChroma!=0)
@@ -227,6 +230,14 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validTextureJson(const QJsonObject &object) {
+        if(!object.contains("texture"))return true;
+        if(!object["texture"].isObject())return false;
+        const auto c=object["texture"].toObject();
+        return c.size()==2&&c["schema"].isDouble()&&c["schema"].toDouble()==1
+            &&c["amount"].isDouble()&&std::isfinite(c["amount"].toDouble())
+            &&c["amount"].toDouble()>=-100&&c["amount"].toDouble()<=100&&c["amount"].toDouble()!=0;
+    }
     static bool validClarityJson(const QJsonObject &object) {
         if(!object.contains("clarity"))return true;
         if(!object["clarity"].isObject())return false;
@@ -357,6 +368,7 @@ struct AdjustmentState {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
         }
+        if(o.contains("texture")&&validTextureJson(o))s.textureAmount=o["texture"].toObject()["amount"].toDouble();
         if(o.contains("clarity")&&validClarityJson(o))s.clarityAmount=o["clarity"].toObject()["amount"].toDouble();
         if(o.contains("denoise")&&validDenoiseJson(o)) {
             const auto d=o["denoise"].toObject();s.denoiseLuma=d["lightness"].toDouble();s.denoiseChroma=d["chroma"].toDouble();

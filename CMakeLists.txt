@@ -88,7 +88,7 @@ add_library(JixelLightCore STATIC
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/pipeline/BrushRenderRequest.cpp
-    core/pipeline/SpatialClarity.cpp
+    core/pipeline/SpatialClarity.cpp core/pipeline/SpatialTexture.cpp
     core/pipeline/SpatialDenoise.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
@@ -122,7 +122,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -513,3 +513,22 @@ target_link_libraries(JixelLightClarityCacheTests PRIVATE JixelLightCore Qt6::Te
 set_target_properties(JixelLightClarityCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME clarity-preview-cache COMMAND JixelLightClarityCacheTests -o clarity-cache-results.txt,txt -o -,txt)
 set_tests_properties(clarity-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightTextureTests tests/SpatialTextureTests.cpp)
+target_link_libraries(JixelLightTextureTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightTextureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME spatial-texture COMMAND JixelLightTextureTests -o texture-results.txt,txt -o -,txt)
+set_tests_properties(spatial-texture PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightTextureWorkflowTests tests/TextureWorkflowTests.cpp)
+target_link_libraries(JixelLightTextureWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightTextureWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME texture-workflows COMMAND JixelLightTextureWorkflowTests -o texture-workflow-results.txt,txt -o -,txt)
+set_tests_properties(texture-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_TEXTURE_EVIDENCE=${CMAKE_BINARY_DIR}/texture-owned")
+
+qt_add_executable(JixelLightTextureCacheTests tests/TexturePreviewCacheTests.cpp core/cache/RenderedPreviewCache.cpp)
+target_compile_definitions(JixelLightTextureCacheTests PRIVATE JIXELLIGHT_PREVIEW_STAGE_TEST_PROGRESS=1)
+target_link_libraries(JixelLightTextureCacheTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightTextureCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME texture-preview-cache COMMAND JixelLightTextureCacheTests -o texture-cache-results.txt,txt -o -,txt)
+set_tests_properties(texture-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")

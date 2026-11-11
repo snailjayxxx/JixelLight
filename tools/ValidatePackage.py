@@ -26,6 +26,7 @@ from ValidateRawPressureQpa import validate_raw_qpa
 from ValidateTangentialGeometry import validate_tangential
 from ValidateDenoise import validate_denoise
 from ValidateClarity import validate_clarity
+from ValidateTexture import validate_texture
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -303,6 +304,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_clarity(executable, environment, Path(clarity_temp) / mode,
                 reports / ('clarity-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Complete original74 modes precede CPU texture/control and GPU-display fallback contexts.
+    with tempfile.TemporaryDirectory(prefix='jixellight-texture-package-') as texture_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_texture(executable, environment, Path(texture_temp) / mode,
+                reports / ('texture-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

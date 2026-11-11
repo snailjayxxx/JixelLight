@@ -95,6 +95,7 @@ Rectangle {
     property bool vignetteExpanded: false
     property bool grainExpanded: false
     property bool sharpenExpanded: false
+    property bool textureExpanded: false
     property bool clarityExpanded: false
     property bool denoiseExpanded: false
     property bool linearMaskExpanded: false
@@ -647,6 +648,31 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("分别平滑明度和彩色噪点；较高强度会柔化细节。",
                             "Smooth lightness and color noise separately. Higher amounts soften fine detail.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    ToolButton {
+                        objectName: "textureToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.textureExpanded ? "▾ " : "▸ ") + root.t("纹理 · CPU", "TEXTURE · CPU")
+                        onClicked: root.textureExpanded = !root.textureExpanded
+                    }
+                    Button {
+                        objectName: "textureReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetTexture()
+                    }
+                }
+                ColumnLayout {
+                    objectName: "textureSection"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.textureExpanded; enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "textureAmountSlider"; label: root.t("强度", "Amount"); from: -100; to: 100; decimals: 0; value: root.controller.textureAmount; onEdited: function(newValue) { root.controller.textureAmount = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("增强或柔化中等尺度细节；高强度可能强化噪点。",
+                            "Strengthen or soften medium-scale detail. Higher amounts can emphasize noise.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

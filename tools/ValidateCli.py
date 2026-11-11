@@ -84,7 +84,7 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 22
+        assert len(schema['parameters']) == 23
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
@@ -92,8 +92,8 @@ def main():
         assert 'grain.reset' in {c['name'] for c in schema['commands']}
         assert {p['name'] for p in schema['parameters']} >= {'sharpenAmount', 'sharpenRadius'}
         assert 'sharpen.reset' in {c['name'] for c in schema['commands']}
-        assert {p['name'] for p in schema['parameters']} >= {'denoiseLuma', 'denoiseChroma', 'clarityAmount'}
-        assert 'denoise.reset' in {c['name'] for c in schema['commands']}
+        assert {p['name'] for p in schema['parameters']} >= {'denoiseLuma', 'denoiseChroma', 'textureAmount', 'clarityAmount'}
+        assert {'denoise.reset','clarity.reset','texture.reset'} <= {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -348,6 +348,24 @@ def main():
         for index, value in enumerate((True, '1', None)):
             commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'clarityAmount', 'value': value}]))
             rejected = root / f'clarity-rejected-{index}.png'
+            run('--commands', commands, sharpen_source, rejected, success=False)
+            assert not rejected.exists()
+        assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash
+        for amount in (-73, 73):
+            commands.write_text(json.dumps(exposure + [{'command': 'develop.set', 'parameter': 'textureAmount', 'value': amount}]))
+            texture = root / f'texture-{amount}.png'
+            result = json.loads(run('--commands', commands, sharpen_source, texture).stdout)
+            assert result['adjustments']['texture'] == {'schema': 1, 'amount': amount}
+            assert result['backend'] == 'cpu-reference'
+            assert png16_pixels(texture)[3] != png16_pixels(detail_plain)[3]
+        commands.write_text(json.dumps(exposure + [{'command': 'develop.set', 'parameter': 'textureAmount', 'value': 73}, {'command': 'texture.reset'}]))
+        texture_reset = root / 'texture-reset.png'
+        result = json.loads(run('--commands', commands, sharpen_source, texture_reset).stdout)
+        assert 'texture' not in result['adjustments'] and result['adjustments']['exposure'] == 1
+        assert png16_pixels(texture_reset) == png16_pixels(detail_plain)
+        for index, value in enumerate((True, '1', None)):
+            commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'textureAmount', 'value': value}]))
+            rejected = root / f'texture-rejected-{index}.png'
             run('--commands', commands, sharpen_source, rejected, success=False)
             assert not rejected.exists()
         assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash

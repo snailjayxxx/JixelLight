@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化、明度/颜色降噪及独立清晰度已覆盖预览、示波器、导出和持久化。清晰度 CPU 干净提交 `08be052` 通过完整 84/84；后续三阶段 QRhi 清晰度本机 GPU 回归 49 项通过，CPU/Metal 实际主界面的正负调整、重置、撤销重做、项目重开及 PNG16 逐像素验证通过，当前提交及跨平台/74 项安装包验证仍待完成。较早 CI #367 三平台和两个 70 项安装包全部通过；CI #368 Windows 上传中取消，CI #370 macOS 上传失败导致打包跳过，均未算作完整交付。传输修正及 CPU 清晰度的 CI #372/#373 正在运行。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)和[QRhi 清晰度与主界面验证](docs/F4_QRHI_CLARITY_NATIVE_STAGE_M58.md)。
+> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化、降噪和独立清晰度已覆盖预览、示波器、导出及持久化。清晰度 QRhi 干净提交 `fb00101` 通过完整 84/84（784 秒）、GPU 49 项和 CPU/Metal 实际主界面逐像素导出验证，草稿 PR #21 的跨平台/74 项安装包验证正在运行。新增纹理 CPU 首版通过核心 10 / 工作流 17 / 缓存 10、完整 GPU/回退 50 项和中英文实际主界面验证；纹理 GPU 显示仍明确使用无阶段缓存的 CPU 整帧参考，后续继续开发。纹理自身干净 87 项与跨平台/76 项安装包验证待完成。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[纹理](docs/F4_SPATIAL_TEXTURE_STAGE_M59.md)和[清晰度](docs/F4_QRHI_CLARITY_NATIVE_STAGE_M58.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

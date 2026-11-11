@@ -6,6 +6,9 @@
 #include <QRgba64>
 #include <algorithm>
 #include <limits>
+#ifdef JIXELLIGHT_PREVIEW_STAGE_TEST_PROGRESS
+#include "tests/PreviewStageProgressProbe.h"
+#endif
 
 RenderedPreviewCache::RenderedPreviewCache(qint64 bytes,std::shared_ptr<BrushRenderBudget> brushBudget)
     : m_entries(int(std::clamp(bytes / 1024, qint64(0), qint64(std::numeric_limits<int>::max())))),
@@ -19,9 +22,11 @@ QJsonObject RenderedPreviewCache::snapshotLocked() const {
             {"evictions", m_evictions}, {"cancelled_requests", m_cancelled},
             {"denoise_stage_hits",m_denoiseHits},{"denoise_stage_misses",m_denoiseMisses},
             {"denoise_stage_bypasses",m_denoiseBypasses},{"denoise_key_version","cpu-denoise-preview-v1"},
+            {"texture_stage_hits",m_textureHits},{"texture_stage_misses",m_textureMisses},
+            {"texture_stage_bypasses",m_textureBypasses},{"texture_key_version","cpu-texture-preview-v1"},
             {"clarity_stage_hits",m_clarityHits},{"clarity_stage_misses",m_clarityMisses},
             {"clarity_stage_bypasses",m_clarityBypasses},{"clarity_key_version","cpu-clarity-preview-v1"},
-            {"accounting", "RGBA64 results, FP32 denoise/clarity stages and retained LUT payloads share this budget; rounded to KiB per entry; excludes allocator overhead/live caller images"}};
+            {"accounting", "RGBA64 results, FP32 denoise/texture/clarity stages and retained LUT payloads share this budget; rounded to KiB per entry; excludes allocator overhead/live caller images"}};
 }
 QJsonObject RenderedPreviewCache::snapshot() const {
     QMutexLocker lock(&m_mutex);
@@ -68,13 +73,16 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
             if(const auto *entry=m_entries.object(spatialKey)) {
                 spatialInput=entry->image;
                 if(plan.denoiseActive()){++m_denoiseHits;PerformanceRecorder::count("cpu_preview_denoise_hit");}
+                if(plan.textureActive()){++m_textureHits;PerformanceRecorder::count("cpu_preview_texture_hit");}
                 if(plan.clarityActive()){++m_clarityHits;PerformanceRecorder::count("cpu_preview_clarity_hit");}
             } else {
                 if(plan.denoiseActive()){++m_denoiseMisses;PerformanceRecorder::count("cpu_preview_denoise_miss");}
+                if(plan.textureActive()){++m_textureMisses;PerformanceRecorder::count("cpu_preview_texture_miss");}
                 if(plan.clarityActive()){++m_clarityMisses;PerformanceRecorder::count("cpu_preview_clarity_miss");}
             }
         } else {
             if(plan.denoiseActive()){++m_denoiseBypasses;PerformanceRecorder::count("cpu_preview_denoise_bypass");}
+            if(plan.textureActive()){++m_textureBypasses;PerformanceRecorder::count("cpu_preview_texture_bypass");}
             if(plan.clarityActive()){++m_clarityBypasses;PerformanceRecorder::count("cpu_preview_clarity_bypass");}
         }
         recordLocked();
@@ -85,6 +93,9 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
         if(request)image=request->render(cancel,error).sharedImage();
     }else if(stageCacheable) {
         if(spatialInput.isNull())spatialInput=ImagePipeline::preparePreviewSpatialInput(source,plan,cancel);
+#ifdef JIXELLIGHT_PREVIEW_STAGE_TEST_PROGRESS
+        if(!spatialInput.isNull())PreviewStageProgressProbe::notify(spatialInput);
+#endif
         if(!spatialInput.isNull())image=ImagePipeline::processPreviewWithSpatialInput(source,spatialInput,plan,cancel);
     }else image=ImagePipeline::processWithPlan(source,plan,cancel);
     if(image.isNull()&&failure&&*failure==BrushAdmissionFailure::None)*failure=cancelled(cancel)?BrushAdmissionFailure::Cancelled:BrushAdmissionFailure::Invalid;
