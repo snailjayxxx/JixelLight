@@ -95,6 +95,7 @@ Rectangle {
     property bool vignetteExpanded: false
     property bool grainExpanded: false
     property bool sharpenExpanded: false
+    property bool denoiseExpanded: false
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
     property bool blackWhiteExpanded: false
@@ -114,6 +115,7 @@ Rectangle {
         property alias vignetteExpanded: root.vignetteExpanded
         property alias grainExpanded: root.grainExpanded
         property alias sharpenExpanded: root.sharpenExpanded
+        property alias denoiseExpanded: root.denoiseExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
@@ -617,6 +619,32 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("单色颗粒随画幅固定；缩小预览时细颗粒会减弱。强度为 0 时关闭。",
                             "Monochrome grain stays fixed to the photo. Fine grain fades in smaller previews. Amount 0 turns it off.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    ToolButton {
+                        objectName: "denoiseToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.denoiseExpanded ? "▾ " : "▸ ") + root.t("降噪 · CPU", "DENOISE · CPU")
+                        onClicked: root.denoiseExpanded = !root.denoiseExpanded
+                    }
+                    Button {
+                        objectName: "denoiseReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetDenoise()
+                    }
+                }
+                ColumnLayout {
+                    objectName: "denoiseSection"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.denoiseExpanded; enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "denoiseLumaSlider"; label: root.t("明度", "Lightness"); from: 0; to: 100; decimals: 0; value: root.controller.denoiseLuma; onEdited: function(newValue) { root.controller.denoiseLuma = newValue } }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "denoiseChromaSlider"; label: root.t("颜色", "Color"); from: 0; to: 100; decimals: 0; value: root.controller.denoiseChroma; onEdited: function(newValue) { root.controller.denoiseChroma = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("分别平滑明度和彩色噪点；较高强度会柔化细节。",
+                            "Smooth lightness and color noise separately. Higher amounts soften fine detail.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

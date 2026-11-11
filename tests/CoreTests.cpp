@@ -7237,7 +7237,7 @@ private slots:
         QVERIFY(!CommandRegistry::set(state,"exposure",std::numeric_limits<double>::infinity(),&error));
         QCOMPARE(state.toJson(),before);
         QVERIFY(!CommandRegistry::execute(state,{{"command","develop.set"},{"parameter","exposure"},{"value","2"}},&error));
-        QCOMPARE(CommandRegistry::schema()["parameters"].toArray().size(),19);
+        QCOMPARE(CommandRegistry::schema()["parameters"].toArray().size(),21);
     }
 
     void geometryPreservesPixelsAndRestoresOldProjectDefaults() {

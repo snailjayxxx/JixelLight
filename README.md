@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 新增胶片颗粒与独立锐化已覆盖预览、示波器、导出和持久化；功能提交 `6cbea77` 在本机通过 78/78 项完整回归。软件源修复后，CI #366 的 Linux 也通过 78/78 项，随后在正常应用检查中发现中文容量删除按钮被裁切；对应布局及边界检查已修正，并通过本机 CPU/Metal 工作流。当前跨平台及打包验收仍待完成，最近完整通过 CI 的基线为 `9c1c4f2`（CI #362）。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[颗粒](docs/F4_FILM_GRAIN_STAGE_M50.md)、[锐化](docs/F4_INDEPENDENT_SHARPEN_STAGE_M51.md)和[容量操作修正](docs/F4_BRUSH_CAPACITY_LAYOUT_STAGE_M51B.md)。
+> **开发进度（2026-11-12）：** 胶片颗粒与独立锐化已覆盖预览、示波器、导出和持久化；新一阶段的 CPU 明度/颜色降噪也已实现，并通过算法、实拍裁块、2400 万像素画笔叠加和双语面板专项检查，仍待完整回归及跨平台验收。功能提交 `6cbea77` 在本机通过 78/78 项完整回归。软件源修复后，CI #366 的 Linux 也通过 78/78 项，随后在正常应用检查中发现中文容量删除按钮被裁切；对应布局及边界检查已修正，并通过本机 CPU/Metal 工作流。当前跨平台及打包验收仍待完成，最近完整通过 CI 的基线为 `9c1c4f2`（CI #362）。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[颗粒](docs/F4_FILM_GRAIN_STAGE_M50.md)、[锐化](docs/F4_INDEPENDENT_SHARPEN_STAGE_M51.md)、[CPU 降噪](docs/F4_SPATIAL_DENOISE_STAGE_M52.md)和[容量操作修正](docs/F4_BRUSH_CAPACITY_LAYOUT_STAGE_M51B.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

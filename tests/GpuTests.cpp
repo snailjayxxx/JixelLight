@@ -109,6 +109,36 @@ private:
         }
     }
 private slots:
+    void spatialDenoiseUsesCompleteCpuReferenceUpload() {
+        QImage integer(137,139,QImage::Format_RGBA64),hdr(137,139,QImage::Format_RGBA32FPx4);
+        const quint16 alpha16[]{0,1,24576,65535};const float alpha32[]{0,1.e-8f,1.f/65535,.375f,1.f};
+        for(int y=0;y<139;++y)for(int x=0;x<137;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,alpha16[(x+y)%4]);
+            auto *p=reinterpret_cast<float *>(hdr.scanLine(y))+4*x;p[0]=-.04f+2.f*x/136.f;p[1]=.02f+1.5f*y/138.f;p[2]=.1f+1.2f*((x+y)%101)/100.f;p[3]=alpha32[(x+y)%5];
+        }
+        const auto verify=[&](const QImage &input,const AdjustmentState &state,ImagePipeline::InputEncoding encoding,ColorManagement::OutputSpace output,bool preview) {
+            const auto reference=preview?QSize(1096,1112):QSize{};const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);
+            const auto actual=render(input,state,true,encoding,output,frame,true,reference);QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));QVERIFY(engine->lastProcessUsedCpuFallback());
+            auto p=ProcessingPlan::compile(state,encoding,output);p.setReferenceFrameSize(reference);p.setFrameRect(frame);
+            const auto expected=ImagePipeline::processWithPlan(input,p);QCOMPARE(actual.image.size(),expected.size());
+            for(int y=0;y<input.height();++y)QVERIFY2(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),std::size_t(input.width())*8)==0,"CPU upload must preserve every RGBA16 pixel; texture readback has no ICC metadata");
+            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.pixelCount,counts.pixelCount);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
+            QVERIFY(actual.diagnostic["available"].toBool());QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+        };
+        for(const auto amounts : {QPoint(100,0),QPoint(0,100),QPoint(87,93)}) {
+            AdjustmentState state;state.denoiseLuma=amounts.x();state.denoiseChroma=amounts.y();state.sharpenAmount=71;state.sharpenRadius=5.7;state.grainAmount=31;state.grainSize=3.3;
+            state.look.mode="manual";state.look.code="ST";state.look.parameters={{"clarity",3},{"sharpness",4}};
+            for(int output=0;output<4;++output)for(bool preview : {false,true}) {
+                for(int encoding=0;encoding<2;++encoding)verify(integer,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(output),preview);
+                verify(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),preview);
+            }
+        }
+        AdjustmentState state;state.denoiseLuma=87;state.denoiseChroma=93;
+        BrushMaskGeometry::Stroke paint;paint.style={.13,.42,.8};paint.dabs={{{.28,.37},.5},{{.69,.62},.9}};auto erase=paint;erase.mode=BrushMaskGeometry::StrokeMode::Erase;erase.dabs={{{.3,.38},.3}};
+        state.brushMasks.layers.push_back({"denoise-fallback",true,.85,{paint,erase}});
+        for(int output=0;output<4;++output)verify(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true);
+        if(!QTest::currentTestFailed())qInfo()<<"spatial denoise: 76 exact CPU-reference upload cases; no GPU-denoise compute claimed";
+    }
     void independentSharpenMatchesCpuAtFullAndPreviewDensity() {
         QImage source(137,139,QImage::Format_RGBA64);const quint16 alpha[]{0,1,24576,65535};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
@@ -186,7 +216,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -210,9 +240,15 @@ private slots:
                 const auto detail=ProcessingPlan::compile(detailState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
                 const auto detailFrame=N::FrameAdmission::prepare(result.source,caps,detail,{"grain-catalog","grain-input","grain-version",1},3,&why);
                 result.sharpenRefused=!detailFrame&&why==N::FrameFailure::CPUPolicy;
+                for(const auto amounts : {QPoint(100,0),QPoint(0,100),QPoint(87,93)}) {
+                    auto denoiseState=state;denoiseState.denoiseLuma=amounts.x();denoiseState.denoiseChroma=amounts.y();
+                    const auto denoise=ProcessingPlan::compile(denoiseState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
+                    const auto denoiseFrame=N::FrameAdmission::prepare(result.source,caps,denoise,{"grain-catalog","grain-input","grain-version",1},4,&why);
+                    result.denoiseRefused=result.denoiseRefused&&!denoiseFrame&&why==N::FrameFailure::CPUPolicy;
+                }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));

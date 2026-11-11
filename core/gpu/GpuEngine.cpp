@@ -20,6 +20,9 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+    // The first spatial-denoise stage is a complete CPU reference. GPU upload
+    // supplies display/statistics only; never silently omit the filter.
+    if(plan.denoiseActive())return true;
     // Extended FP32 grain fixtures expose >40/65535 at an Adobe RGB gamut
     // edge. Keep the established color math and tolerance; use the exact
     // reference for this optional output combination on every backend.
@@ -222,7 +225,7 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
     m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
-    if(!plan.validIndependentDetail())return fail(QStringLiteral("Invalid independent detail settings"));
+    if(!plan.validSpatialSettings())return fail(QStringLiteral("Invalid spatial settings"));
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0||plan.data[ProcessingPlan::IndependentDetail].x>0;
     if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;

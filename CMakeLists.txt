@@ -88,6 +88,7 @@ add_library(JixelLightCore STATIC
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/pipeline/BrushRenderRequest.cpp
+    core/pipeline/SpatialDenoise.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
     core/pipeline/GeometryCorrections.cpp
@@ -473,3 +474,15 @@ target_link_libraries(JixelLightSharpenTests PRIVATE JixelLightCore Qt6::Test)
 set_target_properties(JixelLightSharpenTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME independent-sharpen COMMAND JixelLightSharpenTests -o sharpen-results.txt,txt -o -,txt)
 set_tests_properties(independent-sharpen PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_SHARPEN_EVIDENCE=${CMAKE_BINARY_DIR}/sharpen-owned")
+
+qt_add_executable(JixelLightDenoiseTests tests/SpatialDenoiseTests.cpp)
+target_link_libraries(JixelLightDenoiseTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDenoiseTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME spatial-denoise COMMAND JixelLightDenoiseTests -o denoise-results.txt,txt -o -,txt)
+set_tests_properties(spatial-denoise PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightDenoiseWorkflowTests tests/DenoiseWorkflowTests.cpp)
+target_link_libraries(JixelLightDenoiseWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDenoiseWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME denoise-workflows COMMAND JixelLightDenoiseWorkflowTests -o denoise-workflow-results.txt,txt -o -,txt)
+set_tests_properties(denoise-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_DENOISE_EVIDENCE=${CMAKE_BINARY_DIR}/denoise-owned")

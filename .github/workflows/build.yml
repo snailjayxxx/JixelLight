@@ -430,6 +430,7 @@ jobs:
             build/tangential-gpu-owned
             build/grain-owned
             build/sharpen-owned
+            build/denoise-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/
@@ -776,6 +777,7 @@ jobs:
             build/tangential-gpu-owned
             build/grain-owned
             build/sharpen-owned
+            build/denoise-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/

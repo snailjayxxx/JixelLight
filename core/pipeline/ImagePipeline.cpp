@@ -1,5 +1,7 @@
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/FilmGrain.h"
+#include "core/pipeline/SpatialDenoise.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/ColorStageDiagnostics.h"
 #include "core/pipeline/StageGraph.h"
@@ -555,6 +557,39 @@ template<class Observer> inline QRgba64 colorPixelFloat(const float *pixel,const
     const quint16 alpha=quint16(std::lround(pixel[3]*65535.0f));
     return colorPixelLinear(inputLinear(encoded,kernel),alpha,kernel,x,y,observe,brushEv);
 }
+template<class Observer> inline QRgba64 colorPixelDenoised(const float *pixel,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
+    return colorPixelLinear({pixel[0],pixel[1],pixel[2]},quint16(std::lround(pixel[3]*65535.f)),kernel,x,y,observe,brushEv);
+}
+QImage prepareDenoiseInput(const QImage &source,const ColorKernel &kernel,const Float4 &settings,
+                           const CancelToken &token,bool parallel,QJsonObject *diagnostics=nullptr) {
+    if(source.isNull()||cancelled(token))return {};
+    PerformanceSpan timer("spatial_denoise_cpu",{{"pixels",qint64(source.width())*source.height()},{"radius",settings.z}});
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    const QImage input=floating?source:ImagePipeline::rgba64Source(source,token);if(input.isNull())return {};
+    QImage linear(input.size(),QImage::Format_RGBA32FPx4),guide(input.size(),QImage::Format_RGBA32FPx4);
+    if(linear.isNull()||guide.isNull())return {};
+    auto *linearBits=linear.bits(),*guideBits=guide.bits();const auto linearStride=linear.bytesPerLine(),guideStride=guide.bytesPerLine();
+    ParallelRows::run(input.height(),input.width(),token,[&](int y) {
+        const auto *row64=floating?nullptr:reinterpret_cast<const QRgba64 *>(input.constScanLine(y));
+        const auto *rowFloat=floating?reinterpret_cast<const float *>(input.constScanLine(y)):nullptr;
+        auto *out=reinterpret_cast<float *>(linearBits+y*linearStride),*labOut=reinterpret_cast<float *>(guideBits+y*guideStride);
+        for(int x=0;x<input.width();++x) {
+            const auto value=floating?inputLinear(Vec3{rowFloat[4*x],rowFloat[4*x+1],rowFloat[4*x+2]},kernel):inputLinear(row64[x],kernel);
+            const float alpha=floating?rowFloat[4*x+3]:row64[x].alpha()/65535.f;
+            const auto lab=linearSrgbToOklab(proPhotoToLinearSrgb(value));
+            out[4*x]=value.x;out[4*x+1]=value.y;out[4*x+2]=value.z;out[4*x+3]=alpha;
+            labOut[4*x]=lab.L;labOut[4*x+1]=lab.a;labOut[4*x+2]=lab.b;labOut[4*x+3]=alpha;
+        }
+    },parallel);
+    if(cancelled(token))return {};
+    if(diagnostics)(*diagnostics)["input"]=FloatFrameFingerprint::capture(linear);
+    const auto inverse=[](SpatialDenoise::Triple lab)->SpatialDenoise::Triple {
+        const auto value=linearSrgbToProPhoto(oklabToLinearSrgb({lab[0],lab[1],lab[2]}));return {value.x,value.y,value.z};
+    };
+    auto result=SpatialDenoise::apply(std::move(linear),guide,{settings.x,settings.y,settings.z},inverse,token,parallel);
+    if(diagnostics&&!result.isNull())(*diagnostics)["output"]=FloatFrameFingerprint::capture(result);
+    return result;
+}
 QImage finishColor(QImage out, const ProcessingPlan &plan, const QSize &sourceSize,const CancelToken &token) {
     if (out.isNull() || cancelled(token)) return {};
     const auto d=plan.data[ProcessingPlan::LookDetail];
@@ -593,6 +628,7 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    plan.data[Denoise]={finite(state.denoiseLuma,0,0,100)*.01f,finite(state.denoiseChroma,0,0,100)*.01f,0,0};
     plan.data[FrameRect]={0,0,1,1};
     constexpr float rad=3.14159265358979323846f/180.0f;
     const float angle=finite(state.linearMaskAngle,0,-180,180)*rad;
@@ -696,14 +732,16 @@ bool validResearchDetail(const Float4 &detail) {
         && detail.z>=0 && detail.z<=12 && detail.w>=0 && detail.w<=12;
 }
 QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,const QRect &region) {
-    if(!plan.validIndependentDetail())return {};
+    if(!plan.validSpatialSettings())return {};
     const QRect bounds(QPoint{},sourceSize);
     const QRect roi=region.intersected(bounds);
     if (roi.isEmpty()) return {};
     const auto detail=plan.data[ProcessingPlan::LookDetail];
     if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks) && !validResearchDetail(detail)) return {};
     const auto independent=plan.independentDetail(sourceSize);
-    const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y});
+    const auto denoise=plan.denoise(sourceSize);
+    const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})
+        +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z});
     return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
 }
 }
@@ -850,7 +888,7 @@ namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,
                         const QSize &sourceSize,const QPoint &origin,
                         std::size_t brushPixelBudget=BrushMaskTileRaster::MaxResearchFramePixels) {
-    if (source.isNull() || cancelled(token) || !plan.validIndependentDetail()
+    if (source.isNull() || cancelled(token) || !plan.validSpatialSettings()
         || !BrushMaskDocument::validDocument(plan.state.brushMasks)) return {};
     const bool brushResearch=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
     // In-memory research only. Large real RAW brush rendering needs a separate
@@ -871,13 +909,15 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     // scene sources bypass RGBA64 staging; otherwise values >1 would clip
     // before the user's exposure or highlight recovery can act.
     if (floating && !ImagePipeline::validFloatSource(source,token)) return {};
-    const QImage input=floating?source:ImagePipeline::rgba64Source(source,token);
+    const ColorKernel kernel(plan,sourceSize);
+    const bool denoised=plan.denoiseActive();
+    const QImage input=denoised?prepareDenoiseInput(source,kernel,plan.denoise(sourceSize),token,parallel)
+        :floating?source:ImagePipeline::rgba64Source(source,token);
     if (input.isNull()) return {};
     QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return {};
     const uchar *src=input.constBits(); const qsizetype srcStride=input.bytesPerLine();
     uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
-    const ColorKernel kernel(plan,sourceSize);
     const auto recordBrushTiles=[&](std::size_t rasterized) {
         PerformanceRecorder::count("brush_research_cpu_tiles",qint64(brushFrame.tiles.size()));
         PerformanceRecorder::count("brush_research_rasterized_tiles",qint64(rasterized));
@@ -905,15 +945,16 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                 if(cancelled(token) || failed.load(std::memory_order_relaxed)) return false;
                 auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
                 const auto *raw=src+(tileY+yy)*srcStride;
-                const auto *rgba=floating ? reinterpret_cast<const float *>(raw) : nullptr;
-                const auto *rgba64=floating ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
+                const auto *rgba=(floating||denoised) ? reinterpret_cast<const float *>(raw) : nullptr;
+                const auto *rgba64=(floating||denoised) ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
                 for(int xx=0;xx<w;++xx) {
                     const int x=tileX+xx;
                     const float ev=tile.candidateVisits==0 ? 0.0f
                         : mask.weightedExposureEv[std::size_t(yy)*w+xx];
                     if (!std::isfinite(ev) || std::abs(ev)>8.0f) return false;
-                    line[x]=floating
-                        ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
+                    line[x]=denoised
+                        ? colorPixelDenoised(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
+                        :floating ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
                         : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
                 }
             }
@@ -976,7 +1017,11 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     // have already run, so this cannot turn malformed active masks into identity.
     ParallelRows::run(out.height(),out.width(),token,[&](int y) {
         auto *line=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
-        if (floating) {
+        if (denoised) {
+            const auto *pixels=reinterpret_cast<const float *>(src+y*srcStride);
+            for (int x=0;x<out.width();++x)
+                line[x]=colorPixelDenoised(pixels+4*x,kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
+        } else if (floating) {
             const auto *pixels=reinterpret_cast<const float *>(src+y*srcStride);
             for (int x=0;x<out.width();++x)
                 line[x]=colorPixelFloat(pixels+4*x,kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
@@ -996,7 +1041,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
 
 ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
-    if (source.isNull() || cancelled(token) || !plan.validIndependentDetail()) return result;
+    if (source.isNull() || cancelled(token) || !plan.validSpatialSettings()) return result;
     if (!BrushMaskDocument::validDocument(plan.state.brushMasks)) {
         result.stages.insert("error","Invalid brush document");
         return result;
@@ -1012,11 +1057,13 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("error","Invalid non-finite/out-of-range FP32 scene source");
         return result;
     }
-    const QImage input=floating?source:rgba64Source(source,token);
+    const ColorKernel kernel(plan,source.size());QJsonObject denoiseDiagnostics;
+    const bool denoised=plan.denoiseActive();
+    const QImage input=denoised?prepareDenoiseInput(source,kernel,plan.denoise(source.size()),token,false,&denoiseDiagnostics)
+        :floating?source:rgba64Source(source,token);
     if (input.isNull()) return result;
     QImage out(input.size(),QImage::Format_RGBA64);
     if (out.isNull()) return result;
-    const ColorKernel kernel(plan,input.size());
     ColorStageDiagnostics stages(input.width(),input.height(),plan);
     // Serial row order makes streaming hashes independent of worker scheduling.
     // Cancellation between rows discards incomplete images and all their hashes.
@@ -1024,7 +1071,11 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         if (cancelled(token)) return result;
         auto *line=reinterpret_cast<QRgba64 *>(out.scanLine(y));
         // Both layouts use the same nine stage-boundary observations.
-        if (floating) {
+        if (denoised) {
+            const auto *in=reinterpret_cast<const float *>(input.constScanLine(y));
+            for(int x=0;x<input.width();++x)
+                line[x]=colorPixelDenoised(in+4*x,kernel,x,y,[&](ColorStage stage,Vec3 v){stages.observe(stage,x,v.x,v.y,v.z);});
+        } else if (floating) {
             const auto *in=reinterpret_cast<const float *>(input.constScanLine(y));
             for (int x=0;x<input.width();++x)
                 line[x]=colorPixelFloat(in+4*x,kernel,x,y,[&](ColorStage stage,Vec3 v) {
@@ -1044,6 +1095,12 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     result.image=finishColor(std::move(out),plan,input.size(),token);
     if (result.image.isNull() || cancelled(token)) { result.image={}; return result; }
     result.stages=stages.result();
+    if(denoised) {
+        denoiseDiagnostics["backend"]="cpu-reference";
+        denoiseDiagnostics["effective_radius"]=plan.denoise(source.size()).z;
+        denoiseDiagnostics["input_linear_semantics"]="denoised linear ProPhoto before WB/exposure";
+        result.stages.insert("spatial_denoise",denoiseDiagnostics);
+    }
     if (floating) {
         result.stages.insert("source_storage","RGBA32FPx4 scene input; no pre-tone integer clipping");
         result.stages.insert("source_integer_clip",false);

@@ -44,6 +44,7 @@ bool validDevelop(const AdjustmentState &state) {
         && AdjustmentState::validVignetteJson(j)
         && AdjustmentState::validGrainJson(j)
         && AdjustmentState::validSharpenJson(j)
+        && AdjustmentState::validDenoiseJson(j)
         && AdjustmentState::validBlackAndWhiteJson(j)
         && AdjustmentState::validColorGradingJson(j)
         && AdjustmentState::fromJson(j).toJson() == j;
