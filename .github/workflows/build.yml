@@ -160,6 +160,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestTangentialGeometryEvidence.py' -v
           python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-gpu.json gpu --expected-commit "$STAMP"
+      - name: Denoise controls, durable history and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestDenoiseEvidence.py' -v
+          python tools/ValidateDenoise.py "$EXE" gui-denoise-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateDenoise.py "$EXE" gui-denoise-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -454,6 +467,7 @@ jobs:
             gui-project-menu-layout.json.stderr
             gui-raw-qpa-*
             gui-tangential-*
+            gui-denoise-*
             diagnostic-validation/
             benchmark.json
             raw-render-matrix.log
@@ -590,6 +604,15 @@ jobs:
           python -m unittest discover -s tests -p 'TestTangentialGeometryEvidence.py' -v
           python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateTangentialGeometry.py "$EXE" gui-tangential-gpu.json gpu --expected-commit "$STAMP"
+      - name: Denoise controls, durable history and exact export
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestDenoiseEvidence.py' -v
+          python tools/ValidateDenoise.py "$EXE" gui-denoise-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateDenoise.py "$EXE" gui-denoise-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -799,5 +822,6 @@ jobs:
             gui-project-menu-layout.json.stderr
             gui-raw-qpa-*
             gui-tangential-*
+            gui-denoise-*
             diagnostic-validation/
             raw-render-matrix.log

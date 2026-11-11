@@ -24,6 +24,7 @@ from ValidateXmpMerge import validate_xmp_merge
 from ValidateProjectMenu import validate_project_menu
 from ValidateRawPressureQpa import validate_raw_qpa
 from ValidateTangentialGeometry import validate_tangential
+from ValidateDenoise import validate_denoise
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -289,6 +290,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_tangential(executable, environment, Path(tangential_temp) / mode,
                 reports / ('tangential-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Preserve the complete original70-mode prefix before the two denoise contexts.
+    with tempfile.TemporaryDirectory(prefix='jixellight-denoise-package-') as denoise_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_denoise(executable, environment, Path(denoise_temp) / mode,
+                reports / ('denoise-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
