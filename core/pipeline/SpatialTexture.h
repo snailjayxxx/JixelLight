@@ -8,6 +8,7 @@ using Triple=std::array<float,3>;
 using Transform=Triple (*)(Triple);
 bool valid(Parameters p);
 int halo(Parameters p);
+std::array<float,13> kernelWeights(float radius);
 // The owned linear image may detach; a cancelled/invalid stage publishes none.
 // RGBA32F16 + lightness4 + horizontal12 + small-band4 =36 bytes/pixel.
 QImage apply(QImage linear,Parameters p,Transform toLab,Transform fromLab,

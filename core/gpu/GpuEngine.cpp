@@ -3,6 +3,7 @@
 #include "core/scopes/ScopesEngine.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/SpatialClarity.h"
+#include "core/pipeline/SpatialTexture.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
@@ -22,7 +23,6 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan,const ImagePipeline::FloatSourceFacts &facts) {
-    if(plan.textureActive())return true; // Explicit CPU stage until a QRhi oracle is accepted.
     // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
     // also stays safely above its1e-20 normalization epsilon.
     if(plan.spatialInputActive()&&facts.nearZeroAlpha)return true;
@@ -111,7 +111,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
-        {"spatial_texture",m_outputTextureActive?"cpu-reference":"inactive"},
+        {"spatial_texture",m_outputTextureActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"spatial_clarity",m_outputClarityActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"spatial_denoise",m_outputDenoiseActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"numeric_source_policy",m_outputNumericPolicy},
@@ -170,9 +170,16 @@ bool GpuEngine::initialize(QSize size) {
     m_denoisePrepareBindings.reset();m_denoiseFilterBindings.reset();m_denoiseColorBindings.reset();m_denoiseDetailBindings.reset();
     m_denoiseGuide.reset();m_denoiseLinear.reset();
     m_denoiseGuideValid=false;m_denoiseFilterValid=false;
+    m_texturePreparePipeline.reset();m_textureSmallHorizontalPipeline.reset();m_textureSmallVerticalPipeline.reset();
+    m_textureLargeHorizontalPipeline.reset();m_textureFilterPipeline.reset();
+    m_texturePrepareBindings.reset();m_texturePrepareDenoisedBindings.reset();m_textureHorizontalBindings.reset();
+    m_textureSmallVerticalBindings.reset();m_textureFilterBindings.reset();m_textureFilterDenoisedBindings.reset();
+    m_textureColorBindings.reset();m_textureDetailBindings.reset();m_textureKernel.reset();
+    m_textureGuide.reset();m_textureHorizontal.reset();m_textureSmallBand.reset();m_textureLinear.reset();
+    m_textureGuideValid=false;m_textureNeighborhoodValid=false;m_textureOutputValid=false;
     m_clarityPreparePipeline.reset();m_clarityHorizontalPipeline.reset();m_clarityFilterPipeline.reset();
-    m_clarityPrepareBindings.reset();m_clarityPrepareDenoisedBindings.reset();m_clarityHorizontalBindings.reset();
-    m_clarityFilterBindings.reset();m_clarityFilterDenoisedBindings.reset();m_clarityColorBindings.reset();m_clarityDetailBindings.reset();
+    m_clarityPrepareBindings.reset();m_clarityPrepareDenoisedBindings.reset();m_clarityPrepareTexturedBindings.reset();m_clarityHorizontalBindings.reset();
+    m_clarityFilterBindings.reset();m_clarityFilterDenoisedBindings.reset();m_clarityFilterTexturedBindings.reset();m_clarityColorBindings.reset();m_clarityDetailBindings.reset();
     m_clarityGuide.reset();m_clarityHorizontal.reset();m_clarityLinear.reset();m_clarityKernel.reset();
     m_clarityGuideValid=false;m_clarityHorizontalValid=false;m_clarityOutputValid=false;
     m_source.reset(); m_output.reset(); m_partial.reset(); m_counts.reset();
@@ -247,15 +254,18 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
     const bool newSource=source.cacheKey()!=m_sourceKey;
     // Validation and numeric facts are captured once per new upload, including
     // uploads made while denoise is disabled. Slider edits reuse these facts.
-    if(newSource&&!ImagePipeline::validFloatSource(source,{},&m_sourceFacts))
+    auto sourceFacts=m_sourceFacts;
+    if(newSource&&!ImagePipeline::validFloatSource(source,{},&sourceFacts))
         return fail(QStringLiteral("Invalid non-finite/out-of-range FP32 source or alpha"));
-    m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan,m_sourceFacts);
+    const bool cpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan,sourceFacts);
     if(!plan.validSpatialSettings())return fail(QStringLiteral("Invalid spatial settings"));
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0||plan.data[ProcessingPlan::IndependentDetail].x>0;
-    if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
-    const bool denoise=plan.denoiseActive()&&!m_lastCpuFallback;
+    if(details&&!cpuFallback&&!ensureDetail())return false;
+    const bool denoise=plan.denoiseActive()&&!cpuFallback;
     if(denoise&&!ensureDenoise())return false;
-    const bool clarity=plan.clarityActive()&&!m_lastCpuFallback;
+    const bool texture=plan.textureActive()&&!cpuFallback;
+    if(texture&&!ensureTexture())return false;
+    const bool clarity=plan.clarityActive()&&!cpuFallback;
     if(clarity&&!ensureClarity())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
@@ -265,11 +275,21 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         ||std::memcmp(m_denoiseInputRows.data(),plan.data.data()+ProcessingPlan::Input0,sizeof(m_denoiseInputRows))!=0);
     const bool denoiseFilterMiss=denoise&&(denoiseGuideMiss||!m_denoiseFilterValid
         ||std::memcmp(&m_denoiseSettings,&denoiseSettings,sizeof(Float4))!=0);
+    const auto textureSettings=plan.texture(m_size);
+    const bool textureGuideMiss=texture&&(!m_textureGuideValid||m_textureSourceKey!=source.cacheKey()
+        ||m_textureEncoding!=int(plan.encoding)
+        ||std::memcmp(m_textureInputRows.data(),plan.data.data()+ProcessingPlan::Input0,sizeof(m_textureInputRows))!=0
+        ||std::memcmp(&m_textureDenoiseSettings,&denoiseSettings,sizeof(Float4))!=0);
+    const bool textureNeighborhoodMiss=texture&&(textureGuideMiss||!m_textureNeighborhoodValid
+        ||m_textureSmallRadius!=textureSettings.y||m_textureLargeRadius!=textureSettings.z);
+    const bool textureFilterMiss=texture&&(textureNeighborhoodMiss||!m_textureOutputValid
+        ||std::memcmp(&m_textureSettings,&textureSettings,sizeof(Float4))!=0);
     const auto claritySettings=plan.clarity(m_size);
     const bool clarityGuideMiss=clarity&&(!m_clarityGuideValid||m_claritySourceKey!=source.cacheKey()
         ||m_clarityEncoding!=int(plan.encoding)
         ||std::memcmp(m_clarityInputRows.data(),plan.data.data()+ProcessingPlan::Input0,sizeof(m_clarityInputRows))!=0
-        ||std::memcmp(&m_clarityDenoiseSettings,&denoiseSettings,sizeof(Float4))!=0);
+        ||std::memcmp(&m_clarityDenoiseSettings,&denoiseSettings,sizeof(Float4))!=0
+        ||std::memcmp(&m_clarityTextureSettings,&textureSettings,sizeof(Float4))!=0);
     const bool clarityHorizontalMiss=clarity&&(clarityGuideMiss||!m_clarityHorizontalValid||m_clarityHorizontalRadius!=claritySettings.y);
     const bool clarityFilterMiss=clarity&&(clarityHorizontalMiss||!m_clarityOutputValid
         ||std::memcmp(&m_claritySettings,&claritySettings,sizeof(Float4))!=0);
@@ -281,30 +301,33 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             upload.setSourceSize(source.size());
             upload.setDataStride(quint32(source.bytesPerLine()));
             updates->uploadTexture(m_source.get(), {{0, 0, upload}});
-            m_sourceKey = source.cacheKey(); ++m_uploads;
-            PerformanceRecorder::count("gpu_source_upload_bytes", source.sizeInBytes());
-            PerformanceRecorder::count("gpu_source_uploads");
         }
         if(newLut) {
             const QImage atlas=lut->atlas();if(atlas.isNull()) {updates->release();return fail("Invalid LUT atlas");}
             QRhiTextureSubresourceUploadDescription upload(atlas.constBits(),quint32(atlas.sizeInBytes()));
             upload.setSourceSize(atlas.size());upload.setDataStride(quint32(atlas.bytesPerLine()));
-            updates->uploadTexture(m_lutTexture.get(),{{0,0,upload}});m_lutKey=lut->digest;
-            PerformanceRecorder::count("look_lut_uploads");
+            updates->uploadTexture(m_lutTexture.get(),{{0,0,upload}});
         }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
         plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         auto uniforms=plan.data;uniforms[ProcessingPlan::IndependentDetail]=plan.independentDetail(m_size);
         uniforms[ProcessingPlan::Denoise]=plan.denoise(m_size);
-        uniforms[ProcessingPlan::Clarity]=claritySettings;uniforms[ProcessingPlan::Clarity].z=denoise?1.f:0.f;
-        uniforms[ProcessingPlan::Dimensions].w=denoise||clarity?1.f:0.f;
+        uniforms[ProcessingPlan::Texture]=textureSettings;uniforms[ProcessingPlan::Texture].w=denoise?1.f:0.f;
+        uniforms[ProcessingPlan::Clarity]=claritySettings;uniforms[ProcessingPlan::Clarity].z=denoise||texture?1.f:0.f;
+        uniforms[ProcessingPlan::Dimensions].w=denoise||texture||clarity?1.f:0.f;
+        if(textureNeighborhoodMiss) {
+            std::array<float,24> packed{};
+            const auto small=SpatialTexture::kernelWeights(textureSettings.y),large=SpatialTexture::kernelWeights(textureSettings.z);
+            std::copy_n(small.begin(),5,packed.begin());std::copy(large.begin(),large.end(),packed.begin()+8);
+            updates->updateDynamicBuffer(m_textureKernel.get(),0,quint32(sizeof(packed)),packed.data());
+        }
         if(clarityHorizontalMiss) {
             std::array<float,52> packed{};const auto weights=SpatialClarity::kernelWeights(claritySettings.y);
             std::copy(weights.begin(),weights.end(),packed.begin());
             updates->updateDynamicBuffer(m_clarityKernel.get(),0,quint32(sizeof(packed)),packed.data());
         }
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(uniforms)), uniforms.data());
-        if (m_lastCpuFallback) {
+        if (cpuFallback) {
             // Render from the exact GPU upload source. An RGBA64 conversion
             // would truncate HDR scene channels (>1) before the safety fallback.
             BrushImageLease admittedPixels;
@@ -343,12 +366,32 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
                 ++m_denoiseFilterDispatches;PerformanceRecorder::count("gpu_spatial_denoise_filter_dispatches");
                 m_denoiseSettings=denoiseSettings;m_denoiseFilterValid=true;
             } else if(denoise)PerformanceRecorder::count("gpu_spatial_denoise_filter_hits");
+            const auto textureDispatch=[&](QRhiComputePipeline *pipeline,QRhiShaderResourceBindings *bindings,quint64 &counter,const char *name) {
+                cb->setComputePipeline(pipeline);cb->setShaderResources(bindings);
+                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();cb->beginComputePass();
+                ++counter;PerformanceRecorder::count(name);
+            };
+            if(textureGuideMiss) {
+                textureDispatch(m_texturePreparePipeline.get(),denoise?m_texturePrepareDenoisedBindings.get():m_texturePrepareBindings.get(),m_textureGuideDispatches,"gpu_spatial_texture_guide_dispatches");
+                m_textureSourceKey=source.cacheKey();m_textureEncoding=int(plan.encoding);m_textureDenoiseSettings=denoiseSettings;
+                std::copy_n(plan.data.data()+ProcessingPlan::Input0,3,m_textureInputRows.data());m_textureGuideValid=true;
+            } else if(texture)PerformanceRecorder::count("gpu_spatial_texture_guide_hits");
+            if(textureNeighborhoodMiss) {
+                textureDispatch(m_textureSmallHorizontalPipeline.get(),m_textureHorizontalBindings.get(),m_textureSmallHorizontalDispatches,"gpu_spatial_texture_small_horizontal_dispatches");
+                textureDispatch(m_textureSmallVerticalPipeline.get(),m_textureSmallVerticalBindings.get(),m_textureSmallVerticalDispatches,"gpu_spatial_texture_small_vertical_dispatches");
+                textureDispatch(m_textureLargeHorizontalPipeline.get(),m_textureHorizontalBindings.get(),m_textureLargeHorizontalDispatches,"gpu_spatial_texture_large_horizontal_dispatches");
+                m_textureSmallRadius=textureSettings.y;m_textureLargeRadius=textureSettings.z;m_textureNeighborhoodValid=true;
+            } else if(texture)PerformanceRecorder::count("gpu_spatial_texture_neighborhood_hits");
+            if(textureFilterMiss) {
+                textureDispatch(m_textureFilterPipeline.get(),denoise?m_textureFilterDenoisedBindings.get():m_textureFilterBindings.get(),m_textureFilterDispatches,"gpu_spatial_texture_filter_dispatches");
+                m_textureSettings=textureSettings;m_textureOutputValid=true;
+            } else if(texture)PerformanceRecorder::count("gpu_spatial_texture_filter_hits");
             if(clarityGuideMiss) {
                 cb->setComputePipeline(m_clarityPreparePipeline.get());
-                cb->setShaderResources(denoise?m_clarityPrepareDenoisedBindings.get():m_clarityPrepareBindings.get());
+                cb->setShaderResources(texture?m_clarityPrepareTexturedBindings.get():denoise?m_clarityPrepareDenoisedBindings.get():m_clarityPrepareBindings.get());
                 cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();cb->beginComputePass();
                 ++m_clarityGuideDispatches;PerformanceRecorder::count("gpu_spatial_clarity_guide_dispatches");
-                m_claritySourceKey=source.cacheKey();m_clarityEncoding=int(plan.encoding);m_clarityDenoiseSettings=denoiseSettings;
+                m_claritySourceKey=source.cacheKey();m_clarityEncoding=int(plan.encoding);m_clarityDenoiseSettings=denoiseSettings;m_clarityTextureSettings=textureSettings;
                 std::copy_n(plan.data.data()+ProcessingPlan::Input0,3,m_clarityInputRows.data());m_clarityGuideValid=true;
             } else if(clarity)PerformanceRecorder::count("gpu_spatial_clarity_guide_hits");
             if(clarityHorizontalMiss) {
@@ -359,13 +402,14 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             } else if(clarity)PerformanceRecorder::count("gpu_spatial_clarity_horizontal_hits");
             if(clarityFilterMiss) {
                 cb->setComputePipeline(m_clarityFilterPipeline.get());
-                cb->setShaderResources(denoise?m_clarityFilterDenoisedBindings.get():m_clarityFilterBindings.get());
+                cb->setShaderResources(texture?m_clarityFilterTexturedBindings.get():denoise?m_clarityFilterDenoisedBindings.get():m_clarityFilterBindings.get());
                 cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();cb->beginComputePass();
                 ++m_clarityFilterDispatches;PerformanceRecorder::count("gpu_spatial_clarity_filter_dispatches");
                 m_claritySettings=claritySettings;m_clarityOutputValid=true;
             } else if(clarity)PerformanceRecorder::count("gpu_spatial_clarity_filter_hits");
             cb->setComputePipeline(m_pipeline.get());
             cb->setShaderResources(clarity?(details?m_clarityDetailBindings.get():m_clarityColorBindings.get()):
+                texture?(details?m_textureDetailBindings.get():m_textureColorBindings.get()):
                 denoise?(details?m_denoiseDetailBindings.get():m_denoiseColorBindings.get()):(details?m_detailBaseBindings.get():m_pipelineBindings.get()));
             cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);
             cb->endComputePass();
@@ -377,13 +421,22 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             }
             PerformanceRecorder::value("gpu_last_execution", backendName());
         }
+        // These facts describe accepted GPU commands, never a rejected plan or
+        // a released resource-update batch. Prior-frame diagnostics stay frozen.
+        if(newSource) {
+            m_sourceKey=source.cacheKey();m_sourceFacts=sourceFacts;++m_uploads;
+            PerformanceRecorder::count("gpu_source_upload_bytes",source.sizeInBytes());
+            PerformanceRecorder::count("gpu_source_uploads");
+        }
+        if(newLut){m_lutKey=lut->digest;PerformanceRecorder::count("look_lut_uploads");}
+        m_lastCpuFallback=cpuFallback;
         m_revision = revision;
         m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();
-        m_outputNumericPolicy=plan.textureActive()?QStringLiteral("texture-cpu-stage"):
+        m_outputNumericPolicy=plan.textureActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("texture-near-zero-alpha"):
             plan.clarityActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("clarity-near-zero-alpha"):
             plan.denoiseActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("denoise-near-zero-alpha"):
             plan.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&plan.output==ColorManagement::OutputSpace::ProPhotoRgb&&m_sourceFacts.negativeRgb?QStringLiteral("signed-linear-prophoto"):
-            m_lastCpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");
+            cpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");
         m_outputSpace = plan.output;
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision
@@ -544,6 +597,48 @@ bool GpuEngine::ensureDenoise() {
     }
     return true;
 }
+bool GpuEngine::ensureTexture() {
+    using B=QRhiShaderResourceBinding;
+    if(!m_textureFilterPipeline) {
+        m_texturePreparePipeline.reset();m_textureSmallHorizontalPipeline.reset();m_textureSmallVerticalPipeline.reset();m_textureLargeHorizontalPipeline.reset();
+        m_textureGuide.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        m_textureHorizontal.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        m_textureSmallBand.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        m_textureLinear.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        m_textureKernel.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic,QRhiBuffer::UniformBuffer,24*sizeof(float)));
+        if(!m_textureGuide->create()||!m_textureHorizontal->create()||!m_textureSmallBand->create()||!m_textureLinear->create()||!m_textureKernel->create())return fail("Texture allocation failed");
+        m_texturePrepareBindings.reset(m_rhi->newShaderResourceBindings());
+        m_texturePrepareBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_source.get(),0),B::imageStore(2,B::ComputeStage,m_textureGuide.get(),0)});
+        m_textureHorizontalBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureHorizontalBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureGuide.get(),0),B::imageStore(2,B::ComputeStage,m_textureHorizontal.get(),0),B::uniformBuffer(3,B::ComputeStage,m_textureKernel.get())});
+        m_textureSmallVerticalBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureSmallVerticalBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureGuide.get(),0),B::imageLoad(2,B::ComputeStage,m_textureHorizontal.get(),0),B::imageStore(3,B::ComputeStage,m_textureSmallBand.get(),0),B::uniformBuffer(4,B::ComputeStage,m_textureKernel.get())});
+        m_textureFilterBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureFilterBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_source.get(),0),B::imageLoad(2,B::ComputeStage,m_textureGuide.get(),0),B::imageLoad(3,B::ComputeStage,m_textureHorizontal.get(),0),B::imageLoad(4,B::ComputeStage,m_textureSmallBand.get(),0),B::imageStore(5,B::ComputeStage,m_textureLinear.get(),0),B::uniformBuffer(6,B::ComputeStage,m_textureKernel.get())});
+        m_textureColorBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureColorBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureLinear.get(),0),B::imageStore(2,B::ComputeStage,m_output.get(),0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
+        if(!m_texturePrepareBindings->create()||!m_textureHorizontalBindings->create()||!m_textureSmallVerticalBindings->create()||!m_textureFilterBindings->create()||!m_textureColorBindings->create())return fail("Texture bindings failed");
+        if(!buildCompute(m_texturePreparePipeline,m_texturePrepareBindings.get(),"texture_prepare.comp")
+            ||!buildCompute(m_textureSmallHorizontalPipeline,m_textureHorizontalBindings.get(),"texture_small_horizontal.comp")
+            ||!buildCompute(m_textureSmallVerticalPipeline,m_textureSmallVerticalBindings.get(),"texture_small_vertical.comp")
+            ||!buildCompute(m_textureLargeHorizontalPipeline,m_textureHorizontalBindings.get(),"texture_large_horizontal.comp")
+            ||!buildCompute(m_textureFilterPipeline,m_textureFilterBindings.get(),"texture_filter.comp"))return false;
+        PerformanceRecorder::value("texture_extra_gpu_bytes",qint64(m_size.width())*m_size.height()*64+qint64(24*sizeof(float)));
+    }
+    if(m_denoiseLinear&&!m_texturePrepareDenoisedBindings) {
+        m_texturePrepareDenoisedBindings.reset(m_rhi->newShaderResourceBindings());
+        m_texturePrepareDenoisedBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_denoiseLinear.get(),0),B::imageStore(2,B::ComputeStage,m_textureGuide.get(),0)});
+        m_textureFilterDenoisedBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureFilterDenoisedBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_denoiseLinear.get(),0),B::imageLoad(2,B::ComputeStage,m_textureGuide.get(),0),B::imageLoad(3,B::ComputeStage,m_textureHorizontal.get(),0),B::imageLoad(4,B::ComputeStage,m_textureSmallBand.get(),0),B::imageStore(5,B::ComputeStage,m_textureLinear.get(),0),B::uniformBuffer(6,B::ComputeStage,m_textureKernel.get())});
+        if(!m_texturePrepareDenoisedBindings->create()||!m_textureFilterDenoisedBindings->create())return fail("Denoised texture bindings failed");
+    }
+    if(m_detailBase&&!m_textureDetailBindings) {
+        m_textureDetailBindings.reset(m_rhi->newShaderResourceBindings());
+        m_textureDetailBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureLinear.get(),0),B::imageStore(2,B::ComputeStage,m_detailBase.get(),0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
+        if(!m_textureDetailBindings->create())return fail("Texture detail bindings failed");
+    }
+    return true;
+}
 bool GpuEngine::ensureClarity() {
     using B=QRhiShaderResourceBinding;
     if(!m_clarityPreparePipeline) {
@@ -572,6 +667,13 @@ bool GpuEngine::ensureClarity() {
         m_clarityFilterDenoisedBindings.reset(m_rhi->newShaderResourceBindings());
         m_clarityFilterDenoisedBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_denoiseLinear.get(),0),B::imageLoad(2,B::ComputeStage,m_clarityGuide.get(),0),B::imageLoad(3,B::ComputeStage,m_clarityHorizontal.get(),0),B::imageStore(4,B::ComputeStage,m_clarityLinear.get(),0),B::uniformBuffer(5,B::ComputeStage,m_clarityKernel.get())});
         if(!m_clarityPrepareDenoisedBindings->create()||!m_clarityFilterDenoisedBindings->create())return fail("Denoised clarity bindings failed");
+    }
+    if(m_textureLinear&&!m_clarityPrepareTexturedBindings) {
+        m_clarityPrepareTexturedBindings.reset(m_rhi->newShaderResourceBindings());
+        m_clarityPrepareTexturedBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureLinear.get(),0),B::imageStore(2,B::ComputeStage,m_clarityGuide.get(),0)});
+        m_clarityFilterTexturedBindings.reset(m_rhi->newShaderResourceBindings());
+        m_clarityFilterTexturedBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_textureLinear.get(),0),B::imageLoad(2,B::ComputeStage,m_clarityGuide.get(),0),B::imageLoad(3,B::ComputeStage,m_clarityHorizontal.get(),0),B::imageStore(4,B::ComputeStage,m_clarityLinear.get(),0),B::uniformBuffer(5,B::ComputeStage,m_clarityKernel.get())});
+        if(!m_clarityPrepareTexturedBindings->create()||!m_clarityFilterTexturedBindings->create())return fail("Textured clarity bindings failed");
     }
     if(m_detailBase&&!m_clarityDetailBindings) {
         m_clarityDetailBindings.reset(m_rhi->newShaderResourceBindings());

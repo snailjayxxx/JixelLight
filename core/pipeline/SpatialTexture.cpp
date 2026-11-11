@@ -12,6 +12,13 @@ bool SpatialTexture::valid(Parameters p) {
         &&p.largeRadius>=p.smallRadius&&p.largeRadius<=6;
 }
 int SpatialTexture::halo(Parameters p) {return valid(p)&&p.amount!=0?int(std::ceil(p.largeRadius)):0;}
+std::array<float,13> SpatialTexture::kernelWeights(float radius) {
+    std::array<float,13> weights{};if(!std::isfinite(radius)||radius<0||radius>6)return weights;
+    const int extent=int(std::ceil(radius));const float sigma=std::max(.01f,.5f*radius);
+    for(int i=-extent;i<=extent;++i)
+        weights[size_t(i+extent)]=std::clamp(radius+1-std::abs(float(i)),0.f,1.f)*std::exp(-float(i*i)/(2*sigma*sigma));
+    return weights;
+}
 QImage SpatialTexture::apply(QImage linear,Parameters p,Transform toLab,Transform fromLab,
                             const CancelToken &cancel,bool parallel) {
     if(linear.isNull()||linear.format()!=QImage::Format_RGBA32FPx4||!valid(p)
@@ -41,10 +48,7 @@ QImage SpatialTexture::apply(QImage linear,Parameters p,Transform toLab,Transfor
     // Each scale uses associated-alpha relative sums. Transparent samples never
     // supply color, and a constant visible field has an exact zero difference.
     const auto filter=[&](float radius,bool final)->bool {
-        const int extent=int(std::ceil(radius));const float sigma=std::max(.01f,.5f*radius);
-        std::array<float,13> weights{};
-        for(int i=-extent;i<=extent;++i)
-            weights[size_t(i+extent)]=std::clamp(radius+1-std::abs(float(i)),0.f,1.f)*std::exp(-float(i*i)/(2*sigma*sigma));
+        const int extent=int(std::ceil(radius));const auto weights=kernelWeights(radius);
         ParallelRows::run(height,width,cancel,[&](int y) {
             const auto *row=reinterpret_cast<const float *>(source+y*stride);
             for(int x=0;x<width;++x) {

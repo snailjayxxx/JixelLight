@@ -305,7 +305,7 @@ def main() -> int:
             results.append(validate_clarity(executable, environment, Path(clarity_temp) / mode,
                 reports / ('clarity-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
-    # Complete original74 modes precede CPU texture/control and GPU-display fallback contexts.
+    # Complete original74 modes precede CPU/GPU texture controls and exact export.
     with tempfile.TemporaryDirectory(prefix='jixellight-texture-package-') as texture_temp:
         for mode in ('cpu', 'gpu'):
             results.append(validate_texture(executable, environment, Path(texture_temp) / mode,
