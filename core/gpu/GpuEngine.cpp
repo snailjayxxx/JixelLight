@@ -22,6 +22,7 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan,const ImagePipeline::FloatSourceFacts &facts) {
+    if(plan.textureActive())return true; // Explicit CPU stage until a QRhi oracle is accepted.
     // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
     // also stays safely above its1e-20 normalization epsilon.
     if(plan.spatialInputActive()&&facts.nearZeroAlpha)return true;
@@ -110,6 +111,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
+        {"spatial_texture",m_outputTextureActive?"cpu-reference":"inactive"},
         {"spatial_clarity",m_outputClarityActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"spatial_denoise",m_outputDenoiseActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"numeric_source_policy",m_outputNumericPolicy},
@@ -376,8 +378,9 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             PerformanceRecorder::value("gpu_last_execution", backendName());
         }
         m_revision = revision;
-        m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();
-        m_outputNumericPolicy=plan.clarityActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("clarity-near-zero-alpha"):
+        m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();
+        m_outputNumericPolicy=plan.textureActive()?QStringLiteral("texture-cpu-stage"):
+            plan.clarityActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("clarity-near-zero-alpha"):
             plan.denoiseActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("denoise-near-zero-alpha"):
             plan.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&plan.output==ColorManagement::OutputSpace::ProPhotoRgb&&m_sourceFacts.negativeRgb?QStringLiteral("signed-linear-prophoto"):
             m_lastCpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");

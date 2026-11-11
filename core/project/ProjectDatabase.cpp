@@ -402,6 +402,9 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     if (!AdjustmentState::validSharpenJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported independent sharpen for project photo"); break;
                     }
+                    if (!AdjustmentState::validTextureJson(doc.object())) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported spatial texture for project photo"); break;
+                    }
                     if (!AdjustmentState::validClarityJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported spatial clarity for project photo"); break;
                     }
@@ -692,6 +695,7 @@ bool ProjectDatabase::addVirtualCopy(const QString &key, const QString &source, 
         || !BrushMaskDocument::validDocument(adjustments.brushMasks)
         || !AdjustmentState::validBrushMaskJson(adjustments.toJson())
         || !AdjustmentState::validDenoiseJson(adjustments.toJson())
+        || !AdjustmentState::validTextureJson(adjustments.toJson())
         || !AdjustmentState::validClarityJson(adjustments.toJson())
         || !checkedHistory.restore(history.toJson(),adjustments) || curation.rating < 0 || curation.rating > 5
         || (curation.flag != "none" && curation.flag != "pick" && curation.flag != "reject")) return false;
@@ -831,6 +835,7 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states,
         if (!BrushMaskDocument::validDocument(it.value().brushMasks)
             || !AdjustmentState::validBrushMaskJson(it.value().toJson())
             || !AdjustmentState::validDenoiseJson(it.value().toJson())
+            || !AdjustmentState::validTextureJson(it.value().toJson())
             || !AdjustmentState::validClarityJson(it.value().toJson())) return false;
     }
     for (auto it=histories.cbegin();it!=histories.cend();++it) {
@@ -838,6 +843,7 @@ bool ProjectDatabase::updateBatch(const QHash<QString, AdjustmentState> &states,
             if (!BrushMaskDocument::validDocument(entry.state.brushMasks)
                 || !AdjustmentState::validBrushMaskJson(entry.state.toJson())
                 || !AdjustmentState::validDenoiseJson(entry.state.toJson())
+                || !AdjustmentState::validTextureJson(entry.state.toJson())
                 || !AdjustmentState::validClarityJson(entry.state.toJson())) return false;
         }
     }

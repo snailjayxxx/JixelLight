@@ -3,6 +3,7 @@
 #include "core/pipeline/FilmGrain.h"
 #include "core/pipeline/SpatialDenoise.h"
 #include "core/pipeline/SpatialClarity.h"
+#include "core/pipeline/SpatialTexture.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/ColorStageDiagnostics.h"
@@ -597,7 +598,7 @@ QImage prepareDenoiseInput(const QImage &source,const ColorKernel &kernel,const 
 }
 QImage prepareSpatialInput(const QImage &source,const ColorKernel &kernel,const ProcessingPlan &plan,
                            const QSize &frameSize,const CancelToken &token,bool parallel,
-                           QJsonObject *denoiseDiagnostics=nullptr,QJsonObject *clarityDiagnostics=nullptr) {
+                           QJsonObject *denoiseDiagnostics=nullptr,QJsonObject *clarityDiagnostics=nullptr,QJsonObject *textureDiagnostics=nullptr) {
     QImage linear;
     if(plan.denoiseActive())linear=prepareDenoiseInput(source,kernel,plan.denoise(frameSize),token,parallel,denoiseDiagnostics);
     else {
@@ -618,6 +619,20 @@ QImage prepareSpatialInput(const QImage &source,const ColorKernel &kernel,const 
         },parallel);
     }
     if(linear.isNull()||cancelled(token))return {};
+    if(plan.textureActive()) {
+        const auto settings=plan.texture(frameSize);
+        PerformanceSpan timing("spatial_texture_cpu",{{"pixels",qint64(source.width())*source.height()},{"small_radius",settings.y},{"large_radius",settings.z}});
+        if(textureDiagnostics)(*textureDiagnostics)["input"]=FloatFrameFingerprint::capture(linear);
+        const auto toLab=[](SpatialTexture::Triple rgb)->SpatialTexture::Triple {
+            const auto lab=linearSrgbToOklab(proPhotoToLinearSrgb({rgb[0],rgb[1],rgb[2]}));return {lab.L,lab.a,lab.b};
+        };
+        const auto fromLab=[](SpatialTexture::Triple lab)->SpatialTexture::Triple {
+            const auto rgb=linearSrgbToProPhoto(oklabToLinearSrgb({lab[0],lab[1],lab[2]}));return {rgb.x,rgb.y,rgb.z};
+        };
+        linear=SpatialTexture::apply(std::move(linear),{settings.x,settings.y,settings.z},toLab,fromLab,token,parallel);
+        if(linear.isNull()||cancelled(token))return {};
+        if(textureDiagnostics)(*textureDiagnostics)["output"]=FloatFrameFingerprint::capture(linear);
+    }
     if(!plan.clarityActive())return linear;
     const auto settings=plan.clarity(frameSize);
     PerformanceSpan timing("spatial_clarity_cpu",{{"pixels",qint64(source.width())*source.height()},{"radius",settings.y}});
@@ -670,6 +685,7 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    plan.data[Texture]={finite(state.textureAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Clarity]={finite(state.clarityAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Denoise]={finite(state.denoiseLuma,0,0,100)*.01f,finite(state.denoiseChroma,0,0,100)*.01f,0,0};
     plan.data[FrameRect]={0,0,1,1};
@@ -785,7 +801,8 @@ QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,con
     const auto denoise=plan.denoise(sourceSize);
     const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})
         +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z})
-        +SpatialClarity::halo({plan.clarity(sourceSize).x,plan.clarity(sourceSize).y});
+        +SpatialClarity::halo({plan.clarity(sourceSize).x,plan.clarity(sourceSize).y})
+        +SpatialTexture::halo({plan.texture(sourceSize).x,plan.texture(sourceSize).y,plan.texture(sourceSize).z});
     return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
 }
 }
@@ -1099,6 +1116,7 @@ QImage ImagePipeline::preparePreviewSpatialInput(const QImage &source,const Proc
         ||!BrushMaskDocument::validDocument(plan.state.brushMasks)||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
     if(source.format()==QImage::Format_RGBA32FPx4&&!validFloatSource(source,cancel))return {};
     if(plan.denoiseActive())PerformanceRecorder::count("cpu_preview_denoise_builds");
+    if(plan.textureActive())PerformanceRecorder::count("cpu_preview_texture_builds");
     if(plan.clarityActive())PerformanceRecorder::count("cpu_preview_clarity_builds");
     return prepareSpatialInput(source,ColorKernel(plan,source.size()),plan,source.size(),cancel,true);
 }
@@ -1129,9 +1147,9 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("error","Invalid non-finite/out-of-range FP32 scene source");
         return result;
     }
-    const ColorKernel kernel(plan,source.size());QJsonObject denoiseDiagnostics,clarityDiagnostics;
+    const ColorKernel kernel(plan,source.size());QJsonObject denoiseDiagnostics,clarityDiagnostics,textureDiagnostics;
     const bool preparedLinear=plan.spatialInputActive();
-    const QImage input=preparedLinear?prepareSpatialInput(source,kernel,plan,source.size(),token,false,&denoiseDiagnostics,&clarityDiagnostics)
+    const QImage input=preparedLinear?prepareSpatialInput(source,kernel,plan,source.size(),token,false,&denoiseDiagnostics,&clarityDiagnostics,&textureDiagnostics)
         :floating?source:rgba64Source(source,token);
     if (input.isNull()) return result;
     QImage out(input.size(),QImage::Format_RGBA64);
@@ -1170,13 +1188,20 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     if(plan.denoiseActive()) {
         denoiseDiagnostics["backend"]="cpu-reference";
         denoiseDiagnostics["effective_radius"]=plan.denoise(source.size()).z;
-        denoiseDiagnostics["input_linear_semantics"]="denoised linear ProPhoto before clarity/WB/exposure";
+        denoiseDiagnostics["input_linear_semantics"]="denoised linear ProPhoto before texture/clarity/WB/exposure";
         result.stages.insert("spatial_denoise",denoiseDiagnostics);
+    }
+    if(plan.textureActive()) {
+        textureDiagnostics["backend"]="cpu-reference";textureDiagnostics["amount"]=plan.state.textureAmount;
+        textureDiagnostics["effective_small_radius"]=plan.texture(source.size()).y;
+        textureDiagnostics["effective_large_radius"]=plan.texture(source.size()).z;
+        textureDiagnostics["order"]="linear ProPhoto after denoise and before clarity/WB/exposure";
+        result.stages.insert("spatial_texture",textureDiagnostics);
     }
     if(plan.clarityActive()) {
         clarityDiagnostics["backend"]="cpu-reference";clarityDiagnostics["amount"]=plan.state.clarityAmount;
         clarityDiagnostics["effective_radius"]=plan.clarity(source.size()).y;
-        clarityDiagnostics["order"]="linear ProPhoto after denoise and before WB/exposure";
+        clarityDiagnostics["order"]="linear ProPhoto after denoise/texture and before WB/exposure";
         result.stages.insert("spatial_clarity",clarityDiagnostics);
     }
     if (floating) {

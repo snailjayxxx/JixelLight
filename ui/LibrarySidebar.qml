@@ -24,6 +24,7 @@ Rectangle {
             vignette_adjustment: ["暗角", "Vignette"], vignette_reset: ["重置暗角", "Reset vignette"],
             grain_adjustment: ["胶片颗粒", "Film grain"], grain_reset: ["重置颗粒", "Reset grain"],
             sharpen_adjustment: ["独立锐化", "Independent sharpen"], sharpen_reset: ["重置独立锐化", "Reset independent sharpen"],
+            texture_adjustment: ["纹理", "Texture"], texture_reset: ["重置纹理", "Reset texture"],
             clarity_adjustment: ["清晰度", "Clarity"], clarity_reset: ["重置清晰度", "Reset clarity"],
             denoise_adjustment: ["降噪", "Noise reduction"], denoise_reset: ["重置降噪", "Reset noise reduction"],
             color_mixer: ["混色器", "Color mixer"], curve_point: ["曲线", "Curve"], curve_reset: ["重置曲线", "Reset curve"],
