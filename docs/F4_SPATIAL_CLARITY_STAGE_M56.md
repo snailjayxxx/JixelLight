@@ -108,3 +108,17 @@ Complete clean84/84, three native platforms and both actual72-mode shipping
 packages are still required at this entry. Native real-camera float calibration,
 clarity QRhi compute, physical tablet evidence, broader camera/ISO quality and
 the other unfinished F0–F6 modules remain separate work.
+
+## Clean committed-source follow-up
+
+Exact clean commit`08be052f94591b198418865fc875e44dc4531853`, tree
+`c98b8c2c09bd401fc1114179fcdd02c5b6005edb`, subsequently passes the complete
+84/84 run in821.17s. Core217/GPU45/Performance39, denoise9/workflow17/cache9,
+clarity9/workflow17/cache10 and independent sharpening14 have zero failures or
+skips. The full original log SHA256 is
+`465aeb319cff37139b64b885282a5e3d38cda7c3a2930d62a2cf51e84d3aa667`.
+`validation-summary-08be052.json` freezes source/tree/clean status and Qt totals.
+The exact-commit full normal-App denoise CPU and Metal probes also pass in
+`exact-08be052-denoise-cpu.json` and `exact-08be052-denoise-gpu.json`. These are
+local observations, not current three-platform/shipping acceptance. The later
+artifact-delivery-only merge keeps this original tested commit distinct.
