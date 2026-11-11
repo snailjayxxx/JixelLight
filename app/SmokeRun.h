@@ -42,3 +42,5 @@ void startProjectMenuLayoutSmokeRun(PhotoController *,QQuickWindow *,const QStri
 void startRawPressureEventSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
 void startTangentialGeometrySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startDenoiseSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
