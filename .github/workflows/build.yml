@@ -444,6 +444,7 @@ jobs:
             build/grain-owned
             build/sharpen-owned
             build/denoise-owned
+            build/clarity-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/
@@ -801,6 +802,7 @@ jobs:
             build/grain-owned
             build/sharpen-owned
             build/denoise-owned
+            build/clarity-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/

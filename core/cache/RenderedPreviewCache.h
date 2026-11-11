@@ -7,7 +7,7 @@ enum class BrushAdmissionFailure;
 
 // CPU preview results only. Sources/plans are immutable worker snapshots;
 // exports, exact scopes and diagnostic reference captures bypass this cache.
-// Completed non-brush denoise stages share the same existing byte budget.
+// Completed non-brush denoise/clarity stages share the same existing byte budget.
 class RenderedPreviewCache final {
 public:
     explicit RenderedPreviewCache(qint64 budgetBytes = 64 * 1024 * 1024,
@@ -29,4 +29,5 @@ private:
     std::shared_ptr<BrushRenderBudget> m_brushBudget;
     qint64 m_hits = 0, m_misses = 0, m_bypasses = 0, m_evictions = 0, m_cancelled = 0;
     qint64 m_denoiseHits=0,m_denoiseMisses=0,m_denoiseBypasses=0;
+    qint64 m_clarityHits=0,m_clarityMisses=0,m_clarityBypasses=0;
 };

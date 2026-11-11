@@ -1,5 +1,6 @@
 #include "core/pipeline/BrushRenderRequest.h"
 #include "core/pipeline/SpatialDenoise.h"
+#include "core/pipeline/SpatialClarity.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/look/LookProfiles.h"
 #include "core/look/SonyLookMetadata.h"
@@ -96,7 +97,7 @@ bool validState(const AdjustmentState &state) {
     return AdjustmentState::fromJson(json).toJson()==json
         &&GeometryState::validJson(state.geometry.toJson())
         &&AdjustmentState::validRadialMaskJson(json)&&AdjustmentState::validLinearMaskJson(json)
-        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
+        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validClarityJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
         &&AdjustmentState::validColorGradingJson(json);
 }
 bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provided) {
@@ -115,6 +116,10 @@ bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provi
             if(b.x==0||!std::isfinite(b.z)||!std::isfinite(b.w)||b.z<1||b.w<1
                 ||b.z>BrushRenderRequest::MaxSourcePixels||b.w>BrushRenderRequest::MaxSourcePixels
                 ||b.z!=std::floor(b.z)||b.w!=std::floor(b.w))return false;
+            continue;
+        }
+        if(i==ProcessingPlan::Clarity) {
+            if(a.x!=b.x||a.y!=b.y||!provided.validClarity())return false;
             continue;
         }
         if(i==ProcessingPlan::Denoise) {
@@ -138,7 +143,8 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     const auto independent=plan.independentDetail(frameSize);
     const auto denoise=plan.denoise(frameSize);
     const int halo=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})
-        +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z});
+        +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z})
+        +SpatialClarity::halo({plan.clarity(frameSize).x,plan.clarity(frameSize).y});
     const auto expanded=region.adjusted(-halo,-halo,halo,halo).intersected(QRect(QPoint{},frameSize));
     const qint64 expandedPixels=qint64(expanded.width())*expanded.height();
     constexpr qint64 fixed=64LL*1024*1024
@@ -148,15 +154,16 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     const qint64 retainedLut=qint64(capacity)*sizeof(float);
     qint64 pixelsAndWork=0;
     const qint64 detailExtra=independent.x>0?8:0;
-    const qint64 denoiseExtra=plan.denoiseActive()?32:0;
+    // Denoise and clarity run sequentially: linear16 plus at most16 scratch.
+    const qint64 spatialExtra=plan.spatialInputActive()?32:0;
     if(layout==BrushRenderRequest::Layout::Whole) {
         const auto copy=region==QRect(QPoint{},frameSize)?qint64(0):expandedPixels*(source.format()==QImage::Format_RGBA32FPx4?16:8);
-        const auto color=2*sourceBytes+copy+(24+detailExtra+denoiseExtra)*expandedPixels+8*pixels;
+        const auto color=2*sourceBytes+copy+(24+detailExtra+spatialExtra)*expandedPixels+8*pixels;
         pixelsAndWork=std::max({3*sourceBytes,color,sourceBytes+(24+detailExtra)*pixels});
     } else {
         const qint64 stripePixels=qint64(expanded.width())*std::min(expanded.height(),128+2*halo);
         // Max sum of retained center outputs=8P; conservative codec reserve=16P.
-        pixelsAndWork=3*sourceBytes+24*pixels+(40+detailExtra+denoiseExtra)*stripePixels;
+        pixelsAndWork=3*sourceBytes+24*pixels+(40+detailExtra+spatialExtra)*stripePixels;
     }
     if(retainedLut>std::numeric_limits<qint64>::max()-fixed-pixelsAndWork)return -1;
     return pixelsAndWork+fixed+retainedLut;
@@ -271,6 +278,9 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
             const auto denoise=expectedPlan->data[ProcessingPlan::Denoise],compiledDenoise=plan.data[ProcessingPlan::Denoise];
             if(denoise.x!=compiledDenoise.x||denoise.y!=compiledDenoise.y)return refuse("Invalid prepared denoise settings");
             plan.data[ProcessingPlan::Denoise]=denoise;
+            const auto clarity=expectedPlan->data[ProcessingPlan::Clarity],compiledClarity=plan.data[ProcessingPlan::Clarity];
+            if(clarity.x!=compiledClarity.x||clarity.y!=compiledClarity.y)return refuse("Invalid prepared clarity settings");
+            plan.data[ProcessingPlan::Clarity]=clarity;
         }
         for(const auto &v:plan.data)for(const auto x:{v.x,v.y,v.z,v.w})if(!std::isfinite(x))return refuse("Non-finite admitted brush plan");
         const auto bytes=estimateBytes(source,region,size,plan,spec.layout);

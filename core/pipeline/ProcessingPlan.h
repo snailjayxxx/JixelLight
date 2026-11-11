@@ -26,7 +26,7 @@ struct ProcessingPlan {
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
                 GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
-                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, SlotCount=54 };
+                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, SlotCount=55 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -39,7 +39,7 @@ struct ProcessingPlan {
         // legacy spatial edits, even if no linear/radial/vignette is active.
         const bool brush=std::any_of(state.brushMasks.layers.begin(),state.brushMasks.layers.end(),
             [](const auto &layer){return layer.enabled;});
-        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0 || data[Grain].x!=0 || data[IndependentDetail].x!=0 || denoiseActive() || brush)
+        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0 || data[Grain].x!=0 || data[IndependentDetail].x!=0 || denoiseActive() || clarityActive() || brush)
             data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
     }
     Float4 pixelMap(const QSize &size) const {
@@ -51,6 +51,9 @@ struct ProcessingPlan {
     void setReferenceFrameSize(const QSize &size) {
         if (data[IndependentDetail].x!=0 && size.width()>0 && size.height()>0) {
             data[IndependentDetail].z=float(size.width());data[IndependentDetail].w=float(size.height());
+        }
+        if(clarityActive()&&size.width()>0&&size.height()>0) {
+            data[Clarity].z=float(size.width());data[Clarity].w=float(size.height());
         }
         if(denoiseActive()&&size.width()>0&&size.height()>0) {
             data[Denoise].z=float(size.width());data[Denoise].w=float(size.height());
@@ -79,7 +82,23 @@ struct ProcessingPlan {
         return denoiseActive()&&std::isfinite(d.z)&&std::isfinite(d.w)&&d.z>=1&&d.w>=1
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
     }
-    bool validSpatialSettings() const {return validIndependentDetail()&&validDenoise();}
+    bool clarityActive() const {return data[Clarity].x!=0;}
+    bool spatialInputActive() const {return denoiseActive()||clarityActive();}
+    bool validClarity() const {
+        const auto c=data[Clarity];
+        if(!std::isfinite(c.x)||c.x<-1||c.x>1||c.y!=0)return false;
+        if(c.z==0&&c.w==0)return true;
+        return clarityActive()&&std::isfinite(c.z)&&std::isfinite(c.w)&&c.z>=1&&c.w>=1
+            &&c.z<=33554432&&c.w<=33554432&&c.z==std::floor(c.z)&&c.w==std::floor(c.w);
+    }
+    Float4 clarity(const QSize &size) const {
+        const auto c=data[Clarity],frame=data[FrameRect];if(!clarityActive()||!validClarity())return {};
+        float density=1;
+        if(c.z>0&&c.w>0&&frame.z>0&&frame.w>0)
+            density=std::min(float(size.width())/(c.z*frame.z),float(size.height())/(c.w*frame.w));
+        return {c.x,std::clamp(24.f*density,0.f,24.f),0,0};
+    }
+    bool validSpatialSettings() const {return validIndependentDetail()&&validDenoise()&&validClarity();}
     Float4 denoise(const QSize &size) const {
         const auto d=data[Denoise],frame=data[FrameRect];if(!denoiseActive()||!validDenoise())return {};
         float density=1;
@@ -106,4 +125,4 @@ private:
     friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 864);
+static_assert(sizeof(ProcessingPlan::data) == 880);

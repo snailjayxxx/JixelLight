@@ -82,6 +82,20 @@ struct StageGraph {
         const auto denoise=plan.denoise(source.size());stream<<denoise.x<<denoise.y<<denoise.z;
         return QStringLiteral("denoise:")+digest(bytes);
     }
+    static QString spatialPreviewKey(const QImage &source,const ProcessingPlan &plan) {
+        if(!plan.clarityActive())return denoisePreviewKey(source,plan);
+        if(source.isNull()||!plan.validSpatialSettings()||!BrushMaskDocument::validDocument(plan.state.brushMasks)
+            ||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
+        QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);stream.setVersion(QDataStream::Qt_6_8);
+        stream<<QStringLiteral("cpu-clarity-preview-v1")<<QString::fromLatin1(ProcessingPlan::EngineVersion)
+              <<source.cacheKey()<<source.size()<<int(source.format())<<int(plan.encoding);
+        for(int i=ProcessingPlan::Input0;i<=ProcessingPlan::Input2;++i) {
+            const auto row=plan.data[i];stream<<row.x<<row.y<<row.z<<row.w;
+        }
+        const auto denoise=plan.denoise(source.size()),clarity=plan.clarity(source.size());
+        stream<<denoise.x<<denoise.y<<denoise.z<<clarity.x<<clarity.y;
+        return QStringLiteral("spatial:")+digest(bytes);
+    }
     static QJsonObject describe(const QString &sourceKey, const PrepareRequest &request,
                                 const AdjustmentState &state, bool raw, float baseExposure) {
         const QString prepared = prepareKey(request);
@@ -160,10 +174,17 @@ struct StageGraph {
                     {"coordinates","normalized post-geometry, committed crop and orientation; viewport preserves full-image position"},
                     {"operation","RGB * exp2(amount * smoothstep); alpha unchanged"},
                     {"lens_profile",false},{"monitor_icc",false}}},
+                {"spatial_clarity",QJsonObject{{"schema",1},{"amount",state.clarityAmount},{"active",state.clarityAmount!=0},
+                    {"backend","CPU reference; explicit GPU display upload and native CPUPolicy fallback"},
+                    {"method","alpha-associated Gaussian Oklab lightness contrast with midtone weighting; chroma retained"},
+                    {"order","decoded linear ProPhoto -> denoise -> clarity -> WB/exposure"},
+                    {"radius_source_pixels",24},{"preview_radius","scaled by prepared/full geometry density"},
+                    {"temporary_cpu_bytes_per_expanded_pixel",32},{"cpu_preview_stage_cache","completed pre-tone stages share render_cache budget"},
+                    {"alpha","unchanged"},{"monitor_icc",false}}},
                 {"spatial_denoise",QJsonObject{{"schema",1},{"lightness",state.denoiseLuma},{"chroma",state.denoiseChroma},
                     {"active",state.denoiseLuma!=0||state.denoiseChroma!=0},{"backend","CPU reference / two-pass QRhi compute; existing brush/numeric policies use CPU upload"},
                     {"method","joint Oklab/spatial bilateral guide; alpha-weighted neighbor differences"},
-                    {"order","decoded linear ProPhoto -> spatial denoise -> WB/exposure"},
+                    {"order","decoded linear ProPhoto -> spatial denoise -> optional clarity -> WB/exposure"},
                     {"radius_source_pixels",2},{"preview_radius","scaled by prepared/full geometry density"},
                     {"temporary_cpu_bytes_per_expanded_pixel",32},{"extra_gpu_bytes_per_preview_pixel",32},{"cpu_preview_stage_cache","non-brush completed stages share render_cache budget; exports/scopes/diagnostics bypass"},{"alpha","unchanged"},{"native_brush_policy","CPUPolicy fallback"},
                     {"monitor_icc",false}}},

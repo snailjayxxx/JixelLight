@@ -88,6 +88,7 @@ add_library(JixelLightCore STATIC
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/pipeline/BrushRenderRequest.cpp
+    core/pipeline/SpatialClarity.cpp
     core/pipeline/SpatialDenoise.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
@@ -493,3 +494,21 @@ target_link_libraries(JixelLightDenoiseCacheTests PRIVATE JixelLightCore Qt6::Te
 set_target_properties(JixelLightDenoiseCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME denoise-preview-cache COMMAND JixelLightDenoiseCacheTests -o denoise-cache-results.txt,txt -o -,txt)
 set_tests_properties(denoise-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightClarityTests tests/SpatialClarityTests.cpp)
+target_link_libraries(JixelLightClarityTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightClarityTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME spatial-clarity COMMAND JixelLightClarityTests -o clarity-results.txt,txt -o -,txt)
+set_tests_properties(spatial-clarity PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightClarityWorkflowTests tests/ClarityWorkflowTests.cpp)
+target_link_libraries(JixelLightClarityWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightClarityWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME clarity-workflows COMMAND JixelLightClarityWorkflowTests -o clarity-workflow-results.txt,txt -o -,txt)
+set_tests_properties(clarity-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_CLARITY_EVIDENCE=${CMAKE_BINARY_DIR}/clarity-owned")
+
+qt_add_executable(JixelLightClarityCacheTests tests/ClarityPreviewCacheTests.cpp)
+target_link_libraries(JixelLightClarityCacheTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightClarityCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME clarity-preview-cache COMMAND JixelLightClarityCacheTests -o clarity-cache-results.txt,txt -o -,txt)
+set_tests_properties(clarity-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
