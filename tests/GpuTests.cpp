@@ -117,7 +117,7 @@ private slots:
         for(int encoding=0;encoding<2;++encoding)for(int space=0;space<4;++space)
         for(double size : {.5,3.5})for(bool viewport : {false,true}) {
             AdjustmentState state;state.grainAmount=89;state.grainSize=size;state.exposure=.27;
-            state.look.mode="manual";state.look.code="FL";state.look.parameters={{"clarity",3},{"sharpness",4}};
+            state.look.mode="manual";state.look.code="ST";state.look.parameters={{"clarity",3},{"sharpness",4}};
             const QRectF frame=viewport?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);
             verifyParity(source,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),true,"film grain",frame);
             QCOMPARE(engine->lastProcessUsedCpuFallback(),ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb);
@@ -134,6 +134,15 @@ private slots:
         }
         const auto fallback=render(hdr,state,true,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::AdobeRgb,{0,0,1,1},true);
         QVERIFY(fallback.diagnostic["available"].toBool());QCOMPARE(fallback.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+        // FL's inherited HSL overrides deliberately use the existing numeric
+        // CPU policy on D3D/OpenGL. Keep that integration distinct from the
+        // mandatory actual-compute ST/HDR cases above.
+        state.look.mode="manual";state.look.code="FL";state.look.parameters={{"clarity",3},{"sharpness",4}};
+        const bool restricted=rhi->backend()==QRhi::D3D11||rhi->backend()==QRhi::OpenGLES2;
+        for(int space=0;space<4;++space)for(bool viewport : {false,true}) {
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"FL grain compatibility",viewport?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1));
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),restricted||ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb);
+        }
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;

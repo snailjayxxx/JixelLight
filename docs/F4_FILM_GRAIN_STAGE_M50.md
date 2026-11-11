@@ -92,3 +92,23 @@ report is12 passed/zero failures/skips, with six fresh bilingual panel PNGs.
 Only the QML panel and its focused driver change; numerical code is unchanged.
 CI363 started at implementation commitf5ed99a; this follow-up requires its own
 current-commit run, rather than borrowing that run's eventual outcome.
+
+At compact-layout commit `cd5406969b26f7d4f8b808a949f0282e4f954279`,
+the complete local Metal run passes all77 CTests in731.69 seconds, including
+Core217, Performance39, GPU38 and film-grain12 with zero failed/skipped
+observations. This is local acceptance, not three-platform shipping acceptance.
+
+CI364's first Linux attempt fails at dependency installation because the
+Ubuntu package mirror cannot resolve; compilation/tests never start. Windows
+passes76/77 CTests, including film-grain12 and both new native Paint/Erase
+checks, but the grain integration test incorrectly expects actual compute
+for FL's inherited HSL overrides. Those overrides already invoke the existing
+D3D/OpenGL CPU numeric policy. The original reports remain failed. The test
+now uses ST for mandatory compute and separately asserts FL compatibility and
+its established fallback. No product math, fallback policy or tolerance changes.
+The corrected local targeted report passes4 observations, zero failures/skips:
+the40 ST/HDR cases include30 actual compute and10 Adobe CPU uploads, with
+maximum RGB error7/65535; eight separate FL cases exercise Metal compute or
+Adobe fallback, and native Paint/Erase each remain at1/65535 with exact alpha.
+CI364's macOS job is still running at this entry; the correction requires a
+fresh exact-commit workflow on all three platforms.
