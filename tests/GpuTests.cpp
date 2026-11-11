@@ -19,6 +19,7 @@
 #include "core/cache/SourceCache.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QFile>
+#include <QScopeGuard>
 #include <QDir>
 #include <QJsonDocument>
 #include <QFutureWatcher>
@@ -204,9 +205,112 @@ private slots:
         }
     }
 
+    void textureMatchesReferenceAcrossSourcesAndDensities() {
+        QImage integer(137,139,QImage::Format_RGBA64),floating(137,139,QImage::Format_RGBA32FPx4);
+        const quint16 alpha16[]{0,655,24576,65535};const float alpha32[]{0,1.e-8f,.375f,1.f};
+        for(int y=0;y<139;++y)for(int x=0;x<137;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,alpha16[(x+y)%4]);
+            auto *pixel=reinterpret_cast<float *>(floating.scanLine(y))+4*x;
+            pixel[0]=-.04f+2.f*x/136.f;pixel[1]=.02f+1.5f*y/138.f;pixel[2]=.1f+1.2f*((x+y)%101)/100.f;pixel[3]=alpha32[(x+y)%4];
+        }
+        int compute=0,cpu=0;
+        for(bool fp32:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)
+        for(double amount:{-73.,87.})for(bool preview:{false,true}) {
+            const auto &source=fp32?floating:integer;AdjustmentState state;state.textureAmount=amount;state.clarityAmount=41;
+            state.denoiseLuma=71;state.denoiseChroma=83;state.sharpenAmount=61;state.grainAmount=19;
+            state.look.mode="manual";state.look.code="ST";state.look.parameters={{"sharpness",3},{"clarity",2}};
+            const auto space=ColorManagement::OutputSpace(output);const auto input=ImagePipeline::InputEncoding(encoding);
+            const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);const auto reference=preview?source.size()*4:QSize{};
+            verifyParity(source,state,input,space,true,"spatial texture",frame,reference);if(QTest::currentTestFailed())return;
+            const bool fallback=space==ColorManagement::OutputSpace::AdobeRgb||(fp32&&encoding==1&&space==ColorManagement::OutputSpace::ProPhotoRgb);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);fallback?++cpu:++compute;
+            const auto actual=render(source,state,false,input,space,frame,true,reference);
+            QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["spatial_texture"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+        }
+        QCOMPARE(compute,44);QCOMPARE(cpu,20);qInfo()<<"texture64: actual compute"<<compute<<"explicit CPU policies"<<cpu;
+    }
+    void textureDarkFieldsFractionalRadiiAndAlphaHoles() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);const float alpha[]{0,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.001f+.015f*float((x*17+y*7)%23)/23;p[1]=.003f+.01f*float((x+y)%13)/13;p[2]=.008f;p[3]=alpha[(x+y)%4];
+            if(p[3]==0){p[0]=64000;p[1]=32000;p[2]=16000;}
+        }
+        for(int output=0;output<4;++output)for(double amount:{-100.,100.})for(bool denoise:{false,true})for(bool tiny:{false,true}) {
+            AdjustmentState state;state.textureAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"texture dark/holes",{0,0,1,1},source.size()*(tiny?40:2));
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
+    void textureRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const auto source=loaded.image.copy((loaded.image.width()-512)/2,(loaded.image.height()-512)/2,512,512);
+        for(int output=0;output<4;++output)for(bool denoise:{false,true}) {
+            AdjustmentState state;state.textureAmount=65;if(denoise){state.denoiseLuma=70;state.denoiseChroma=90;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"real Sony texture");
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
+    void textureResidentStagesTrackCompleteDependencies() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.03f*std::sin(float(x));p[1]=.2f+.02f*std::cos(float(y));p[2]=.12f;p[3]=1;}
+        AdjustmentState state;state.textureAmount=73;QSize reference;
+        auto encoding=ImagePipeline::InputEncoding::LinearProPhoto;auto output=ColorManagement::OutputSpace::SRgb;
+        std::array<Float4,3> rows{};const std::array<Float4,3> *customRows=nullptr;
+        const auto verify=[&]{verifyParity(source,state,encoding,output,true,"texture cache",{0,0,1,1},reference,customRows);QVERIFY(!engine->lastProcessUsedCpuFallback());};
+        verify();auto guide=engine->textureGuideDispatches(),smallH=engine->textureSmallHorizontalDispatches(),smallV=engine->textureSmallVerticalDispatches(),largeH=engine->textureLargeHorizontalDispatches(),filter=engine->textureFilterDispatches(),uploads=engine->sourceUploads();
+        const auto counts=[&]{QCOMPARE(engine->textureGuideDispatches(),guide);QCOMPARE(engine->textureSmallHorizontalDispatches(),smallH);QCOMPARE(engine->textureSmallVerticalDispatches(),smallV);QCOMPARE(engine->textureLargeHorizontalDispatches(),largeH);QCOMPARE(engine->textureFilterDispatches(),filter);};
+        const auto allMiss=[&]{++guide;++smallH;++smallV;++largeH;++filter;};
+        state.exposure=.3;state.temperature=17;output=ColorManagement::OutputSpace::DisplayP3;verify();counts();
+        state.textureAmount=-49;++filter;verify();counts();
+        reference=source.size()*4;++smallH;++smallV;++largeH;++filter;verify();counts();
+        state.denoiseLuma=77;state.denoiseChroma=83;allMiss();verify();counts();
+        state.denoiseChroma=19;allMiss();verify();counts();
+        state.sharpenAmount=61;state.grainAmount=19;verify();counts();QCOMPARE(engine->sourceUploads(),uploads);
+        state.clarityAmount=41;verify();counts();const auto clarityGuide=engine->clarityGuideDispatches();
+        state.clarityAmount=-61;verify();counts();QCOMPARE(engine->clarityGuideDispatches(),clarityGuide);
+        state.textureAmount=35;++filter;verify();counts();QCOMPARE(engine->clarityGuideDispatches(),clarityGuide+1);
+        auto next=source.copy();source=next;state.textureAmount=0;state.clarityAmount=0;state.denoiseLuma=0;state.denoiseChroma=0;verify();counts();
+        state.textureAmount=73;allMiss();verify();counts();QCOMPARE(engine->sourceUploads(),uploads+1);
+        source=source.copy(0,0,67,71);reference={};allMiss();verify();counts();
+        encoding=ImagePipeline::InputEncoding::SRgb;allMiss();verify();counts();
+        const auto matrix=ProcessingPlan::compile(state,encoding,output);std::copy_n(matrix.data.data()+ProcessingPlan::Input0,3,rows.data());rows[0].x+=.01f;customRows=&rows;
+        allMiss();verify();counts();output=ColorManagement::OutputSpace::SRgb;verify();counts();
+    }
+    void rejectedPlanPreservesAcceptedFrameProvenance_data() {
+        QTest::addColumn<bool>("invalidLut");QTest::newRow("spatial-settings")<<false;QTest::newRow("lut-atlas")<<true;
+    }
+    void rejectedPlanPreservesAcceptedFrameProvenance() {
+        QFETCH(bool,invalidLut);
+        auto saved=std::move(engine);engine=std::make_unique<GpuEngine>(rhi.get());
+        auto restore=qScopeGuard([&]{engine=std::move(saved);});
+        QImage original(9,7,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<original.height();++y)for(int x=0;x<original.width();++x){auto *p=reinterpret_cast<float *>(original.scanLine(y))+4*x;p[0]=.2f;p[1]=.3f;p[2]=.1f;p[3]=x==1?std::numeric_limits<float>::denorm_min():1.f;}
+        AdjustmentState state;state.textureAmount=73;
+        const auto accepted=render(original,state,false,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,{0,0,1,1},true);
+        QVERIFY(!accepted.image.isNull());QCOMPARE(accepted.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+        const auto uploads=engine->sourceUploads(),acceptedRevision=engine->renderedRevision();
+        auto other=original.copy();for(int y=0;y<other.height();++y)for(int x=0;x<other.width();++x)reinterpret_cast<float *>(other.scanLine(y))[4*x+3]=1;
+        auto malformed=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto);
+        if(invalidLut){auto lut=std::make_shared<LookLut>();lut->digest="invalid-owned-lut";malformed.state.look.lut=lut;malformed.data[ProcessingPlan::LookStyle].w=1;}
+        else malformed.data[ProcessingPlan::Texture].y=1;
+        QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        const bool processed=engine->process(cb,other,malformed,++revision,{});rhi->endOffscreenFrame();rhi->finish();
+        QVERIFY(!processed);QCOMPARE(engine->sourceUploads(),uploads);QCOMPARE(engine->renderedRevision(),acceptedRevision);
+        QJsonObject frozen;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        const bool captured=engine->captureWorkingFrame(cb,acceptedRevision,[&](QJsonObject value){frozen=std::move(value);});
+        rhi->endOffscreenFrame();rhi->finish();QVERIFY(captured);QVERIFY(frozen["available"].toBool());
+        QCOMPARE(frozen["source_cache_key"],accepted.diagnostic["source_cache_key"]);
+        QCOMPARE(frozen["producer"].toString(),QString("cpu-reference-upload"));
+        QCOMPARE(frozen["spatial_texture"].toString(),QString("cpu-reference"));
+        QCOMPARE(frozen["numeric_source_policy"].toString(),QString("texture-near-zero-alpha"));
+    }
     void textureUsesExplicitCompleteCpuReferencePolicy() {
         QImage source(39,41,QImage::Format_RGBA32FPx4);
-        const float alpha[]{0,1.e-8f,1.f/65535.f,.01f,.5f,1.f};
+        const float alpha[]{0,std::numeric_limits<float>::denorm_min(),1.e-19f,.01f,.5f,1.f};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
             auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
             p[0]=.2f+.08f*std::sin(float(x));p[1]=.3f+.04f*std::cos(float(y));p[2]=.1f;p[3]=alpha[(x+y)%6];
@@ -215,6 +319,7 @@ private slots:
         for(int output=0;output<4;++output)for(double amount:{-100.,73.})for(bool denoise:{false,true}) {
             AdjustmentState state;state.textureAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
             state.sharpenAmount=61;state.grainAmount=19;
+            if(integer){BrushMaskGeometry::Stroke paint;paint.style={.2,.4,.8};paint.dabs={{{.5,.5},.7}};state.brushMasks.layers={{"texture-reference",true,.6,{paint}}};}
             const auto input=integer?ImagePipeline::rgba64Source(source):source;
             const auto space=ColorManagement::OutputSpace(output);const auto actual=render(input,state,true,ImagePipeline::InputEncoding(encoding),space,{0,0,1,1},true);
             QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
@@ -222,7 +327,7 @@ private slots:
             for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
             QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
             QCOMPARE(actual.diagnostic["spatial_texture"].toString(),QString("cpu-reference"));
-            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("texture-cpu-stage"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),integer?QString("existing-color-or-brush"):QString("texture-near-zero-alpha"));
             const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
         }
     }

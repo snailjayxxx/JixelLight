@@ -1,0 +1,5 @@
+#version 440
+#extension GL_GOOGLE_include_directive : require
+#define TEXTURE_RADIUS p[55].y
+#define TEXTURE_WEIGHT_OFFSET 0
+#include "texture_horizontal_common.glsl"

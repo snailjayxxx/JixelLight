@@ -145,6 +145,8 @@ set(JIXELLIGHT_SHADER_SOURCES
     shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
     shaders/denoise_prepare.comp shaders/denoise_filter.comp
     shaders/clarity_prepare.comp shaders/clarity_horizontal.comp shaders/clarity_filter.comp
+    shaders/texture_prepare.comp shaders/texture_small_horizontal.comp shaders/texture_small_vertical.comp
+    shaders/texture_large_horizontal.comp shaders/texture_filter.comp
     shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
 qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)

@@ -1,0 +1,21 @@
+#version 440
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[56];};
+layout(rgba32f,binding=1) readonly uniform image2D guideImage;
+layout(rgba32f,binding=2) readonly uniform image2D horizontalImage;
+layout(rgba32f,binding=3) writeonly uniform image2D smallBandImage;
+layout(std140,binding=4) uniform Kernel {vec4 weights[6];};
+float weightAt(int n){return weights[n/4][n%4];}
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+    vec4 center=imageLoad(guideImage,c);precise float value=0.0,alpha=0.0;
+    if(center.a>1.e-20) {
+        int extent=int(ceil(p[55].y));
+        for(int i=-extent;i<=extent;++i) {
+            vec3 sampleValue=imageLoad(horizontalImage,ivec2(c.x,clamp(c.y+i,0,size.y-1))).rgb;
+            precise float weight=weightAt(i+extent);
+            value+=weight*(sampleValue.x+(sampleValue.z-center.r)*sampleValue.y);alpha+=weight*sampleValue.y;
+        }
+    }
+    imageStore(smallBandImage,c,vec4(alpha>1.e-20?value/alpha:0.0,0,0,0));
+}

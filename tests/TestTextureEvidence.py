@@ -1,4 +1,4 @@
-"""Reject stale, incomplete or falsely GPU-computed claims in the native texture gate."""
+"""Reject stale, incomplete or false native texture evidence."""
 from copy import deepcopy
 from pathlib import Path
 import sys
@@ -28,8 +28,8 @@ def report_fixture(mode='gpu', qpa='cocoa'):
         'actual_backend': 'CPU parallel' if mode == 'cpu' else {'cocoa': 'GPU · Metal', 'windows': 'GPU · Direct3D 11', 'xcb': 'GPU · OpenGL'}[qpa],
         'elapsed_ms': 5000, 'deadline_ms': 60000, 'source_commit': '1234567',
         'initial_whole_Develop': initial, 'first_whole_Develop': first, 'active_whole_Develop': active,
-        'reset_whole_Develop': dict(initial, exposure=.3), 'undo_steps_to_first': 2, 'texture_cache_hit_delta': 0 if mode=='gpu' else 1, 'texture_cache_required': mode!='gpu', 'texture_processing_policy': 'complete-cpu-reference-upload; uncached' if mode=='gpu' else 'cached-cpu-reference',
-        'texture_header_text': 'TEXTURE · CPU' if mode == 'cpu' else '纹理 · CPU', 'texture_reset_text': 'Reset' if mode == 'cpu' else '重置',
+        'reset_whole_Develop': dict(initial, exposure=.3), 'undo_steps_to_first': 2, 'texture_cache_hit_delta': 2 if mode=='gpu' else 1, 'texture_cache_required': True, 'texture_processing_policy': 'cached-gpu-compute' if mode=='gpu' else 'cached-cpu-reference',
+        'texture_header_text': 'TEXTURE' if mode == 'cpu' else '纹理', 'texture_reset_text': 'Reset' if mode == 'cpu' else '重置',
         'staging': {'bit_exact': True, 'complete_pixels': 64777, 'actual_FP32_staging_sha256': 'a'*64, 'expected_FP32_staging_sha256': 'a'*64},
         'scope': {'pixels': 64777, 'bins': 1024, 'four_histograms_exact': True, 'clipping_exact': True,
                   **{key: [64777] + [0]*1023 for key in ('red', 'green', 'blue', 'luma')}},
@@ -53,9 +53,9 @@ def diagnostic_fixture(mode='gpu'):
                   'backend': 'cpu-reference', 'effective_small_radius': 2, 'effective_large_radius': 6, 'input': frame,
                   'output': dict(frame, pixel_sha256='c'*64)}, 'spatial_denoise': {'backend': 'cpu-reference', 'output': {'pixel_sha256':'b'*64}}},
               'gpu_working_output': {'available': False} if mode == 'cpu' else {
-                  'available': True, 'producer': 'cpu-reference-upload', 'spatial_texture': 'cpu-reference', 'spatial_denoise': 'cpu-reference',
+                  'available': True, 'producer': 'gpu-compute', 'spatial_texture': 'gpu-compute', 'spatial_denoise': 'gpu-compute',
                   'pixels':64777, 'bytes':1036432, 'nonfinite_rgba':[0,0,0,0],
-                  'numeric_source_policy': 'texture-cpu-stage', 'monitor_icc': False, 'parameter_revision': 30, 'source_cache_key': '50'}}
+                  'numeric_source_policy': 'none', 'monitor_icc': False, 'parameter_revision': 30, 'source_cache_key': '50'}}
     return manifest, stages
 
 
@@ -71,7 +71,7 @@ class TextureEvidenceTests(unittest.TestCase):
         edits = [(('phase',), 15), (('texture_header_text',), 'DENOISE'), (('source_commit',), 'unknown'), (('deadline_ms',), 60000.0),
                  (('active_whole_Develop', 'contrast'), 20), (('reset_whole_Develop', 'exposure'), .2),
                  (('active_whole_Develop', 'texture', 'amount'), 0), (('texture_cache_hit_delta',), -1),
-                 (('texture_cache_required',), True), (('texture_processing_policy',), 'gpu-compute'),
+                 (('texture_cache_required',), False), (('texture_processing_policy',), 'gpu-compute'),
                  (('export', 'RGBA16_exact'), False), (('scope', 'red', 0), 64776),
                  (('pointers', 1, 'post_event_render_revision'), '1'), (('pointers', 2, 'QPA_mouse_route'), False),
                  (('native_float_RAW_decoder',), True), (('product_development_complete',), True)]
@@ -83,13 +83,14 @@ class TextureEvidenceTests(unittest.TestCase):
                 validate_report(data, 'gpu', 'cocoa', '1234567')
 
     def test_cpu_requires_real_cache_reuse(self):
-        data=report_fixture('cpu');data['texture_cache_hit_delta']=0
-        with self.assertRaises(ValueError):validate_report(data,'cpu','cocoa')
+        for mode in ('cpu','gpu'):
+            data=report_fixture(mode);data['texture_cache_hit_delta']=0
+            with self.assertRaises(ValueError):validate_report(data,mode,'cocoa')
 
     def test_reject_false_compute_claims_and_stale_frames(self):
-        edits = [(('gpu_working_output', 'producer'), 'gpu-compute'),
-                 (('gpu_working_output', 'spatial_texture'), 'gpu-compute'),
-                 (('gpu_working_output', 'numeric_source_policy'), 'none'),
+        edits = [(('gpu_working_output', 'producer'), 'cpu-reference-upload'),
+                 (('gpu_working_output', 'spatial_texture'), 'cpu-reference'),
+                 (('gpu_working_output', 'numeric_source_policy'), 'texture-near-zero-alpha'),
                  (('gpu_working_output', 'monitor_icc'), True), (('gpu_working_output', 'source_cache_key'), '49'),
                  (('gpu_working_output', 'parameter_revision'), 29), (('parameter_revision',), 29),
                  (('color_stages', 'spatial_texture', 'output', 'pixels'), 1),

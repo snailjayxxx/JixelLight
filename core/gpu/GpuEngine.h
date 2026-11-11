@@ -44,6 +44,11 @@ public:
     quint64 sourceUploads() const { return m_uploads; }
     quint64 denoiseGuideDispatches() const { return m_denoiseGuideDispatches; }
     quint64 denoiseFilterDispatches() const { return m_denoiseFilterDispatches; }
+    quint64 textureGuideDispatches() const {return m_textureGuideDispatches;}
+    quint64 textureSmallHorizontalDispatches() const {return m_textureSmallHorizontalDispatches;}
+    quint64 textureSmallVerticalDispatches() const {return m_textureSmallVerticalDispatches;}
+    quint64 textureLargeHorizontalDispatches() const {return m_textureLargeHorizontalDispatches;}
+    quint64 textureFilterDispatches() const {return m_textureFilterDispatches;}
     quint64 clarityGuideDispatches() const {return m_clarityGuideDispatches;}
     quint64 clarityHorizontalDispatches() const {return m_clarityHorizontalDispatches;}
     quint64 clarityFilterDispatches() const {return m_clarityFilterDispatches;}
@@ -56,6 +61,7 @@ private:
     bool initialize(QSize size);
     bool ensureDetail();
     bool ensureDenoise();
+    bool ensureTexture();
     bool ensureClarity();
     bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input);
     bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input=nullptr);
@@ -77,16 +83,31 @@ private:
     std::unique_ptr<QRhiTexture> m_denoiseGuide,m_denoiseLinear;
     std::unique_ptr<QRhiShaderResourceBindings> m_denoisePrepareBindings,m_denoiseFilterBindings,m_denoiseColorBindings,m_denoiseDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_denoisePreparePipeline,m_denoiseFilterPipeline;
+    std::unique_ptr<QRhiTexture> m_textureGuide,m_textureHorizontal,m_textureSmallBand,m_textureLinear;
+    std::unique_ptr<QRhiBuffer> m_textureKernel;
+    std::unique_ptr<QRhiShaderResourceBindings> m_texturePrepareBindings,m_texturePrepareDenoisedBindings,
+        m_textureHorizontalBindings,m_textureSmallVerticalBindings,m_textureFilterBindings,m_textureFilterDenoisedBindings,
+        m_textureColorBindings,m_textureDetailBindings;
+    std::unique_ptr<QRhiComputePipeline> m_texturePreparePipeline,m_textureSmallHorizontalPipeline,
+        m_textureSmallVerticalPipeline,m_textureLargeHorizontalPipeline,m_textureFilterPipeline;
+    qint64 m_textureSourceKey=0;
+    int m_textureEncoding=-1;
+    std::array<Float4,3> m_textureInputRows{};
+    Float4 m_textureDenoiseSettings{},m_textureSettings{};
+    float m_textureSmallRadius=-1,m_textureLargeRadius=-1;
+    bool m_textureGuideValid=false,m_textureNeighborhoodValid=false,m_textureOutputValid=false;
+    quint64 m_textureGuideDispatches=0,m_textureSmallHorizontalDispatches=0,m_textureSmallVerticalDispatches=0,
+        m_textureLargeHorizontalDispatches=0,m_textureFilterDispatches=0;
     std::unique_ptr<QRhiTexture> m_clarityGuide,m_clarityHorizontal,m_clarityLinear;
     std::unique_ptr<QRhiBuffer> m_clarityKernel;
-    std::unique_ptr<QRhiShaderResourceBindings> m_clarityPrepareBindings,m_clarityPrepareDenoisedBindings,
-        m_clarityHorizontalBindings,m_clarityFilterBindings,m_clarityFilterDenoisedBindings,
+    std::unique_ptr<QRhiShaderResourceBindings> m_clarityPrepareBindings,m_clarityPrepareDenoisedBindings,m_clarityPrepareTexturedBindings,
+        m_clarityHorizontalBindings,m_clarityFilterBindings,m_clarityFilterDenoisedBindings,m_clarityFilterTexturedBindings,
         m_clarityColorBindings,m_clarityDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_clarityPreparePipeline,m_clarityHorizontalPipeline,m_clarityFilterPipeline;
     qint64 m_claritySourceKey=0;
     int m_clarityEncoding=-1;
     std::array<Float4,3> m_clarityInputRows{};
-    Float4 m_clarityDenoiseSettings{},m_claritySettings{};
+    Float4 m_clarityDenoiseSettings{},m_clarityTextureSettings{},m_claritySettings{};
     float m_clarityHorizontalRadius=-1;
     bool m_clarityGuideValid=false,m_clarityHorizontalValid=false,m_clarityOutputValid=false;
     quint64 m_clarityGuideDispatches=0,m_clarityHorizontalDispatches=0,m_clarityFilterDispatches=0;

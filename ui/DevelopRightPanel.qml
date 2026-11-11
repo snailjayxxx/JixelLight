@@ -656,7 +656,7 @@ Rectangle {
                     Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
                         objectName: "textureToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
-                        text: (root.textureExpanded ? "▾ " : "▸ ") + root.t("纹理 · CPU", "TEXTURE · CPU")
+                        text: (root.textureExpanded ? "▾ " : "▸ ") + root.t("纹理", "TEXTURE")
                         onClicked: root.textureExpanded = !root.textureExpanded
                     }
                     Button {
