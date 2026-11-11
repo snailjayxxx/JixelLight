@@ -428,6 +428,7 @@ jobs:
             build/brush-tile-lowerbound-owned
             build/tangential-geometry-owned
             build/tangential-gpu-owned
+            build/grain-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/
@@ -766,6 +767,7 @@ jobs:
             build/brush-tile-lowerbound-owned
             build/tangential-geometry-owned
             build/tangential-gpu-owned
+            build/grain-owned
             build/native-brush-monitor.json
             build/xmp-controller-native/
             build/brush-pressure-input/

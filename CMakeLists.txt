@@ -461,3 +461,9 @@ target_link_libraries(JixelLightTangentialGpuTests PRIVATE JixelLightGpu Qt6::Te
 set_target_properties(JixelLightTangentialGpuTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME tangential-gpu COMMAND JixelLightTangentialGpuTests -o tangential-gpu-results.txt,txt -o -,txt)
 set_tests_properties(tangential-gpu PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_REQUIRE_GPU=1;JIXELLIGHT_TANGENTIAL_GPU_EVIDENCE=${CMAKE_BINARY_DIR}/tangential-gpu-owned")
+
+qt_add_executable(JixelLightFilmGrainTests tests/FilmGrainTests.cpp)
+target_link_libraries(JixelLightFilmGrainTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightFilmGrainTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME film-grain COMMAND JixelLightFilmGrainTests -o film-grain-results.txt,txt -o -,txt)
+set_tests_properties(film-grain PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_GRAIN_EVIDENCE=${CMAKE_BINARY_DIR}/grain-owned")

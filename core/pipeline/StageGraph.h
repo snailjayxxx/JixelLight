@@ -148,6 +148,14 @@ struct StageGraph {
                     {"coordinates","normalized post-geometry, committed crop and orientation; viewport preserves full-image position"},
                     {"operation","RGB * exp2(amount * smoothstep); alpha unchanged"},
                     {"lens_profile",false},{"monitor_icc",false}}},
+                {"grain",QJsonObject{{"schema",1},{"amount",state.grainAmount},{"size",state.grainSize},
+                    {"active",state.grainAmount!=0},{"backend","CPU reference / QRhi color compute"},
+                    {"gpu_adobe_rgb_policy","CPU numeric reference upload; native brush admission falls back"},
+                    {"order","output transfer -> Sony LUT -> grain -> quantization -> Sony spatial detail"},
+                    {"coordinates","fixed 512/size lattice per normalized post-crop/orientation frame axis; full-image viewport anchoring"},
+                    {"operation","fixed-seed smooth value noise; monochrome encoded-RGB delta; mean-brightness endpoint taper"},
+                    {"preview_filter","amplitude fades above one lattice cell per pixel; zero from two cells"},
+                    {"alpha","unchanged"},{"monitor_icc",false}}},
                 {"monitor_icc", "presentation-only; excluded from render/scopes keys"}};
     }
     // Only completed full post-geometry analysis frames are reusable. The

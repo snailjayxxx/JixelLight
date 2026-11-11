@@ -20,6 +20,9 @@
 #include <QFile>
 #include <QDir>
 #include <QJsonDocument>
+#include <QFutureWatcher>
+#include <QtConcurrent>
+#include "core/gpu/brush/NativeBrushFrame.h"
 
 class GpuTests : public QObject {
     Q_OBJECT
@@ -106,6 +109,74 @@ private:
         }
     }
 private slots:
+    void filmGrainMatchesCpuInEveryOutputSpaceAndViewport() {
+        QImage source(385,289,QImage::Format_RGBA64);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
+            reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(
+                (x*157+y*31)%65536,(x*43+y*197)%65536,(x*113+y*89)%65536,(x+y)%3?23456:0);
+        for(int encoding=0;encoding<2;++encoding)for(int space=0;space<4;++space)
+        for(double size : {.5,3.5})for(bool viewport : {false,true}) {
+            AdjustmentState state;state.grainAmount=89;state.grainSize=size;state.exposure=.27;
+            state.look.mode="manual";state.look.code="FL";state.look.parameters={{"clarity",3},{"sharpness",4}};
+            const QRectF frame=viewport?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);
+            verifyParity(source,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(space),true,"film grain",frame);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb);
+        }
+        QImage hdr(385,289,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<hdr.height();++y)for(int x=0;x<hdr.width();++x) {
+            auto *p=reinterpret_cast<float *>(hdr.scanLine(y))+4*x;
+            p[0]=-.04f+2.f*x/384.f;p[1]=.02f+1.5f*y/288.f;p[2]=.1f+1.2f*((x+y)%101)/100.f;p[3]=(x%3)*.375f;
+        }
+        AdjustmentState state;state.grainAmount=77;state.grainSize=2.5;
+        for(int space=0;space<4;++space)for(bool viewport : {false,true}) {
+            verifyParity(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"FP32 film grain",viewport?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1));
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb);
+        }
+        const auto fallback=render(hdr,state,true,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::AdobeRgb,{0,0,1,1},true);
+        QVERIFY(fallback.diagnostic["available"].toBool());QCOMPARE(fallback.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+    }
+    void filmGrainWithNativePaintErasePreservesCpuParity() {
+        namespace N=NativeBrush;
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false;};
+        for(bool fp32 : {false,true}) {
+            QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
+            for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
+                if(fp32) {auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;p[0]=-.02f+1.5f*x/256.f;p[1]=.1f+y/192.f;p[2]=.2f;p[3]=(x%3)*.375f;}
+                else reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(10000+x*100,8000+y*150,12000,quint16((x%3)*24576));
+            }
+            auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+            auto budget=std::make_shared<BrushRenderBudget>();AdjustmentState state;state.grainAmount=83;state.grainSize=3.5;
+            BrushMaskGeometry::Stroke paint;paint.style={.13,.42,.8};paint.dabs={{{.28,.37},.5},{{.69,.62},.9}};
+            auto erase=paint;erase.mode=BrushMaskGeometry::StrokeMode::Erase;erase.dabs={{{.3,.38},.3}};
+            state.brushMasks.layers.push_back({"grain-native",true,.85,{paint,erase}});
+            const auto p=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+            QFutureWatcher<Prepared> watcher;watcher.setFuture(QtConcurrent::run([=] {
+                Prepared result;result.source=N::CanonicalSource::capture(image,{"grain-owned",p.encoding,false,0,{0,0,1,1}},caps.threads(),budget);
+                if(!result.source)return result;
+                result.upload=N::UploadAdmission::prepare(result.source,caps);result.frame=N::FrameAdmission::prepare(result.source,caps,p,{"grain-catalog","grain-input","grain-version",1},1);
+                const auto adobe=ProcessingPlan::compile(state,p.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0);N::FrameFailure why=N::FrameFailure::None;
+                const auto refused=N::FrameAdmission::prepare(result.source,caps,adobe,{"grain-catalog","grain-input","grain-version",1},2,&why);
+                result.adobeRefused=!refused&&why==N::FrameFailure::CPUPolicy;
+                auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
+            }));
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);
+            auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
+            QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
+            QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));
+            QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->compute(frame,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(frame));
+            QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QRhiReadbackResult readback;bool done=false;readback.completed=[&]{done=true;};
+            auto *updates=rhi->nextResourceUpdateBatch();updates->readBackTexture(QRhiReadbackDescription(domain->texture(frame)),&readback);cb->resourceUpdate(updates);rhi->endOffscreenFrame();rhi->finish();QVERIFY(done);
+            QCOMPARE(readback.data.size(),image.width()*image.height()*16);
+            QImage gpu(reinterpret_cast<const uchar *>(readback.data.constData()),image.width(),image.height(),image.width()*16,QImage::Format_RGBA32FPx4);
+            const auto actual=ImagePipeline::rgba64Source(gpu),expected=prepared.reference.image();int maximum=0;
+            for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
+                const auto a=reinterpret_cast<const QRgba64 *>(actual.constScanLine(y))[x],b=reinterpret_cast<const QRgba64 *>(expected.constScanLine(y))[x];
+                maximum=std::max({maximum,std::abs(int(a.red())-int(b.red())),std::abs(int(a.green())-int(b.green())),std::abs(int(a.blue())-int(b.blue()))});QCOMPARE(a.alpha(),b.alpha());
+            }
+            qInfo()<<"native Paint/Erase grain"<<fp32<<"max RGB16 error"<<maximum;QVERIFY(maximum<=40);
+            domain->release(frame);domain->release(input);domain->collect();domain->shutdown();
+        }
+    }
     void initTestCase() {
 #ifdef Q_OS_WIN
         QRhiD3D11InitParams params;

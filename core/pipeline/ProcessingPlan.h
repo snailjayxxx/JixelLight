@@ -26,7 +26,7 @@ struct ProcessingPlan {
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
                 GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
-                RadialMask=49, RadialMaskShape=50, SlotCount=51 };
+                RadialMask=49, RadialMaskShape=50, Grain=51, SlotCount=52 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -39,7 +39,7 @@ struct ProcessingPlan {
         // legacy spatial edits, even if no linear/radial/vignette is active.
         const bool brush=std::any_of(state.brushMasks.layers.begin(),state.brushMasks.layers.end(),
             [](const auto &layer){return layer.enabled;});
-        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0 || brush)
+        if (data[Vignette].x!=0 || data[LinearMask].x!=0 || data[RadialMask].x!=0 || data[Grain].x!=0 || brush)
             data[FrameRect]={float(rect.x()),float(rect.y()),float(rect.width()),float(rect.height())};
     }
     Float4 pixelMap(const QSize &size) const {
@@ -67,4 +67,4 @@ private:
     friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 816);
+static_assert(sizeof(ProcessingPlan::data) == 832);

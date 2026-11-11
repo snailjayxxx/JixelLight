@@ -20,6 +20,10 @@ constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+    // Extended FP32 grain fixtures expose >40/65535 at an Adobe RGB gamut
+    // edge. Keep the established color math and tolerance; use the exact
+    // reference for this optional output combination on every backend.
+    if (plan.data[ProcessingPlan::Grain].x>0 && plan.output==ColorManagement::OutputSpace::AdobeRgb) return true;
     // All QRhi backends require the established CPU numeric upload while the
     // M4.4A brush is a research-only CPU kernel. No silent GPU omission.
     if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) return true;

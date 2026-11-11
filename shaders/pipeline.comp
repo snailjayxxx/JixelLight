@@ -1,10 +1,36 @@
 #version 440
 layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
-layout(std140, binding=0) uniform Plan { vec4 p[51]; };
+layout(std140, binding=0) uniform Plan { vec4 p[52]; };
 layout(rgba32f, binding=1) readonly uniform image2D sourceImage;
 layout(rgba32f, binding=2) writeonly uniform image2D outputImage;
 layout(rgba32f,binding=3) readonly uniform image2D lookLut;
 const float PI=3.14159265358979323846;
+float grainLattice(ivec2 cell) {
+    uint h=uint(cell.x)*0x9e3779b9u ^ uint(cell.y)*0x85ebca6bu ^ 0x68bc21ebu;
+    h=(h^(h>>16u))*0x7feb352du;
+    h=(h^(h>>15u))*0x846ca68bu;
+    h^=h>>16u;
+    return float(h>>16u)*(1.0/32768.0)-1.0;
+}
+vec3 applyGrain(vec3 v,ivec2 coord) {
+    if(p[51].x==0.0) return v;
+    precise float footprint=max(abs(p[39].z),abs(p[39].w))*.5*p[51].y;
+    float weight=clamp(2.0-footprint,0.0,1.0);
+    if(weight==0.0) return v;
+    precise vec2 delta=p[39].xy+(vec2(coord)-(p[24].xy-vec2(1.0))*.5)*p[39].zw;
+    precise vec2 pos=(delta*.5+vec2(.5))*p[51].y;
+    ivec2 cell=ivec2(floor(pos));
+    precise vec2 f=pos-vec2(cell);
+    f=f*f*(vec2(3.0)-2.0*f);
+    float a=grainLattice(cell),b=grainLattice(cell+ivec2(1,0));
+    float c=grainLattice(cell+ivec2(0,1)),d=grainLattice(cell+ivec2(1,1));
+    precise float top=a+(b-a)*f.x,bottom=c+(d-c)*f.x;
+    precise float noise=top+(bottom-top)*f.y;
+    precise float mean=clamp(((v.x+v.y)+v.z)/3.0,0.0,1.0);
+    precise float taper=4.0*mean*(1.0-mean);
+    precise float value=noise*p[51].x*weight*taper;
+    return v+vec3(value);
+}
 float dot3(vec3 a, vec3 b) {
     precise float result=(a.x*b.x+a.y*b.y)+a.z*b.z;
     return result;
@@ -245,6 +271,7 @@ void main() {
             v=vec3(encodeTarget(v.r),encodeTarget(v.g),encodeTarget(v.b));
         }
     }
+    v=applyGrain(v,coord);
     v=floor(clamp(v,vec3(0.0),vec3(1.0))*65535.0+vec3(.5))/65535.0;
     imageStore(outputImage,coord,vec4(v,original.a));
 }

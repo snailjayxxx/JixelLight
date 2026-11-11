@@ -396,6 +396,9 @@ bool ProjectDatabase::openCatalog(const QString &directory, QVector<SavedPhoto> 
                     if (!AdjustmentState::validVignetteJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported vignette for project photo"); break;
                     }
+                    if (!AdjustmentState::validGrainJson(doc.object())) {
+                        ready=false; error=QStringLiteral("Invalid or unsupported grain for project photo"); break;
+                    }
                     if (!AdjustmentState::validBlackAndWhiteJson(doc.object())) {
                         ready=false; error=QStringLiteral("Invalid or unsupported black-and-white mixer for project photo"); break;
                     }

@@ -15,3 +15,10 @@ Only the newly added Python boundary tail runs locally: Ran1 subset,9 accepted a
 Source302/other299 unchanged and final docs3 are bound separately. New QA compilation uses current precommit1dbe9d5; adopted Core/Gpu/product objects remain compiled at218f986 and the corrected GPU QA binary at6ff819c. The new App plus19 accurately adopted targets make20 effective local targets, not20 fresh builds. Old binaries/objects/link inputs and all three before-App preference existence/SHA states remain unchanged. Source macros are not labeled as the future publication commit. Native26/target15.4 warnings do not establish older-OS acceptance.
 
 The unmodified Core217/geometry/GPU/tile/worker/live/pressure/raw-QPA/XMP/menu/curation groups retain their precise historical local or CI359 scope; none is fresh current data. There is no current full76, actual70shipping or new whole-CI acceptance. All original numerical/work/memory/time gates remain. Full F0–F6, physical devices/arbitrary raw jitter/native FP32 RAW and independent exact-commit three-platform acceptance remain unfinished.
+
+Subsequent status checked on 2026-11-11: GitHub CI362 at exact commit
+`9c1c4f2dd63cde025c285a668e82e51faed67288` succeeds on its three original
+attempt-1 jobs. Original full logs show 76/76 CTests and Core217 with zero
+failures/skips on each platform, and both desktop package steps succeed.
+This updates the pending CI observation above; it is not a new independent
+artifact-verification receipt and does not complete F0–F6.

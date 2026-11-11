@@ -111,6 +111,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteAmount READ vignetteAmount WRITE setVignetteAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteMidpoint READ vignetteMidpoint WRITE setVignetteMidpoint NOTIFY adjustmentsChanged)
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double grainAmount READ grainAmount WRITE setGrainAmount NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double grainSize READ grainSize WRITE setGrainSize NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
@@ -289,6 +291,7 @@ public:
     double highlights() const; double shadows() const; double whites() const; double blacks() const;
     double highlightRecovery() const; double hue() const; double saturation() const; double vibrance() const;
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
+    double grainAmount() const; double grainSize() const;
     QVariantMap linearMask() const {
         const auto state=currentState();
         return {{"enabled",state.linearMaskEnabled},{"exposure",state.linearMaskExposure},
@@ -316,6 +319,7 @@ public:
     void setHighlights(double v); void setShadows(double v); void setWhites(double v); void setBlacks(double v);
     void setHighlightRecovery(double v); void setHue(double v); void setSaturation(double v); void setVibrance(double v);
     void setVignetteAmount(double v); void setVignetteMidpoint(double v); void setVignetteFeather(double v);
+    void setGrainAmount(double v); void setGrainSize(double v);
     Q_INVOKABLE bool setLinearMaskEnabled(bool enabled);
     Q_INVOKABLE bool setLinearMaskParameter(const QString &parameter,double value);
     Q_INVOKABLE void resetLinearMask();
@@ -440,6 +444,7 @@ public:
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetAdjustments();
     Q_INVOKABLE void resetVignette();
+    Q_INVOKABLE void resetGrain();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
     Q_INVOKABLE void syncAdjustmentsToAll();

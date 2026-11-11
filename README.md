@@ -2,6 +2,8 @@
 
 # JixelLight
 
+> **开发进度（2026-11-11）：** 当前父提交 `9c1c4f2` 的 CI #362 已在 Windows、macOS、Linux 各通过 76 项 CTest。本轮继续加入可撤销、可持久化的胶片颗粒：双语强度/粒度控件、CPU/QRhi 预览、示波器、多格式导出、预设/XMP/CLI 与效果组同步；Adobe RGB 颗粒采用明确的 CPU 数值回退。新代码仍须完成当前提交的跨平台验收。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)和[颗粒实现说明](docs/F4_FILM_GRAIN_STAGE_M50.md)。
+
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
 > **Jixel Neutral v2 and no universal RAW +2.5 EV**. The alpha.10 descriptions

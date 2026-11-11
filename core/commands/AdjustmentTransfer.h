@@ -20,6 +20,7 @@ inline bool validGroups(const QStringList &groups) {
 }
 inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QStringList &groups) {
     if (!validGroups(groups)
+        || (groups.contains("effects") && !AdjustmentState::validGrainJson(source.toJson()))
         || (groups.contains("geometry") && !GeometryState::validJson(source.geometry.toJson()))
         || (groups.contains("masks") &&
             (!BrushMaskDocument::validDocument(source.brushMasks)
@@ -42,6 +43,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         else if (group=="sony_look") target.look=source.look;
         else if (group=="effects") {
             target.vignetteAmount=source.vignetteAmount; target.vignetteMidpoint=source.vignetteMidpoint; target.vignetteFeather=source.vignetteFeather;
+            target.grainAmount=source.grainAmount; target.grainSize=source.grainSize;
         }
         else if (group=="masks") {
             target.linearMaskEnabled=source.linearMaskEnabled;

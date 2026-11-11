@@ -36,7 +36,9 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
         || frame.x != float(id.preparedFrame.x()) || frame.y != float(id.preparedFrame.y())
         || frame.z != float(id.preparedFrame.width()) || frame.w != float(id.preparedFrame.height())) return fail(FrameFailure::InvalidSource);
     const auto look = intent.data[ProcessingPlan::LookDetail];
-    if (look.x || look.y || look.z || look.w || intent.state.look.lut || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);
+    if (look.x || look.y || look.z || look.w || intent.state.look.lut
+        || (intent.data[ProcessingPlan::Grain].x>0 && intent.output==ColorManagement::OutputSpace::AdobeRgb)
+        || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);
     const auto size = source->size();
     if (!caps.m_compute || caps.m_framesInFlight < 1 || caps.m_framesInFlight > 8 || caps.m_uniformAlignment < 1
         || (size.width()+15)/16 > caps.m_groupMaximum || (size.height()+15)/16 > caps.m_groupMaximum) return fail(FrameFailure::CPUPolicy);

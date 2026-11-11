@@ -1,4 +1,5 @@
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/FilmGrain.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/ColorStageDiagnostics.h"
 #include "core/pipeline/StageGraph.h"
@@ -344,6 +345,7 @@ struct ColorKernel {
     const ProcessingPlan &plan;
     Float4 tone, tonal, color, flags, lum, style, vignette, pixelMap;
     float centerX,centerY;
+    float grainWeight;
     ColorManagement::OutputSpace kernelOutput;
     std::shared_ptr<const LookLut> lut;
     explicit ColorKernel(const ProcessingPlan &p,const QSize &sourceSize) : plan(p),
@@ -352,6 +354,7 @@ struct ColorKernel {
         lum(p.data[ProcessingPlan::Luminance]), style(p.data[ProcessingPlan::LookStyle]),
         vignette(p.data[ProcessingPlan::Vignette]), pixelMap(p.pixelMap(sourceSize)),
         centerX((sourceSize.width()-1)*.5f),centerY((sourceSize.height()-1)*.5f),
+        grainWeight(FilmGrain::attenuation(std::max(std::abs(pixelMap.z),std::abs(pixelMap.w))*.5f*p.data[ProcessingPlan::Grain].y)),
         kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr) {}
 };
 inline Vec3 inputLinear(Vec3 v, const ColorKernel &kernel) {
@@ -512,6 +515,18 @@ inline Vec3 lookLut(Vec3 v, const ColorKernel &kernel) {
     return v;
 }
 struct NoColorObservation { void operator()(ColorStage, Vec3) const {} };
+inline Vec3 applyGrain(Vec3 v,const ColorKernel &kernel,int x,int y) {
+    const auto grain=kernel.plan.data[ProcessingPlan::Grain];
+    if (grain.x==0 || kernel.grainWeight==0) return v;
+    const auto map=kernel.pixelMap;
+    const float dx=map.x+(float(x)-kernel.centerX)*map.z;
+    const float dy=map.y+(float(y)-kernel.centerY)*map.w;
+    const float gx=(dx*.5f+.5f)*grain.y,gy=(dy*.5f+.5f)*grain.y;
+    const float mean=clamp01((v.x+v.y+v.z)/3.0f);
+    const float taper=4.0f*mean*(1.0f-mean);
+    const float delta=FilmGrain::sample(gx,gy)*grain.x*kernel.grainWeight*taper;
+    return {v.x+delta,v.y+delta,v.z+delta};
+}
 template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     observe(ColorStage::InputLinear,v);
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
@@ -528,6 +543,7 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     v=outputLinear(v,kernel); observe(ColorStage::OutputLinear,v);
     v=outputTransfer(v,kernel); observe(ColorStage::OutputTransfer,v);
     v=lookLut(v,kernel); observe(ColorStage::LookLut,v);
+    v=applyGrain(v,kernel,x,y); observe(ColorStage::Grain,v);
     const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
     return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),alpha);
 }
@@ -574,6 +590,7 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
         plan.m_brushIntent=std::make_shared<const AdjustmentState>(original);
     const auto finite=[](double value,double fallback,double lo,double hi) { return float(std::clamp(std::isfinite(value)?value:fallback,lo,hi)); };
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
+    plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[FrameRect]={0,0,1,1};
     constexpr float rad=3.14159265358979323846f/180.0f;
     const float angle=finite(state.linearMaskAngle,0,-180,180)*rad;

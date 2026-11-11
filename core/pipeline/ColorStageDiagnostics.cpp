@@ -12,20 +12,20 @@
 namespace {
 constexpr std::array<const char *,int(ColorStage::Count)> StageIds{
     "input_linear", "wb_exposure", "vignette", "highlight_recovery", "tone_neutral",
-    "perceptual_look", "output_linear", "output_transfer", "look_lut"};
+    "perceptual_look", "output_linear", "output_transfer", "look_lut", "grain"};
 QJsonArray rgbArray(const std::array<double,3> &rgb) {
     return {rgb[0],rgb[1],rgb[2]}; // QJson represents non-finite numbers as null.
 }
 }
 
 ColorStageDiagnostics::ColorStageDiagnostics(int width, int height, const ProcessingPlan &plan)
-    : m_width(width), m_height(height),
+    : m_width(width), m_height(height),m_count(plan.data[ProcessingPlan::Grain].x!=0 ? Count : Count-1),
       m_inputEncoding(plan.encoding==ImagePipeline::InputEncoding::SRgb ? "srgb-encoded" : "linear-prophoto-d50") {
     const auto kernelSpace=ColorManagement::OutputSpace(int(plan.data[ProcessingPlan::Luminance].w));
     const auto kernelKey=ColorManagement::key(kernelSpace), targetKey=ColorManagement::key(plan.output);
     m_spaces={"linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50","linear-prophoto-d50",
-              "linear-srgb-d65","linear-"+kernelKey,"encoded-"+kernelKey,"encoded-"+targetKey};
-    for (int i=0;i<Count;++i) {
+              "linear-srgb-d65","linear-"+kernelKey,"encoded-"+kernelKey,"encoded-"+targetKey,"encoded-"+targetKey};
+    for (int i=0;i<m_count;++i) {
         auto &boundary=m_boundaries[i];
         boundary.row.resize(qsizetype(width)*3*sizeof(float));
         boundary.minimum.fill(std::numeric_limits<double>::infinity());
@@ -41,6 +41,7 @@ ColorStageDiagnostics::ColorStageDiagnostics(int width, int height, const Proces
 }
 
 void ColorStageDiagnostics::observe(ColorStage stage, int x, float r, float g, float b) {
+    if (int(stage)>=m_count) return;
     static_assert(sizeof(float)==4 && std::numeric_limits<float>::is_iec559);
     auto &boundary=m_boundaries[int(stage)];
     const std::array<float,3> rgb{r,g,b};
@@ -57,13 +58,13 @@ void ColorStageDiagnostics::observe(ColorStage stage, int x, float r, float g, f
 }
 
 void ColorStageDiagnostics::finishRow() {
-    for (auto &boundary:m_boundaries) boundary.hash->addData(QByteArrayView(boundary.row));
+    for (int i=0;i<m_count;++i) m_boundaries[i].hash->addData(QByteArrayView(m_boundaries[i].row));
     ++m_rows;
 }
 
 QJsonObject ColorStageDiagnostics::result() const {
     QJsonArray entries;
-    for (int i=0;i<Count;++i) {
+    for (int i=0;i<m_count;++i) {
         const auto &boundary=m_boundaries[i];
         entries.append(QJsonObject{{"id",StageIds[i]},{"color_space",m_spaces[i]},
             {"pixel_sha256",QString::fromLatin1(boundary.hash->result().toHex())},
@@ -75,7 +76,7 @@ QJsonObject ColorStageDiagnostics::result() const {
         {"engine",ProcessingPlan::EngineVersion},{"width",m_width},{"height",m_height},
         {"input_encoding",m_inputEncoding},{"source_storage","RGBA64; transient FP32 color arithmetic"},
         {"hash_format","descriptor plus row-major RGB IEEE754 binary32 little-endian; no alpha or row padding"},
-        {"row_buffer_bytes",qint64(Count)*m_width*3*qint64(sizeof(float))},
+        {"row_buffer_bytes",qint64(m_count)*m_width*3*qint64(sizeof(float))},
         {"monitor_icc","excluded; before screen presentation"},
         {"note","CPU boundaries, not float RAW decoding or GPU readback; FP32 hashes may vary with platform math"},
         {"entries",entries}};

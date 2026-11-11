@@ -7,7 +7,7 @@
 
 struct ProcessingPlan;
 enum class ColorStage { InputLinear, WbExposure, Vignette, HighlightRecovery, ToneNeutral,
-                        PerceptualLook, OutputLinear, OutputTransfer, LookLut, Count };
+                        PerceptualLook, OutputLinear, OutputTransfer, LookLut, Grain, Count };
 
 // One RGB FP32 row per boundary, consumed in source row order. No full-frame
 // float intermediates and no dependence on QImage padding, alpha or monitor ICC.
@@ -28,5 +28,6 @@ private:
     std::array<Boundary,Count> m_boundaries;
     std::array<QString,Count> m_spaces;
     int m_width, m_height, m_rows = 0;
+    int m_count;
     QString m_inputEncoding;
 };

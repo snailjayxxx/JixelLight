@@ -26,7 +26,7 @@ struct CommandRegistry {
         return descriptors;
     }
     static const auto &parameters() {
-        static const std::array<Parameter,15> descriptors{{
+        static const std::array<Parameter,17> descriptors{{
             {"exposure",&AdjustmentState::exposure,-5,5},
             {"temperature",&AdjustmentState::temperature,-180,180},
             {"tint",&AdjustmentState::tint,-180,180},
@@ -41,7 +41,9 @@ struct CommandRegistry {
             {"vibrance",&AdjustmentState::vibrance,-100,100},
             {"vignetteAmount",&AdjustmentState::vignetteAmount,-3,3},
             {"vignetteMidpoint",&AdjustmentState::vignetteMidpoint,0,.95},
-            {"vignetteFeather",&AdjustmentState::vignetteFeather,.01,1}
+            {"vignetteFeather",&AdjustmentState::vignetteFeather,.01,1},
+            {"grainAmount",&AdjustmentState::grainAmount,0,100},
+            {"grainSize",&AdjustmentState::grainSize,.5,4}
         }};
         return descriptors;
     }
@@ -265,6 +267,10 @@ struct CommandRegistry {
             if (!fields(command,{})) return fail();
             state.vignetteAmount=0; state.vignetteMidpoint=.5; state.vignetteFeather=1; return true;
         }
+        if (name == "grain.reset") {
+            if (!fields(command,{})) return fail();
+            state.grainAmount=0; state.grainSize=1; return true;
+        }
         if (name == "bw.enable") {
             if (!fields(command,{"enabled"}) || !command["enabled"].isBool()) return fail();
             state.blackWhite=command["enabled"].toBool(); return true;
@@ -416,6 +422,7 @@ struct CommandRegistry {
             QJsonObject{{"name","mask.linear.reset"},{"fields",QJsonArray{}},
                 {"operation","reset local linear gradient only"}},
             QJsonObject{{"name","vignette.reset"},{"fields",QJsonArray{}},{"operation","reset post-crop vignette amount/midpoint/feather; preserve other edits"}},
+            QJsonObject{{"name","grain.reset"},{"fields",QJsonArray{}},{"operation","reset grain amount/size; preserve other edits"}},
             QJsonObject{{"name","bw.enable"},{"fields",QJsonArray{"enabled"}},{"operation","toggle monochrome without discarding 8 color-channel luminance values"}},
             QJsonObject{{"name","bw.set"},{"fields",QJsonArray{"band","value"}},{"band",QJsonArray{0,7}},{"value",QJsonArray{-100,100}},{"range_policy","clamp"},{"unit","1/100 EV"}},
             QJsonObject{{"name","bw.reset"},{"fields",QJsonArray{}},{"operation","disable monochrome and reset all 8 channel mixes"}},

@@ -93,6 +93,7 @@ Rectangle {
     property bool exifExpanded: false
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
+    property bool grainExpanded: false
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
     property bool blackWhiteExpanded: false
@@ -110,6 +111,7 @@ Rectangle {
         property alias exifExpanded: root.exifExpanded
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
+        property alias grainExpanded: root.grainExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
@@ -583,6 +585,30 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("裁切后椭圆暗角；负值压暗边缘，正值提亮。在线性工作空间、明暗映射之前执行。",
                             "Post-crop ellipse; negative darkens edges, positive brightens. Applied in linear working space before tone mapping.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton {
+                        objectName: "grainToggle"; Layout.fillWidth: true; font.bold: true
+                        text: (root.grainExpanded ? "▾ " : "▸ ") + root.t("胶片颗粒", "FILM GRAIN")
+                        onClicked: root.grainExpanded = !root.grainExpanded
+                    }
+                    Button {
+                        objectName: "grainReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetGrain()
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 6; visible: root.grainExpanded
+                    enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "grainAmountSlider"; label: root.t("强度", "Amount"); from: 0; to: 100; decimals: 0; value: root.controller.grainAmount; onEdited: function(newValue) { root.controller.grainAmount = newValue } }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "grainSizeSlider"; label: root.t("粒度", "Size"); from: .5; to: 4; decimals: 2; value: root.controller.grainSize; onEdited: function(newValue) { root.controller.grainSize = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("单色颗粒随画幅固定；缩小预览时细颗粒会减弱。强度为 0 时关闭。",
+                            "Monochrome grain stays fixed to the photo. Fine grain fades in smaller previews. Amount 0 turns it off.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

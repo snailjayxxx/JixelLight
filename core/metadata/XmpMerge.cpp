@@ -42,6 +42,7 @@ bool validDevelop(const AdjustmentState &state) {
         && AdjustmentState::validLinearMaskJson(j)
         && AdjustmentState::validRadialMaskJson(j)
         && AdjustmentState::validVignetteJson(j)
+        && AdjustmentState::validGrainJson(j)
         && AdjustmentState::validBlackAndWhiteJson(j)
         && AdjustmentState::validColorGradingJson(j)
         && AdjustmentState::fromJson(j).toJson() == j;

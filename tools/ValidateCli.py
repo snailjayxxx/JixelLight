@@ -84,10 +84,12 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 15
+        assert len(schema['parameters']) == 17
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
+        assert {p['name'] for p in schema['parameters']} >= {'grainAmount', 'grainSize'}
+        assert 'grain.reset' in {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -243,6 +245,30 @@ def main():
         result = json.loads(run('--commands', commands, source, reset_vignette).stdout)
         assert 'vignette' not in result['adjustments'] and result['adjustments']['exposure'] == 1
         assert png_pixel_stream(reset_vignette) == png_pixel_stream(plain)
+        grain_source = root / 'grain-original.png'
+        grain_source.write_bytes(b'\x89PNG\r\n\x1a\n'
+                                 + chunk(b'IHDR', struct.pack('>2I5B', 384, 288, 8, 2, 0, 0, 0))
+                                 + chunk(b'IDAT', zlib.compress((b'\x00' + b'\x80\x80\x80' * 384) * 288))
+                                 + chunk(b'IEND', b''))
+        grain_source_hash = hashlib.sha256(grain_source.read_bytes()).hexdigest()
+        grain = [{'command': 'develop.set', 'parameter': key, 'value': value}
+                 for key, value in {'grainAmount': 78, 'grainSize': 3.2}.items()]
+        commands.write_text(json.dumps(grain))
+        grained, repeated = root / 'grain.png', root / 'grain-again.png'
+        result = json.loads(run('--commands', commands, grain_source, grained).stdout)
+        assert result['adjustments']['grain'] == {'schema': 1, 'amount': 78, 'size': 3.2}
+        run('--commands', commands, grain_source, repeated)
+        grained_pixels = png16_pixels(grained)
+        assert grained_pixels == png16_pixels(repeated)
+        grain_baseline = root / 'grain-baseline.png'
+        run(grain_source, grain_baseline)
+        assert grained_pixels[3] != png16_pixels(grain_baseline)[3]
+        commands.write_text(json.dumps(grain + [{'command': 'grain.reset'}]))
+        grain_reset = root / 'grain-reset.png'
+        result = json.loads(run('--commands', commands, grain_source, grain_reset).stdout)
+        assert 'grain' not in result['adjustments']
+        assert png16_pixels(grain_reset) == png16_pixels(grain_baseline)
+        assert hashlib.sha256(grain_source.read_bytes()).hexdigest() == grain_source_hash
         gradient = [
             {'command': 'mask.linear.enable', 'enabled': True},
             {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': -1.5},
@@ -342,6 +368,9 @@ def main():
             {'command': 'geometry.set', 'parameter': 'unknown', 'value': 0},
             {'command': 'geometry.resetCorrections', 'extra': 1},
             {'command': 'vignette.reset', 'extra': 1},
+            {'command': 'grain.reset', 'extra': 1},
+            {'command': 'develop.set', 'parameter': 'grainAmount', 'value': '70'},
+            {'command': 'develop.set', 'parameter': 'grainSize', 'value': None},
             {'command': 'grading.enable', 'enabled': 1},
             {'command': 'grading.set', 'region': 3, 'component': 'hue', 'value': 120},
             {'command': 'grading.set', 'region': 1, 'component': 'oops', 'value': 50},

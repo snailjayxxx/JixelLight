@@ -35,6 +35,8 @@ struct AdjustmentState {
     double vignetteAmount = 0.0; // EV at the outer ellipse; negative darkens.
     double vignetteMidpoint = 0.5;
     double vignetteFeather = 1.0;
+    double grainAmount = 0.0; // 0..100; deterministic monochrome output texture.
+    double grainSize = 1.0;   // .5..4, relative to the post-crop image frame.
     // F4 M1: one manual scene-linear graduated exposure mask.
     // Normalized post-geometry/crop frame, not the pre-crop RAW sensor.
     bool linearMaskEnabled = false;
@@ -133,6 +135,8 @@ struct AdjustmentState {
         // Keep the exact legacy snapshot when the new tool is at its defaults.
         if (vignetteAmount!=0 || vignetteMidpoint!=.5 || vignetteFeather!=1)
             result["vignette"]=QJsonObject{{"schema",1},{"amount",vignetteAmount},{"midpoint",vignetteMidpoint},{"feather",vignetteFeather}};
+        if (grainAmount!=0 || grainSize!=1)
+            result["grain"]=QJsonObject{{"schema",1},{"amount",grainAmount},{"size",grainSize}};
         const bool hasMix = std::any_of(bwMix.begin(), bwMix.end(), [](double v){ return v != 0.0; });
         if (blackWhite || hasMix)
             result["blackAndWhite"] = QJsonObject{{"schema", 1}, {"enabled", blackWhite}, {"mix", toJsonArray(bwMix)}};
@@ -210,6 +214,19 @@ struct AdjustmentState {
         };
         return valid("amount",-3,3) && valid("midpoint",0,.95) && valid("feather",.01,1)
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
+    }
+
+    static bool validGrainJson(const QJsonObject &object) {
+        if (!object.contains("grain")) return true;
+        if (!object["grain"].isObject()) return false;
+        const auto g=object["grain"].toObject();
+        const auto range=[&](const char *key,double lo,double hi) {
+            return g[key].isDouble() && std::isfinite(g[key].toDouble())
+                && g[key].toDouble()>=lo && g[key].toDouble()<=hi;
+        };
+        return g.size()==3 && g["schema"].isDouble() && g["schema"].toDouble()==1
+            && range("amount",0,100) && range("size",.5,4)
+            && (g["amount"].toDouble()!=0 || g["size"].toDouble()!=1);
     }
 
     static bool validBlackAndWhiteJson(const QJsonObject &object) {
@@ -292,6 +309,10 @@ struct AdjustmentState {
         if (o.contains("vignette") && validVignetteJson(o)) {
             const auto v=o["vignette"].toObject(); s.vignetteAmount=v["amount"].toDouble();
             s.vignetteMidpoint=v["midpoint"].toDouble(); s.vignetteFeather=v["feather"].toDouble();
+        }
+        if (o.contains("grain") && validGrainJson(o)) {
+            const auto g=o["grain"].toObject();
+            s.grainAmount=g["amount"].toDouble(); s.grainSize=g["size"].toDouble();
         }
         if (o.contains("blackAndWhite") && validBlackAndWhiteJson(o)) {
             const auto b = o.value("blackAndWhite").toObject();
