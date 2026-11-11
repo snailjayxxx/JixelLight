@@ -54,13 +54,18 @@ void apply(QDialog *dialog) {auto *box=dialog->findChild<QDialogButtonBox*>();re
 // A static file dialog may enter its event loop before its filesystem model
 // can accept the owned selection. Observe actual acceptance with a deadline.
 struct XmpFilePicker {
- QTimer timer;QElapsedTimer clock;QPointer<QFileDialog> observed;QString path;
+ QTimer timer;QElapsedTimer clock,visibleClock;QPointer<QFileDialog> observed;QString path;
  bool accepted=false,expired=false,select=true;int attempts=0,visibleTicks=0,deadlineMs=10000,minVisibleTicks=1;
  explicit XmpFilePicker(QString value,int deadline=10000,int holdTicks=1,bool selectFile=true)
   :path(std::move(value)),select(selectFile),deadlineMs(deadline),minVisibleTicks(holdTicks) {
   timer.setInterval(5);
   QObject::connect(&timer,&QTimer::timeout,&timer,[this] {
-   if(clock.elapsed()>=deadlineMs) {
+   // For the unanswered-dialog check, construction/readiness is distinct from
+   // the unchanged 150ms visible response window. A dialog that never becomes
+   // visible still fails within the existing 10s picker readiness allowance.
+   const bool timedOut=select?clock.elapsed()>=deadlineMs
+       :visibleClock.isValid()?visibleClock.elapsed()>=deadlineMs:clock.elapsed()>=10000;
+   if(timedOut) {
     expired=true;timer.stop();
     for(auto *w:QApplication::topLevelWidgets())if(auto *d=qobject_cast<QFileDialog*>(w))d->reject();
     qInfo()<<"XMP_FILE_PICKER_V1 expired=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;return;
@@ -69,7 +74,9 @@ struct XmpFilePicker {
     if(observed!=d) {observed=d;QObject::connect(d,&QDialog::accepted,&timer,[this] {
       accepted=true;timer.stop();qInfo()<<"XMP_FILE_PICKER_V1 accepted=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;
     });}
-    ++visibleTicks;if(!select||visibleTicks<minVisibleTicks)return;
+    ++visibleTicks;
+    if(!select){if(!visibleClock.isValid())visibleClock.start();return;}
+    if(visibleTicks<minVisibleTicks)return;
     ++attempts;
     // Qt6.8.3 selectFile leaves a visible focused filename editor unchanged.
     // Enter the owned path through its widget input event, then require the
@@ -216,6 +223,7 @@ private slots:
  void unansweredFilePickerDeadlineClosesWithoutCatalogMutation() {
   Fixture f;const auto before=f.rows();XmpFilePicker picker(f.sidecar,150,1,false);picker.start();f.c->openXmpImportDialog();picker.stop();
   QVERIFY(!picker.accepted);QVERIFY(picker.expired);QVERIFY(picker.visibleTicks>=1);QCOMPARE(picker.attempts,0);QVERIFY(!f.c->xmpMergeBusy());QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  QVERIFY(picker.visibleClock.isValid());QVERIFY(picker.visibleClock.elapsed()>=150);QVERIFY(!picker.observed||!picker.observed->isVisible());
   qInfo()<<"XMP_EXPLICIT_ACTIONS unanswered_picker_deadline_closed=true no_acceptance=true catalog_and_files_unchanged=true";
  }
 

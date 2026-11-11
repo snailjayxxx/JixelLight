@@ -145,7 +145,7 @@ Rectangle {
             Layout.bottomMargin: 8
                 Label { text: root.t("当前编辑图像 · 专业示波器", "CURRENT EDIT · SCOPES"); color: "#8e9aa8"; font.bold: true; font.pixelSize: 11; Layout.topMargin: 10 }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ComboBox {
                         id: scopeModeChoice
                         objectName: "scopeModeChoice"; Layout.fillWidth: true
@@ -164,7 +164,7 @@ Rectangle {
                     }
                 }
                 RowLayout {
-                    Layout.fillWidth: true; visible: root.controller.scopeMode==="histogram"
+                    Layout.fillWidth: true; Layout.minimumWidth: 0; visible: root.controller.scopeMode==="histogram"
                     Button { id: rgbButton; text: "RGB"; checkable: true; checked: true; onClicked: { checked = true; lumaButton.checked = false } }
                     Button { id: lumaButton; text: root.t("亮度", "Luma"); checkable: true; onClicked: { checked = true; rgbButton.checked = false } }
                     Item { Layout.fillWidth: true }
@@ -193,7 +193,7 @@ Rectangle {
                     color: "#738293"; font.pixelSize: 10
                 }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     Label { text: root.t("阴影裁切  ", "Shadows clipped  ") + root.controller.shadowClipPercent.toFixed(3) + "%"; color: root.controller.shadowClipPercent > 0.1 ? "#ffb066" : "#8b98a6"; font.pixelSize: 10 }
                     Item { Layout.fillWidth: true }
                     Label { text: root.t("高光裁切  ", "Highlights  ") + root.controller.highlightClipPercent.toFixed(3) + "%"; color: root.controller.highlightClipPercent > 0.1 ? "#ff8e8e" : "#8b98a6"; font.pixelSize: 10 }
@@ -201,7 +201,7 @@ Rectangle {
 
         }
         RowLayout {
-            Layout.fillWidth: true
+            Layout.fillWidth: true; Layout.minimumWidth: 0
             Layout.leftMargin: 8
             Layout.rightMargin: 8
             spacing: 2
@@ -238,6 +238,8 @@ Rectangle {
         Rectangle { Layout.fillWidth: true; height: 1; color: "#303840" }
         ScrollView {
             id: toolScroll; objectName: "developToolScroll"
+            contentWidth: availableWidth
+            Layout.minimumWidth: 0
             WheelHandler {
                 target: null; blocking: false
                 onWheel: function(event) { root.cancelBrushReveal(); event.accepted=false }
@@ -259,14 +261,14 @@ Rectangle {
                     onClicked: root.controller.cropEditing ? root.controller.cancelCrop() : root.controller.beginCrop()
                 }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "↶ 90°"; enabled: root.controller.hasImage; onClicked: root.controller.rotatePhoto(-1) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "↷ 90°"; enabled: root.controller.hasImage; onClicked: root.controller.rotatePhoto(1) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: root.t("水平翻转", "Flip H"); enabled: root.controller.hasImage; onClicked: root.controller.flipPhoto(true) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: root.t("垂直翻转", "Flip V"); enabled: root.controller.hasImage; onClicked: root.controller.flipPhoto(false) }
                 }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     Label { text: root.t("居中裁切", "Center crop"); color: "#a3b2c1" }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "1:1"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(1) }
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: "3:2"; enabled: root.controller.previewReady; onClicked: root.controller.setCropAspect(1.5) }
@@ -274,7 +276,7 @@ Rectangle {
                     Button { Layout.fillWidth: true; Layout.minimumWidth: 0; text: root.t("重置", "Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetGeometry() }
                 }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     enabled: root.controller.previewReady && !root.controller.cropEditing
                     Label { text: root.t("拉直", "Straighten"); color: "#a3b2c1"; Layout.preferredWidth: 70 }
                     Slider {
@@ -291,7 +293,7 @@ Rectangle {
                     text: root.t("拉直自动收边；随后在校正画面上裁切。", "Straighten trims edges; crop the corrected image.")
                 }
                 ToolButton {
-                    objectName: "geometryCorrectionsToggle"; Layout.fillWidth: true
+                    objectName: "geometryCorrectionsToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0
                     text: (root.correctionsExpanded ? "▾ " : "▸ ") + root.t("透视 / 手动镜头校正（CPU）", "PERSPECTIVE / MANUAL LENS (CPU)")
                     onClicked: root.correctionsExpanded = !root.correctionsExpanded
                     font.bold: true
@@ -335,7 +337,7 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     text: (root.sonyExpanded ? "▾ " : "▸ ") + root.t("相机 / Sony 创意外观", "CAMERA / SONY CREATIVE LOOK")
                     onClicked: root.sonyExpanded = !root.sonyExpanded
                     font.bold: true
@@ -347,13 +349,13 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
                         text: (root.basicExpanded ? "▾ " : "▸ ") + root.t("基础调整", "LIGHT")
                         onClicked: root.basicExpanded = !root.basicExpanded
                         font.bold: true
                     }
-                    Item { Layout.fillWidth: true }
                     Button { text: root.t("全部重置", "Reset All"); enabled: root.controller.hasImage; onClicked: root.controller.resetAdjustments() }
                 }
                 ColumnLayout {
@@ -372,7 +374,7 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     text: (root.colorExpanded ? "▾ " : "▸ ") + root.t("颜色 / RAW 工作空间", "COLOR")
                     onClicked: root.colorExpanded = !root.colorExpanded
                     font.bold: true
@@ -387,9 +389,9 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
-                        objectName: "blackWhitePanelToggle"; Layout.fillWidth: true; font.bold: true
+                        objectName: "blackWhitePanelToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
                         text: (root.blackWhiteExpanded ? "▾ " : "▸ ") + root.t("黑白 / 颜色混合", "BLACK & WHITE MIX")
                         onClicked: root.blackWhiteExpanded = !root.blackWhiteExpanded
                     }
@@ -429,10 +431,10 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
-                        objectName: "colorGradingToggle"; Layout.fillWidth: true; font.bold: true
-                        text: (root.colorGradingExpanded ? "▾ " : "▸ ") + root.t("色彩分级 / 三色轮", "COLOR GRADING / THREE WHEELS")
+                        objectName: "colorGradingToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.colorGradingExpanded ? "▾ " : "▸ ") + root.t("色彩分级", "COLOR GRADING")
                         onClicked: root.colorGradingExpanded = !root.colorGradingExpanded
                     }
                     Button {
@@ -450,7 +452,7 @@ Rectangle {
                         onToggled: root.controller.gradingEnabled = checked
                     }
                     RowLayout {
-                        Layout.fillWidth: true; spacing: 3
+                        Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 3
                         Repeater {
                             model: 3
                             delegate: ColumnLayout {
@@ -566,10 +568,10 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
                         objectName: "vignetteToggle"
-                        Layout.fillWidth: true; font.bold: true
+                        Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
                         text: (root.vignetteExpanded ? "▾ " : "▸ ") + root.t("暗角", "VIGNETTE")
                         onClicked: root.vignetteExpanded = !root.vignetteExpanded
                     }
@@ -594,7 +596,7 @@ Rectangle {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
                     Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
-                        objectName: "grainToggle"; Layout.fillWidth: true; font.bold: true
+                        objectName: "grainToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
                         text: (root.grainExpanded ? "▾ " : "▸ ") + root.t("胶片颗粒", "FILM GRAIN")
                         onClicked: root.grainExpanded = !root.grainExpanded
                     }
@@ -645,9 +647,9 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
-                        objectName: "linearMaskToggle"; Layout.fillWidth: true; font.bold: true
+                        objectName: "linearMaskToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
                         text: (root.linearMaskExpanded ? "▾ " : "▸ ") + root.t("局部线性蒙版 (1)", "LINEAR MASK (1)")
                         onClicked: root.linearMaskExpanded = !root.linearMaskExpanded
                     }
@@ -698,9 +700,9 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
-                        objectName: "radialMaskToggle"; Layout.fillWidth: true; font.bold: true
+                        objectName: "radialMaskToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
                         text: (root.radialMaskExpanded ? "▾ " : "▸ ") + root.t("椭圆／径向蒙版 (1)", "RADIAL MASK (1)")
                         onClicked: root.radialMaskExpanded = !root.radialMaskExpanded
                     }
@@ -776,15 +778,14 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
-                    ToolButton { id: brushPanelHeader; objectName: "brushPanelToggle"; text: (root.brushExpanded ? "▾ " : "▸ ")+root.t("笔刷局部曝光","BRUSH EXPOSURE"); font.bold: true; onClicked: root.brushExpanded=!root.brushExpanded }
-                    Item { Layout.fillWidth: true }
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    ToolButton { id: brushPanelHeader; objectName: "brushPanelToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: (root.brushExpanded ? "▾ " : "▸ ")+root.t("笔刷局部曝光","BRUSH EXPOSURE"); font.bold: true; onClicked: root.brushExpanded=!root.brushExpanded }
                     Button { text: root.t("清空","Clear"); enabled: root.controller.brushLayers.length>0 && !root.controller.brushRecoveryAvailable; onClicked: root.controller.executeEditCommand({command:"mask.brush.reset"}) }
                 }
                 ColumnLayout {
                     visible: root.brushExpanded; Layout.fillWidth: true; spacing: 6; enabled: root.brushEditor !== null && !root.controller.brushRecoveryAvailable
                     RowLayout {
-                        Layout.fillWidth: true
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
                         ComboBox {
                             objectName: "brushLayerSelector"; Layout.fillWidth: true; Layout.minimumWidth: 80; model: root.brushOptions; textRole: "label"
                             currentIndex: { if (!root.brushEditor) return 0; for(let i=0;i<root.brushOptions.length;++i)if(root.brushOptions[i].id===root.brushEditor.layerId)return i; return 0 }
@@ -814,6 +815,15 @@ Rectangle {
                             ToolTip.visible: hovered
                             ToolTip.text: root.t("擦除仅影响所选已有图层；每笔可独立撤销。","Erase affects only the selected existing layer; each stroke has one Undo step.")
                         }
+                    }
+                    AdjustmentSlider {
+                        id: brushExposureControl
+                        Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
+                        value: root.currentBrush ? root.currentBrush.exposure : root.brushEditor ? root.brushEditor.exposure : 1
+                        onEdited: function(v) { if(root.currentBrush)root.controller.setBrushLayerExposure(root.currentBrush.id,v);else if(root.brushEditor)root.brushEditor.exposure=v }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
                         CheckBox {
                             id: brushPenChoice
                             objectName: "brushPenStabilization"; Layout.minimumWidth: implicitWidth; Layout.maximumWidth: implicitWidth
@@ -839,19 +849,19 @@ Rectangle {
                             ToolTip.visible: hovered || visualFocus
                             ToolTip.text: brushPenChoice.ToolTip.text
                         }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
                         Item { Layout.fillWidth: true }
+                    }
+                    Flow {
+                        Layout.fillWidth: true; spacing: 6
+                        CheckBox { objectName: "brushLayerEnabled"; text: root.t("启用","Enabled"); enabled: root.currentBrush !== null; checked: root.currentBrush ? root.currentBrush.enabled : false; onClicked: if(root.currentBrush)root.controller.setBrushLayerEnabled(root.currentBrush.id,checked) }
                         Button { objectName: "removeLastBrushStroke"; text: root.t("删除末笔","Remove last stroke"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeLastBrushStroke(root.currentBrush.id) }
                         Button { objectName: "removeBrushLayer"; text: root.t("删除图层","Delete layer"); enabled: root.currentBrush !== null; onClicked: if(root.currentBrush)root.controller.removeBrushLayer(root.currentBrush.id) }
                     }
                     RowLayout {
-                        Layout.fillWidth: true
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
                         ComboBox {
                             id: brushStrokeChoice
-                            objectName: "brushStrokeSelector"; Layout.fillWidth: true
+                            objectName: "brushStrokeSelector"; Layout.fillWidth: true; Layout.minimumWidth: 80
                             enabled: root.controller.currentSourceAvailable && root.currentBrush !== null
                             model: root.currentBrush ? root.currentBrush.strokes+1 : 1
                             function strokeText(index) {
@@ -882,12 +892,7 @@ Rectangle {
                             }
                         }
                     }
-                    AdjustmentSlider {
-                        id: brushExposureControl
-                        Layout.fillWidth: true; sliderObjectName: "brushExposureSlider"; label: root.t("局部曝光","Local EV"); from: -3; to: 3; decimals: 2
-                        value: root.currentBrush ? root.currentBrush.exposure : root.brushEditor ? root.brushEditor.exposure : 1
-                        onEdited: function(v) { if(root.currentBrush)root.controller.setBrushLayerExposure(root.currentBrush.id,v);else if(root.brushEditor)root.brushEditor.exposure=v }
-                    }
+
                     RowLayout { Layout.fillWidth: true; Label { text: root.t("半径","Radius"); Layout.preferredWidth: 74 }
                         Slider { objectName: "brushRadiusSlider"; Layout.fillWidth: true; from: .002; to: .5; value: root.brushEditor ? root.brushEditor.radius : .05; onMoved: root.brushEditor.radius=value }
                         Label { text: root.brushEditor ? (root.brushEditor.radius*100).toFixed(1)+"%" : ""; Layout.preferredWidth: 42 }
@@ -904,13 +909,13 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
                         text: (root.mixerExpanded ? "▾ " : "▸ ") + root.t("HSL 颜色混合器", "COLOR MIXER")
                         onClicked: root.mixerExpanded = !root.mixerExpanded
                         font.bold: true
                     }
-                    Item { Layout.fillWidth: true }
                     ComboBox {
                         id: mixerMode; Layout.preferredWidth: 105
                         model: [root.t("色相", "Hue"), root.t("饱和度", "Sat"), root.t("明度", "Luma")]
@@ -933,13 +938,13 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
-                        text: (root.curveExpanded ? "▾ " : "▸ ") + root.t("曲线", "TONE CURVE")
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
+                        text: (root.curveExpanded ? "▾ " : "▸ ") + root.t("曲线", "CURVES")
                         onClicked: root.curveExpanded = !root.curveExpanded
                         font.bold: true
                     }
-                    Item { Layout.fillWidth: true }
                     ComboBox { id: curveChannel; Layout.preferredWidth: 110; model: [root.t("主曲线", "Master"), "Red", "Green", "Blue"] }
                     Button { text: root.t("重置", "Reset"); onClicked: root.controller.resetCurve(curveChannel.currentIndex) }
                 }
@@ -956,7 +961,7 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 ToolButton {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
                     text: (root.exifExpanded ? "▾ " : "▸ ") + root.t("照片信息 / EXIF", "PHOTO INFO / EXIF")
                     onClicked: root.exifExpanded = !root.exifExpanded
                     font.bold: true
