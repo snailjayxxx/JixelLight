@@ -13,6 +13,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <limits>
+#include <cstring>
 #include <random>
 #include "app/PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
@@ -23,6 +24,7 @@
 #include "core/commands/NamedPresets.h"
 #include "core/export/RasterExporter.h"
 #include "core/metadata/XmpSidecar.h"
+#include "diagnostics/PerformanceRecorder.h"
 
 class DenoiseWorkflowTests:public QObject {
     Q_OBJECT
@@ -140,6 +142,18 @@ private slots:
             QVERIFY(db.flush());QCOMPARE(bytes(path),before);
         }
         QVector<ProjectDatabase::SavedPhoto> loaded;ProjectDatabase reopened;QVERIFY(reopened.open(db.projectPath(),&loaded));QCOMPARE(loaded.size(),1);QCOMPARE(loaded[0].adjustments.toJson(),valid.toJson());
+    }
+    void controllerCpuColorChangesReuseCompletedDenoiseStage() {
+        QTemporaryDir dir;const auto path=dir.filePath("cached-source.png");QVERIFY(scene({800,600},false).convertToFormat(QImage::Format_RGBA64).save(path));const auto original=bytes(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.setViewport(200,150,1,0,.5,.5);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);
+        c.setDenoiseLuma(83);c.setDenoiseChroma(91);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(!c.rendering(),10000);
+        const auto count=[](const char *name){return PerformanceRecorder::snapshot()["counters"].toObject()[name].toInteger();};
+        const auto builds=count("cpu_preview_denoise_builds"),hits=count("cpu_preview_denoise_hit");QVERIFY(builds>0);
+        c.setExposure(.3);c.setTemperature(16);c.setTint(-11);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(!c.rendering(),10000);
+        QCOMPARE(count("cpu_preview_denoise_builds"),builds);QVERIFY(count("cpu_preview_denoise_hit")>hits);
+        const auto actual=provider.requestImage("current",nullptr,{}),expected=ImagePipeline::processWithPlan(c.gpuSource(),c.gpuPlan(false));QVERIFY(!actual.isNull());QCOMPARE(actual.size(),expected.size());QCOMPARE(actual.format(),QImage::Format_RGBA64);
+        for(int y=0;y<actual.height();++y)QVERIFY(std::memcmp(actual.constScanLine(y),expected.constScanLine(y),std::size_t(actual.width())*8)==0);
+        c.setDenoiseLuma(94);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(!c.rendering(),10000);QVERIFY(count("cpu_preview_denoise_builds")>builds);QCOMPARE(bytes(path),original);
     }
     void controllerHistoryExactScopesProjectAndCopies() {
         QTemporaryDir dir;const auto sourcePath=dir.filePath("source.png");QVERIFY(scene({800,600},false).convertToFormat(QImage::Format_RGBA64).save(sourcePath));const auto original=bytes(sourcePath);

@@ -487,3 +487,9 @@ target_link_libraries(JixelLightDenoiseWorkflowTests PRIVATE JixelLightCore Qt6:
 set_target_properties(JixelLightDenoiseWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME denoise-workflows COMMAND JixelLightDenoiseWorkflowTests -o denoise-workflow-results.txt,txt -o -,txt)
 set_tests_properties(denoise-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_DENOISE_EVIDENCE=${CMAKE_BINARY_DIR}/denoise-owned")
+
+qt_add_executable(JixelLightDenoiseCacheTests tests/DenoisePreviewCacheTests.cpp)
+target_link_libraries(JixelLightDenoiseCacheTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDenoiseCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME denoise-preview-cache COMMAND JixelLightDenoiseCacheTests -o denoise-cache-results.txt,txt -o -,txt)
+set_tests_properties(denoise-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")

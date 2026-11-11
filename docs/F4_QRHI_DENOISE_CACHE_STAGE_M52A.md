@@ -1,5 +1,8 @@
 # F4 M7A QRhi denoise and resident stage reuse
 
+This entry records `125c83a` / draft PR17. Subsequent CPU-only preview reuse
+is recorded separately in [M8](F3_CPU_DENOISE_PREVIEW_CACHE_STAGE_M53.md).
+
 The CPU denoiser from6effe5c now has a two-pass QRhi implementation for normal
 previews. The first pass makes an Oklab guide; the second filters into a
 scene-linear ProPhoto texture before the existing color/detail passes. Two

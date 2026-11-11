@@ -70,6 +70,18 @@ struct StageGraph {
         }
         return digest(bytes);
     }
+    static QString denoisePreviewKey(const QImage &source,const ProcessingPlan &plan) {
+        if(source.isNull()||!plan.denoiseActive()||!plan.validSpatialSettings()
+            ||!BrushMaskDocument::validDocument(plan.state.brushMasks)||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
+        QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);stream.setVersion(QDataStream::Qt_6_8);
+        stream<<QStringLiteral("cpu-denoise-preview-v1")<<QString::fromLatin1(ProcessingPlan::EngineVersion)
+              <<source.cacheKey()<<source.size()<<int(source.format())<<int(plan.encoding);
+        for(int i=ProcessingPlan::Input0;i<=ProcessingPlan::Input2;++i) {
+            const auto row=plan.data[i];stream<<row.x<<row.y<<row.z<<row.w;
+        }
+        const auto denoise=plan.denoise(source.size());stream<<denoise.x<<denoise.y<<denoise.z;
+        return QStringLiteral("denoise:")+digest(bytes);
+    }
     static QJsonObject describe(const QString &sourceKey, const PrepareRequest &request,
                                 const AdjustmentState &state, bool raw, float baseExposure) {
         const QString prepared = prepareKey(request);
@@ -153,7 +165,7 @@ struct StageGraph {
                     {"method","joint Oklab/spatial bilateral guide; alpha-weighted neighbor differences"},
                     {"order","decoded linear ProPhoto -> spatial denoise -> WB/exposure"},
                     {"radius_source_pixels",2},{"preview_radius","scaled by prepared/full geometry density"},
-                    {"temporary_cpu_bytes_per_expanded_pixel",32},{"extra_gpu_bytes_per_preview_pixel",32},{"alpha","unchanged"},{"native_brush_policy","CPUPolicy fallback"},
+                    {"temporary_cpu_bytes_per_expanded_pixel",32},{"extra_gpu_bytes_per_preview_pixel",32},{"cpu_preview_stage_cache","non-brush completed stages share render_cache budget; exports/scopes/diagnostics bypass"},{"alpha","unchanged"},{"native_brush_policy","CPUPolicy fallback"},
                     {"monitor_icc",false}}},
                 {"independent_sharpen",QJsonObject{{"schema",1},{"amount",state.sharpenAmount},{"radius_source_pixels",state.sharpenRadius},
                     {"active",state.sharpenAmount!=0},{"backend","CPU reference / QRhi separable compute"},

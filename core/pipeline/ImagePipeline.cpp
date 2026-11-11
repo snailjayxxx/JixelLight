@@ -887,7 +887,8 @@ bool ImagePipeline::preflightAdmittedBrush(const QSize &frameSize,const Processi
 namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,
                         const QSize &sourceSize,const QPoint &origin,
-                        std::size_t brushPixelBudget=BrushMaskTileRaster::MaxResearchFramePixels) {
+                        std::size_t brushPixelBudget=BrushMaskTileRaster::MaxResearchFramePixels,
+                        const QImage *preparedDenoise=nullptr) {
     if (source.isNull() || cancelled(token) || !plan.validSpatialSettings()
         || !BrushMaskDocument::validDocument(plan.state.brushMasks)) return {};
     const bool brushResearch=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
@@ -911,7 +912,7 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     if (floating && !ImagePipeline::validFloatSource(source,token)) return {};
     const ColorKernel kernel(plan,sourceSize);
     const bool denoised=plan.denoiseActive();
-    const QImage input=denoised?prepareDenoiseInput(source,kernel,plan.denoise(sourceSize),token,parallel)
+    const QImage input=denoised?(preparedDenoise?*preparedDenoise:prepareDenoiseInput(source,kernel,plan.denoise(sourceSize),token,parallel))
         :floating?source:ImagePipeline::rgba64Source(source,token);
     if (input.isNull()) return {};
     QImage out(input.size(),QImage::Format_RGBA64);
@@ -1034,6 +1035,18 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     if (brushResearch && !cancelled(token)) recordBrushTiles(0);
     return finishColor(std::move(out),plan,sourceSize,token);
 }
+}
+QImage ImagePipeline::preparePreviewDenoiseInput(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel) {
+    if(source.isNull()||cancelled(cancel)||!plan.denoiseActive()||!plan.validSpatialSettings()
+        ||!BrushMaskDocument::validDocument(plan.state.brushMasks)||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
+    if(source.format()==QImage::Format_RGBA32FPx4&&!validFloatSource(source,cancel))return {};
+    PerformanceRecorder::count("cpu_preview_denoise_builds");
+    return prepareDenoiseInput(source,ColorKernel(plan,source.size()),plan.denoise(source.size()),cancel,true);
+}
+QImage ImagePipeline::processPreviewWithDenoiseInput(const QImage &source,const QImage &input,const ProcessingPlan &plan,const CancelToken &cancel) {
+    if(input.isNull()||input.format()!=QImage::Format_RGBA32FPx4||input.size()!=source.size()
+        ||!plan.denoiseActive()||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
+    return processColorFrame(source,plan,cancel,true,source.size(),{},BrushMaskTileRaster::MaxResearchFramePixels,&input);
 }
 QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
     return processColorFrame(source,plan,token,parallel,source.size(),{});

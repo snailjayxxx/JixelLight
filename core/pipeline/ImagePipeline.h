@@ -7,6 +7,7 @@
 
 struct ProcessingPlan;
 class BrushRenderRequest;
+class RenderedPreviewCache;
 class ImagePipeline {
 public:
     enum class InputEncoding { SRgb, LinearProPhoto };
@@ -41,6 +42,11 @@ public:
                                             const CancelToken &cancel = {});
 private:
     friend class BrushRenderRequest;
+    friend class RenderedPreviewCache;
+    // Immutable preview-only stage reuse. Brush admission, exports, exact
+    // scopes and diagnostic captures always keep their reference paths.
+    static QImage preparePreviewDenoiseInput(const QImage &,const ProcessingPlan &,const CancelToken &);
+    static QImage processPreviewWithDenoiseInput(const QImage &,const QImage &,const ProcessingPlan &,const CancelToken &);
     static bool preflightAdmittedBrush(const QSize &frameSize,const ProcessingPlan &plan,const QRect &region,
                                       int stripeHeight,const CancelToken &cancel,QString *error);
     static QImage renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,

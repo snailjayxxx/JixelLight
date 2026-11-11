@@ -17,7 +17,9 @@ QJsonObject RenderedPreviewCache::snapshotLocked() const {
             {"charged_bytes", qint64(m_entries.totalCost()) * 1024}, {"entries", m_entries.size()},
             {"hits", m_hits}, {"misses", m_misses}, {"bypasses", m_bypasses},
             {"evictions", m_evictions}, {"cancelled_requests", m_cancelled},
-            {"accounting", "image and retained LUT payloads, rounded up per entry to KiB; excludes allocator overhead and live caller images"}};
+            {"denoise_stage_hits",m_denoiseHits},{"denoise_stage_misses",m_denoiseMisses},
+            {"denoise_stage_bypasses",m_denoiseBypasses},{"denoise_key_version","cpu-denoise-preview-v1"},
+            {"accounting", "RGBA64 results, FP32 denoise stages and retained LUT payloads share this budget; rounded to KiB per entry; excludes allocator overhead/live caller images"}};
 }
 QJsonObject RenderedPreviewCache::snapshot() const {
     QMutexLocker lock(&m_mutex);
@@ -44,6 +46,10 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
     const qint64 cost = (bytes + 1023) / 1024;
     const bool cacheable = m_entries.maxCost() > 0 && cost <= m_entries.maxCost();
     const QString key = cacheable ? StageGraph::renderKey(source, plan) : QString{};
+    const qint64 denoiseCost=(qint64(source.width())*source.height()*16+1023)/1024;
+    const bool stageFits=cacheable&&denoiseCost<=qint64(m_entries.maxCost())-cost;
+    const QString denoiseKey=!brush&&plan.denoiseActive()&&stageFits?StageGraph::denoisePreviewKey(source,plan):QString{};
+    const bool denoiseCacheable=!denoiseKey.isEmpty();QImage denoised;
     {
         QMutexLocker lock(&m_mutex);
         if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
@@ -56,12 +62,19 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
         } else {
             ++m_bypasses; PerformanceRecorder::count("render_cache_bypass");
         }
+        if(denoiseCacheable) {
+            if(const auto *entry=m_entries.object(denoiseKey)) {denoised=entry->image;++m_denoiseHits;PerformanceRecorder::count("cpu_preview_denoise_hit");}
+            else {++m_denoiseMisses;PerformanceRecorder::count("cpu_preview_denoise_miss");}
+        } else if(plan.denoiseActive()) {++m_denoiseBypasses;PerformanceRecorder::count("cpu_preview_denoise_bypass");}
         recordLocked();
     }
     QImage image;
     if(brush) {
         auto request=BrushRenderRequest::createPrepared(source,plan,BrushRenderRequest::Layout::Whole,cancel,error,m_brushBudget,failure);
         if(request)image=request->render(cancel,error).sharedImage();
+    }else if(denoiseCacheable) {
+        if(denoised.isNull())denoised=ImagePipeline::preparePreviewDenoiseInput(source,plan,cancel);
+        if(!denoised.isNull())image=ImagePipeline::processPreviewWithDenoiseInput(source,denoised,plan,cancel);
     }else image=ImagePipeline::processWithPlan(source,plan,cancel);
     if(image.isNull()&&failure&&*failure==BrushAdmissionFailure::None)*failure=cancelled(cancel)?BrushAdmissionFailure::Cancelled:BrushAdmissionFailure::Invalid;
     QMutexLocker lock(&m_mutex);
@@ -69,13 +82,16 @@ QImage RenderedPreviewCache::render(const QImage &source,const ProcessingPlan &p
     if (image.isNull() || !cacheable) return image;
     // Rendering runs outside the lock. Concurrent equivalent misses may finish
     // twice, but only one complete immutable entry is retained.
-    if (!m_entries.object(key)) {
-        const auto previous = m_entries.size();
-        m_entries.insert(key, new Entry{image, lut}, int(cost));
-        const qint64 evicted = previous + 1 - m_entries.size();
-        m_evictions += evicted;
-        if (evicted) PerformanceRecorder::count("render_cache_eviction", evicted);
-    }
+    const auto retain=[&](const QString &entryKey,const QImage &pixels,qint64 entryCost,std::shared_ptr<const LookLut> retainedLut) {
+        if(m_entries.object(entryKey))return;
+        const auto previous=m_entries.size();m_entries.insert(entryKey,new Entry{pixels,std::move(retainedLut)},int(entryCost));
+        const qint64 evicted=previous+1-m_entries.size();m_evictions+=evicted;
+        if(evicted)PerformanceRecorder::count("render_cache_eviction",evicted);
+    };
+    // Publish only after the whole color render completed without cancellation.
+    // The stage and result must fit together in the existing shared LRU budget.
+    if(denoiseCacheable)retain(denoiseKey,denoised,denoiseCost,{});
+    retain(key,image,cost,lut);
     recordLocked();
     return cancelled(cancel) ? QImage{} : image;
 }
