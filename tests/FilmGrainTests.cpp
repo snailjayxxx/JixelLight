@@ -188,6 +188,7 @@ private slots:
     void realBilingualPanelControls_data() {
         QTest::addColumn<int>("width");
         QTest::newRow("compact")<<300;
+        QTest::newRow("production-minimum")<<320;
         QTest::newRow("wide")<<350;
     }
     void realBilingualPanelControls() {
@@ -212,10 +213,23 @@ private slots:
         const auto point=slider->mapToScene({slider->width()*.75,slider->height()*.5}).toPoint();QVERIFY(window->contentItem()->contains(point));
         QVERIFY(flick->contains(slider->mapToItem(flick,{slider->width()*.75,slider->height()*.5})));
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,point);QTRY_VERIFY(c.grainAmount()>40);c.finishInteraction();
+        const auto controlsWithinWindow=[&] {
+            auto *section=object->findChild<QQuickItem *>("grainSection");
+            if(!section)return false;
+            for(auto *row : section->childItems())for(auto *control : row->childItems()) {
+                if(!control->isVisible())continue;
+                const auto left=control->mapToScene({0,0}).x(),right=control->mapToScene({control->width(),0}).x();
+                if(left<0||right>window->width()+.5)return false;
+            }
+            const auto resetRight=reset->mapToScene({reset->width(),0}).x();
+            return resetRight<=window->width()+.5;
+        };
+        QTRY_VERIFY(controlsWithinWindow());
         c.setExactScopes(true);QTRY_VERIFY_WITH_TIMEOUT(!c.rendering()&&c.scopesStatus().contains("Full-resolution statistics"),10000);
         const auto captureRoot=qEnvironmentVariable("JIXELLIGHT_GRAIN_EVIDENCE");
         if(!captureRoot.isEmpty()) {QVERIFY(QDir().mkpath(captureRoot));QTRY_VERIFY(!window->grabWindow().isNull());QVERIFY(window->grabWindow().save(QDir(captureRoot).filePath(QString("grain-panel-en-%1.png").arg(width))));}
         c.setLanguage("zh_CN");QTRY_VERIFY(toggle->property("text").toString().contains(QStringLiteral("胶片颗粒")));
+        QTRY_VERIFY(controlsWithinWindow());
         if(!captureRoot.isEmpty()) {QVERIFY(QDir().mkpath(captureRoot));QTRY_VERIFY(!window->grabWindow().isNull());QVERIFY(window->grabWindow().save(QDir(captureRoot).filePath(QString("grain-panel-zh-%1.png").arg(width))));}
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,reset->mapToScene({reset->width()*.5,reset->height()*.5}).toPoint());QTRY_COMPARE(c.grainAmount(),0.0);
         c.undo();QVERIFY(c.grainAmount()>40);item->setParentItem(nullptr);

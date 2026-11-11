@@ -48,12 +48,12 @@ SDK-26 AGL link failure is retained; the successful local configure resolves
 the real AGL framework from the installed macOS 15.4 SDK. No repository SDK
 override, math change or replacement framework is introduced.
 
-The new `film-grain` CTest is appended after the existing 76 tests. Its 11
+The new `film-grain` CTest is appended after the existing 76 tests. Its 12
 observations cover fixed-noise values and default identity, alpha/endpoints,
 serial/parallel/region agreement, all histogram channels and three plots,
 viewport anchoring, cancellation, strict snapshots and failed-open writer
 preservation, presets/XMP/history, 12 PNG/TIFF/WebP ICC round trips, actual
-controller persistence/copies, and real 300/350-pixel panels at height 780.
+controller persistence/copies, and real 300/320/350-pixel panels at height 780.
 The real panel is hosted with Main.qml's Fusion palette; native pointer input
 changes Amount, Reset and Undo in both languages. This is a focused component
 window, not an additional normal-MainApp or packaged-GUI acceptance claim.
@@ -66,8 +66,8 @@ source bytes. Workflow uploads retain the new grain screenshots alongside
 the existing reports. Current three-platform and shipping acceptance remains
 required after publication; previous CI362 accepts the unchanged parent only.
 
-Final related local reports pass Core217, Performance39, GPU38 and the new
-film-grain11, each with zero failures/skips/blacklisted observations. The last
+Parent implementation reports pass Core217, Performance39, GPU38 and the new
+film-grain11, each with zero failures/skips/blacklisted observations. Those
 four CTests complete in 41.97 seconds. Among 40 new output/viewport cases,
 30 actual-compute cases have maximum RGB error 2/65535 and ten Adobe RGB cases
 use the explicitly asserted CPU fallback. Both native Paint/Erase cases have
@@ -82,3 +82,13 @@ first CTest profile-location refusal remain in the separate original logs.
 The endpoint test now verifies actual encoded white after the existing
 shoulder. The component host uses a separate QML fixture. No failure is
 reclassified as a successful run.
+
+The compact-layout follow-up bounds both the grain header and controls by
+the real panel width. Visual review had exposed clipped English values at
+width300, despite a successful pointer test. The current test also covers
+the production minimum320, and asserts every grain control/value and Reset
+remain within actual window bounds in both languages. Its single current
+report is12 passed/zero failures/skips, with six fresh bilingual panel PNGs.
+Only the QML panel and its focused driver change; numerical code is unchanged.
+CI363 started at implementation commitf5ed99a; this follow-up requires its own
+current-commit run, rather than borrowing that run's eventual outcome.

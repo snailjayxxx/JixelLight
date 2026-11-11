@@ -589,7 +589,8 @@ Rectangle {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
                         objectName: "grainToggle"; Layout.fillWidth: true; font.bold: true
                         text: (root.grainExpanded ? "▾ " : "▸ ") + root.t("胶片颗粒", "FILM GRAIN")
@@ -601,7 +602,10 @@ Rectangle {
                     }
                 }
                 ColumnLayout {
-                    Layout.fillWidth: true; spacing: 6; visible: root.grainExpanded
+                    objectName: "grainSection"
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.grainExpanded
                     enabled: root.controller.hasImage
                     AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "grainAmountSlider"; label: root.t("强度", "Amount"); from: 0; to: 100; decimals: 0; value: root.controller.grainAmount; onEdited: function(newValue) { root.controller.grainAmount = newValue } }
                     AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "grainSizeSlider"; label: root.t("粒度", "Size"); from: .5; to: 4; decimals: 2; value: root.controller.grainSize; onEdited: function(newValue) { root.controller.grainSize = newValue } }
