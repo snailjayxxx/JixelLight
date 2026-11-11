@@ -63,3 +63,9 @@ byte job log has SHA-256ac9ad9ccda237bd221636835dcae1a6ea07c68020a5b45ea024f27b3
 Desktop jobs remain separate and pending at this entry; no whole-workflow
 acceptance is inferred from Linux. Denoise work is kept on a separate branch
 so its validation does not cancel that existing capacity-layout run.
+
+Extended boundary validation later exposes source-dependent numerical regions
+not covered by these initial fixtures. [M9](F0_FLOAT_SOURCE_NUMERIC_POLICY_STAGE_M54.md)
+records the original failures and explicit policies, including a revised
+48-compute/28-CPU split for the76 combined cases. The earlier54/22 observations
+remain bound to125c83a and are not relabeled as current-head compute coverage.

@@ -86,6 +86,8 @@ private:
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
     bool m_outputDenoiseActive = false;
+    ImagePipeline::FloatSourceFacts m_sourceFacts;
+    QString m_outputNumericPolicy;
     // GPU-resident stage cache; downstream color/output edits do not change it.
     qint64 m_denoiseSourceKey = 0;
     int m_denoiseEncoding = -1;

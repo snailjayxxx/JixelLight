@@ -20,7 +20,14 @@ constexpr int CountsBytes = HistogramCounts::GpuWords * int(sizeof(quint32));
 constexpr int DisplayLutSize = 33;
 constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLutSize, DisplayLutSize); }
 
-bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan) {
+bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan,const ImagePipeline::FloatSourceFacts &facts) {
+    // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
+    // also stays safely above its1e-20 normalization epsilon.
+    if(plan.denoiseActive()&&facts.nearZeroAlpha)return true;
+    // Signed scene channels expose >40 at a ProPhoto gamut boundary even with
+    // denoise off. Keep the oracle and exact alpha rather than widening RGB.
+    if(plan.encoding==ImagePipeline::InputEncoding::LinearProPhoto
+        &&plan.output==ColorManagement::OutputSpace::ProPhotoRgb&&facts.negativeRgb)return true;
     // Extended FP32 grain fixtures expose >40/65535 at an Adobe RGB gamut
     // edge. Keep the established color math and tolerance; use the exact
     // reference for this optional output combination on every backend.
@@ -103,6 +110,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
         {"spatial_denoise",m_outputDenoiseActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
+        {"numeric_source_policy",m_outputNumericPolicy},
         {"stage", "working-output"}, {"monitor_icc", false}};
     m_frameReadback->result.completed = [weak, ready, size, bytes, context] {
         if (const auto state = weak.lock()) {
@@ -227,7 +235,12 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
     if (!BrushMaskDocument::validDocument(plan.state.brushMasks))
         return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
-    m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
+    const bool newSource=source.cacheKey()!=m_sourceKey;
+    // Validation and numeric facts are captured once per new upload, including
+    // uploads made while denoise is disabled. Slider edits reuse these facts.
+    if(newSource&&!ImagePipeline::validFloatSource(source,{},&m_sourceFacts))
+        return fail(QStringLiteral("Invalid non-finite/out-of-range FP32 source or alpha"));
+    m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan,m_sourceFacts);
     if(!plan.validSpatialSettings())return fail(QStringLiteral("Invalid spatial settings"));
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0||plan.data[ProcessingPlan::IndependentDetail].x>0;
     if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
@@ -235,17 +248,12 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
     if(denoise&&!ensureDenoise())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
-    const bool newSource = source.cacheKey() != m_sourceKey;
     const auto denoiseSettings=plan.denoise(m_size);
     const bool denoiseGuideMiss=denoise&&(!m_denoiseGuideValid||m_denoiseSourceKey!=source.cacheKey()
         ||m_denoiseEncoding!=int(plan.encoding)
         ||std::memcmp(m_denoiseInputRows.data(),plan.data.data()+ProcessingPlan::Input0,sizeof(m_denoiseInputRows))!=0);
     const bool denoiseFilterMiss=denoise&&(denoiseGuideMiss||!m_denoiseFilterValid
         ||std::memcmp(&m_denoiseSettings,&denoiseSettings,sizeof(Float4))!=0);
-    // Inspect only new uploads, never repeat the O(pixels) validation on a
-    // slider tick. Refuse bad FP32 data before any QRhi resources are updated.
-    if (newSource && !ImagePipeline::validFloatSource(source))
-        return fail(QStringLiteral("Invalid non-finite/out-of-range FP32 source or alpha"));
     if (revision != m_revision || newSource || newLut) {
         PerformanceSpan timing("gpu_submit_cpu_ms", {{"pixels", qint64(source.width())*source.height()}});
         auto *updates = m_rhi->nextResourceUpdateBatch();
@@ -324,6 +332,9 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         }
         m_revision = revision;
         m_outputDenoiseActive=plan.denoiseActive();
+        m_outputNumericPolicy=plan.denoiseActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("denoise-near-zero-alpha"):
+            plan.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&plan.output==ColorManagement::OutputSpace::ProPhotoRgb&&m_sourceFacts.negativeRgb?QStringLiteral("signed-linear-prophoto"):
+            m_lastCpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");
         m_outputSpace = plan.output;
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision

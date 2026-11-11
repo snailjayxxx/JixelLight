@@ -1,4 +1,5 @@
 #include "core/pipeline/ImagePipeline.h"
+#include <bit>
 #include "core/pipeline/FilmGrain.h"
 #include "core/pipeline/SpatialDenoise.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
@@ -745,7 +746,8 @@ QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,con
     return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
 }
 }
-bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &token) {
+bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &token,FloatSourceFacts *facts) {
+    if(facts)*facts={};FloatSourceFacts found;
     if (source.isNull() || source.format()!=QImage::Format_RGBA32FPx4 || cancelled(token)) return false;
     for (int y=0;y<source.height();++y) {
         if (cancelled(token)) return false;
@@ -755,9 +757,17 @@ bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &tok
             for (int c=0;c<3;++c)
                 if (!std::isfinite(p[c]) || std::fabs(p[c])>MaxLinearInputMagnitude) return false;
             if (!std::isfinite(p[3]) || p[3]<0.0f || p[3]>1.0f) return false;
+            if(facts) {
+                found.negativeRgb=found.negativeRgb||p[0]<0||p[1]<0||p[2]<0;
+                // Inspect the bits so subnormal alpha is observed even when
+                // a hardware floating-point mode would flush arithmetic to0.
+                const auto bits=std::bit_cast<quint32>(p[3])&0x7fffffffu;
+                found.nearZeroAlpha=found.nearZeroAlpha||(bits>0&&bits<std::bit_cast<quint32>(1.e-18f));
+            }
         }
     }
-    return !cancelled(token);
+    if(cancelled(token))return false;
+    if(facts)*facts=found;return true;
 }
 QImage ImagePipeline::floatSource(const QImage &source,const CancelToken &token) {
     if (source.isNull() || cancelled(token)) return {};

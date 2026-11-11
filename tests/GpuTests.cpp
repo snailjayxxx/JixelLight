@@ -122,7 +122,7 @@ private slots:
             const auto reference=preview?QSize(1096,1112):QSize{};const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);
             verifyParity(input,state,encoding,output,true,"spatial denoise",frame,reference);
             if(QTest::currentTestFailed())return;
-            const bool fallback=BrushMaskTileRaster::anyEnabled(state.brushMasks)||(state.grainAmount>0&&output==ColorManagement::OutputSpace::AdobeRgb);
+            const bool fallback=BrushMaskTileRaster::anyEnabled(state.brushMasks)||(state.grainAmount>0&&output==ColorManagement::OutputSpace::AdobeRgb)||(input.format()==QImage::Format_RGBA32FPx4&&encoding==ImagePipeline::InputEncoding::LinearProPhoto&&output==ColorManagement::OutputSpace::ProPhotoRgb);
             QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
             const auto actual=render(input,state,false,encoding,output,frame,true,reference);QVERIFY(actual.diagnostic["available"].toBool());
             QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
@@ -144,7 +144,7 @@ private slots:
         BrushMaskGeometry::Stroke paint;paint.style={.13,.42,.8};paint.dabs={{{.28,.37},.5},{{.69,.62},.9}};auto erase=paint;erase.mode=BrushMaskGeometry::StrokeMode::Erase;erase.dabs={{{.3,.38},.3}};
         state.brushMasks.layers.push_back({"denoise-fallback",true,.85,{paint,erase}});
         for(int output=0;output<4;++output)verify(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true);
-        if(!QTest::currentTestFailed())qInfo()<<"spatial denoise: 76 denoise cases: 54 mandatory compute, 22 existing CPU policies";
+        if(!QTest::currentTestFailed())qInfo()<<"spatial denoise: 76 denoise cases: 48 mandatory compute, 28 explicit CPU policies";
     }
     void spatialDenoiseNoisyDarkFieldsAndResourceTransitions() {
         QImage noisy(137,139,QImage::Format_RGBA32FPx4);std::mt19937 rng(95951);std::normal_distribution<float> noise(0,.003f);const float alphas[]{0,1.e-8f,.375f,1.f};
@@ -152,7 +152,7 @@ private slots:
         for(float level : {.001f,.18f}) {
             for(int y=0;y<139;++y)for(int x=0;x<137;++x){auto *p=reinterpret_cast<float *>(noisy.scanLine(y))+4*x;for(int c=0;c<3;++c)p[c]=level+noise(rng)+(x>68&&c==0?.07f:0.f);p[3]=alphas[(x+y)%4];}
             for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)for(bool preview : {false,true}) {
-                verifyParity(noisy,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(output),true,"noisy/dark denoise",{0,0,1,1},preview?noisy.size()*4:QSize{});if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+                verifyParity(noisy,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(output),true,"noisy/dark denoise",{0,0,1,1},preview?noisy.size()*4:QSize{});if(QTest::currentTestFailed())return;QCOMPARE(engine->lastProcessUsedCpuFallback(),level==.001f&&encoding==1&&output==3);
             }
         }
         const auto first=render(noisy,state,false);QVERIFY(!first.image.isNull());const auto uploads=engine->sourceUploads();
@@ -202,6 +202,36 @@ private slots:
             verifyParity(crop,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"actual Sony denoise",{0,0,1,1},preview?crop.size()*4:QSize{});if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
         }
     }
+    void numericSourceBoundariesUseExplicitReferencePolicies() {
+        QImage source(33,35,QImage::Format_RGBA32FPx4);AdjustmentState state;state.denoiseLuma=100;state.denoiseChroma=100;
+        const auto exactPolicy=[&](bool expectedFallback,const char *policy,const AdjustmentState &edits,ColorManagement::OutputSpace output) {
+            const auto actual=render(source,edits,true,ImagePipeline::InputEncoding::LinearProPhoto,output,{0,0,1,1},true);QVERIFY(!actual.image.isNull());
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),expectedFallback);QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString::fromLatin1(policy));
+            QCOMPARE(actual.diagnostic["producer"].toString(),expectedFallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            if(expectedFallback){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(edits,ImagePipeline::InputEncoding::LinearProPhoto,output));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),std::size_t(source.width())*8)==0);}
+        };
+        for(float alpha : {0.f,std::numeric_limits<float>::denorm_min(),1.e-38f,1.e-30f,1.e-21f,1.e-20f,1.e-18f,1.e-8f,1.f/65535,1.f}) {
+            for(int y=0;y<35;++y)for(int x=0;x<33;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.001f*((x*17+y*7)%23);p[1]=.12f;p[2]=.18f;p[3]=1;}
+            auto *center=reinterpret_cast<float *>(source.scanLine(17))+4*16;center[0]=.17f;center[1]=.14f;center[2]=.19f;center[3]=alpha;
+            const bool near=alpha>0&&alpha<1.e-18f;ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QCOMPARE(facts.nearZeroAlpha,near);QVERIFY(!facts.negativeRgb);
+            exactPolicy(false,"none",{},ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;const auto uploads=engine->sourceUploads();
+            for(int output=0;output<4;++output) {
+                qInfo()<<"boundary alpha"<<alpha;verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"alpha boundary denoise");if(QTest::currentTestFailed())return;
+                exactPolicy(near,near?"denoise-near-zero-alpha":"none",state,ColorManagement::OutputSpace(output));if(QTest::currentTestFailed())return;
+            }
+            QCOMPARE(engine->sourceUploads(),uploads);
+        }
+        for(float scale : {1.e-10f,4.f,256.f,65536.f}) {
+            for(int y=0;y<35;++y)for(int x=0;x<33;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=scale*float((x*7+y*3)%19-9)/10;p[1]=scale*float((x*3+y*7)%17-8)/10;p[2]=scale*float((x*5+y*11)%23-11)/12;p[3]=1;}
+            ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QVERIFY(facts.negativeRgb);QVERIFY(!facts.nearZeroAlpha);
+            for(int output=0;output<4;++output)for(bool active : {false,true}) {
+                qInfo()<<"boundary RGB scale"<<scale<<"denoise active"<<active;const auto edits=active?state:AdjustmentState{};
+                verifyParity(source,edits,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"range boundary");if(QTest::currentTestFailed())return;
+                exactPolicy(output==3,output==3?"signed-linear-prophoto":"none",edits,ColorManagement::OutputSpace(output));if(QTest::currentTestFailed())return;
+            }
+        }
+        auto invalid=source.copy();reinterpret_cast<float *>(invalid.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();ImagePipeline::FloatSourceFacts facts{true,true};QVERIFY(!ImagePipeline::validFloatSource(invalid,{},&facts));QVERIFY(!facts.nearZeroAlpha&&!facts.negativeRgb);
+    }
     void independentSharpenMatchesCpuAtFullAndPreviewDensity() {
         QImage source(137,139,QImage::Format_RGBA64);const quint16 alpha[]{0,1,24576,65535};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)
@@ -224,7 +254,7 @@ private slots:
         AdjustmentState state;state.sharpenAmount=100;state.sharpenRadius=5.7;
         for(int space=0;space<4;++space)for(bool preview : {false,true}) {
             verifyParity(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"FP32 independent sharpen",preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1),preview?QSize(548,556):QSize{});
-            QVERIFY(!engine->lastProcessUsedCpuFallback());
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),space==3);
         }
         state.look.mode="manual";state.look.code="FL";state.look.parameters={{"clarity",3},{"sharpness",4}};
         const bool restricted=rhi->backend()==QRhi::D3D11||rhi->backend()==QRhi::OpenGLES2;
@@ -263,7 +293,7 @@ private slots:
         AdjustmentState state;state.grainAmount=77;state.grainSize=2.5;
         for(int space=0;space<4;++space)for(bool viewport : {false,true}) {
             verifyParity(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(space),true,"FP32 film grain",viewport?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1));
-            QCOMPARE(engine->lastProcessUsedCpuFallback(),ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),ColorManagement::OutputSpace(space)==ColorManagement::OutputSpace::AdobeRgb||space==3);
         }
         const auto fallback=render(hdr,state,true,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::AdobeRgb,{0,0,1,1},true);
         QVERIFY(fallback.diagnostic["available"].toBool());QCOMPARE(fallback.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
@@ -279,7 +309,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,prophotoPolicyOk=false;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -299,6 +329,9 @@ private slots:
                 const auto adobe=ProcessingPlan::compile(state,p.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0);N::FrameFailure why=N::FrameFailure::None;
                 const auto refused=N::FrameAdmission::prepare(result.source,caps,adobe,{"grain-catalog","grain-input","grain-version",1},2,&why);
                 result.adobeRefused=!refused&&why==N::FrameFailure::CPUPolicy;
+                const auto prophoto=ProcessingPlan::compile(state,p.encoding,ColorManagement::OutputSpace::ProPhotoRgb,false,0);why=N::FrameFailure::None;
+                const auto prophotoFrame=N::FrameAdmission::prepare(result.source,caps,prophoto,{"grain-catalog","grain-input","grain-version",1},5,&why);
+                result.prophotoPolicyOk=fp32?(!prophotoFrame&&why==N::FrameFailure::CPUPolicy):bool(prophotoFrame);
                 auto detailState=state;detailState.sharpenAmount=80;detailState.sharpenRadius=2.7;
                 const auto detail=ProcessingPlan::compile(detailState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
                 const auto detailFrame=N::FrameAdmission::prepare(result.source,caps,detail,{"grain-catalog","grain-input","grain-version",1},3,&why);
@@ -311,7 +344,7 @@ private slots:
                 }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.prophotoPolicyOk);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));
@@ -456,7 +489,7 @@ private slots:
             verifyParity(scaled,state,ImagePipeline::InputEncoding::LinearProPhoto,
                          ColorManagement::OutputSpace(output),true,"FP32 antialiased preview");
             if(QTest::currentTestFailed()) return;
-            const bool fallback=mode==1 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            const bool fallback=output==3||(mode==1 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2));
             QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
         }
     }
@@ -501,8 +534,8 @@ private slots:
             verifyParity(corrected,state,ImagePipeline::InputEncoding::LinearProPhoto,
                          output,true,"FP32 lens/CA/projective/straighten");
             if(QTest::currentTestFailed()) return;
-            const bool expectedFallback=mode==1 &&
-                (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            const bool expectedFallback=space==3||(mode==1 &&
+                (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2));
             QCOMPARE(engine->lastProcessUsedCpuFallback(),expectedFallback);
         }
     }
@@ -534,7 +567,7 @@ private slots:
             }
             verifyParity(scene,state,ImagePipeline::InputEncoding::LinearProPhoto,output,true,"FP32 scene > 1");
             if(QTest::currentTestFailed()) return;
-            const bool fallback=mode==2 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2);
+            const bool fallback=space==3||(mode==2 && (rhi->backend()==QRhi::D3D11 || rhi->backend()==QRhi::OpenGLES2));
             QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
         }
         // Capture a real output fingerprint from the frozen FP32 source rather

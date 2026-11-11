@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化及明度/颜色降噪已覆盖预览、示波器、导出和持久化。CPU 降噪提交 `6effe5c` 在本机通过 80/80 项完整回归；后续 QRhi 降噪与缓存复用通过 43 项 GPU 检查及正常应用绘制/擦除专项检查，仍待自身跨平台验收。CPU 预览降噪复用也已通过专项检查，保持原有 64 MiB 缓存总额。容量按钮修正的 CI #367 已完成 Linux 全流程，桌面及打包仍在运行。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[CPU 降噪](docs/F4_SPATIAL_DENOISE_STAGE_M52.md)、[QRhi 降噪](docs/F4_QRHI_DENOISE_CACHE_STAGE_M52A.md)、[CPU 预览缓存](docs/F3_CPU_DENOISE_PREVIEW_CACHE_STAGE_M53.md)和[容量修正](docs/F4_BRUSH_CAPACITY_LAYOUT_STAGE_M51B.md)。
+> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化及明度/颜色降噪已覆盖预览、示波器、导出和持久化。CPU 降噪提交 `6effe5c` 在本机通过 80/80 项完整回归；后续 QRhi 降噪与缓存复用通过 43 项 GPU 检查及正常应用绘制/擦除专项检查，仍待自身跨平台验收。CPU 预览降噪复用也已通过专项检查，保持原有 64 MiB 缓存总额。扩展边界检查发现的极小 alpha 和带负值 ProPhoto 数值差异已补入显式回退，并通过 44 项 GPU 检查及相关回归。容量按钮修正的 CI #367 已完成 Linux 全流程，桌面及打包仍在运行。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[CPU 降噪](docs/F4_SPATIAL_DENOISE_STAGE_M52.md)、[QRhi 降噪](docs/F4_QRHI_DENOISE_CACHE_STAGE_M52A.md)、[CPU 预览缓存](docs/F3_CPU_DENOISE_PREVIEW_CACHE_STAGE_M53.md)和[容量修正](docs/F4_BRUSH_CAPACITY_LAYOUT_STAGE_M51B.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
