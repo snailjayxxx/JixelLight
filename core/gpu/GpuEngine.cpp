@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QResource>
 #include <algorithm>
+#include <cstring>
 
 static void initializeShaderResources() { Q_INIT_RESOURCE(pipeline_shaders); }
 namespace {
@@ -101,6 +102,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
+        {"spatial_denoise",m_outputDenoiseActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"stage", "working-output"}, {"monitor_icc", false}};
     m_frameReadback->result.completed = [weak, ready, size, bytes, context] {
         if (const auto state = weak.lock()) {
@@ -152,6 +154,10 @@ bool GpuEngine::initialize(QSize size) {
     m_pipelineBindings.reset(); m_histogramBindings.reset(); m_reduceBindings.reset();
     m_detailBaseBindings.reset();m_horizontalBindings.reset();m_detailBindings.reset();
     m_horizontalPipeline.reset();m_detailPipeline.reset();m_detailBase.reset();m_horizontal.reset();
+    m_denoisePreparePipeline.reset();m_denoiseFilterPipeline.reset();
+    m_denoisePrepareBindings.reset();m_denoiseFilterBindings.reset();m_denoiseColorBindings.reset();m_denoiseDetailBindings.reset();
+    m_denoiseGuide.reset();m_denoiseLinear.reset();
+    m_denoiseGuideValid=false;m_denoiseFilterValid=false;
     m_source.reset(); m_output.reset(); m_partial.reset(); m_counts.reset();
     m_size = size;
     m_groups = (size.width()*size.height()+16383)/16384;
@@ -222,12 +228,20 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
     m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
-    if(!plan.validIndependentDetail())return fail(QStringLiteral("Invalid independent detail settings"));
+    if(!plan.validSpatialSettings())return fail(QStringLiteral("Invalid spatial settings"));
     const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0||plan.data[ProcessingPlan::IndependentDetail].x>0;
     if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
+    const bool denoise=plan.denoiseActive()&&!m_lastCpuFallback;
+    if(denoise&&!ensureDenoise())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
     const bool newSource = source.cacheKey() != m_sourceKey;
+    const auto denoiseSettings=plan.denoise(m_size);
+    const bool denoiseGuideMiss=denoise&&(!m_denoiseGuideValid||m_denoiseSourceKey!=source.cacheKey()
+        ||m_denoiseEncoding!=int(plan.encoding)
+        ||std::memcmp(m_denoiseInputRows.data(),plan.data.data()+ProcessingPlan::Input0,sizeof(m_denoiseInputRows))!=0);
+    const bool denoiseFilterMiss=denoise&&(denoiseGuideMiss||!m_denoiseFilterValid
+        ||std::memcmp(&m_denoiseSettings,&denoiseSettings,sizeof(Float4))!=0);
     // Inspect only new uploads, never repeat the O(pixels) validation on a
     // slider tick. Refuse bad FP32 data before any QRhi resources are updated.
     if (newSource && !ImagePipeline::validFloatSource(source))
@@ -254,6 +268,8 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
         plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
         auto uniforms=plan.data;uniforms[ProcessingPlan::IndependentDetail]=plan.independentDetail(m_size);
+        uniforms[ProcessingPlan::Denoise]=plan.denoise(m_size);
+        uniforms[ProcessingPlan::Dimensions].w=denoise?1.f:0.f;
         updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(uniforms)), uniforms.data());
         if (m_lastCpuFallback) {
             // Render from the exact GPU upload source. An RGBA64 conversion
@@ -281,8 +297,21 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         } else {
             m_cpuFallbackFrame={};
             cb->beginComputePass(updates);
+            if(denoiseGuideMiss) {
+                cb->setComputePipeline(m_denoisePreparePipeline.get());cb->setShaderResources(m_denoisePrepareBindings.get());
+                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();cb->beginComputePass();
+                ++m_denoiseGuideDispatches;PerformanceRecorder::count("gpu_spatial_denoise_guide_dispatches");
+                m_denoiseSourceKey=source.cacheKey();m_denoiseEncoding=int(plan.encoding);
+                std::copy_n(plan.data.data()+ProcessingPlan::Input0,3,m_denoiseInputRows.data());m_denoiseGuideValid=true;
+            } else if(denoise)PerformanceRecorder::count("gpu_spatial_denoise_guide_hits");
+            if(denoiseFilterMiss) {
+                cb->setComputePipeline(m_denoiseFilterPipeline.get());cb->setShaderResources(m_denoiseFilterBindings.get());
+                cb->dispatch((m_size.width()+15)/16,(m_size.height()+15)/16,1);cb->endComputePass();cb->beginComputePass();
+                ++m_denoiseFilterDispatches;PerformanceRecorder::count("gpu_spatial_denoise_filter_dispatches");
+                m_denoiseSettings=denoiseSettings;m_denoiseFilterValid=true;
+            } else if(denoise)PerformanceRecorder::count("gpu_spatial_denoise_filter_hits");
             cb->setComputePipeline(m_pipeline.get());
-            cb->setShaderResources(details?m_detailBaseBindings.get():m_pipelineBindings.get());
+            cb->setShaderResources(denoise?(details?m_denoiseDetailBindings.get():m_denoiseColorBindings.get()):(details?m_detailBaseBindings.get():m_pipelineBindings.get()));
             cb->dispatch((m_size.width()+15)/16, (m_size.height()+15)/16, 1);
             cb->endComputePass();
             if(details) {
@@ -294,6 +323,7 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             PerformanceRecorder::value("gpu_last_execution", backendName());
         }
         m_revision = revision;
+        m_outputDenoiseActive=plan.denoiseActive();
         m_outputSpace = plan.output;
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision
@@ -430,6 +460,30 @@ bool GpuEngine::drawImpl(QRhiCommandBuffer *cb, QRhiRenderTarget *target,bool pr
     return true;
 }
 
+bool GpuEngine::ensureDenoise() {
+    using B=QRhiShaderResourceBinding;
+    if(!m_denoisePreparePipeline) {
+        m_denoiseGuide.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        m_denoiseLinear.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));
+        if(!m_denoiseGuide->create()||!m_denoiseLinear->create())return fail("Denoise allocation failed");
+        m_denoisePrepareBindings.reset(m_rhi->newShaderResourceBindings());
+        m_denoisePrepareBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_source.get(),0),B::imageStore(2,B::ComputeStage,m_denoiseGuide.get(),0)});
+        m_denoiseFilterBindings.reset(m_rhi->newShaderResourceBindings());
+        m_denoiseFilterBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_source.get(),0),B::imageLoad(2,B::ComputeStage,m_denoiseGuide.get(),0),B::imageStore(3,B::ComputeStage,m_denoiseLinear.get(),0)});
+        m_denoiseColorBindings.reset(m_rhi->newShaderResourceBindings());
+        m_denoiseColorBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_denoiseLinear.get(),0),B::imageStore(2,B::ComputeStage,m_output.get(),0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
+        if(!m_denoisePrepareBindings->create()||!m_denoiseFilterBindings->create()||!m_denoiseColorBindings->create())return fail("Denoise bindings failed");
+        if(!buildCompute(m_denoisePreparePipeline,m_denoisePrepareBindings.get(),"denoise_prepare.comp")||!buildCompute(m_denoiseFilterPipeline,m_denoiseFilterBindings.get(),"denoise_filter.comp"))return false;
+        PerformanceRecorder::value("denoise_extra_gpu_bytes",qint64(m_size.width())*m_size.height()*32);
+    }
+    // Detail may become active after an earlier denoise-only frame.
+    if(m_detailBase&&!m_denoiseDetailBindings) {
+        m_denoiseDetailBindings.reset(m_rhi->newShaderResourceBindings());
+        m_denoiseDetailBindings->setBindings({B::uniformBuffer(0,B::ComputeStage,m_uniform.get()),B::imageLoad(1,B::ComputeStage,m_denoiseLinear.get(),0),B::imageStore(2,B::ComputeStage,m_detailBase.get(),0),B::imageLoad(3,B::ComputeStage,m_lutTexture.get(),0)});
+        if(!m_denoiseDetailBindings->create())return fail("Denoise detail bindings failed");
+    }
+    return true;
+}
 bool GpuEngine::ensureDetail() {
     if(m_detailPipeline)return true;
     m_detailBase.reset(m_rhi->newTexture(QRhiTexture::RGBA32F,m_size,1,QRhiTexture::UsedWithLoadStore));

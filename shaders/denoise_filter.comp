@@ -1,0 +1,30 @@
+#version 440
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=16,local_size_y=16,local_size_z=1) in;
+layout(std140,binding=0) uniform Plan {vec4 p[54];};
+layout(rgba32f,binding=1) readonly uniform image2D sourceImage;
+layout(rgba32f,binding=2) readonly uniform image2D guideImage;
+layout(rgba32f,binding=3) writeonly uniform image2D linearImage;
+#include "denoise_common.glsl"
+void main() {
+    ivec2 coord=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(coord,size)))return;
+    vec4 original=imageLoad(sourceImage,coord),center=imageLoad(guideImage,coord);
+    precise vec3 linear=dnInput(original.rgb);float radius=p[53].z;
+    if(center.a>0.0&&radius>0.0) {
+        int extent=int(ceil(radius));float sigma=max(.01,.6*radius);precise float sum=center.a;precise vec3 delta=vec3(0);
+        for(int y=-2;y<=2;++y)for(int x=-2;x<=2;++x) {
+            if((x==0&&y==0)||abs(x)>extent||abs(y)>extent)continue;
+            float edgeX=clamp(radius+1.0-abs(float(x)),0.0,1.0),edgeY=clamp(radius+1.0-abs(float(y)),0.0,1.0);
+            precise float spatial=edgeX*edgeY*exp(-float(x*x+y*y)/(2.0*sigma*sigma));if(spatial<=0.0)continue;
+            vec4 neighbor=imageLoad(guideImage,clamp(coord+ivec2(x,y),ivec2(0),size-ivec2(1)));if(neighbor.a<=0.0)continue;
+            precise vec3 difference=neighbor.rgb-center.rgb;
+            precise float distance=difference.x*difference.x*(1.0/(.04*.04))+(difference.y*difference.y+difference.z*difference.z)*(1.0/(.06*.06));
+            precise float weight=spatial*neighbor.a*exp(-.5*distance);sum+=weight;delta+=weight*difference;
+        }
+        if(sum>1.e-20) {
+            delta=(delta/sum)*vec3(p[53].x,p[53].y,p[53].y);
+            if(any(notEqual(delta,vec3(0))))linear=dnToPro(dnFromLab(center.rgb+delta));
+        }
+    }
+    imageStore(linearImage,coord,vec4(linear,original.a));
+}

@@ -84,7 +84,7 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 19
+        assert len(schema['parameters']) == 21
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
@@ -92,6 +92,8 @@ def main():
         assert 'grain.reset' in {c['name'] for c in schema['commands']}
         assert {p['name'] for p in schema['parameters']} >= {'sharpenAmount', 'sharpenRadius'}
         assert 'sharpen.reset' in {c['name'] for c in schema['commands']}
+        assert {p['name'] for p in schema['parameters']} >= {'denoiseLuma', 'denoiseChroma'}
+        assert 'denoise.reset' in {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -298,6 +300,38 @@ def main():
         result = json.loads(run('--commands', commands, sharpen_source, detail_reset).stdout)
         assert 'sharpen' not in result['adjustments'] and result['adjustments']['exposure'] == 1
         assert png16_pixels(detail_reset) == png16_pixels(detail_plain)
+        assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash
+        denoise = [{'command': 'develop.set', 'parameter': key, 'value': value}
+                   for key, value in {'denoiseLuma': 91, 'denoiseChroma': 83}.items()]
+        commands.write_text(json.dumps(exposure + denoise))
+        denoised, denoise_repeat = root / 'denoise.png', root / 'denoise-repeat.png'
+        result = json.loads(run('--commands', commands, sharpen_source, denoised).stdout)
+        assert result['adjustments']['denoise'] == {'schema': 1, 'lightness': 91, 'chroma': 83}
+        assert result['backend'] == 'cpu-reference'
+        run('--commands', commands, sharpen_source, denoise_repeat)
+        assert png16_pixels(denoised) == png16_pixels(denoise_repeat)
+        assert png16_pixels(denoised)[3] != png16_pixels(detail_plain)[3]
+        commands.write_text(json.dumps(exposure + denoise + sharpen + [{'command': 'denoise.reset'}]))
+        denoise_reset = root / 'denoise-reset.png'
+        result = json.loads(run('--commands', commands, sharpen_source, denoise_reset).stdout)
+        assert 'denoise' not in result['adjustments'] and result['adjustments']['exposure'] == 1
+        assert result['adjustments']['sharpen'] == {'schema': 1, 'amount': 73, 'radius': 2.7}
+        assert png16_pixels(denoise_reset) == png16_pixels(detail_output)
+        for parameter, value, key, expected in (('denoiseLuma', -1, 'lightness', 0), ('denoiseChroma', 101, 'chroma', 100)):
+            commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': parameter, 'value': value}]))
+            clamped = root / f'denoise-clamped-{parameter}.png'
+            result = json.loads(run('--commands', commands, sharpen_source, clamped).stdout)
+            if expected == 0:
+                assert 'denoise' not in result['adjustments']
+                run(sharpen_source, root / 'denoise-zero-baseline.png')
+                assert png16_pixels(clamped) == png16_pixels(root / 'denoise-zero-baseline.png')
+            else:
+                assert result['adjustments']['denoise'][key] == expected
+        for index, value in enumerate((True, '1', None)):
+            commands.write_text(json.dumps([{'command': 'develop.set', 'parameter': 'denoiseLuma', 'value': value}]))
+            rejected = root / f'denoise-rejected-{index}.png'
+            run('--commands', commands, sharpen_source, rejected, success=False)
+            assert not rejected.exists()
         assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash
         gradient = [
             {'command': 'mask.linear.enable', 'enabled': True},
@@ -877,6 +911,9 @@ def main():
         bad_output = root / 'catalog-rejected'
         bad_output.mkdir()
         for corrupt in [{**saved, '_history': {'schema': 2}}, {**original_state, 'look': {'schema': 2}},
+                        {**original_state, 'denoise': {'schema': 2, 'lightness': 90, 'chroma': 80}},
+                        {**original_state, 'denoise': {'schema': 1, 'lightness': 101, 'chroma': 80}},
+                        {**original_state, 'denoise': {'schema': 1, 'lightness': True, 'chroma': 80}},
                         {**original_state, 'geometry': {'schema': 3, 'straighten': 5}},
                         {**original_state, 'vignette': {'schema': 2, 'amount': -1, 'midpoint': .5, 'feather': 1}},
                         {**original_state, 'vignette': {'schema': 1, 'amount': -4, 'midpoint': .5, 'feather': 1}},
@@ -890,7 +927,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

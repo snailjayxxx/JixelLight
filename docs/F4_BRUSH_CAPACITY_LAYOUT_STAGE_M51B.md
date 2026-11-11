@@ -42,3 +42,10 @@ Original full log, failed JSON and failure/capacity PNGs remain retained.
 Desktop jobs are still running at this entry. A fresh current-commit workflow
 must validate this layout on Linux and both desktops, including packages.
 Independent denoising remains an unpublished isolated prototype.
+
+Follow-up CI367 atd27a46c now completes the Linux job successfully: all78 CTests
+in1,124.03s and subsequent original normal-App/GPU checks pass. The original
+26,798,796-byte log is retained with SHA-256
+`ac9ad9ccda237bd221636835dcae1a6ea07c68020a5b45ea024f27b36a3c95b6`.
+Windows/macOS and their packages still require their own completion; the new
+CPU/GPU denoise branch does not supersede this capacity-layout workflow.
