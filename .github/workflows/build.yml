@@ -90,7 +90,7 @@ jobs:
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Build
         id: compile
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Download real RAW test sample
         shell: bash
         run: >-

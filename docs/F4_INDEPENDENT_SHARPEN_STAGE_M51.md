@@ -85,3 +85,11 @@ validation is not an exact-commit78-test, three-platform or shipping-package
 acceptance claim; the published commit must complete those existing gates.
 Noise reduction, Texture/Clarity/Dehaze, healing and a native floating-point
 RAW decoder remain outside this change and unfinished in the master plan.
+
+The publication follow-up caps desktop CMake build parallelism at4, matching
+the existing Linux build limit. CI364's original macOS compile remains running
+after more than70 minutes; its log is not yet available, so memory pressure
+is a risk addressed by the cap, not a measured cause. Native test bodies,
+order, precision, memory and individual/aggregate deadlines are unchanged.
+Local complete-feature validation remains tied to commit `deaf9f1`; this
+workflow-only follow-up still requires its own actual CI execution.
