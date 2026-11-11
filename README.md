@@ -2,7 +2,7 @@
 
 # JixelLight
 
-> **开发进度（2026-11-12）：** 已通过 CI 的基线 `9c1c4f2`（CI #362）已在 Windows、macOS、Linux 各通过 76 项 CTest。新增胶片颗粒在本机完成 77/77 项回归；CI #364 的 Linux 因软件源 DNS 中止，Windows 通过 76/77 项并暴露一个已修正的测试断言，macOS 仍在运行。新代码须重新完成跨平台验收。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)和[颗粒实现说明](docs/F4_FILM_GRAIN_STAGE_M50.md)。
+> **开发进度（2026-11-12）：** 已通过 CI 的基线 `9c1c4f2`（CI #362）已在 Windows、macOS、Linux 各通过 76 项 CTest。新增胶片颗粒在本机完成 77/77 项回归；CI #364 的 Linux 因软件源 DNS 中止，Windows 通过 76/77 项并暴露一个已修正的测试断言，macOS 仍在运行。独立锐化也已接通预览、示波器、导出和持久化，并通过专项验证。新增功能须完成完整回归及跨平台验收。整体 F0–F6 尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)、[颗粒实现说明](docs/F4_FILM_GRAIN_STAGE_M50.md)和[锐化实现说明](docs/F4_INDEPENDENT_SHARPEN_STAGE_M51.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

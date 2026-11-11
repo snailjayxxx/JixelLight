@@ -94,6 +94,7 @@ Rectangle {
     property bool correctionsExpanded: false
     property bool vignetteExpanded: false
     property bool grainExpanded: false
+    property bool sharpenExpanded: false
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
     property bool blackWhiteExpanded: false
@@ -112,6 +113,7 @@ Rectangle {
         property alias correctionsExpanded: root.correctionsExpanded
         property alias vignetteExpanded: root.vignetteExpanded
         property alias grainExpanded: root.grainExpanded
+        property alias sharpenExpanded: root.sharpenExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
@@ -613,6 +615,32 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("单色颗粒随画幅固定；缩小预览时细颗粒会减弱。强度为 0 时关闭。",
                             "Monochrome grain stays fixed to the photo. Fine grain fades in smaller previews. Amount 0 turns it off.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    ToolButton {
+                        objectName: "sharpenToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.sharpenExpanded ? "▾ " : "▸ ") + root.t("独立锐化", "SHARPEN")
+                        onClicked: root.sharpenExpanded = !root.sharpenExpanded
+                    }
+                    Button {
+                        objectName: "sharpenReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetSharpen()
+                    }
+                }
+                ColumnLayout {
+                    objectName: "sharpenSection"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.sharpenExpanded; enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "sharpenAmountSlider"; label: root.t("强度", "Amount"); from: 0; to: 100; decimals: 0; value: root.controller.sharpenAmount; onEdited: function(newValue) { root.controller.sharpenAmount = newValue } }
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "sharpenRadiusSlider"; label: root.t("源像素范围", "Radius px"); from: .5; to: 6; decimals: 2; value: root.controller.sharpenRadius; onEdited: function(newValue) { root.controller.sharpenRadius = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("独立于 Sony 外观的亮度细节增强；保留透明度，预览范围随原片像素密度缩放。",
+                            "Luma detail independent of Sony Look. Alpha is preserved; preview radius follows source pixel density.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

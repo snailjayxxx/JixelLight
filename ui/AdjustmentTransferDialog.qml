@@ -21,6 +21,7 @@ Dialog {
         { key: "curves", zh: "主曲线与 RGB 曲线", en: "Master / RGB curves" },
         { key: "sony_look", zh: "Sony 创意外观", en: "Sony Creative Look" },
         { key: "effects", zh: "效果 / 暗角 / 颗粒", en: "Effects / vignette / grain" },
+        { key: "detail", zh: "独立细节 / 锐化", en: "Independent detail / sharpen" },
         { key: "masks", zh: "局部蒙版", en: "Local masks" },
         { key: "geometry", zh: "裁切、透视、镜头与方向", en: "Crop, perspective, lens / orientation" }
     ]

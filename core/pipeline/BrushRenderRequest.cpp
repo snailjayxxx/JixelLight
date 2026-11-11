@@ -95,7 +95,7 @@ bool validState(const AdjustmentState &state) {
     return AdjustmentState::fromJson(json).toJson()==json
         &&GeometryState::validJson(state.geometry.toJson())
         &&AdjustmentState::validRadialMaskJson(json)&&AdjustmentState::validLinearMaskJson(json)
-        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
+        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
         &&AdjustmentState::validColorGradingJson(json);
 }
 bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provided) {
@@ -108,6 +108,14 @@ bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provi
         // neither controls the admitted CPU kernel, which derives its own map.
         if(i==ProcessingPlan::Dimensions||i==ProcessingPlan::PixelMap)continue;
         const auto a=expected.data[std::size_t(i)],b=provided.data[std::size_t(i)];
+        if(i==ProcessingPlan::IndependentDetail) {
+            if(a.x!=b.x||a.y!=b.y)return false;
+            if(b.z==0&&b.w==0)continue;
+            if(b.x==0||!std::isfinite(b.z)||!std::isfinite(b.w)||b.z<1||b.w<1
+                ||b.z>BrushRenderRequest::MaxSourcePixels||b.w>BrushRenderRequest::MaxSourcePixels
+                ||b.z!=std::floor(b.z)||b.w!=std::floor(b.w))return false;
+            continue;
+        }
         if(a.x!=b.x||a.y!=b.y||a.z!=b.z||a.w!=b.w)return false;
     }
     // Also compare the double-valued CPU state and document, not just uniforms.
@@ -122,7 +130,8 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     const qint64 sourceBytes=source.sizeInBytes();
     const qint64 pixels=qint64(region.width())*region.height();
     const auto detail=plan.data[ProcessingPlan::LookDetail];
-    const int halo=LookDetail::halo({detail.x,detail.y,detail.z,detail.w});
+    const auto independent=plan.independentDetail(frameSize);
+    const int halo=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y});
     const auto expanded=region.adjusted(-halo,-halo,halo,halo).intersected(QRect(QPoint{},frameSize));
     const qint64 expandedPixels=qint64(expanded.width())*expanded.height();
     constexpr qint64 fixed=64LL*1024*1024
@@ -131,14 +140,15 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     if(capacity>std::size_t((std::numeric_limits<qint64>::max()-fixed)/sizeof(float)))return -1;
     const qint64 retainedLut=qint64(capacity)*sizeof(float);
     qint64 pixelsAndWork=0;
+    const qint64 detailExtra=independent.x>0?8:0;
     if(layout==BrushRenderRequest::Layout::Whole) {
         const auto copy=region==QRect(QPoint{},frameSize)?qint64(0):expandedPixels*(source.format()==QImage::Format_RGBA32FPx4?16:8);
-        const auto color=2*sourceBytes+copy+24*expandedPixels+8*pixels;
-        pixelsAndWork=std::max({3*sourceBytes,color,sourceBytes+24*pixels});
+        const auto color=2*sourceBytes+copy+(24+detailExtra)*expandedPixels+8*pixels;
+        pixelsAndWork=std::max({3*sourceBytes,color,sourceBytes+(24+detailExtra)*pixels});
     } else {
         const qint64 stripePixels=qint64(expanded.width())*std::min(expanded.height(),128+2*halo);
         // Max sum of retained center outputs=8P; conservative codec reserve=16P.
-        pixelsAndWork=3*sourceBytes+24*pixels+40*stripePixels;
+        pixelsAndWork=3*sourceBytes+24*pixels+(40+detailExtra)*stripePixels;
     }
     if(retainedLut>std::numeric_limits<qint64>::max()-fixed-pixelsAndWork)return -1;
     return pixelsAndWork+fixed+retainedLut;
@@ -243,6 +253,14 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
         // Frozen compile: a caller cannot attach an admission to another plan.
         auto plan=ProcessingPlan::compile(state,spec.encoding,spec.output,spec.rawSource,spec.rawBaseExposureStops);
         plan.setFrameRect(spec.normalizedFrame);
+        if(expectedPlan) {
+            const auto detail=expectedPlan->data[ProcessingPlan::IndependentDetail],compiled=plan.data[ProcessingPlan::IndependentDetail];
+            if(!expectedPlan->validIndependentDetail()||detail.x!=compiled.x||detail.y!=compiled.y)
+                return refuse("Invalid prepared independent detail settings");
+            // Keep validated source-density metadata in both the budget's halo
+            // estimate and the frozen render; recompilation only retains intent.
+            plan.data[ProcessingPlan::IndependentDetail]=detail;
+        }
         for(const auto &v:plan.data)for(const auto x:{v.x,v.y,v.z,v.w})if(!std::isfinite(x))return refuse("Non-finite admitted brush plan");
         const auto bytes=estimateBytes(source,region,size,plan,spec.layout);
         if(bytes<=0)return refuse("Invalid admitted brush memory estimate");

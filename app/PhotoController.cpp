@@ -594,6 +594,8 @@ GETTER(vignetteMidpoint)
 GETTER(vignetteFeather)
 GETTER(grainAmount)
 GETTER(grainSize)
+GETTER(sharpenAmount)
+GETTER(sharpenRadius)
 #undef GETTER
 
 QVariantList PhotoController::toVariantList(const AdjustmentState::ColorBandArray &values) {
@@ -627,7 +629,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -684,7 +686,8 @@ void PhotoController::setAdjustment(const char *name, double value, double Adjus
     value = (*state).*member;
     const QString parameter=QString::fromLatin1(name);
     const QString action=parameter.startsWith("vignette") ? QStringLiteral("vignette_adjustment")
-        : parameter.startsWith("grain") ? QStringLiteral("grain_adjustment") : QStringLiteral("adjustment");
+        : parameter.startsWith("grain") ? QStringLiteral("grain_adjustment")
+        : parameter.startsWith("sharpen") ? QStringLiteral("sharpen_adjustment") : QStringLiteral("adjustment");
     persistAndApply(action,
         {{"parameter", QString::fromLatin1(name)}, {"value", value}});
 }
@@ -715,6 +718,12 @@ void PhotoController::resetGrain() {
     auto *state=mutableCurrentState(); if (!state || (state->grainAmount==0 && state->grainSize==1)) return;
     m_photos[m_currentIndex].history.finish(); CommandRegistry::execute(*state,{{"command","grain.reset"}});
     persistAndApply("grain_reset");
+}
+void PhotoController::setSharpenAmount(double v) {setAdjustment("sharpenAmount",v,&AdjustmentState::sharpenAmount);}
+void PhotoController::setSharpenRadius(double v) {setAdjustment("sharpenRadius",v,&AdjustmentState::sharpenRadius);}
+void PhotoController::resetSharpen() {
+    auto *state=mutableCurrentState();if(!state||(state->sharpenAmount==0&&state->sharpenRadius==3))return;
+    m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","sharpen.reset"}});persistAndApply("sharpen_reset");
 }
 
 bool PhotoController::setLinearMaskEnabled(bool enabled) {
@@ -1587,7 +1596,7 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
     // Both the CPU oracle and the bundle metadata use the initial request,
     // even if a photo, viewport, or parameter changes while the GPU responds.
     const auto diagnosticPreview = preparePreview(snapshot.prepare, {});
-    auto diagnosticPlan = snapshot.plan; diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);
+    auto diagnosticPlan = snapshot.plan; diagnosticPlan.setFrameRect(diagnosticPreview.frameRect);diagnosticPlan.setReferenceFrameSize(diagnosticPreview.referenceFrameSize);
     ImagePipeline::DiagnosticResult colorCapture;
     if(BrushMaskTileRaster::anyEnabled(diagnosticPlan.state.brushMasks)) {
         QString error;
@@ -1862,6 +1871,7 @@ void PhotoController::initializeJobs() {
             }
             m_previewSource = result.normal; m_fastSource = result.fast; m_gpuSource = result.gpu;
             m_previewFrameRect=result.frameRect;
+            m_previewReferenceFrameSize=result.referenceFrameSize;
             m_displayPixels = result.displayPixels; m_viewportOnly = result.viewportOnly;
             emit previewGeometryChanged(); emit activityChanged();
             ++m_requestedRevision;

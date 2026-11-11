@@ -555,10 +555,11 @@ template<class Observer> inline QRgba64 colorPixelFloat(const float *pixel,const
     const quint16 alpha=quint16(std::lround(pixel[3]*65535.0f));
     return colorPixelLinear(inputLinear(encoded,kernel),alpha,kernel,x,y,observe,brushEv);
 }
-QImage finishColor(QImage out, const ProcessingPlan &plan, const CancelToken &token) {
+QImage finishColor(QImage out, const ProcessingPlan &plan, const QSize &sourceSize,const CancelToken &token) {
     if (out.isNull() || cancelled(token)) return {};
     const auto d=plan.data[ProcessingPlan::LookDetail];
-    out=LookDetail::apply(out,{d.x,d.y,d.z,d.w},token);
+    const auto independent=plan.independentDetail(sourceSize);
+    out=LookDetail::apply(out,{d.x,d.y,d.z,d.w},{independent.x,independent.y},token);
     if(out.isNull())return {};
     out.setColorSpace(ColorManagement::colorSpace(plan.output));
     out.setText(QStringLiteral("JixelLightPipeline"), QString::fromLatin1(ProcessingPlan::EngineVersion));
@@ -591,6 +592,7 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     const auto finite=[](double value,double fallback,double lo,double hi) { return float(std::clamp(std::isfinite(value)?value:fallback,lo,hi)); };
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
+    plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
     plan.data[FrameRect]={0,0,1,1};
     constexpr float rad=3.14159265358979323846f/180.0f;
     const float angle=finite(state.linearMaskAngle,0,-180,180)*rad;
@@ -694,12 +696,14 @@ bool validResearchDetail(const Float4 &detail) {
         && detail.z>=0 && detail.z<=12 && detail.w>=0 && detail.w<=12;
 }
 QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,const QRect &region) {
+    if(!plan.validIndependentDetail())return {};
     const QRect bounds(QPoint{},sourceSize);
     const QRect roi=region.intersected(bounds);
     if (roi.isEmpty()) return {};
     const auto detail=plan.data[ProcessingPlan::LookDetail];
     if (BrushMaskTileRaster::anyEnabled(plan.state.brushMasks) && !validResearchDetail(detail)) return {};
-    const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w});
+    const auto independent=plan.independentDetail(sourceSize);
+    const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y});
     return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
 }
 }
@@ -846,7 +850,7 @@ namespace {
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,
                         const QSize &sourceSize,const QPoint &origin,
                         std::size_t brushPixelBudget=BrushMaskTileRaster::MaxResearchFramePixels) {
-    if (source.isNull() || cancelled(token)
+    if (source.isNull() || cancelled(token) || !plan.validIndependentDetail()
         || !BrushMaskDocument::validDocument(plan.state.brushMasks)) return {};
     const bool brushResearch=BrushMaskTileRaster::anyEnabled(plan.state.brushMasks);
     // In-memory research only. Large real RAW brush rendering needs a separate
@@ -965,7 +969,7 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
         PerformanceRecorder::count("brush_research_helper_tasks",submitted);
         PerformanceRecorder::count("brush_research_parallel_frames",submitted>0?1:0);
         PerformanceRecorder::count("brush_research_serial_frames",submitted==0?1:0);
-        return finishColor(std::move(out),plan,token);
+        return finishColor(std::move(out),plan,sourceSize,token);
     }
     // An all-zero candidate frame uses the historical row renderer, including
     // its parallel scheduling. Preflight, research caps and source validation
@@ -983,7 +987,7 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
         }
     },parallel);
     if (brushResearch && !cancelled(token)) recordBrushTiles(0);
-    return finishColor(std::move(out),plan,token);
+    return finishColor(std::move(out),plan,sourceSize,token);
 }
 }
 QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
@@ -992,7 +996,7 @@ QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan
 
 ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
-    if (source.isNull() || cancelled(token)) return result;
+    if (source.isNull() || cancelled(token) || !plan.validIndependentDetail()) return result;
     if (!BrushMaskDocument::validDocument(plan.state.brushMasks)) {
         result.stages.insert("error","Invalid brush document");
         return result;
@@ -1037,7 +1041,7 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     }
     if (cancelled(token)) return result;
     const auto quantized=StageGraph::outputFingerprint(out);
-    result.image=finishColor(std::move(out),plan,token);
+    result.image=finishColor(std::move(out),plan,input.size(),token);
     if (result.image.isNull() || cancelled(token)) { result.image={}; return result; }
     result.stages=stages.result();
     if (floating) {
@@ -1049,7 +1053,9 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     result.stages.insert("quantized_color",quantized);
     result.stages.insert("detail_output",StageGraph::outputFingerprint(result.image));
     const auto detail=plan.data[ProcessingPlan::LookDetail];
-    result.stages.insert("detail_active",LookDetail::halo({detail.x,detail.y,detail.z,detail.w})>0);
+    const auto independent=plan.independentDetail(input.size());
+    result.stages.insert("detail_active",LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})>0);
+    result.stages.insert("independent_sharpen",QJsonObject{{"amount",plan.state.sharpenAmount},{"source_radius",plan.state.sharpenRadius},{"effective_radius",independent.y}});
     result.stages.insert("capture_elapsed_ms",timer.nsecsElapsed()/1e6);
     result.stages.insert("timing_scope","whole CPU capture including observation, detail and hashing; not individual kernel time");
     PerformanceRecorder::sample("diagnostic_color_capture_ms",timer.nsecsElapsed()/1e6,

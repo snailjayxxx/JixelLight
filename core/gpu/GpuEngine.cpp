@@ -222,7 +222,8 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         return fail(QStringLiteral("Invalid research brush document"));
     if (!initialize(source.size())) return false;
     m_lastCpuFallback = requiresNumericCpuFallback(m_rhi->backend(), plan);
-    const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0;
+    if(!plan.validIndependentDetail())return fail(QStringLiteral("Invalid independent detail settings"));
+    const bool details=plan.data[ProcessingPlan::LookDetail].x>0||plan.data[ProcessingPlan::LookDetail].y>0||plan.data[ProcessingPlan::IndependentDetail].x>0;
     if(details&&!m_lastCpuFallback&&!ensureDetail())return false;
     const auto lut=plan.data[ProcessingPlan::LookStyle].w>0?plan.state.look.lut:nullptr;
     const bool newLut=lut&&lut->digest!=m_lutKey;
@@ -252,7 +253,8 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         }
         plan.data[ProcessingPlan::Dimensions] = {float(m_size.width()), float(m_size.height()), float(m_groups), 0};
         plan.data[ProcessingPlan::PixelMap] = plan.pixelMap(m_size);
-        updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(plan.data)), plan.data.data());
+        auto uniforms=plan.data;uniforms[ProcessingPlan::IndependentDetail]=plan.independentDetail(m_size);
+        updates->updateDynamicBuffer(m_uniform.get(), 0, quint32(sizeof(uniforms)), uniforms.data());
         if (m_lastCpuFallback) {
             // Render from the exact GPU upload source. An RGBA64 conversion
             // would truncate HDR scene channels (>1) before the safety fallback.

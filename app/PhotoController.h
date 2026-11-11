@@ -113,6 +113,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double vignetteFeather READ vignetteFeather WRITE setVignetteFeather NOTIFY adjustmentsChanged)
     Q_PROPERTY(double grainAmount READ grainAmount WRITE setGrainAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double grainSize READ grainSize WRITE setGrainSize NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double sharpenAmount READ sharpenAmount WRITE setSharpenAmount NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double sharpenRadius READ sharpenRadius WRITE setSharpenRadius NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
@@ -236,7 +238,7 @@ public:
     ProcessingPlan gpuPlan(bool fullFrame=false) const {
         auto plan=ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
                                        ColorManagement::OutputSpace::SRgb, currentIsRaw(), rawBaseExposureStops());
-        if (!fullFrame) plan.setFrameRect(m_previewFrameRect);
+        if (!fullFrame) {plan.setFrameRect(m_previewFrameRect);plan.setReferenceFrameSize(m_previewReferenceFrameSize);}
         return plan;
     }
     void gpuPresented(quint64 revision, const QString &backend);
@@ -292,6 +294,7 @@ public:
     double highlightRecovery() const; double hue() const; double saturation() const; double vibrance() const;
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     double grainAmount() const; double grainSize() const;
+    double sharpenAmount() const; double sharpenRadius() const;
     QVariantMap linearMask() const {
         const auto state=currentState();
         return {{"enabled",state.linearMaskEnabled},{"exposure",state.linearMaskExposure},
@@ -320,6 +323,7 @@ public:
     void setHighlightRecovery(double v); void setHue(double v); void setSaturation(double v); void setVibrance(double v);
     void setVignetteAmount(double v); void setVignetteMidpoint(double v); void setVignetteFeather(double v);
     void setGrainAmount(double v); void setGrainSize(double v);
+    void setSharpenAmount(double v); void setSharpenRadius(double v);
     Q_INVOKABLE bool setLinearMaskEnabled(bool enabled);
     Q_INVOKABLE bool setLinearMaskParameter(const QString &parameter,double value);
     Q_INVOKABLE void resetLinearMask();
@@ -445,6 +449,7 @@ public:
     Q_INVOKABLE void resetAdjustments();
     Q_INVOKABLE void resetVignette();
     Q_INVOKABLE void resetGrain();
+    Q_INVOKABLE void resetSharpen();
     Q_INVOKABLE void copyAdjustments();
     Q_INVOKABLE void pasteAdjustments();
     Q_INVOKABLE void syncAdjustmentsToAll();
@@ -591,6 +596,7 @@ private:
     QSize m_viewport{1600, 1000};
     QSizeF m_displayPixels;
     QRectF m_previewFrameRect{0,0,1,1};
+    QSize m_previewReferenceFrameSize;
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
     QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer, m_catalogDateTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;

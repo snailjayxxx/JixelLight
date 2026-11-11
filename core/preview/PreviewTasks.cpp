@@ -52,6 +52,7 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
         PerformanceRecorder::count("prepare_cache_miss");
         QImage source = request.geometry.apply(request.image,cancel);
         if (source.isNull() || cancelled(cancel)) return {};
+        result.referenceFrameSize=source.size();
         const QSize viewport = request.viewport.expandedTo(QSize(64, 64));
         if (request.zoom > 0 && request.fullResolution) {
             const int w = std::min(source.width(), std::max(1, int(std::ceil(viewport.width() / request.zoom))));

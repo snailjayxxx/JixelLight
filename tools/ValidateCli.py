@@ -84,12 +84,14 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 17
+        assert len(schema['parameters']) == 19
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
         assert {p['name'] for p in schema['parameters']} >= {'grainAmount', 'grainSize'}
         assert 'grain.reset' in {c['name'] for c in schema['commands']}
+        assert {p['name'] for p in schema['parameters']} >= {'sharpenAmount', 'sharpenRadius'}
+        assert 'sharpen.reset' in {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -269,6 +271,34 @@ def main():
         assert 'grain' not in result['adjustments']
         assert png16_pixels(grain_reset) == png16_pixels(grain_baseline)
         assert hashlib.sha256(grain_source.read_bytes()).hexdigest() == grain_source_hash
+        sharpen_source = root / 'detail-original.png'
+        detail_rows = bytearray()
+        for y in range(24):
+            detail_rows.append(0)
+            for x in range(32):
+                detail_rows.extend((60 + (x*17+y*7) % 120, 50 + (x*13+y*19) % 130, 70 + (x*11+y*5) % 110))
+        sharpen_source.write_bytes(b'\x89PNG\r\n\x1a\n'
+                                   + chunk(b'IHDR', struct.pack('>2I5B', 32, 24, 8, 2, 0, 0, 0))
+                                   + chunk(b'IDAT', zlib.compress(detail_rows)) + chunk(b'IEND', b''))
+        sharpen_hash = hashlib.sha256(sharpen_source.read_bytes()).hexdigest()
+        sharpen = [{'command': 'develop.set', 'parameter': key, 'value': value}
+                   for key, value in {'sharpenAmount': 73, 'sharpenRadius': 2.7}.items()]
+        commands.write_text(json.dumps(exposure + sharpen))
+        detail_output, detail_repeat = root / 'detail.png', root / 'detail-repeat.png'
+        result = json.loads(run('--commands', commands, sharpen_source, detail_output).stdout)
+        assert result['adjustments']['sharpen'] == {'schema': 1, 'amount': 73, 'radius': 2.7}
+        run('--commands', commands, sharpen_source, detail_repeat)
+        assert png16_pixels(detail_output) == png16_pixels(detail_repeat)
+        commands.write_text(json.dumps(exposure))
+        detail_plain = root / 'detail-baseline.png'
+        run('--commands', commands, sharpen_source, detail_plain)
+        assert png16_pixels(detail_output)[3] != png16_pixels(detail_plain)[3]
+        commands.write_text(json.dumps(exposure + sharpen + [{'command': 'sharpen.reset'}]))
+        detail_reset = root / 'detail-reset.png'
+        result = json.loads(run('--commands', commands, sharpen_source, detail_reset).stdout)
+        assert 'sharpen' not in result['adjustments'] and result['adjustments']['exposure'] == 1
+        assert png16_pixels(detail_reset) == png16_pixels(detail_plain)
+        assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash
         gradient = [
             {'command': 'mask.linear.enable', 'enabled': True},
             {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': -1.5},
@@ -371,6 +401,9 @@ def main():
             {'command': 'grain.reset', 'extra': 1},
             {'command': 'develop.set', 'parameter': 'grainAmount', 'value': '70'},
             {'command': 'develop.set', 'parameter': 'grainSize', 'value': None},
+            {'command': 'sharpen.reset', 'extra': 1},
+            {'command': 'develop.set', 'parameter': 'sharpenAmount', 'value': '70'},
+            {'command': 'develop.set', 'parameter': 'sharpenRadius', 'value': None},
             {'command': 'grading.enable', 'enabled': 1},
             {'command': 'grading.set', 'region': 3, 'component': 'hue', 'value': 120},
             {'command': 'grading.set', 'region': 1, 'component': 'oops', 'value': 50},
@@ -857,7 +890,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':
