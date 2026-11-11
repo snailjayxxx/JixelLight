@@ -193,7 +193,7 @@ private slots:
         QVERIFY2(object,qPrintable(component.errorString()));auto *item=qobject_cast<QQuickItem *>(object.get());QVERIFY(item);
         window->resize(width,780);item->setParentItem(window->contentItem());item->setSize(window->size());window->show();QVERIFY(QTest::qWaitForWindowExposed(window));
         auto *lightness=object->findChild<QQuickItem *>("denoiseLumaSlider"),*chroma=object->findChild<QQuickItem *>("denoiseChromaSlider"),*reset=object->findChild<QQuickItem *>("denoiseReset"),*toggle=object->findChild<QQuickItem *>("denoiseToggle");
-        QVERIFY(lightness&&chroma&&reset&&toggle);QTRY_VERIFY(lightness->width()>50&&lightness->isVisible());QVERIFY(toggle->property("text").toString().contains("DENOISE · CPU"));
+        QVERIFY(lightness&&chroma&&reset&&toggle);QTRY_VERIFY(lightness->width()>50&&lightness->isVisible());QVERIFY(toggle->property("text").toString().contains("DENOISE"));
         auto *flick=qvariant_cast<QQuickItem *>(object->property("brushToolFlick"));QVERIFY(flick);
         const auto sectionY=toggle->mapToItem(flick,{0,0}).y()+flick->property("contentY").toDouble();
         flick->setProperty("contentY",std::clamp(sectionY-10,0.0,std::max(0.0,flick->property("contentHeight").toDouble()-flick->height())));
@@ -218,7 +218,7 @@ private slots:
             if(captureRoot.isEmpty())return true;
             return QDir().mkpath(captureRoot)&&!window->grabWindow().isNull()&&window->grabWindow().save(QDir(captureRoot).filePath(QString("denoise-panel-%1-%2.png").arg(language).arg(width)));
         };
-        QVERIFY(capture("en"));c.setLanguage("zh_CN");QTRY_VERIFY(toggle->property("text").toString().contains(QStringLiteral("降噪 · CPU")));QTRY_VERIFY(controlsWithinWindow());QVERIFY(capture("zh"));
+        QVERIFY(capture("en"));c.setLanguage("zh_CN");QTRY_VERIFY(toggle->property("text").toString().contains(QStringLiteral("降噪")));QTRY_VERIFY(controlsWithinWindow());QVERIFY(capture("zh"));
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,reset->mapToScene({reset->width()*.5,reset->height()*.5}).toPoint());QTRY_COMPARE(c.denoiseLuma(),0.0);QCOMPARE(c.denoiseChroma(),0.0);
         c.undo();QVERIFY(c.denoiseLuma()>40&&c.denoiseChroma()>40);item->setParentItem(nullptr);
     }

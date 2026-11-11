@@ -42,6 +42,8 @@ public:
     QString backendName() const;
     bool hasPendingReadback() const;
     quint64 sourceUploads() const { return m_uploads; }
+    quint64 denoiseGuideDispatches() const { return m_denoiseGuideDispatches; }
+    quint64 denoiseFilterDispatches() const { return m_denoiseFilterDispatches; }
     quint64 renderedRevision() const { return m_revision; }
     bool lastProcessUsedCpuFallback() const { return m_lastCpuFallback; }
 private:
@@ -50,6 +52,7 @@ private:
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
     bool initialize(QSize size);
     bool ensureDetail();
+    bool ensureDenoise();
     bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input);
     bool drawImpl(QRhiCommandBuffer *cb,QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input=nullptr);
     bool ensureDisplayColorResources();
@@ -67,6 +70,9 @@ private:
     std::shared_ptr<ReadbackState> m_frameReadback;
     ColorManagement::OutputSpace m_outputSpace = ColorManagement::OutputSpace::SRgb;
     std::unique_ptr<QRhiTexture> m_source, m_output, m_lutTexture, m_detailBase, m_horizontal, m_displayLutTexture;
+    std::unique_ptr<QRhiTexture> m_denoiseGuide,m_denoiseLinear;
+    std::unique_ptr<QRhiShaderResourceBindings> m_denoisePrepareBindings,m_denoiseFilterBindings,m_denoiseColorBindings,m_denoiseDetailBindings;
+    std::unique_ptr<QRhiComputePipeline> m_denoisePreparePipeline,m_denoiseFilterPipeline;
     QString m_lutKey;
     std::unique_ptr<QRhiBuffer> m_uniform, m_partial, m_counts, m_vertices;
     std::unique_ptr<QRhiSampler> m_sampler, m_displayLutSampler;
@@ -79,6 +85,14 @@ private:
     quint64 m_displayTextureId = 0;
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
+    bool m_outputDenoiseActive = false;
+    // GPU-resident stage cache; downstream color/output edits do not change it.
+    qint64 m_denoiseSourceKey = 0;
+    int m_denoiseEncoding = -1;
+    std::array<Float4,3> m_denoiseInputRows{};
+    Float4 m_denoiseSettings{};
+    bool m_denoiseGuideValid = false,m_denoiseFilterValid = false;
+    quint64 m_denoiseGuideDispatches = 0,m_denoiseFilterDispatches = 0;
     QImage m_displayColorLut;
     QString m_displayColorLutKey;
     QString m_uploadedDisplayColorLutKey;

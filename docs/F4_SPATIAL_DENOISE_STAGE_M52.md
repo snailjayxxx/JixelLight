@@ -1,5 +1,8 @@
 # F4 M7 CPU spatial noise reduction
 
+This entry records the CPU stage at `6effe5c`. The subsequent QRhi implementation
+and stage reuse are documented in [M7A](F4_QRHI_DENOISE_CACHE_STAGE_M52A.md).
+
 Develop adds independently adjustable Lightness and Color noise reduction
 (0–100), an isolated Reset, and Chinese/English labels. The section explicitly
 says CPU. Preview, full-resolution statistics, exports, gesture-coalesced
@@ -100,3 +103,10 @@ context and contain a skip; separate corrected Sony methods pass, and those
 incomplete reports are retained. Full validation must run with both required
 RAW and Sony fixtures. CPU denoise first-stage completion does not complete
 the broader F0–F6 fusion plan.
+
+The clean CPU commit6effe5c subsequently passes80/80 CTests in772.27s. Core217,
+GPU40, Performance39, XMP20, grain12, sharpen14, denoise kernel9 and denoise
+workflow16 all report zero failures/skips. The full-run24MP observation is
+10,531ms with the same2,576,225,792-byte reservation. This does not convert the
+initial missing-context exploratory reports into complete runs, nor establish
+full validation of the later GPU follow-up.

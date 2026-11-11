@@ -34,13 +34,14 @@ private:
     struct Result { QImage image; ScopesResult histogram; QJsonObject diagnostic, independentFingerprint; };
     Result render(const QImage &input,const AdjustmentState &state,bool statistics=true,
                   ImagePipeline::InputEncoding encoding=ImagePipeline::InputEncoding::LinearProPhoto,
-                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb,const QRectF &frameRect={0,0,1,1},bool diagnostic=false,QSize referenceFrameSize={}) {
+                  ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb,const QRectF &frameRect={0,0,1,1},bool diagnostic=false,QSize referenceFrameSize={},const std::array<Float4,3> *inputRows=nullptr) {
         QRhiCommandBuffer *cb=nullptr;
         if (rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess) return {};
         QByteArray counts;
         const auto floatImage=ImagePipeline::floatSource(input);
         const auto callback=statistics ? GpuEngine::HistogramReady([&](quint64,QByteArray data,quint64){ counts=std::move(data); }) : GpuEngine::HistogramReady{};
         auto plan=ProcessingPlan::compile(state,encoding,output); plan.setReferenceFrameSize(referenceFrameSize);plan.setFrameRect(frameRect);
+        if(inputRows)std::copy(inputRows->begin(),inputRows->end(),plan.data.begin()+ProcessingPlan::Input0);
         const bool ok=engine->process(cb,floatImage,plan,++revision,callback,true);
         QJsonObject captured;
         if (ok && diagnostic && !engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){captured=std::move(value);})) {
@@ -66,10 +67,11 @@ private:
     }
     void verifyParity(const QImage &input,const AdjustmentState &state,
                       ImagePipeline::InputEncoding encoding,ColorManagement::OutputSpace space,
-                      bool statistics,const char *label,const QRectF &frameRect={0,0,1,1},QSize referenceFrameSize={}) {
-        const auto actual=render(input,state,statistics,encoding,space,frameRect,false,referenceFrameSize);
+                      bool statistics,const char *label,const QRectF &frameRect={0,0,1,1},QSize referenceFrameSize={},const std::array<Float4,3> *inputRows=nullptr) {
+        const auto actual=render(input,state,statistics,encoding,space,frameRect,false,referenceFrameSize,inputRows);
         QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));
         auto plan=ProcessingPlan::compile(state,encoding,space);plan.setReferenceFrameSize(referenceFrameSize);plan.setFrameRect(frameRect);
+        if(inputRows)std::copy(inputRows->begin(),inputRows->end(),plan.data.begin()+ProcessingPlan::Input0);
         const auto reference=ImagePipeline::processWithPlan(input,plan);
         int maximum=0,worstX=0,worstY=0;
         quint64 absolute=0,overTolerance=0;
@@ -109,7 +111,7 @@ private:
         }
     }
 private slots:
-    void spatialDenoiseUsesCompleteCpuReferenceUpload() {
+    void spatialDenoiseMatchesCpuAcrossDensities() {
         QImage integer(137,139,QImage::Format_RGBA64),hdr(137,139,QImage::Format_RGBA32FPx4);
         const quint16 alpha16[]{0,1,24576,65535};const float alpha32[]{0,1.e-8f,1.f/65535,.375f,1.f};
         for(int y=0;y<139;++y)for(int x=0;x<137;++x) {
@@ -118,12 +120,17 @@ private slots:
         }
         const auto verify=[&](const QImage &input,const AdjustmentState &state,ImagePipeline::InputEncoding encoding,ColorManagement::OutputSpace output,bool preview) {
             const auto reference=preview?QSize(1096,1112):QSize{};const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);
-            const auto actual=render(input,state,true,encoding,output,frame,true,reference);QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));QVERIFY(engine->lastProcessUsedCpuFallback());
-            auto p=ProcessingPlan::compile(state,encoding,output);p.setReferenceFrameSize(reference);p.setFrameRect(frame);
-            const auto expected=ImagePipeline::processWithPlan(input,p);QCOMPARE(actual.image.size(),expected.size());
-            for(int y=0;y<input.height();++y)QVERIFY2(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),std::size_t(input.width())*8)==0,"CPU upload must preserve every RGBA16 pixel; texture readback has no ICC metadata");
-            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.pixelCount,counts.pixelCount);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
-            QVERIFY(actual.diagnostic["available"].toBool());QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+            verifyParity(input,state,encoding,output,true,"spatial denoise",frame,reference);
+            if(QTest::currentTestFailed())return;
+            const bool fallback=BrushMaskTileRaster::anyEnabled(state.brushMasks)||(state.grainAmount>0&&output==ColorManagement::OutputSpace::AdobeRgb);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
+            const auto actual=render(input,state,false,encoding,output,frame,true,reference);QVERIFY(actual.diagnostic["available"].toBool());
+            QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["spatial_denoise"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+            if(fallback) {
+                auto p=ProcessingPlan::compile(state,encoding,output);p.setReferenceFrameSize(reference);p.setFrameRect(frame);const auto expected=ImagePipeline::processWithPlan(input,p);
+                for(int y=0;y<input.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),std::size_t(input.width())*8)==0);
+            }
         };
         for(const auto amounts : {QPoint(100,0),QPoint(0,100),QPoint(87,93)}) {
             AdjustmentState state;state.denoiseLuma=amounts.x();state.denoiseChroma=amounts.y();state.sharpenAmount=71;state.sharpenRadius=5.7;state.grainAmount=31;state.grainSize=3.3;
@@ -137,7 +144,63 @@ private slots:
         BrushMaskGeometry::Stroke paint;paint.style={.13,.42,.8};paint.dabs={{{.28,.37},.5},{{.69,.62},.9}};auto erase=paint;erase.mode=BrushMaskGeometry::StrokeMode::Erase;erase.dabs={{{.3,.38},.3}};
         state.brushMasks.layers.push_back({"denoise-fallback",true,.85,{paint,erase}});
         for(int output=0;output<4;++output)verify(hdr,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true);
-        if(!QTest::currentTestFailed())qInfo()<<"spatial denoise: 76 exact CPU-reference upload cases; no GPU-denoise compute claimed";
+        if(!QTest::currentTestFailed())qInfo()<<"spatial denoise: 76 denoise cases: 54 mandatory compute, 22 existing CPU policies";
+    }
+    void spatialDenoiseNoisyDarkFieldsAndResourceTransitions() {
+        QImage noisy(137,139,QImage::Format_RGBA32FPx4);std::mt19937 rng(95951);std::normal_distribution<float> noise(0,.003f);const float alphas[]{0,1.e-8f,.375f,1.f};
+        AdjustmentState state;state.denoiseLuma=89;state.denoiseChroma=97;
+        for(float level : {.001f,.18f}) {
+            for(int y=0;y<139;++y)for(int x=0;x<137;++x){auto *p=reinterpret_cast<float *>(noisy.scanLine(y))+4*x;for(int c=0;c<3;++c)p[c]=level+noise(rng)+(x>68&&c==0?.07f:0.f);p[3]=alphas[(x+y)%4];}
+            for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)for(bool preview : {false,true}) {
+                verifyParity(noisy,state,ImagePipeline::InputEncoding(encoding),ColorManagement::OutputSpace(output),true,"noisy/dark denoise",{0,0,1,1},preview?noisy.size()*4:QSize{});if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+            }
+        }
+        const auto first=render(noisy,state,false);QVERIFY(!first.image.isNull());const auto uploads=engine->sourceUploads();
+        AdjustmentState detail=state;detail.sharpenAmount=83;detail.sharpenRadius=4.3;
+        verifyParity(noisy,detail,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"denoise -> detail allocation");if(QTest::currentTestFailed())return;
+        const auto disabled=render(noisy,{},false,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,{0,0,1,1},true);QVERIFY(!disabled.image.isNull());QCOMPARE(disabled.diagnostic["spatial_denoise"].toString(),QString("inactive"));const auto repeated=render(noisy,state,false);QCOMPARE(repeated.image,first.image);QCOMPARE(engine->sourceUploads(),uploads);
+        const auto resized=noisy.copy(0,0,71,73);verifyParity(resized,detail,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"denoise source resize");if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        const auto restored=render(noisy,state,false);QCOMPARE(restored.image,first.image);
+        if(!QTest::currentTestFailed())qInfo()<<"32 pure noisy/dark denoise compute cases and enable/detail/resize transitions passed";
+    }
+    void spatialDenoiseCacheTracksOnlyItsRealDependencies() {
+        QImage source(137,139,QImage::Format_RGBA32FPx4);for(int y=0;y<139;++y)for(int x=0;x<137;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.1f+.001f*((x*17+y*7)%23);p[1]=.12f;p[2]=.13f;p[3]=1.f;}
+        AdjustmentState state;state.denoiseLuma=80;state.denoiseChroma=90;
+        verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"denoise cached base");if(QTest::currentTestFailed())return;
+        const auto guides=engine->denoiseGuideDispatches(),filters=engine->denoiseFilterDispatches(),uploads=engine->sourceUploads();
+        state.exposure=.3;state.temperature=17;state.tint=-11;state.saturation=13;
+        verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,true,"denoise cache downstream edits");if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guides);QCOMPARE(engine->denoiseFilterDispatches(),filters);QCOMPARE(engine->sourceUploads(),uploads);
+        state.denoiseLuma=91;verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"denoise cache amount invalidation");if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guides);QCOMPARE(engine->denoiseFilterDispatches(),filters+1);
+        verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"denoise cache density invalidation",{0,0,1,1},source.size()*4);if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guides);QCOMPARE(engine->denoiseFilterDispatches(),filters+2);
+        verifyParity(source,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,true,"denoise cache encoding invalidation",{0,0,1,1},source.size()*4);if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guides+1);QCOMPARE(engine->denoiseFilterDispatches(),filters+3);
+        auto changed=source.copy();reinterpret_cast<float *>(changed.scanLine(0))[0]+=.02f;
+        // A new source can be uploaded while the denoiser is off. Enabling it
+        // later must compare against the guide's own source key, not merely
+        // the most recently uploaded texture's key.
+        const auto off=render(changed,{},false);QVERIFY(!off.image.isNull());
+        verifyParity(changed,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,true,"denoise cache source uploaded while off",{0,0,1,1},changed.size()*4);if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guides+2);QCOMPARE(engine->denoiseFilterDispatches(),filters+4);
+        const auto before=render(changed,state,false,ImagePipeline::InputEncoding::SRgb);QVERIFY(!before.image.isNull());const auto guideBefore=engine->denoiseGuideDispatches(),filterBefore=engine->denoiseFilterDispatches();
+        auto fallback=state;fallback.grainAmount=31;fallback.grainSize=3.3;const auto cpu=render(changed,fallback,false,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::AdobeRgb);QVERIFY(!cpu.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
+        const auto after=render(changed,state,false,ImagePipeline::InputEncoding::SRgb);QCOMPARE(after.image,before.image);QCOMPARE(engine->denoiseGuideDispatches(),guideBefore);QCOMPARE(engine->denoiseFilterDispatches(),filterBefore);QVERIFY(!engine->lastProcessUsedCpuFallback());
+        const auto p=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb);std::array<Float4,3> rows;std::copy_n(p.data.data()+ProcessingPlan::Input0,3,rows.data());rows[0].x+=.005f;
+        verifyParity(changed,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,true,"denoise cache input-matrix invalidation",{0,0,1,1},{},&rows);if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guideBefore+1);QCOMPARE(engine->denoiseFilterDispatches(),filterBefore+1);
+        verifyParity(changed,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,true,"denoise cache unchanged input rows",{0,0,1,1},{},&rows);if(QTest::currentTestFailed())return;
+        QCOMPARE(engine->denoiseGuideDispatches(),guideBefore+1);QCOMPARE(engine->denoiseFilterDispatches(),filterBefore+1);
+    }
+    void spatialDenoiseRealSonyCropUsesCompute() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony dataset configured; not a real-denoise pass");}
+        QString error;const auto source=RawDecoder::decode(QDir(folder).filePath("sony_a7_iv_07.arw"),&error);QVERIFY2(!source.isNull(),qPrintable(error));
+        const auto crop=source.copy((source.width()-512)/2,(source.height()-512)/2,512,512);AdjustmentState state;state.denoiseLuma=70;state.denoiseChroma=90;
+        for(int output=0;output<4;++output)for(bool preview : {false,true}) {
+            verifyParity(crop,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"actual Sony denoise",{0,0,1,1},preview?crop.size()*4:QSize{});if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
     }
     void independentSharpenMatchesCpuAtFullAndPreviewDensity() {
         QImage source(137,139,QImage::Format_RGBA64);const quint16 alpha[]{0,1,24576,65535};

@@ -627,7 +627,7 @@ Rectangle {
                     Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
                         objectName: "denoiseToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
-                        text: (root.denoiseExpanded ? "▾ " : "▸ ") + root.t("降噪 · CPU", "DENOISE · CPU")
+                        text: (root.denoiseExpanded ? "▾ " : "▸ ") + root.t("降噪", "DENOISE")
                         onClicked: root.denoiseExpanded = !root.denoiseExpanded
                     }
                     Button {

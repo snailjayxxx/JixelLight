@@ -142,6 +142,7 @@ target_link_libraries(JixelLightGpu PUBLIC JixelLightCore Qt6::GuiPrivate)
 set(JIXELLIGHT_SHADER_SOURCES
     shaders/brush_mask_coverage.comp shaders/brush_pipeline.comp
     shaders/look_horizontal.comp shaders/look_detail.comp shaders/pipeline.comp
+    shaders/denoise_prepare.comp shaders/denoise_filter.comp
     shaders/histogram.comp shaders/histogram_reduce.comp shaders/display.vert shaders/display.frag)
 qt_add_shaders(JixelLightGpu "pipeline_shaders" PREFIX "/jixellight" BASE shaders GLSL "430,310es" HLSL 50 MSL 12 FILES ${JIXELLIGHT_SHADER_SOURCES})
 target_sources(JixelLight PRIVATE core/gpu/GpuPreviewItem.cpp)
