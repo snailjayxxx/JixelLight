@@ -1,4 +1,5 @@
 import QtQuick
+import "BrushGuide.js" as BrushGuide
 import JixelLight.Native 1.0
 
 Item {
@@ -81,9 +82,11 @@ Item {
     function clearGuide() { drawing=false; strokeErasing=false; currentPressure=1; points=[]; if (guide) guide.requestPaint() }
     function cancel() { cancelNavigation(); if (controller) controller.cancelBrushStroke(); tabletInput.cancelGesture(); clearGuide() }
     function addGuide(x,y) {
-        let next=points.slice()
-        if (next.length >= 1024) next=next.filter(function(p,i) { return i % 2 === 0 })
-        next.push({x:x,y:y}); points=next; guide.requestPaint()
+        const next=BrushGuide.appendVisualPoint(points,x,y)
+        if (next) points=next
+        // The raw cursor/pressure can change even when its visual path is
+        // subpixel. Keep requesting its ordinary coalesced canvas repaint.
+        guide.requestPaint()
     }
     onVisibleChanged: { if (!visible) cancel(); if (guide) guide.requestPaint() }
     onEnabledChanged: if (!enabled) cancel()
