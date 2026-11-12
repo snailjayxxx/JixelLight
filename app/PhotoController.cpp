@@ -17,6 +17,7 @@
 #include "core/cache/AnalysisFrameCache.h"
 #include "core/cache/ScopePlotCache.h"
 #include "core/commands/CommandRegistry.h"
+#include "core/commands/EditRecipe.h"
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
@@ -686,6 +687,18 @@ bool PhotoController::executeEditCommand(const QVariantMap &command) {
     auto *state=mutableCurrentState(); if(!state)return false;
     m_photos[m_currentIndex].history.finish(); *state = std::move(staged);
     persistAndApply("command_replay",{{"command",command}}); return true;
+}
+
+QVariantMap PhotoController::currentEditRecipe() const {
+    if(!currentSourceAvailable())return {{"status","unavailable"},{"error",uiText("当前原片不可用。", "The current source is unavailable.")}};
+    const auto result=EditRecipe::encode(m_photos[m_currentIndex].state,currentIsRaw());
+    if(result)return {{"status","ok"},{"text",result.text},{"commandCount",result.commandCount}};
+    const auto error=result.error==EditRecipe::Error::UnsupportedLook
+        ?uiText("此调整包含校准 LUT 或不可用的 Look，无法完整复制为命令配方。", "These edits include a calibrated LUT or an unavailable Look and cannot be copied as a complete command recipe.")
+        :result.error==EditRecipe::Error::TooLong
+        ?uiText("此调整超出配方文本大小限制。", "These edits exceed the recipe text limit.")
+        :uiText("当前调整无法完整转换为配方。", "The current edits cannot be represented by a complete recipe.");
+    return {{"status","unsupported"},{"error",error}};
 }
 
 bool PhotoController::executeEditCommands(const QVariantList &commands) {

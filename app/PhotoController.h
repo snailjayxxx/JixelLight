@@ -518,6 +518,7 @@ public:
     QString currentColorLabel() const;
     Q_INVOKABLE bool executeEditCommand(const QVariantMap &command);
     Q_INVOKABLE bool executeEditCommands(const QVariantList &commands);
+    Q_INVOKABLE QVariantMap currentEditRecipe() const;
     Q_INVOKABLE bool createVirtualCopy(const QString &name = {});
     Q_INVOKABLE bool renameCurrentVirtualCopy(const QString &name);
     Q_INVOKABLE bool removeCurrentVirtualCopy();

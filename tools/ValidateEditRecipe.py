@@ -39,6 +39,10 @@ CASES = (
     'ten-thousand-command-snapshot-exact',
     'ten-thousand-commands-apply-one-history-step',
     'ten-thousand-commands-undo-atomically',
+    'copy-current-edits-is-readonly-and-exact',
+    'copied-recipe-replaces-edits-one-history-step',
+    'copied-recipe-undo-restores-target',
+    'copied-recipe-redo-restores-source',
 )
 CAPTURES = ('english-compact', 'truncated-preview', 'invalid-command', 'chinese-compact')
 MARKERS = ('TypeError:', 'ReferenceError:', 'Unable to assign [undefined]',
@@ -58,7 +62,7 @@ def finite_number(value):
 def check_evidence(data, native, expected_stamp, qpa, dpr, mode="clipboard"):
     """Check untrusted smoke output and associated real PNGs, not the product as a whole."""
     require(isinstance(data, dict), 'report must be an object')
-    require(data['passed'] is True and data['error'] == '' and data['phase'] == 20, 'test did not finish')
+    require(data['passed'] is True and data['error'] == '' and data['phase'] == 26, 'test did not finish')
     require(type(data['deadline_ms']) is int and data['deadline_ms'] == 60000, 'GUI deadline changed')
     require(0 < finite_number(data['elapsed_ms']) < 60000, 'GUI elapsed out of bounds')
     for key in ('actual_App_UI', 'QPA_controlled_focus', 'source_unchanged', 'settings_isolated',
@@ -92,7 +96,7 @@ def check_evidence(data, native, expected_stamp, qpa, dpr, mode="clipboard"):
     for row in rows[23:25]:
         require(row['dialog_visible'] is False and row['history_size'] == 2 and row['state_exposure'] == .25, 'cancel baseline')
     buttons=rows[1]['modal_button_checks']
-    require(type(buttons) is list and [r['focus'] for r in buttons] == ['editRecipePaste','editRecipeApply','editRecipeCancel'], 'modal button focus set')
+    require(type(buttons) is list and [r['focus'] for r in buttons] == ['editRecipePaste','editRecipeCopyCurrent','editRecipeApply','editRecipeCancel'], 'modal button focus set')
     require(all(r['g_isolated'] is True and r['d_isolated'] is True and r['photo_and_history_unchanged'] is True and r['dialog_visible'] is True for r in buttons), 'modal workspace shortcut isolation')
     nav=rows[23]['navigation_after_close']
     require(nav['g_to_library'] is True and nav['d_to_develop'] is True, 'workspace navigation after dialog closes')
@@ -109,6 +113,20 @@ def check_evidence(data, native, expected_stamp, qpa, dpr, mode="clipboard"):
     require(rows[25]['history_size'] == 3 and rows[32]['history_size'] == 4 and rows[33]['history_size'] == 4, 'single history steps')
     require(rows[28]['dialog_visible'] is True and rows[29]['dialog_visible'] is False, 'target selection')
     require(rows[31]['commands'] == 10000 and 0 < rows[31]['utf16_units'] <= 1048576, 'maximum command batch')
+    copied=rows[34]
+    require(copied['dialog_visible'] is True and copied['state_exposure'] == .75 and copied['history_size'] == 4, 'copy changes photo/history')
+    require(copied['source_state'] == copied['replayed_state'], 'copied state roundtrip')
+    recipe_path=Path(copied['recipe_path'])
+    require(not recipe_path.is_symlink() and recipe_path.resolve() == Path(str(Path(native).resolve())+'.copied-recipe.json'), 'copied recipe path')
+    require(recipe_path.stat().st_size <= 4*1048576, 'copied recipe byte bound')
+    payload=recipe_path.read_bytes()
+    require(hashlib.sha256(payload).hexdigest() == copied['recipe_sha256'], 'copied recipe hash')
+    recipe=strict_json(recipe_path)
+    require(type(recipe) is list and len(recipe) == copied['commands'] and 1 <= len(recipe) <= 10000, 'copied recipe commands')
+    require(recipe[0] == {'command':'develop.reset'} and all(type(c) is dict and type(c.get('command')) is str for c in recipe), 'complete replacement recipe')
+    require(0 < copied['utf16_units'] == len(payload.decode().encode('utf-16-le'))//2 <= 1048576, 'copied recipe bound')
+    for index, exposure in ((35,.75),(36,-.5),(37,.75)):
+        require(rows[index]['dialog_visible'] is False and rows[index]['state_exposure'] == exposure and rows[index]['history_size'] == 5, 'copied recipe apply/undo/redo')
     keys=data['key_events']
     require(isinstance(keys, list) and len(keys) >= 15 and all(type(k['key']) is int and type(k['modifiers']) is int and type(k['shortcut_consumed']) is bool for k in keys), 'injected key evidence')
     captures=data['captures']
