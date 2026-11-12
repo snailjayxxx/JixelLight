@@ -63,6 +63,9 @@ def validate_report(data, mode, qpa, expected_commit=None):
                 and f['gamut_warning'] is (index>=2) and f['black_point_compensation'] is (index<3), 'actual selected proof modes and source reuse')
         require(f['monitor_lut_key']==('owned-proof-invert'if index==4 else'identity-srgb'), 'monitor applied only in existing provider presentation')
     require(len({p['actual_pixels_sha256']for p in proofs[:3]})==3 and proofs[3]['actual_pixels_sha256']!=proofs[4]['actual_pixels_sha256'], 'paper/gamut/monitor visibly change owned pixels')
+    live=data['live_invariants']
+    require(all(live[k]is True for k in ('source_same','revision_same','state_same','history_same','red_same','green_same','blue_same','luma_same','shadow_same','highlight_same'))
+            and live['source_key']==data['source_key']and live['revision']==data['render_revision']and live['pixels']==307*211, 'final live source/revision/edits/scopes remain frozen')
     composition=data['alpha_composition'];require(composition['passed'] is True and composition['no_double_composition'] is True
             and composition['partial_alpha']==32768 and composition['tolerance_U8']==3 and integer(composition['max_U8_error']) and composition['max_U8_error']<=3
             and len(composition['expected'])==len(composition['observed'])==3
