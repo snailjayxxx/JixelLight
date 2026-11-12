@@ -7247,6 +7247,56 @@ private slots:
         QCOMPARE(fixtureBytes(source),bytes);QVERIFY(QDir(out).isEmpty());
     }
 
+    void catalogCurationCommandsPreserveDevelopHistoriesOriginalsAndVersionStorageDomains() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");
+        QVERIFY(selectedExportPngFixture(a,3));QVERIFY(selectedExportPngFixture(b,8));const auto bytesA=fixtureBytes(a),bytesB=fixtureBytes(b);
+        PhotoController c(nullptr);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"CurationCommands"));QVERIFY(c.importFile(QUrl::fromLocalFile(a)));
+        c.setExposure(.25);c.finishInteraction();QVERIFY(c.createVirtualCopy("Alternative"));c.setExposure(-.5);c.finishInteraction();
+        QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.selectPhoto(2);c.setExposure(.1);c.finishInteraction();
+        QList<QJsonObject> states;QList<QVariantList> histories;for(int i=0;i<3;++i){c.selectPhoto(i);states.append(c.gpuPlan(true).state.toJson());histories.append(c.editHistory());}
+        QVERIFY(c.setPhotoSelection({0,1}));const auto selection=c.selectedIndices();
+        const auto apply=[&](const QString &field,const QJsonValue &value){return c.executeCommand(QJsonObject{{"command","catalog.curate"},{"target","selection"},{"field",field},{"value",value}}.toVariantMap());};
+        QVERIFY(apply("rating",5));QVERIFY(apply("flag","reject"));QVERIFY(apply("keywords","z, a,z"));QVERIFY(apply("label","blue"));
+        QVERIFY(apply("album_add","Keep"));QVERIFY(apply("album_add","Drop"));QVERIFY(apply("album_remove"," Drop "));
+        QCOMPARE(c.currentIndex(),2);QCOMPARE(c.selectedIndices(),selection);QCOMPARE(c.gpuPlan(true).state.toJson(),states[2]);QCOMPARE(c.editHistory(),histories[2]);
+        for(int i=0;i<3;++i) {
+            const auto row=c.library()[i].toMap();QCOMPARE(row["rating"].toInt(),i<2?5:0);QCOMPARE(row["flag"].toString(),i<2?QString("reject"):QString("none"));
+            QCOMPARE(row["keywords"].toStringList(),i<2?QStringList({"a","z"}):QStringList{});QCOMPARE(row["albums"].toStringList(),i<2?QStringList{"Keep"}:QStringList{});
+            QCOMPARE(row["label"].toString(),i<2?QString("blue"):QString("none"));c.selectPhoto(i);QCOMPARE(c.gpuPlan(true).state.toJson(),states[i]);QCOMPARE(c.editHistory(),histories[i]);
+        }
+        bool normalizedTrace=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+            const auto row=value.toObject();const auto command=row["command"].toObject();
+            if(row["action"].toString()=="selection_keywords"&&command==QJsonObject{{"command","catalog.curate"},{"target","selection"},{"field","keywords"},{"value","a,z"}})normalizedTrace=true;
+        }
+        QVERIFY(normalizedTrace);QVERIFY(c.prepareToClose());PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QCOMPARE(reopened.library().size(),3);
+        for(int i=0;i<3;++i) {
+            const auto row=reopened.library()[i].toMap();QCOMPARE(row["rating"].toInt(),i<2?5:0);QCOMPARE(row["label"].toString(),i<2?QString("blue"):QString("none"));
+            QCOMPARE(row["albums"].toStringList(),i<2?QStringList{"Keep"}:QStringList{});reopened.selectPhoto(i);QCOMPARE(reopened.gpuPlan(true).state.toJson(),states[i]);QCOMPARE(reopened.editHistory(),histories[i]);
+        }
+        QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
+    }
+
+    void catalogCurationRejectsInvalidAndForeignRequestsAndStagesWholeSelectionBeforeAlbumLimits() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());PhotoController c(nullptr);
+        const QJsonObject valid{{"command","catalog.curate"},{"target","selection"},{"field","rating"},{"value",4}};
+        QVERIFY(!c.executeCommand(valid.toVariantMap()));
+        const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");QVERIFY(selectedExportPngFixture(a,1));QVERIFY(selectedExportPngFixture(b,2));const auto bytesA=fixtureBytes(a),bytesB=fixtureBytes(b);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(a)));QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.selectPhoto(1);c.setExposure(.3);c.finishInteraction();QVERIFY(c.setPhotoSelection({0,1}));
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto selection=c.selectedIndices();
+        QList<QJsonObject> invalid;for(const auto &value:QList<QJsonValue>{-1,6,1.5,true,"4"}){auto bad=valid;bad["value"]=value;invalid.append(bad);}
+        for(const auto &field:QStringList{"unknown","flag","label","keywords"}){auto bad=valid;bad["field"]=field;bad["value"]=field=="keywords"?QString(81,'x'):QString("invalid");invalid.append(bad);}
+        {auto bad=valid;bad["target"]="all";invalid.append(bad);bad=valid;bad["photos"]=QJsonArray{"unknown"};invalid.append(bad);}
+        for(const auto &bad:invalid){QVERIFY(!c.executeCommand(bad.toVariantMap()));QCOMPARE(c.currentRating(),0);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.selectedIndices(),selection);}
+        QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},valid}}}));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(valid.toVariantMap());});worker.join();QVERIFY(foreign);QVERIFY(!accepted);
+        QVERIFY(c.setPhotoSelection({0}));for(int i=0;i<32;++i)QVERIFY(c.addSelectionToAlbum(QString("Album%1").arg(i,2,10,QChar('0'))));QVERIFY(c.setPhotoSelection({0,1}));
+        QVERIFY(!c.executeCommand({{"command","catalog.curate"},{"target","selection"},{"field","album_add"},{"value","Overflow"}}));
+        QCOMPARE(c.library()[0].toMap()["albums"].toStringList().size(),32);QVERIFY(c.library()[1].toMap()["albums"].toStringList().isEmpty());
+        QVERIFY(c.setPhotoSelection({}));QVERIFY(!c.executeCommand(valid.toVariantMap()));auto current=valid;current["target"]="current";QVERIFY(c.executeCommand(current.toVariantMap()));QCOMPARE(c.currentRating(),4);QVERIFY(c.selectedIndices().isEmpty());
+        c.setRating(99);QCOMPARE(c.currentRating(),5);QVERIFY(!c.setSelectionRating(99));
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;
