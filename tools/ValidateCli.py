@@ -151,6 +151,10 @@ def main():
             version_form = next(c for c in schema['workflow_commands'] if c['name'] == name)
             assert version_form['scope'] == 'desktop' and version_form['source_writes'] is False and version_form['catalog_writes'] is True
             assert all(c['name'] != name for c in schema['session']['commands'])
+        for name in ('preset.save', 'preset.apply', 'preset.remove', 'preset.rename', 'preset.replace', 'preset.export', 'preset.import'):
+            preset_form = next(c for c in schema['workflow_commands'] if c['name'] == name)
+            assert preset_form['scope'] == 'desktop' and preset_form['source_writes'] is False
+            assert all(c['name'] != name for c in schema['session']['commands'])
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -207,7 +211,11 @@ def main():
                      {'command': 'photo.move', 'sources': [str(source)], 'folder': str(root)},
                      {'command': 'catalog.curate', 'target': 'current', 'field': 'rating', 'value': 5},
                      {'command': 'version.create', 'name': 'Copy'}, {'command': 'version.rename', 'name': 'Copy'},
-                     {'command': 'version.remove'}]:
+                     {'command': 'version.remove'},
+                     {'command': 'preset.save', 'name': 'A'}, {'command': 'preset.apply', 'name': 'A'},
+                     {'command': 'preset.remove', 'name': 'A'}, {'command': 'preset.rename', 'name': 'A', 'replacement': 'B'},
+                     {'command': 'preset.replace', 'name': 'A'}, {'command': 'preset.export', 'name': 'A', 'destination': str(root / 'preset.json')},
+                     {'command': 'preset.import', 'source': str(root / 'preset.json')}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))

@@ -399,6 +399,46 @@ QStringList PhotoController::presetNames() const {
     return presets.load(&error) ? presets.names() : QStringList{};
 }
 bool PhotoController::saveNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.save"},{"name",name.trimmed()}});
+}
+bool PhotoController::applyNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.apply"},{"name",name}});
+}
+bool PhotoController::removeNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.remove"},{"name",name}});
+}
+bool PhotoController::renameNamedPreset(const QString &name,const QString &replacement) {
+    return executePresetCommand({{"command","preset.rename"},{"name",name},{"replacement",replacement.trimmed()}});
+}
+bool PhotoController::replaceNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.replace"},{"name",name}});
+}
+bool PhotoController::exportNamedPreset(const QString &name,const QUrl &destination) {
+    return destination.isLocalFile()&&executePresetCommand({{"command","preset.export"},{"name",name},{"destination",destination.toLocalFile()}});
+}
+bool PhotoController::importNamedPreset(const QUrl &source,const QString &replacementName) {
+    return source.isLocalFile()&&executePresetCommand({{"command","preset.import"},{"source",source.toLocalFile()},{"name",replacementName.trimmed()}});
+}
+bool PhotoController::executePresetCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Preset request;if(!CommandRegistry::decodePreset(command,&request))return false;
+    bool accepted=false;
+    switch(request.kind) {
+        case CommandRegistry::PresetKind::Save:accepted=saveNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Apply:accepted=applyNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Remove:accepted=removeNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Rename:accepted=renameNamedPresetImpl(request.name,request.replacement);break;
+        case CommandRegistry::PresetKind::Replace:accepted=replaceNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Export:accepted=exportNamedPresetImpl(request.name,QUrl::fromLocalFile(request.path));break;
+        case CommandRegistry::PresetKind::Import:accepted=importNamedPresetImpl(QUrl::fromLocalFile(request.path),request.name);break;
+    }
+    if(accepted) {
+        auto canonical=command;if(request.kind==CommandRegistry::PresetKind::Import&&request.name.isEmpty())canonical.remove("name");
+        ActionTrace::instance().record("preset_command",{{"command",canonical},{"photo_key",hasImage()?m_photos[m_currentIndex].storageKey():QString()}});
+    }
+    return accepted;
+}
+bool PhotoController::saveNamedPresetImpl(const QString &name) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.save(name.trimmed(), m_photos[m_currentIndex].state, &error)) {
@@ -407,7 +447,7 @@ bool PhotoController::saveNamedPreset(const QString &name) {
     emit presetsChanged();
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
-bool PhotoController::applyNamedPreset(const QString &name) {
+bool PhotoController::applyNamedPresetImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
@@ -420,21 +460,21 @@ bool PhotoController::applyNamedPreset(const QString &name) {
     persistAndApply(QStringLiteral("named_preset"));
     setStatus(uiText("已应用预设：", "Preset applied: ") + name); return true;
 }
-bool PhotoController::removeNamedPreset(const QString &name) {
+bool PhotoController::removeNamedPresetImpl(const QString &name) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.remove(name, &error)) {
         setStatus(uiText("预设删除失败：", "Preset removal failed: ") + error); return false;
     }
     emit presetsChanged(); return true;
 }
-bool PhotoController::renameNamedPreset(const QString &name, const QString &replacement) {
+bool PhotoController::renameNamedPresetImpl(const QString &name, const QString &replacement) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.rename(name,replacement.trimmed(),&error)) {
         setStatus(uiText("预设重命名失败：", "Preset rename failed: ")+error); return false;
     }
     emit presetsChanged(); return true;
 }
-bool PhotoController::replaceNamedPreset(const QString &name) {
+bool PhotoController::replaceNamedPresetImpl(const QString &name) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.replace(name,m_photos[m_currentIndex].state,&error)) {
@@ -442,7 +482,7 @@ bool PhotoController::replaceNamedPreset(const QString &name) {
     }
     emit presetsChanged(); setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
 }
-bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destination) {
+bool PhotoController::exportNamedPresetImpl(const QString &name, const QUrl &destination) {
     if (!destination.isLocalFile() || isProtectedPhoto(destination.toLocalFile())) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.exportFile(name,destination.toLocalFile(),&error)) {
@@ -450,7 +490,7 @@ bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destina
     }
     setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
 }
-bool PhotoController::importNamedPreset(const QUrl &source, const QString &replacementName) {
+bool PhotoController::importNamedPresetImpl(const QUrl &source, const QString &replacementName) {
     if (!source.isLocalFile()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.importFile(source.toLocalFile(),replacementName.trimmed(),&error)) {
@@ -706,6 +746,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString().startsWith("preset."))return executePresetCommand(object);
     if(QStringList{"version.create","version.rename","version.remove"}.contains(object["command"].toString()))return executeVirtualVersion(object);
     if(object["command"].toString()=="catalog.curate")return executeCurationCommand(object);
     if(object["command"].toString()=="photo.copy"||object["command"].toString()=="photo.move")return executePhotoTransfer(object);
