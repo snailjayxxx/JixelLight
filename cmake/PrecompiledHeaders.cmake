@@ -10,13 +10,21 @@ foreach(jixel_pch_target IN ITEMS JixelLightCore JixelLight)
     target_precompile_headers(${jixel_pch_target} PRIVATE
         "$<${jixel_pch_cpp_release}:${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtBuildPch.h>")
 endforeach()
-target_precompile_headers(JixelLightCoreTests PRIVATE
-    "$<${jixel_pch_cpp_release}:${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtTestPch.h>")
-
 # The independent oracle and production color kernels keep their own existing
 # strict floating-point options, without consuming a differently compiled PCH.
 set_source_files_properties(core/pipeline/ImagePipeline.cpp core/look/LookDetail.cpp
     tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+# REUSE_FROM requires an owner header in every generated configuration. A
+# Release-only owner has no Debug/MinSizeRel/RelWithDebInfo header for VS to
+# reference. Keep QtTest's original path in multi-config/non-Release builds;
+# Core/App still have their own independent Release C++ PCH artifacts.
+if(CMAKE_CONFIGURATION_TYPES OR NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Release C++ PCH: core/app target-local; QtTest reuse disabled for multi-config/non-Release")
+    return()
+endif()
+target_precompile_headers(JixelLightCoreTests PRIVATE
+    "$<${jixel_pch_cpp_release}:${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtTestPch.h>")
 
 # Reuse only for matching test targets, including their direct usage requirements,
 # local flags/definitions and QtTest source/build-directory definitions. Targets
