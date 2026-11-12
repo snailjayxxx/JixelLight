@@ -26,6 +26,9 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
     // Tight Point Color shoulders amplify observed FP32 Lab differences above
     // the unchanged40/65535 bound. Keep the complete CPU reference in this region.
     if(plan.colorMaskNeedsCpuPrecision())return true;
+    // CI389 WARP: a broad +3EV color selection reaches42/65535 at an
+    // Adobe RGB dark gamut edge. Preserve40 with a common complete reference.
+    if(plan.colorMaskActive()&&plan.output==ColorManagement::OutputSpace::AdobeRgb)return true;
     if(plan.pointColorNeedsCpuPrecision())return true;
     // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
     // also stays safely above its1e-20 normalization epsilon.
@@ -505,6 +508,8 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
             plan.clarityActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("clarity-near-zero-alpha"):
             plan.denoiseActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("denoise-near-zero-alpha"):
             plan.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&plan.output==ColorManagement::OutputSpace::ProPhotoRgb&&m_sourceFacts.negativeRgb?QStringLiteral("signed-linear-prophoto"):
+            plan.colorMaskActive()&&plan.output==ColorManagement::OutputSpace::AdobeRgb&&plan.data[ProcessingPlan::Grain].x==0
+                &&!BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)?QStringLiteral("color-mask-adobe-boundary"):
             cpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");
         m_outputSpace = plan.output;
     }

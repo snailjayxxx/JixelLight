@@ -250,14 +250,14 @@ private slots:
                 verifyParity(source,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),true,label.constData());
                 if(QTest::currentTestFailed())return;
                 const bool precise=range==0||range==3||range==4||range==5||range==6||range==7||range==8||range==9||range==10||range==11;
-                precise?++cpu:++compute;QCOMPARE(engine->lastProcessUsedCpuFallback(),precise);
+                const bool fallback=precise||output==2;fallback?++cpu:++compute;QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
                 const auto actual=render(source,state,false,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),{0,0,1,1},true);
-                QCOMPARE(actual.diagnostic["color_mask"].toString(),precise?QString("cpu-reference"):QString("gpu-compute"));
-                QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),precise?QString("color-mask-narrow-range"):QString("none"));
-                if(precise){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output)));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
+                QCOMPARE(actual.diagnostic["color_mask"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+                QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),precise?QString("color-mask-narrow-range"):output==2?QString("color-mask-adobe-boundary"):QString("none"));
+                if(fallback){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output)));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
             }
         }
-        QCOMPARE(compute,144);QCOMPARE(cpu,480);qInfo()<<"Color mask624 ranges: compute"<<compute<<"exact CPU precision"<<cpu;
+        QCOMPARE(compute,108);QCOMPARE(cpu,516);qInfo()<<"Color mask624 ranges: compute"<<compute<<"exact CPU precision"<<cpu;
     }
     void colorMaskEditsKeepEveryResidentSpatialStageAndSource() {
         QImage source(83,89,QImage::Format_RGBA32FPx4);
@@ -283,7 +283,7 @@ private slots:
             AdjustmentState state;state.colorMaskEnabled=true;state.colorMaskExposure=-1.9;state.colorMaskLab={.6,.02,.01};state.colorMaskHueRange=180;state.colorMaskChromaRange=1;state.colorMaskLightnessRange=1;state.colorMaskInverted=denoise;
             state.dehazeAmount=65;if(denoise){state.denoiseLuma=70;state.denoiseChroma=90;}
             verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"real Sony color mask");
-            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+            if(QTest::currentTestFailed())return;QCOMPARE(engine->lastProcessUsedCpuFallback(),output==2);
         }
     }
     void colorMaskRetainsExplicitSourceAndBrushCpuPolicies() {
@@ -314,7 +314,7 @@ private slots:
             state.colorMaskEnabled=true;state.colorMaskExposure=exposure;state.colorMaskLab={.6,.02,.01};state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;state.colorMaskInverted=inverted;
             const auto space=ColorManagement::OutputSpace(output);
             verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,"color mask bright perceptual policy");if(QTest::currentTestFailed())return;
-            const bool fallback=restricted&&exposure>0;QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
+            const bool fallback=output==2||(restricted&&exposure>0);QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
             const auto actual=render(source,state,false,ImagePipeline::InputEncoding::LinearProPhoto,space,{0,0,1,1},true);
             QCOMPARE(actual.diagnostic["color_mask"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
             if(fallback){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
