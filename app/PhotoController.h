@@ -847,6 +847,14 @@ private:
     bool executePhotoTransfer(const QJsonObject &command);
     bool executeCurationCommand(const QJsonObject &command);
     bool executeVirtualVersion(const QJsonObject &command);
+    bool executePresetCommand(const QJsonObject &command);
+    bool saveNamedPresetImpl(const QString &name);
+    bool applyNamedPresetImpl(const QString &name);
+    bool removeNamedPresetImpl(const QString &name);
+    bool renameNamedPresetImpl(const QString &name,const QString &replacement);
+    bool replaceNamedPresetImpl(const QString &name);
+    bool exportNamedPresetImpl(const QString &name,const QUrl &destination);
+    bool importNamedPresetImpl(const QUrl &source,const QString &replacementName);
     bool createVirtualCopyImpl(const QString &name);
     bool renameCurrentVirtualCopyImpl(const QString &name);
     bool removeCurrentVirtualCopyImpl();

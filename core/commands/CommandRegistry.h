@@ -4,6 +4,7 @@
 #include "core/look/LookProfiles.h"
 #include "core/color/ColorManagement.h"
 #include "core/library/CatalogTags.h"
+#include "core/commands/NamedPresets.h"
 #include <QJsonArray>
 #include <QStringList>
 #include <QRegularExpression>
@@ -182,6 +183,57 @@ struct CommandRegistry {
             {"target","current photo for creation; current virtual copy for rename/remove; originals cannot be removed"},
             {"catalog_writes",true},{"source_writes",false},{"history","creation starts an independent baseline; existing rename/removal semantics remain separate from Develop Undo"},
             {"offline_sessions","unsupported; session-local photo aliases do not create catalog versions"}};
+    }
+    enum class PresetKind { Save, Apply, Remove, Rename, Replace, Export, Import };
+    struct Preset {PresetKind kind=PresetKind::Save;QString name,replacement,path;};
+    static bool decodePreset(const QJsonObject &command,Preset *output,QString *error=nullptr) {
+        if(error)error->clear();
+        const auto fail=[&]{if(error)*error="Invalid named preset command";return false;};
+        if(!output)return fail();
+        Preset staged;const auto action=command["command"].toString();
+        if(action=="preset.import") {
+            if(!optionalFields(command,{"source"},{"name"}))return fail();
+            staged.kind=PresetKind::Import;
+        }else {
+            QStringList required{"name"};
+            if(action=="preset.save")staged.kind=PresetKind::Save;
+            else if(action=="preset.apply")staged.kind=PresetKind::Apply;
+            else if(action=="preset.remove")staged.kind=PresetKind::Remove;
+            else if(action=="preset.replace")staged.kind=PresetKind::Replace;
+            else if(action=="preset.rename"){staged.kind=PresetKind::Rename;required.append("replacement");}
+            else if(action=="preset.export"){staged.kind=PresetKind::Export;required.append("destination");}
+            else return fail();
+            if(!fields(command,required))return fail();
+        }
+        if(command.contains("name")) {
+            if(!command["name"].isString())return fail();
+            staged.name=command["name"].toString();
+            if(!(staged.kind==PresetKind::Import&&staged.name.isEmpty())&&!NamedPresets::validName(staged.name))return fail();
+        }
+        if(staged.kind==PresetKind::Rename) {
+            if(!command["replacement"].isString())return fail();
+            staged.replacement=command["replacement"].toString();
+            if(!NamedPresets::validName(staged.replacement))return fail();
+        }
+        if(staged.kind==PresetKind::Import||staged.kind==PresetKind::Export) {
+            const auto field=staged.kind==PresetKind::Import?"source":"destination";
+            if(!command[field].isString())return fail();staged.path=command[field].toString();
+            if(staged.path.isEmpty()||staged.path.size()>32768||staged.path.contains(QChar(u'\0')))return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject presetSchema(const QString &name) {
+        QStringList required;const bool importing=name=="preset.import",exporting=name=="preset.export";
+        if(importing)required={"source"};else required={"name"};
+        if(name=="preset.rename")required.append("replacement");
+        if(exporting)required.append("destination");
+        return {{"name",name},{"scope","desktop"},{"fields",QJsonArray::fromStringList(required)},
+            {"optional_fields",importing?QJsonArray{"name"}:QJsonArray{}},{"maximum_name_utf16_units",80},
+            {"name_policy","exact trimmed nonempty stored name; import omitted/empty name uses the portable file's stored name"},
+            {"store","existing user-local named preset file; bounded100 presets and64MiB"},
+            {"source_writes",false},{"geometry","presets retain destination geometry and catalog curation"},
+            {"history","apply retains one existing Develop step; management does not edit Develop history"},
+            {"offline_sessions","unsupported; local preset store is separate from session-local photo aliases"}};
     }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
@@ -832,7 +884,9 @@ struct CommandRegistry {
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
                     {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema(),
-                virtualVersionSchema("version.create"),virtualVersionSchema("version.rename"),virtualVersionSchema("version.remove")}},
+                virtualVersionSchema("version.create"),virtualVersionSchema("version.rename"),virtualVersionSchema("version.remove"),
+                presetSchema("preset.save"),presetSchema("preset.apply"),presetSchema("preset.remove"),presetSchema("preset.rename"),
+                presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
