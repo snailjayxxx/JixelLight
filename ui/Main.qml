@@ -54,8 +54,8 @@ ApplicationWindow {
     }
     Component.onCompleted: workspaceSplit.restoreState(workspaceSettings.value("splitViewState"))
     Component.onDestruction: workspaceSettings.setValue("splitViewState", workspaceSplit.saveState())
-    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible && !copyImportDialog.visible; onActivated: window.workspaceIndex = 0 }
-    Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible && !copyImportDialog.visible; onActivated: window.workspaceIndex = 1 }
+    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible && !copyImportDialog.visible && !moveImportRecoveryDialog.visible; onActivated: window.workspaceIndex = 0 }
+    Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: !editRecipeDialog.visible && !exportSettingsDialog.visible && !transferDialog.visible && !copyImportDialog.visible && !moveImportRecoveryDialog.visible; onActivated: window.workspaceIndex = 1 }
 
 
     function t(zh, en) { return photoController.language === "zh_CN" ? zh : en }
@@ -595,6 +595,10 @@ ApplicationWindow {
         nameFilters: ["JPEG (*.jpg *.jpeg)", "PNG 16-bit (*.png)", "TIFF 16-bit (*.tif *.tiff)", "WebP 8-bit (*.webp)"]
         onAccepted: photoController.exportCurrent(selectedFile, window.exportSpaceKey(exportSpaceBox.currentIndex), exportQualityBox.value)
     }
+    MoveImportRecoveryDialog {
+        id: moveImportRecoveryDialog; controller: photoController; parent: Overlay.overlay
+        hostWidth: window.width; hostHeight: window.height
+    }
     CopyImportDialog {
         id: copyImportDialog; controller: photoController; parent: Overlay.overlay
         hostWidth: window.width; hostHeight: window.height
@@ -602,6 +606,7 @@ ApplicationWindow {
     Connections {
         target: photoController
         function onCopyImportRequested(urls) { copyImportDialog.openFor(urls) }
+        function onMoveImportRequested(urls) { copyImportDialog.openFor(urls, true) }
     }
     FolderDialog {
         id: batchFolder
@@ -697,6 +702,8 @@ ApplicationWindow {
             objectName: "importActionsMenu"
             MenuItem { text: window.t("添加现有照片…", "Add existing photos…"); onTriggered: photoController.openImportDialog() }
             MenuItem { objectName: "copyImportAction"; text: window.t("复制到文件夹并导入…", "Copy to folder and import…"); enabled: !photoController.copyImportBusy; onTriggered: photoController.openCopyImportDialog() }
+            MenuItem { objectName: "moveImportAction"; text: window.t("移动到文件夹并导入…", "Move to folder and import…"); enabled: !photoController.copyImportBusy && photoController.projectPath.length > 0; onTriggered: photoController.openMoveImportDialog() }
+            MenuItem { objectName: "moveImportRecoveryAction"; text: window.t("恢复移动导入…", "Resume move import…"); enabled: !photoController.copyImportBusy && photoController.projectPath.length > 0; onTriggered: moveImportRecoveryDialog.open() }
         }
         RowLayout {
             anchors.fill: parent
@@ -806,7 +813,7 @@ ApplicationWindow {
             ProgressBar { visible: photoController.exportBusy; value: photoController.exportProgress; Layout.preferredWidth: 120 }
             Label { visible: photoController.copyImportBusy; text: photoController.copyImportStatus; textFormat: Text.PlainText; color: "#aeb9c7" }
             ProgressBar { visible: photoController.copyImportBusy; value: photoController.copyImportProgress; Layout.preferredWidth: 90 }
-            ToolButton { visible: photoController.copyImportBusy; text: window.t("取消复制", "Cancel copy"); onClicked: photoController.cancelCopyImport() }
+            ToolButton { visible: photoController.copyImportBusy; text: photoController.moveImportBusy ? window.t("取消移动", "Cancel move") : window.t("取消复制", "Cancel copy"); onClicked: photoController.cancelCopyImport() }
             CheckBox { text: "GPU"; checked: photoController.gpuEnabled; onToggled: photoController.gpuEnabled = checked }
             Label { text: photoController.statusMessage; textFormat: Text.PlainText; color: "#9eabb9"; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: 11 }
             Label { visible: photoController.hasImage; text: photoController.pipelineDescription; textFormat: Text.PlainText; color: "#687b8d"; elide: Text.ElideMiddle; Layout.maximumWidth: 500; font.pixelSize: 10 }

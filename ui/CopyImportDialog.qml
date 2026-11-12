@@ -15,6 +15,7 @@ Dialog {
     y: Math.max(16, Math.round((hostHeight - height) / 2))
     width: Math.min(700, hostWidth - 32)
     standardButtons: Dialog.Ok | Dialog.Cancel
+    property bool moveMode: false
     property var sources: []
     property url destination: ""
     property bool customNames: false
@@ -29,7 +30,7 @@ Dialog {
         return controller.previewImportNames(sources, customNames ? pattern : "", sequenceStart)
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
-    function openFor(urls) { sources = urls; open() }
+    function openFor(urls, moving = false) { moveMode = moving; sources = urls; open() }
     Settings {
         category: "CopyImportNaming"
         property alias destination: root.destination
@@ -39,24 +40,35 @@ Dialog {
     }
     FolderDialog {
         id: folder
-        title: root.t("选择复制目标文件夹", "Choose the copy destination folder")
+        title: root.moveMode ? root.t("选择移动目标文件夹", "Choose the move destination folder") : root.t("选择复制目标文件夹", "Choose the copy destination folder")
         currentFolder: root.destination
         onAccepted: root.destination = selectedFolder
     }
-    title: t("复制并导入 · 名称预览", "Copy and import · Name preview")
+    title: moveMode ? t("移动并导入 · 名称预览", "Move and import · Name preview") : t("复制并导入 · 名称预览", "Copy and import · Name preview")
     onOpened: {
         const ok = standardButton(Dialog.Ok)
         ok.objectName = "copyImportApply"
-        ok.text = Qt.binding(function() { return root.t("开始复制", "Start copy") })
-        ok.enabled = Qt.binding(function() { return root.preview.valid && root.destination.toString().length > 0 && !root.controller.copyImportBusy })
+        ok.text = Qt.binding(function() { return root.moveMode ? root.t("开始移动", "Start move") : root.t("开始复制", "Start copy") })
+        ok.enabled = Qt.binding(function() { return root.preview.valid && root.destination.toString().length > 0 && !root.controller.copyImportBusy && (!root.moveMode || root.controller.projectPath.length > 0) })
         standardButton(Dialog.Cancel).text = Qt.binding(function() { return root.t("取消", "Cancel") })
     }
-    onAccepted: controller.copyImport(sources, destination, customNames ? pattern : "", sequenceStart)
+    onAccepted: {
+        if (moveMode) controller.moveImport(sources, destination, customNames ? pattern : "", sequenceStart)
+        else controller.copyImport(sources, destination, customNames ? pattern : "", sequenceStart)
+    }
     // Accepted queues its immutable metadata snapshot before the cache clears.
     onClosed: Qt.callLater(function() { if (!root.visible) root.controller.cancelImportNamePreview() })
     contentItem: ColumnLayout {
         implicitWidth: 660
         spacing: 10
+        Label {
+            objectName: "moveImportExplanation"
+            visible: root.moveMode
+            Layout.fillWidth: true
+            textFormat: Text.PlainText; wrapMode: Text.WordWrap
+            text: root.t("先校验副本并保存到当前项目，再将原文件移至系统废纸篓。取消会保留已完成副本及未处理来源。仅支持尚未加入当前项目的新照片。",
+                         "Copies are verified and saved in the current project before originals enter system trash. Cancel retains completed copies and remaining sources. Choose new photos outside the current catalog.")
+        }
         RowLayout {
             Layout.fillWidth: true
             Label { text: root.t("目标文件夹", "Destination folder") }

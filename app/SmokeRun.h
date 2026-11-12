@@ -55,3 +55,5 @@ void startColorMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,con
 
 class ProcessedImageProvider;
 void startSoftProofSmokeRun(PhotoController *,ProcessedImageProvider *,QQuickWindow *,const QString &,const QString &);
+
+void startMoveImportSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

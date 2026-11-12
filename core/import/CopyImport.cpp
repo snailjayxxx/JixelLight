@@ -15,7 +15,7 @@
 #include <limits>
 
 CopyImportResult copyImportFiles(const QStringList &sources,const QString &directory,
-                                 const CancelToken &cancel,const CopyImportProgress &progress,const ImportNaming &naming,const QStringList &expectedCaptureTimes) {
+                                 const CancelToken &cancel,const CopyImportProgress &progress,const ImportNaming &naming,const QStringList &expectedCaptureTimes,const CopyImportPublished &published) {
     CopyImportResult result;
     auto fail=[&](const QString &error,const QString &zh=QString()) { result.error=error; result.errorZh=zh; result.wasCancelled=cancelled(cancel); return result; };
     auto stopped=[&] { result.wasCancelled=true; return result; };
@@ -144,6 +144,7 @@ CopyImportResult copyImportFiles(const QStringList &sources,const QString &direc
             // All native handles are closed before same-filesystem publication.
             if (!QFile::rename(stagedPath,entry.target)) return fail("Destination exists or publication failed: "+entry.target);
             result.completed.push_back({entry.source,entry.target,QString::fromLatin1(sourceHash.result().toHex())});
+            if(published&&!published(result.completed.back()))return fail("Cannot preserve import publication record");
             if (progress) progress(copiedBytes,totalBytes,result.completed.size(),plan.size(),"published");
         }
     } catch (const std::exception &e) { return fail(QString::fromUtf8(e.what())); }
