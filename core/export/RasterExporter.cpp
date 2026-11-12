@@ -4,6 +4,12 @@
 #include <QImageWriter>
 #include <QSaveFile>
 
+namespace {
+// Qt PNG maps0..100 to deflate0..9;35 selects lossless level3.
+// Favor bounded write latency while retaining every RGBA16/ICC byte.
+constexpr int LosslessPngCompression=35;
+}
+
 bool exportRaster(const QImage &source, const AdjustmentState &state, const QString &path,
                   ColorManagement::OutputSpace space, RasterFormat format, int quality,
                   const CancelToken &cancel, QString *error, bool rawSource, float rawBaseExposureStops) {
@@ -26,9 +32,13 @@ bool exportRaster(const QImage &source, const AdjustmentState &state, const QStr
     // wide-gamut target transform. TIFF and PNG retain every 16-bit channel.
     if (format == RasterFormat::WebP8) rendered = rendered.convertToFormat(QImage::Format_RGBA8888);
     if (rendered.isNull()) return fail("Cannot allocate output image");
+    PerformanceSpan encoding("raster_encode_commit",{{"format",QString::fromLatin1(codec)},
+        {"pixels",qint64(rendered.width())*rendered.height()},
+        {"png_compression_0_100",format==RasterFormat::Png16?LosslessPngCompression:-1}});
     QSaveFile file(path); file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) return fail(file.errorString());
     QImageWriter writer(&file,codec);
+    if (format == RasterFormat::Png16) writer.setCompression(LosslessPngCompression);
     if (format == RasterFormat::Tiff16) writer.setCompression(1); // Qt TIFF: lossless LZW
     if (format == RasterFormat::WebP8) writer.setQuality(std::clamp(quality,1,100)); // 100 is lossless
     if (!writer.write(rendered)) { file.cancelWriting(); return fail(writer.errorString()); }
@@ -51,9 +61,13 @@ bool exportRaster(BrushRenderRequest &request,const QString &path,RasterFormat f
     if(format==RasterFormat::Tiff16&&rendered.sizeInBytes()>qint64(0xffffffff)-16*1024*1024)return refuse("TIFF exceeds classic TIFF size limit");
     if(format==RasterFormat::WebP8)rendered=rendered.convertToFormat(QImage::Format_RGBA8888);
     if(rendered.isNull()||cancelled(cancel))return refuse("Cancelled or output conversion failed");
+    PerformanceSpan encoding("raster_encode_commit",{{"format",QString::fromLatin1(codec)},
+        {"pixels",qint64(rendered.width())*rendered.height()},
+        {"png_compression_0_100",format==RasterFormat::Png16?LosslessPngCompression:-1}});
     QSaveFile file(path);file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly))return refuse(file.errorString());
     QImageWriter writer(&file,codec);
+    if(format==RasterFormat::Png16)writer.setCompression(LosslessPngCompression);
     if(format==RasterFormat::Tiff16)writer.setCompression(1);
     if(format==RasterFormat::WebP8)writer.setQuality(std::clamp(quality,1,100));
     if(!writer.write(rendered)){file.cancelWriting();return refuse(writer.errorString());}
