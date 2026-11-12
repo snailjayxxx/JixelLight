@@ -62,6 +62,14 @@ private slots:
         const auto base=plan(),active=plan(edits());QCOMPARE(sizeof(base.data),std::size_t(1040));QVERIFY(active.validColorMask());for(int i=0;i<63;++i)QCOMPARE(QByteArrayView(reinterpret_cast<const char *>(&base.data[i]),16),QByteArrayView(reinterpret_cast<const char *>(&active.data[i]),16));
         for(int slot=63;slot<65;++slot){auto bad=base;bad.data[slot].y=1;QVERIFY(!bad.validColorMask());QVERIFY(ImagePipeline::processWithPlan(source,bad).isNull());}
     }
+    void narrowSelectionPrecisionPolicyMatchesControllerAndNeutralBypass() {
+        QTemporaryDir dir;const auto path=dir.filePath("source.png");QVERIFY(scene().convertToFormat(QImage::Format_RGBA64).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.setViewport(40,30,1,0,.5,.5);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);
+        c.setColorMaskEnabled(true);c.setColorMaskParameter("exposure",1);
+        for(double radius:{1.,2.,3.,5.,10.,20.,44.9,45.,180.}){c.setColorMaskParameter("hueRange",radius);const bool expected=radius<45;QCOMPARE(c.colorMaskCpuPrecision(),expected);QCOMPARE(c.gpuPlan(false).colorMaskNeedsCpuPrecision(),expected);}
+        for(const auto key:{"chromaRange","lightnessRange"}){c.setColorMaskParameter(key,.001);QVERIFY(c.colorMaskCpuPrecision());c.setColorMaskParameter(key,.003);QVERIFY(!c.colorMaskCpuPrecision());}
+        c.setColorMaskParameter("hueRange",1);c.setColorMaskParameter("exposure",0);QVERIFY(!c.colorMaskCpuPrecision());c.setColorMaskParameter("exposure",1);c.setColorMaskEnabled(false);QVERIFY(!c.colorMaskCpuPrecision());
+    }
     void sourceSamplerIgnoresColorExposureAndOutputEdits() {
         QImage source(1,1,QImage::Format_RGBA32FPx4);auto *q=reinterpret_cast<float *>(source.bits());q[0]=.2f;q[1]=.4f;q[2]=.7f;q[3]=1;const auto expected=PointColor::fromEncodedSrgb({.2f,.4f,.7f});
         for(int output=0;output<4;++output){auto s=edits();s.exposure=2;s.temperature=53;s.tint=-41;s.hue=79;s.pointColorEnabled=true;s.pointColorHue=77;s.luminanceMaskEnabled=true;s.luminanceMaskExposure=-2;s.vignetteAmount=-1.3;s.linearMaskEnabled=true;s.linearMaskExposure=1.8;

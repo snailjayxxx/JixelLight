@@ -25,7 +25,7 @@ constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLut
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan,const ImagePipeline::FloatSourceFacts &facts) {
     // Tight Point Color shoulders amplify observed FP32 Lab differences above
     // the unchanged40/65535 bound. Keep the complete CPU reference in this region.
-    if(plan.colorMaskActive())return true; // Color selection uses the complete CPU reference.
+    if(plan.colorMaskNeedsCpuPrecision())return true;
     if(plan.pointColorNeedsCpuPrecision())return true;
     // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
     // also stays safely above its1e-20 normalization epsilon.
@@ -54,7 +54,8 @@ bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPl
         plan.encoding == ImagePipeline::InputEncoding::LinearProPhoto && state.exposure+std::max(0.0f,plan.data[ProcessingPlan::Vignette].x)
             +std::max(0.0f,plan.data[ProcessingPlan::LinearMask].x)
             +std::max(0.0f,plan.data[ProcessingPlan::RadialMask].x)
-            +std::max(0.0f,plan.data[ProcessingPlan::LuminanceMask].x) >= 2.5
+            +std::max(0.0f,plan.data[ProcessingPlan::LuminanceMask].x)
+            +std::max(0.0f,plan.data[ProcessingPlan::ColorMask].x) >= 2.5
         && (state.saturation != 0 || state.vibrance != 0);
     return complexHsl || extremeBrightPerceptual;
 }
@@ -116,7 +117,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
-        {"color_mask",m_outputColorMaskActive?"cpu-reference":"inactive"},
+        {"color_mask",m_outputColorMaskActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"luminance_mask",m_outputLuminanceMaskActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"point_color",m_outputPointColorActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"spatial_dehaze",m_outputDehazeActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
@@ -497,7 +498,7 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         m_lastCpuFallback=cpuFallback;
         m_revision = revision;
         m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();m_outputDehazeActive=plan.dehazeActive();m_outputPointColorActive=plan.pointColorActive();m_outputLuminanceMaskActive=plan.luminanceMaskActive();m_outputColorMaskActive=plan.colorMaskActive();
-        m_outputNumericPolicy=plan.colorMaskActive()?QStringLiteral("color-range-mask-cpu-stage"):
+        m_outputNumericPolicy=plan.colorMaskNeedsCpuPrecision()?QStringLiteral("color-mask-narrow-range"):
             plan.pointColorNeedsCpuPrecision()?QStringLiteral("point-color-narrow-range"):
             plan.dehazeActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("dehaze-near-zero-alpha"):
             plan.textureActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("texture-near-zero-alpha"):
