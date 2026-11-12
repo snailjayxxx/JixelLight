@@ -451,10 +451,10 @@ private slots:
         QCOMPARE(frozen["numeric_source_policy"].toString(),QString("texture-near-zero-alpha"));
     }
     void pointColorNarrowRangesHueSeamsAndNeutrals() {
-        constexpr float Pi=3.14159265358979323846f;
+        constexpr float Pi=3.14159265358979323846f;int compute=0,cpu=0;
         for(const auto center : {PointColor::Lab{.62f,.08f,359.f},PointColor::Lab{.035f,.012f,179.f},PointColor::Lab{.6f,0,0}})
-        for(int range=0;range<6;++range) {
-            const float rL=(range==0||range==3)?.001f:range==1?.003f:.4f,rC=(range==0||range==4)?.001f:range==1?.02f:.12f,rH=(range==0||range==5)?1:range==2?180:45;
+        for(int range=0;range<9;++range) {
+            const float rL=(range==0||range==3)?.001f:range==1?.003f:.4f,rC=(range==0||range==4)?.001f:range==1?.02f:.12f,rH=(range==0||range==5)?1:range==6?2:range==7?3:range==8?5:range==2?180:45;
             const float angle=center.b*(Pi/180.f);QImage source(31,29,QImage::Format_RGBA32FPx4);
             for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
                 const float t=float((x*7+y*11)%101)/100.f;
@@ -469,13 +469,14 @@ private slots:
                 state.pointColorHueRange=rH;state.pointColorChromaRange=rC;state.pointColorLightnessRange=rL;
                 verifyParity(source,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),true,"Point Color narrow/seam/neutral");
                 if(QTest::currentTestFailed())return;
-                const bool precise=range==0||range==3||range==4;QCOMPARE(engine->lastProcessUsedCpuFallback(),precise);
+                const bool precise=range==0||range==3||range==4||range==5||range==6||range==7;precise?++cpu:++compute;QCOMPARE(engine->lastProcessUsedCpuFallback(),precise);
                 const auto actual=render(source,state,false,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),{0,0,1,1},true);
                 QCOMPARE(actual.diagnostic["point_color"].toString(),precise?QString("cpu-reference"):QString("gpu-compute"));
                 QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),precise?QString("point-color-narrow-range"):QString("none"));
                 if(precise){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output)));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
             }
         }
+        QCOMPARE(compute,72);QCOMPARE(cpu,144);qInfo()<<"Point Color216 ranges: compute"<<compute<<"exact CPU precision"<<cpu;
     }
     void pointColorEditsKeepEveryResidentSpatialStageAndSource() {
         QImage source(83,89,QImage::Format_RGBA32FPx4);
