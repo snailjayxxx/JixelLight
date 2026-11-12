@@ -39,6 +39,8 @@ public:
     // A single working-color sample before Point Color and all output/display transforms.
     // Only the summed spatial halo is rendered; brush admission and cancellation remain mandatory.
     static std::optional<PointColor::Lab> samplePointColor(const QImage &,const ProcessingPlan &,const QPoint &,const CancelToken &cancel = {});
+    // Input color-mask selection ignores all WB/color/exposure/output edits.
+    static std::optional<PointColor::Lab> sampleMaskColor(const QImage &,const ProcessingPlan &,const QPoint &,const CancelToken &cancel = {});
     static QImage processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &cancel = {});
     static SpatialDehaze::Airlight estimateDehazeAirlight(const QImage &,const ProcessingPlan &,const CancelToken &cancel = {});
     // Resolve once on the whole corrected frame before ROI/tile extraction.
@@ -51,6 +53,7 @@ public:
     static DiagnosticResult diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan,
                                             const CancelToken &cancel = {});
 private:
+    static std::optional<PointColor::Lab> sampleWorkingColor(const QImage &,const ProcessingPlan &,const QPoint &,bool inputMask,const CancelToken &);
     friend class BrushRenderRequest;
     friend class RenderedPreviewCache;
     // Immutable preview-only stage reuse. Brush admission, exports, exact

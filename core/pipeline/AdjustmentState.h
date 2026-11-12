@@ -68,6 +68,9 @@ struct AdjustmentState {
     double radialMaskRadiusY = 0.35; // vertical fraction .05..1
     double radialMaskFeather = 0.25; // transition fraction .02..1
     double radialMaskAngle = 0.0; // ellipse rotation degrees [-180, 180]
+    bool colorMaskEnabled=false,colorMaskInverted=false;
+    std::array<double,3> colorMaskLab=DefaultPointColorLab;
+    double colorMaskExposure=0,colorMaskHueRange=45,colorMaskChromaRange=.12,colorMaskLightnessRange=.4;
     // Independent selection from source scene-linear luminance, before WB/EV.
     bool luminanceMaskEnabled=false,luminanceMaskInverted=false;
     double luminanceMaskExposure=0,luminanceMaskLower=0,luminanceMaskUpper=1,luminanceMaskFeather=.1;
@@ -144,6 +147,11 @@ struct AdjustmentState {
             auto m=result.value("radialMask").toObject();
             m.insert("angle",radialMaskAngle); result.insert("radialMask",m);
         }
+        if(colorMaskEnabled||colorMaskInverted||colorMaskLab!=DefaultPointColorLab||colorMaskExposure!=0
+            ||colorMaskHueRange!=45||colorMaskChromaRange!=.12||colorMaskLightnessRange!=.4)
+            result["colorMask"]=QJsonObject{{"schema",1},{"space","oklab"},{"enabled",colorMaskEnabled},{"inverted",colorMaskInverted},
+                {"exposure",colorMaskExposure},{"center",toJsonArray(colorMaskLab)},
+                {"hueRange",colorMaskHueRange},{"chromaRange",colorMaskChromaRange},{"lightnessRange",colorMaskLightnessRange}};
         if(luminanceMaskEnabled||luminanceMaskInverted||luminanceMaskExposure!=0
             ||luminanceMaskLower!=0||luminanceMaskUpper!=1||luminanceMaskFeather!=.1)
             result["luminanceMask"]=QJsonObject{{"schema",1},{"enabled",luminanceMaskEnabled},{"inverted",luminanceMaskInverted},
@@ -251,6 +259,18 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validColorMaskJson(const QJsonObject &object) {
+        if(!object.contains("colorMask"))return true;
+        if(!object["colorMask"].isObject())return false;
+        const auto m=object["colorMask"].toObject();
+        if(m.size()!=9||!m["schema"].isDouble()||m["schema"].toDouble()!=1||m["space"]!=QStringLiteral("oklab")
+            ||!m["enabled"].isBool()||!m["inverted"].isBool()||!m["center"].isArray()||m["center"].toArray().size()!=3)return false;
+        const auto lab=m["center"].toArray();for(auto v:lab)if(!v.isDouble()||!std::isfinite(v.toDouble())||std::abs(v.toDouble())>4)return false;
+        const auto number=[&](const char *key,double lo,double hi){const auto v=m[key];return v.isDouble()&&std::isfinite(v.toDouble())&&v.toDouble()>=lo&&v.toDouble()<=hi;};
+        if(!number("exposure",-3,3)||!number("hueRange",1,180)||!number("chromaRange",.001,1)||!number("lightnessRange",.001,1))return false;
+        return m["enabled"].toBool()||m["inverted"].toBool()||lab!=toJsonArray(DefaultPointColorLab)||m["exposure"].toDouble()!=0
+            ||m["hueRange"].toDouble()!=45||m["chromaRange"].toDouble()!=.12||m["lightnessRange"].toDouble()!=.4;
+    }
     static bool validLuminanceMaskJson(const QJsonObject &object) {
         if(!object.contains("luminanceMask"))return true;
         if(!object["luminanceMask"].isObject())return false;
@@ -423,6 +443,11 @@ struct AdjustmentState {
         if (o.contains("sharpen") && validSharpenJson(o)) {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
+        }
+        if(o.contains("colorMask")&&validColorMaskJson(o)) {
+            const auto m=o["colorMask"].toObject();s.colorMaskEnabled=m["enabled"].toBool();s.colorMaskInverted=m["inverted"].toBool();
+            for(int i=0;i<3;++i)s.colorMaskLab[i]=m["center"].toArray()[i].toDouble();
+            s.colorMaskExposure=m["exposure"].toDouble();s.colorMaskHueRange=m["hueRange"].toDouble();s.colorMaskChromaRange=m["chromaRange"].toDouble();s.colorMaskLightnessRange=m["lightnessRange"].toDouble();
         }
         if(o.contains("luminanceMask")&&validLuminanceMaskJson(o)) {
             const auto m=o["luminanceMask"].toObject();s.luminanceMaskEnabled=m["enabled"].toBool();s.luminanceMaskInverted=m["inverted"].toBool();

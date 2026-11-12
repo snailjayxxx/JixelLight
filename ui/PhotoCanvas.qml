@@ -80,6 +80,10 @@ Item {
     }
     Connections {
         target: root.controller
+        function onColorMaskPickerRequested() {
+            if(!root.visible||!controller.previewReady||controller.cropEditing||controller.brushDrawing||controller.brushRecoveryAvailable||controller.rendering)return
+            root.maskTool="colorMask"
+        }
         function onPointColorPickerRequested() {
             if(!root.visible||!controller.previewReady||controller.cropEditing||controller.brushDrawing||controller.brushRecoveryAvailable||controller.rendering)return
             root.maskTool="pointColor"
@@ -169,14 +173,14 @@ Item {
         }
     }
     MouseArea {
-        objectName: "pointColorCanvasPicker"
+        objectName: root.maskTool === "colorMask" ? "colorMaskCanvasPicker" : "pointColorCanvasPicker"
         anchors.fill: picture; z: 7
-        visible: root.maskTool === "pointColor" && !controller.cropEditing && controller.previewReady
+        visible: (root.maskTool === "pointColor" || root.maskTool === "colorMask") && !controller.cropEditing && controller.previewReady
         enabled: visible && !controller.loading && !controller.rendering
         cursorShape: Qt.CrossCursor
         acceptedButtons: Qt.LeftButton
         onClicked: function(mouse) {
-            if(controller.pickPointColor(mouse.x,mouse.y,width,height)) root.maskTool=""
+            if(root.maskTool === "colorMask" ? controller.pickColorMask(mouse.x,mouse.y,width,height) : controller.pickPointColor(mouse.x,mouse.y,width,height)) root.maskTool=""
         }
     }
     MouseArea {

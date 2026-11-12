@@ -221,6 +221,33 @@ struct CommandRegistry {
             }
             return fail(); // Unknown identity never selects an arbitrary layer.
         }
+        if(name=="mask.color.enable"||name=="mask.color.invert") {
+            const bool enable=name=="mask.color.enable";const auto key=enable?"enabled":"inverted";
+            if(!fields(command,{key})||!command[key].isBool())return fail();
+            if(enable)state.colorMaskEnabled=command[key].toBool();else state.colorMaskInverted=command[key].toBool();return true;
+        }
+        if(name=="mask.color.select"||name=="mask.color.select.lab") {
+            const bool lab=name=="mask.color.select.lab";const auto key=lab?"lab":"color";
+            if(!fields(command,{key})||!command[key].isArray()||command[key].toArray().size()!=3)return fail();
+            std::array<double,3> selected{};const auto values=command[key].toArray();
+            for(int i=0;i<3;++i){if(!values[i].isDouble()||!std::isfinite(values[i].toDouble())||values[i].toDouble()<(lab?-4:0)||values[i].toDouble()>(lab?4:1))return fail();selected[i]=values[i].toDouble();}
+            if(lab)state.colorMaskLab=selected;
+            else {const auto center=PointColor::fromEncodedSrgb({float(selected[0]),float(selected[1]),float(selected[2])});state.colorMaskLab={center.L,center.a,center.b};}
+            state.colorMaskEnabled=true;return true;
+        }
+        if(name=="mask.color.set") {
+            if(!fields(command,{"parameter","value"})||!command["parameter"].isString()||!number(command,"value"))return fail();
+            const auto key=command["parameter"].toString();const double value=command["value"].toDouble();
+            if(key=="exposure"&&value>=-3&&value<=3)state.colorMaskExposure=value;
+            else if(key=="hueRange"&&value>=1&&value<=180)state.colorMaskHueRange=value;
+            else if(key=="chromaRange"&&value>=.001&&value<=1)state.colorMaskChromaRange=value;
+            else if(key=="lightnessRange"&&value>=.001&&value<=1)state.colorMaskLightnessRange=value;
+            else return fail();return true;
+        }
+        if(name=="mask.color.reset") {
+            if(!fields(command,{}))return fail();state.colorMaskEnabled=false;state.colorMaskInverted=false;state.colorMaskLab=AdjustmentState::DefaultPointColorLab;
+            state.colorMaskExposure=0;state.colorMaskHueRange=45;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;return true;
+        }
         if(name=="mask.luminance.enable"||name=="mask.luminance.invert") {
             const bool enable=name=="mask.luminance.enable";const auto key=enable?"enabled":"inverted";
             if(!fields(command,{key})||!command[key].isBool())return fail();
@@ -491,6 +518,12 @@ struct CommandRegistry {
                 {"operation","remove only the indexed whole stroke; remove its layer when empty"}},
             QJsonObject{{"name","mask.brush.reset"},{"fields",QJsonArray{}},
                 {"operation","remove brush layers only; preserve gradients and other edits"}},
+            QJsonObject{{"name","mask.color.enable"},{"fields",QJsonArray{"enabled"}}},
+            QJsonObject{{"name","mask.color.invert"},{"fields",QJsonArray{"inverted"}}},
+            QJsonObject{{"name","mask.color.select"},{"fields",QJsonArray{"color"}},{"space","encoded-sRGB"}},
+            QJsonObject{{"name","mask.color.select.lab"},{"fields",QJsonArray{"lab"}},{"space","source-working-Oklab"}},
+            QJsonObject{{"name","mask.color.set"},{"fields",QJsonArray{"parameter","value"}},{"parameters",QJsonArray{"exposure","hueRange","chromaRange","lightnessRange"}},{"range_policy","reject"}},
+            QJsonObject{{"name","mask.color.reset"},{"fields",QJsonArray{}},{"operation","reset color range mask only"}},
             QJsonObject{{"name","mask.luminance.enable"},{"fields",QJsonArray{"enabled"}}},
             QJsonObject{{"name","mask.luminance.invert"},{"fields",QJsonArray{"inverted"}}},
             QJsonObject{{"name","mask.luminance.set"},{"fields",QJsonArray{"parameter","value"}},

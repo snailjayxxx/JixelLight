@@ -50,3 +50,5 @@ void startClaritySmokeRun(PhotoController *,QQuickWindow *,const QString &,const
 void startDenoiseSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
 void startLuminanceMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startColorMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);

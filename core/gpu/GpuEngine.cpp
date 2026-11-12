@@ -25,6 +25,7 @@ constexpr QSize displayLutAtlasSize() { return QSize(DisplayLutSize * DisplayLut
 bool requiresNumericCpuFallback(QRhi::Implementation backend, const ProcessingPlan &plan,const ImagePipeline::FloatSourceFacts &facts) {
     // Tight Point Color shoulders amplify observed FP32 Lab differences above
     // the unchanged40/65535 bound. Keep the complete CPU reference in this region.
+    if(plan.colorMaskActive())return true; // Color selection uses the complete CPU reference.
     if(plan.luminanceMaskActive())return true; // This stage is an explicit CPU reference.
     if(plan.pointColorNeedsCpuPrecision())return true;
     // Preserve the CPU guide's tiny/subnormal-alpha semantics. The1e-18 floor
@@ -115,6 +116,7 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
         {"output_space", ColorManagement::key(m_outputSpace)}, {"encoding", "encoded RGB"},
         {"producer", m_lastCpuFallback ? "cpu-reference-upload" : "gpu-compute"},
+        {"color_mask",m_outputColorMaskActive?"cpu-reference":"inactive"},
         {"luminance_mask",m_outputLuminanceMaskActive?"cpu-reference":"inactive"},
         {"point_color",m_outputPointColorActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"spatial_dehaze",m_outputDehazeActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
@@ -494,8 +496,9 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         if(newLut){m_lutKey=lut->digest;PerformanceRecorder::count("look_lut_uploads");}
         m_lastCpuFallback=cpuFallback;
         m_revision = revision;
-        m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();m_outputDehazeActive=plan.dehazeActive();m_outputPointColorActive=plan.pointColorActive();m_outputLuminanceMaskActive=plan.luminanceMaskActive();
-        m_outputNumericPolicy=plan.luminanceMaskActive()?QStringLiteral("luminance-mask-cpu-stage"):
+        m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();m_outputDehazeActive=plan.dehazeActive();m_outputPointColorActive=plan.pointColorActive();m_outputLuminanceMaskActive=plan.luminanceMaskActive();m_outputColorMaskActive=plan.colorMaskActive();
+        m_outputNumericPolicy=plan.colorMaskActive()?QStringLiteral("color-range-mask-cpu-stage"):
+            plan.luminanceMaskActive()?QStringLiteral("luminance-mask-cpu-stage"):
             plan.pointColorNeedsCpuPrecision()?QStringLiteral("point-color-narrow-range"):
             plan.dehazeActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("dehaze-near-zero-alpha"):
             plan.textureActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("texture-near-zero-alpha"):

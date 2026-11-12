@@ -209,6 +209,21 @@ private slots:
         }
     }
 
+    void colorMaskAlwaysUploadsTheCompleteCpuReference() {
+        QImage source(47,43,QImage::Format_RGBA32FPx4);const float alpha[]{0,1.e-8f,.4f,1};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {auto *q=reinterpret_cast<float *>(source.scanLine(y))+4*x;q[0]=-.04f+2.f*x/46;q[1]=.02f+1.5f*y/42;q[2]=.2f;q[3]=alpha[(x+y)%4];}
+        int cases=0;
+        for(bool integer:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)for(double exposure:{-2.7,1.9})for(bool inverted:{false,true}) {
+            AdjustmentState state;state.colorMaskEnabled=true;state.colorMaskExposure=exposure;state.colorMaskInverted=inverted;state.colorMaskLab={.6,.02,.01};state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;state.luminanceMaskEnabled=true;state.luminanceMaskExposure=.4;
+            state.denoiseLuma=71;state.denoiseChroma=83;state.dehazeAmount=53;state.textureAmount=57;state.clarityAmount=-41;state.sharpenAmount=61;state.grainAmount=19;state.pointColorEnabled=true;state.pointColorHue=39;
+            const auto input=integer?ImagePipeline::rgba64Source(source):source;const auto space=ColorManagement::OutputSpace(output);const auto enc=ImagePipeline::InputEncoding(encoding);
+            const auto actual=render(input,state,true,enc,space,{0,0,1,1},true);QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,enc,space));
+            QVERIFY(!expected.isNull());for(int y=0;y<input.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(input.width())*8)==0);
+            QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));QCOMPARE(actual.diagnostic["color_mask"].toString(),QString("cpu-reference"));QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("color-range-mask-cpu-stage"));
+            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);++cases;
+        }
+        QCOMPARE(cases,64);
+    }
     void luminanceMaskAlwaysUploadsTheCompleteCpuReference() {
         QImage source(47,43,QImage::Format_RGBA32FPx4);const float alpha[]{0,1.e-8f,.4f,1};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {auto *q=reinterpret_cast<float *>(source.scanLine(y))+4*x;q[0]=-.04f+2.f*x/46;q[1]=.02f+1.5f*y/42;q[2]=.2f;q[3]=alpha[(x+y)%4];}
@@ -782,7 +797,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,dehazeRefused=true,pointColorRefused=true,luminanceMaskRefused=true,prophotoPolicyOk=false;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,dehazeRefused=true,pointColorRefused=true,luminanceMaskRefused=true,colorMaskRefused=true,prophotoPolicyOk=false;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -845,9 +860,15 @@ private slots:
                     const auto frame=N::FrameAdmission::prepare(result.source,caps,mask,{"grain-catalog","grain-input","grain-version",1},3,&why);
                     result.luminanceMaskRefused=result.luminanceMaskRefused&&!frame&&why==N::FrameFailure::CPUPolicy;
                 }
+                for(double exposure:{-3.,1.7}) {
+                    auto maskState=state;maskState.colorMaskEnabled=true;maskState.colorMaskExposure=exposure;
+                    const auto mask=ProcessingPlan::compile(maskState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
+                    const auto frame=N::FrameAdmission::prepare(result.source,caps,mask,{"grain-catalog","grain-input","grain-version",1},3,&why);
+                    result.colorMaskRefused=result.colorMaskRefused&&!frame&&why==N::FrameFailure::CPUPolicy;
+                }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.dehazeRefused);QVERIFY(prepared.pointColorRefused);QVERIFY(prepared.luminanceMaskRefused);QVERIFY(prepared.prophotoPolicyOk);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.dehazeRefused);QVERIFY(prepared.pointColorRefused);QVERIFY(prepared.luminanceMaskRefused);QVERIFY(prepared.colorMaskRefused);QVERIFY(prepared.prophotoPolicyOk);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));

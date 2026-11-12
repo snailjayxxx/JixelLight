@@ -103,6 +103,7 @@ Rectangle {
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
     property bool luminanceMaskExpanded: false
+    property bool colorMaskExpanded: false
     property bool blackWhiteExpanded: false
     property bool colorGradingExpanded: false
     property bool pointColorExpanded: false
@@ -128,6 +129,7 @@ Rectangle {
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
         property alias luminanceMaskExpanded: root.luminanceMaskExpanded
+        property alias colorMaskExpanded: root.colorMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
         property alias colorGradingExpanded: root.colorGradingExpanded
         property alias pointColorExpanded: root.pointColorExpanded
@@ -138,6 +140,12 @@ Rectangle {
         selectedColor: root.controller.pointColorColor
         options: ColorDialog.DontUseNativeDialog
         onAccepted: root.controller.selectPointColor(selectedColor)
+    }
+    ColorDialog {
+        id: colorMaskDialog; objectName: "colorMaskDialog"
+        title: root.t("选择蒙版颜色","Choose mask color");selectedColor: root.controller.colorMaskColor
+        options: ColorDialog.DontUseNativeDialog
+        onAccepted: root.controller.selectColorMask(selectedColor)
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -939,6 +947,29 @@ Rectangle {
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    ToolButton { objectName: "colorMaskToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.colorMaskExpanded ? "▾ " : "▸ ")+root.t("颜色范围蒙版","COLOR RANGE MASK");onClicked: root.colorMaskExpanded=!root.colorMaskExpanded }
+                    Button { objectName: "colorMaskReset";text: root.t("重置","Reset");enabled: root.controller.hasImage;onClicked: root.controller.resetColorMask() }
+                }
+                ColumnLayout {
+                    objectName: "colorMaskSection";visible: root.colorMaskExpanded;Layout.fillWidth: true;spacing: 6
+                    CheckBox { objectName: "colorMaskEnable";Layout.fillWidth: true;enabled: root.controller.hasImage;text: root.t("启用颜色蒙版","Enable color mask");checked: root.controller.colorMask.enabled;onToggled: root.controller.setColorMaskEnabled(checked) }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Rectangle { width: 26;height: 26;radius: 3;color: root.controller.colorMaskColor;border.color: "#8293a5" }
+                        Button { objectName: "colorMaskChoose";text: root.t("选择颜色","Choose color");enabled: root.controller.hasImage;onClicked: colorMaskDialog.open() }
+                        Button { objectName: "colorMaskPick";text: root.t("从照片取色","Pick from photo");enabled: root.controller.previewReady && !root.controller.rendering && !root.controller.cropEditing && !root.controller.brushDrawing && !root.controller.brushRecoveryAvailable;onClicked: root.controller.requestColorMaskPicker() }
+                    }
+                    CheckBox { objectName: "colorMaskInvert";Layout.fillWidth: true;enabled: root.controller.hasImage && root.controller.colorMask.enabled;text: root.t("反选颜色范围","Invert color range");checked: root.controller.colorMask.inverted;onToggled: root.controller.setColorMaskInverted(checked) }
+                    AdjustmentSlider { sliderObjectName: "colorMaskExposureSlider";labelWidth: 100;Layout.fillWidth: true;enabled: root.controller.hasImage && root.controller.colorMask.enabled;label: root.t("局部曝光 EV","Local EV");from: -3;to: 3;decimals: 2;value: root.controller.colorMask.exposure;onEdited: function(v) { root.controller.setColorMaskParameter("exposure",v) } }
+                    AdjustmentSlider { sliderObjectName: "colorMaskHueRangeSlider";labelWidth: 100;Layout.fillWidth: true;enabled: root.controller.hasImage && root.controller.colorMask.enabled;label: root.t("色相范围","Hue range");from: 1;to: 180;decimals: 1;value: root.controller.colorMask.hueRange;onEdited: function(v) { root.controller.setColorMaskParameter("hueRange",v) } }
+                    AdjustmentSlider { sliderObjectName: "colorMaskChromaRangeSlider";labelWidth: 100;Layout.fillWidth: true;enabled: root.controller.hasImage && root.controller.colorMask.enabled;label: root.t("彩度范围","Chroma range");from: .1;to: 100;decimals: 1;value: root.controller.colorMask.chromaRange*100;onEdited: function(v) { root.controller.setColorMaskParameter("chromaRange",v/100) } }
+                    AdjustmentSlider { sliderObjectName: "colorMaskLightnessRangeSlider";labelWidth: 100;Layout.fillWidth: true;enabled: root.controller.hasImage && root.controller.colorMask.enabled;label: root.t("明度范围","Lightness range");from: .1;to: 100;decimals: 1;value: root.controller.colorMask.lightnessRange*100;onEdited: function(v) { root.controller.setColorMaskParameter("lightnessRange",v/100) } }
+                    Label { Layout.fillWidth: true;wrapMode: Text.WordWrap;color: "#8996a7";font.pixelSize: 10;text: root.t("CPU 参考计算。吸管读取白平衡和曝光调整前的颜色；色相、彩度和明度范围共同限定选区。反选选择其余颜色。","CPU reference. Samples input color before white balance and exposure adjustments. Hue, chroma and lightness ranges define the selection; invert selects the remainder.") }
+                }
+                Rectangle { Layout.fillWidth: true;height: 1;color: "#29333e" }
                 RowLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton { objectName: "luminanceMaskToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
