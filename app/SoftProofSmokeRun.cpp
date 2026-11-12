@@ -60,9 +60,9 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
         QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;
     }
     struct State {
-        QElapsedTimer clock;QTimer *timer=nullptr;int phase=0,lastPhase=-1,frames=0,stableFrame=0,resizes=0;
+        QElapsedTimer clock;QTimer *timer=nullptr;int phase=0,lastPhase=-1,frames=0,stableFrame=0,resizes=0,scopeWaits=0;
         bool done=false,initialized=false,prepared=false,projectInteractionFinished=false,admitted=false,exportStarted=false,exportPassed=false,projectPassed=false;
-        ulong stamp=5000;quint64 sourceKey=0,revision=0;QString source,profile,project,oldUrl;
+        ulong stamp=5000;quint64 sourceKey=0,revision=0;QString source,profile,project,oldUrl,initialScopeStatus;QJsonArray scopeWaitStates;
         QImage fixture,reference,wide,relative,paper,warning;SoftProof::Profile target;ScopesResult scopes;
         QJsonObject initial,diagnostic,exportResult,windowAdmission,composition,proofProbe;QJsonArray history,pointers,captures,proofs,phases,signature,events;
         QByteArray sourceSha;QSize windowLogical,windowPhysical;double dpr=0;
@@ -117,7 +117,8 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
             {"profile_path",s->profile},{"profile_sha256",QString::fromLatin1(fileHash(s->profile))},{"profile_model",s->target.colorModel()},
             {"header_text",item("softProofPanelToggle")?item("softProofPanelToggle")->property("text").toString():QString{}},
             {"presentation_only",true},{"proof_independent_CPU_reference",true},{"exact_scopes_preserved",true},{"original_GPU_parity_covered_by_separate_suite",true},
-            {"scope",QJsonObject{{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"red",QJsonArray::fromVariantList(s->scopes.red)},
+            {"scope_wait_observations",s->scopeWaits},{"scope_wait_states",s->scopeWaitStates},
+            {"scope",QJsonObject{{"status",s->initialScopeStatus},{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
             {"current_proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())},{"live_invariants",liveInvariants()},{"events",s->events},{"proof_probe",s->proofProbe},{"proofs",s->proofs},{"pointers",s->pointers},{"window_capture_admission",s->windowAdmission},{"window_captures",s->captures},{"alpha_composition",s->composition},
             {"phase_checkpoints",s->phases},{"export",s->exportResult},{"diagnostic",s->diagnostic},{"project_path",s->project},{"durable_edit_history_preserved",s->projectPassed},
@@ -204,11 +205,13 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
         if(!stable())return;
         if(s->phase==0){
             if(!s->prepared){
+            const auto expectedStatus=language=="zh_CN"?QString::fromUtf8("全分辨率统计"):QStringLiteral("Full-resolution statistics");
+            if(c->scopesStatus()!=expectedStatus){++s->scopeWaits;s->scopeWaitStates.append(QJsonObject{{"status",c->scopesStatus()},{"revision",QString::number(c->renderRevision())},{"pixels",qint64(c->scopesPixelCount())}});while(s->scopeWaitStates.size()>16)s->scopeWaitStates.removeFirst();return;}
             const auto corrected=GeometryState::fromJson(intent()["geometry"].toObject()).apply(s->fixture);
             s->reference=ImagePipeline::processWithPlan(corrected,c->gpuPlan(true));s->scopes=ScopesEngine::analyze(s->reference);
             if(c->scopesPixelCount()!=s->scopes.pixelCount||c->redHistogram().size()!=1024)return;
             s->sourceKey=c->gpuSource().cacheKey();s->revision=c->renderRevision();s->initial=intent();s->history=history();
-            if(!unchanged()){finish("Original full scopes do not match reference before proof");return;}
+            if(!unchanged()){finish("Original full scopes do not match reference before proof");return;}s->initialScopeStatus=c->scopesStatus();
             const auto observed=w->grabWindow();s->dpr=w->devicePixelRatio();const QSize logical(w->width(),w->height()),physical(qRound(logical.width()*s->dpr),qRound(logical.height()*s->dpr));
             if(observed.size()!=physical){const QSize fit(qRound(observed.width()/s->dpr),qRound(observed.height()/s->dpr));
                 if(s->resizes||fit.width()<w->minimumWidth()||fit.height()<w->minimumHeight()||QSize(qRound(fit.width()*s->dpr),qRound(fit.height()*s->dpr))!=observed.size()){

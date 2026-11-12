@@ -30,7 +30,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
            phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(15)])
     d['live_invariants']=dict(source_key='70',revision='14',pixels=307*211,**{k:True for k in ('source_same','revision_same','state_same','history_same','red_same','green_same','blue_same','luma_same','shadow_same','highlight_same')})
     d['final_history']=deepcopy(d['initial_history'])
-    d['scope']=dict(pixels=pixels,bins=1024,**{key:[pixels]+[0]*1023 for key in ('red','green','blue','luma')})
+    d['scope']=dict(status='Full-resolution statistics'if mode=='cpu'else'全分辨率统计',pixels=pixels,bins=1024,**{key:[pixels]+[0]*1023 for key in ('red','green','blue','luma')})
     targets=['softProofPanelToggle','softProofEnable','softProofPaper','softProofGamut','softProofBlackPoint','softProofRefresh','softProofEnable','softProofEnable']
     d['pointers']=[dict(target=key,x=100,y=200,QPA_mouse_route=True,source_key='50',render_revision='8',post_event_render_revision='8',at_ms=i*50+20)for i,key in enumerate(targets)]
     d['proofs']=[]
@@ -68,6 +68,11 @@ class SoftProofEvidenceTests(unittest.TestCase):
             with self.subTest(key=key):
                 d=report_fixture();d[key]=value
                 with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
+    def test_old_or_preview_statistics_cannot_be_admitted_as_current_full(self):
+        for status in ['更新中（旧统计）','GPU 预览统计','全分辨率统计 · 全分辨率更新中']:
+            d=report_fixture('gpu','windows');d['scope']['status']=status
+            with self.assertRaises(ValueError):validate_report(d,'gpu','windows')
 
     def test_stale_cpu_gpu_source_or_revision_and_unadmitted_memory_are_rejected(self):
         for key,value in [('gpu_staging_source_key','51'),('parameter_revision','7'),('prepared_source_key','0'),('presentation_reserved_bytes',0),('cpu_operation_reserved_bytes',0),('source_scaled_for_proof',True)]:

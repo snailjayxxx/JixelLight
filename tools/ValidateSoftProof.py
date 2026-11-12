@@ -37,6 +37,7 @@ def validate_report(data, mode, qpa, expected_commit=None):
     require(data['profile_model']=='RGB' and re.fullmatch(r'[0-9a-f]{64}',data['profile_sha256']) is not None, 'owned bounded output RGB ICC')
     require(('SOFT PROOF'if mode=='cpu'else'软打样') in data['header_text'], 'actual translated panel')
     scope=data['scope'];require(scope['pixels']==307*211 and scope['bins']==1024, 'complete original scope size')
+    require(scope['status']==('全分辨率统计'if data['language']=='zh_CN'else'Full-resolution statistics'),'current completed original full statistics')
     for key in ('red','green','blue','luma'):
         require(len(scope[key])==1024 and all(integer(v)for v in scope[key]) and sum(scope[key])==307*211, 'every original histogram bin')
     pointers=data['pointers'];require([p['target']for p in pointers]==['softProofPanelToggle','softProofEnable','softProofPaper','softProofGamut','softProofBlackPoint','softProofRefresh','softProofEnable','softProofEnable'], 'eight actual QPA control events')
