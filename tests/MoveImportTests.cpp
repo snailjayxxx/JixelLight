@@ -23,6 +23,7 @@
 #include "core/import/MoveImport.h"
 #include "core/import/MoveImportQueue.h"
 #include "core/project/ProjectDatabase.h"
+#include "diagnostics/ActionTrace.h"
 
 namespace {
 QByteArray bytes(const QString &path){QFile file(path);return file.open(QIODevice::ReadOnly)?file.readAll():QByteArray{};}
@@ -113,11 +114,17 @@ private slots:
     }
     void controllerMovesOnlyAfterDurableCatalogAndRecoveryReview(){
         Fixture f;QVERIFY(f.valid);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVariantList urls;for(const auto &source:f.sources)urls.push_back(QUrl::fromLocalFile(source));
-        QVERIFY(!c.moveImport(urls,QUrl::fromLocalFile(f.destination)));QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));QVERIFY(c.moveImport(urls,QUrl::fromLocalFile(f.destination)));
+        const QJsonObject command{{"command","photo.move"},{"sources",QJsonArray::fromStringList(f.sources)},{"folder",f.destination},{"pattern",""},{"sequenceStart",1}};
+        QVERIFY(!c.moveImport(urls,QUrl::fromLocalFile(f.destination)));QVERIFY(!c.executeCommand(command.toVariantMap()));
+        QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));QVERIFY(c.executeCommand(command.toVariantMap()));
         QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(f.calls,2);QCOMPARE(c.library().size(),2);QVERIFY(!c.moveImportJournal().isEmpty());
         ProjectDatabase read;QVector<ProjectDatabase::SavedPhoto> photos;QVERIFY(read.readSnapshot(c.projectPath(),&photos));QCOMPARE(photos.size(),2);for(const auto &photo:photos)QVERIFY(photo.identity.isKnown());
         QVERIFY(!c.resumeMoveImport(c.moveImportJournal()));c.inspectMoveImportRecovery(c.moveImportJournal());QTRY_VERIFY_WITH_TIMEOUT(c.moveImportRecoveryPreview()["valid"].toBool(),10000);
         QVERIFY(c.resumeMoveImport(c.moveImportJournal()));QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(f.calls,2);
+        bool canonical=false;for(const auto &entry:ActionTrace::instance().snapshot()) {
+            const auto row=entry.toObject();if(row["action"].toString()=="move_import_started"&&row["command"].toObject()==command)canonical=true;
+        }
+        QVERIFY(canonical);
     }
     void cancellingThenClosingControllerNeverRetiresAnOriginal(){
         Fixture f;QVERIFY(f.valid);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));

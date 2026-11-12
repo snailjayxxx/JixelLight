@@ -681,6 +681,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="photo.copy"||object["command"].toString()=="photo.move")return executePhotoTransfer(object);
     if(object["command"].toString()=="export.batch")return executeBatchExport(object);
     if(object["command"].toString()=="export.run")return executeCurrentExport(object,true);
     if(object["command"].toString()=="photo.import")return executePhotoImport(object,true);
@@ -1231,6 +1232,28 @@ void PhotoController::cancelImportNamePreview() {
     ++m_importNameRevision; emit importNamePreviewChanged();
 }
 bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart) {
+    return transferImportFromUrls(urls,directory,pattern,sequenceStart,false);
+}
+bool PhotoController::transferImportFromUrls(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart,bool move) {
+    if(QThread::currentThread()!=thread()||m_closing||!directory.isLocalFile()||urls.isEmpty()||urls.size()>1000)return false;
+    QJsonArray sources;
+    for(const auto &value:urls) {
+        const auto url=value.canConvert<QUrl>()?value.toUrl():QUrl(value.toString());
+        if(!url.isLocalFile()){if(!move)setStatus(uiText("复制导入仅支持本地文件", "Copy import requires local files"));return false;}sources.append(url.toLocalFile());
+    }
+    return executePhotoTransfer({{"command",move?"photo.move":"photo.copy"},{"sources",sources},{"folder",directory.toLocalFile()},
+        {"pattern",pattern},{"sequenceStart",pattern.isEmpty()?1:sequenceStart}});
+}
+bool PhotoController::executePhotoTransfer(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::PhotoTransfer request;if(!CommandRegistry::decodePhotoTransfer(command,&request))return false;
+    QVariantList urls;for(const auto &source:request.sources)urls.append(QUrl::fromLocalFile(source));
+    const QJsonObject canonical{{"command",request.move?"photo.move":"photo.copy"},{"sources",QJsonArray::fromStringList(request.sources)},
+        {"folder",request.folder},{"pattern",request.pattern},{"sequenceStart",request.sequenceStart}};
+    return request.move?startMoveImport(urls,QUrl::fromLocalFile(request.folder),request.pattern,request.sequenceStart,canonical)
+        :startCopyImport(urls,QUrl::fromLocalFile(request.folder),request.pattern,request.sequenceStart,canonical);
+}
+bool PhotoController::startCopyImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart,const QJsonObject &canonical) {
     if (xmpMergeBusy()) return false;
     if (copyImportBusy() || !directory.isLocalFile() || urls.isEmpty() || urls.size()>1000) return false;
     QStringList sources;
@@ -1247,7 +1270,7 @@ bool PhotoController::copyImport(const QVariantList &urls,const QUrl &directory,
     if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming,expected)) return false;
     m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
     ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},
-        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)}});
+        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)},{"command",canonical}});
     return true;
 }
 void PhotoController::openCopyImportDialog() {

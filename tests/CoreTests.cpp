@@ -7206,6 +7206,47 @@ private slots:
         QVERIFY(c.executeCommand(valid.toVariantMap()));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),1);QCOMPARE(finished[0][1].toInt(),0);
     }
 
+    void desktopCopyImportCommandFreezesNamesAndLeavesSourceBytesAndCurrentSelection() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto a=dir.filePath("a.png"),b=dir.filePath("b.png"),out=dir.filePath("out");QVERIFY(selectedExportPngFixture(a,2));QVERIFY(selectedExportPngFixture(b,7));
+        const auto bytesA=fixtureBytes(a),bytesB=fixtureBytes(b);PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(a)));c.setExposure(.5);c.finishInteraction();
+        const auto history=c.editHistory();const auto state=c.gpuPlan(true).state.toJson();
+        QJsonObject command{{"command","photo.copy"},{"sources",QJsonArray{a,b}},{"folder",out},{"pattern","copy_{seq:2}_{name}"},{"sequenceStart",3}};
+        const auto frozen=command;QVERIFY(c.executeCommand(command.toVariantMap()));QCOMPARE(c.editHistory(),history);QCOMPARE(c.gpuPlan(true).state.toJson(),state);
+        QVERIFY(!c.executeCommand(command.toVariantMap()));command["sources"]=QJsonArray{"unreadable.png"};command["folder"]="unused";command["pattern"]="changed";
+        c.setExposure(-.75);c.finishInteraction();
+        QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(c.library().size(),3);QCOMPARE(c.currentIndex(),0);QCOMPARE(c.currentFile(),a);
+        QCOMPARE(QDir(out).entryList(QDir::Files),QStringList({"copy_03_a.png","copy_04_b.png"}));
+        QCOMPARE(fixtureBytes(QDir(out).filePath("copy_03_a.png")),bytesA);QCOMPARE(fixtureBytes(QDir(out).filePath("copy_04_b.png")),bytesB);
+        QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);QVERIFY(!QFileInfo::exists(dir.filePath("unused")));
+        bool canonical=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+            const auto row=value.toObject();if(row["action"].toString()=="copy_import_started"&&row["command"].toObject()==frozen)canonical=true;
+        }
+        QVERIFY(canonical);QVERIFY(QDir(out).entryList({".jixellight-import-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+    }
+
+    void desktopTransferCommandsRejectInvalidFieldsNestedControlsAndForeignThreadsWithoutStarting() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto source=dir.filePath("source.png"),out=dir.filePath("out");QVERIFY(selectedExportPngFixture(source,5));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.2);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();
+        const QJsonObject valid{{"command","photo.copy"},{"sources",QJsonArray{source}},{"folder",out}};
+        QJsonArray excessive;for(int i=0;i<1001;++i)excessive.append(QString::number(i));
+        const QList<QPair<QString,QJsonValue>> invalid{{"sources",QJsonArray{}},{"sources",QJsonArray{source,source}},{"sources",QJsonArray{true}},
+            {"sources",QJsonArray{QString("nul")+QChar(u'\0')}},{"sources",excessive},{"sources",source},{"folder",true},{"folder",""},
+            {"folder",QString(32769,'x')},{"pattern",true},{"pattern",QString(161,'x')},{"pattern","../{name}"},{"pattern","{capture_date}"},
+            {"sequenceStart",0},{"sequenceStart",1000000000},{"sequenceStart",1.25},{"sequenceStart",true},{"overwrite",true},{"trash",true}};
+        for(const auto &entry:invalid) {
+            auto bad=valid;bad[entry.first]=entry.second;QVERIFY(!c.executeCommand(bad.toVariantMap()));QVERIFY(!c.copyImportBusy());
+            QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QVERIFY(QDir(out).isEmpty());QCOMPARE(fixtureBytes(source),bytes);
+        }
+        auto move=valid;move["command"]="photo.move";QVERIFY(!c.executeCommand(move.toVariantMap()));QVERIFY(!c.copyImportBusy());
+        QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},valid}}}));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(valid.toVariantMap());});worker.join();
+        QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!c.copyImportBusy());QCOMPARE(c.library().size(),1);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
+        QCOMPARE(fixtureBytes(source),bytes);QVERIFY(QDir(out).isEmpty());
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;

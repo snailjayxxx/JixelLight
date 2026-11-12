@@ -29,6 +29,9 @@ QString localizedMoveError(const QString &error,const QString &language){
 }
 
 bool PhotoController::moveImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart){
+    return transferImportFromUrls(urls,directory,pattern,sequenceStart,true);
+}
+bool PhotoController::startMoveImport(const QVariantList &urls,const QUrl &directory,const QString &pattern,int sequenceStart,const QJsonObject &canonical){
     if(copyImportBusy()||xmpMergeBusy()||exportBusy()||m_relinkBusy||!m_project.isOpen()||!directory.isLocalFile()||urls.isEmpty()||urls.size()>1000||!flushEdits())return false;
     QStringList sources;for(const auto &value:urls){const auto url=value.canConvert<QUrl>()?value.toUrl():QUrl(value.toString());if(!url.isLocalFile())return false;sources.push_back(url.toLocalFile());}
     const auto preview=previewImportNames(urls,pattern,sequenceStart);if(!preview["valid"].toBool()){setStatus(preview["error"].toString());return false;}
@@ -36,7 +39,7 @@ bool PhotoController::moveImport(const QVariantList &urls,const QUrl &directory,
     if(!m_moveImportQueue->start(sources,directory.toLocalFile(),m_moveImportProject,{pattern,sequenceStart},preview["captureTimes"].toStringList()))return false;
     m_moveImportFacts={{"phase","copying"},{"project",m_moveImportProject},{"requested",sources.size()}};
     m_copyImportProgress=0;m_copyImportStatus=uiText("检查移动导入计划…","Checking move import plan…");emit copyImportChanged();
-    ActionTrace::instance().record("move_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},{"project",m_moveImportProject}});return true;
+    ActionTrace::instance().record("move_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},{"project",m_moveImportProject},{"command",canonical}});return true;
 }
 void PhotoController::openMoveImportDialog(){
     if(copyImportBusy())return;

@@ -844,6 +844,10 @@ private:
     bool executePhotoImport(const QJsonObject &command,bool notifyImmediately);
     bool executeCurrentExport(const QJsonObject &command,bool newFileOnly);
     bool executeBatchExport(const QJsonObject &command);
+    bool executePhotoTransfer(const QJsonObject &command);
+    bool transferImportFromUrls(const QVariantList &,const QUrl &,const QString &,int,bool move);
+    bool startCopyImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
+    bool startMoveImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();
