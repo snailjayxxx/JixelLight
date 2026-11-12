@@ -7253,7 +7253,7 @@ private slots:
         PhotoController c(nullptr);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"CurationCommands"));QVERIFY(c.importFile(QUrl::fromLocalFile(a)));
         c.setExposure(.25);c.finishInteraction();QVERIFY(c.createVirtualCopy("Alternative"));c.setExposure(-.5);c.finishInteraction();
         QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.selectPhoto(2);c.setExposure(.1);c.finishInteraction();
-        QList<QJsonObject> states;QList<QVariantList> histories;for(int i=0;i<3;++i){c.selectPhoto(i);states.append(c.gpuPlan(true).state.toJson());histories.append(c.editHistory());}
+        QStringList keys;QList<QJsonObject> states;QList<QVariantList> histories;for(int i=0;i<3;++i){c.selectPhoto(i);keys.append(c.library()[i].toMap()["id"].toString());states.append(c.gpuPlan(true).state.toJson());histories.append(c.editHistory());}
         QVERIFY(c.setPhotoSelection({0,1}));const auto selection=c.selectedIndices();
         const auto apply=[&](const QString &field,const QJsonValue &value){return c.executeCommand(QJsonObject{{"command","catalog.curate"},{"target","selection"},{"field",field},{"value",value}}.toVariantMap());};
         QVERIFY(apply("rating",5));QVERIFY(apply("flag","reject"));QVERIFY(apply("keywords","z, a,z"));QVERIFY(apply("label","blue"));
@@ -7269,9 +7269,13 @@ private slots:
             if(row["action"].toString()=="selection_keywords"&&command==QJsonObject{{"command","catalog.curate"},{"target","selection"},{"field","keywords"},{"value","a,z"}})normalizedTrace=true;
         }
         QVERIFY(normalizedTrace);QVERIFY(c.prepareToClose());PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QCOMPARE(reopened.library().size(),3);
+        // Catalog snapshots deliberately load originals before virtual copies;
+        // compare saved version identities, not the former live row positions.
+        QSet<QString> restoredKeys;
         for(int i=0;i<3;++i) {
-            const auto row=reopened.library()[i].toMap();QCOMPARE(row["rating"].toInt(),i<2?5:0);QCOMPARE(row["label"].toString(),i<2?QString("blue"):QString("none"));
-            QCOMPARE(row["albums"].toStringList(),i<2?QStringList{"Keep"}:QStringList{});reopened.selectPhoto(i);QCOMPARE(reopened.gpuPlan(true).state.toJson(),states[i]);QCOMPARE(reopened.editHistory(),histories[i]);
+            const auto row=reopened.library()[i].toMap();const auto key=row["id"].toString();const int previous=keys.indexOf(key);QVERIFY(previous>=0);QVERIFY(!restoredKeys.contains(key));restoredKeys.insert(key);
+            QCOMPARE(row["rating"].toInt(),previous<2?5:0);QCOMPARE(row["label"].toString(),previous<2?QString("blue"):QString("none"));
+            QCOMPARE(row["albums"].toStringList(),previous<2?QStringList{"Keep"}:QStringList{});reopened.selectPhoto(i);QCOMPARE(reopened.gpuPlan(true).state.toJson(),states[previous]);QCOMPARE(reopened.editHistory(),histories[previous]);
         }
         QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
     }
