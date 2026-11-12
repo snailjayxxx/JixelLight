@@ -21,6 +21,9 @@ public:
     bool setBrushPreview(const QString &id,const QImage &leasedImage);
     bool renameBrushPreview(const QString &id);
     void clearBrushPreview();
+    bool setProofPreview(const QString &id,const QImage &leasedImage);
+    bool renameProofPreview(const QString &id);
+    void clearProofPreview();
 
 private:
     static QImage displayCopy(const QImage &source, const QImage &atlas, const QString &key);
@@ -33,4 +36,7 @@ private:
     QImage m_brushSource,m_brushImage;
     QString m_brushId;
     quint64 m_brushEpoch=0;
+    QImage m_proofSource,m_proofImage;
+    QString m_proofId;
+    quint64 m_proofEpoch=0;
 };

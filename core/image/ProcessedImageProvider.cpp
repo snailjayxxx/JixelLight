@@ -53,11 +53,14 @@ QImage ProcessedImageProvider::displayCopy(const QImage &source,const QImage &at
 
 QImage ProcessedImageProvider::requestImage(const QString &id, QSize *size, const QSize &requestedSize) {
     QMutexLocker lock(&m_mutex);
-    const bool brush=id.startsWith("brush-live/");
-    QImage result = brush ? (id==m_brushId?m_brushImage:QImage{}) :
+    const bool brush=id.startsWith("brush-live/"),proof=id.startsWith("proof-live/");
+    QImage result = proof ? (id==m_proofId?m_proofImage:QImage{}) : brush ? (id==m_brushId?m_brushImage:QImage{}) :
         id.startsWith("scopes/") ? m_scopePlot : id.startsWith("reference/") ? m_reference : m_image;
     lock.unlock();
     if (size) *size = result.size();
+    // Proof frames are admitted at native bounded resolution. QML scales the
+    // texture; arbitrary provider requests cannot allocate uncharged copies.
+    if(proof)return result;
     if (requestedSize.isValid() && !result.isNull()) {
         if(brush) {
             if(qint64(requestedSize.width())*requestedSize.height()>32LL*1024*1024)return {};
@@ -95,23 +98,25 @@ void ProcessedImageProvider::setReference(const QImage &image) {
 }
 
 void ProcessedImageProvider::setDisplayColorLut(const QImage &atlas,const QString &key) {
-    QImage imageSource,referenceSource,brushSource;QString brushId;
+    QImage imageSource,referenceSource,brushSource,proofSource;QString brushId,proofId;
     QString effective=key.isEmpty()?QStringLiteral("identity-srgb"):key;
     {
         QMutexLocker lock(&m_mutex);
         if(m_displayLutKey==effective&&m_displayLut.cacheKey()==atlas.cacheKey())return;
         m_displayLut=atlas;m_displayLutKey=effective;
         imageSource=m_imageSource;referenceSource=m_referenceSource;
-        brushSource=m_brushSource;brushId=m_brushId;
+        brushSource=m_brushSource;brushId=m_brushId;proofSource=m_proofSource;proofId=m_proofId;
     }
     const QImage displayImage=displayCopy(imageSource,atlas,effective);
     const QImage displayReference=displayCopy(referenceSource,atlas,effective);
     const QImage displayBrush=retainBrushDisplay(displayCopy(brushSource,atlas,effective),brushSource);
+    const QImage displayProof=retainBrushDisplay(displayCopy(proofSource,atlas,effective),proofSource);
     QMutexLocker lock(&m_mutex);
     if(m_displayLutKey!=effective||m_displayLut.cacheKey()!=atlas.cacheKey())return;
     if(m_imageSource.cacheKey()==imageSource.cacheKey())m_image=displayImage;
     if(m_referenceSource.cacheKey()==referenceSource.cacheKey())m_reference=displayReference;
     if(m_brushId==brushId&&m_brushSource.cacheKey()==brushSource.cacheKey())m_brushImage=displayBrush;
+    if(m_proofId==proofId&&m_proofSource.cacheKey()==proofSource.cacheKey())m_proofImage=displayProof;
 }
 
 bool ProcessedImageProvider::setBrushPreview(const QString &id,const QImage &image) {
@@ -130,4 +135,22 @@ bool ProcessedImageProvider::renameBrushPreview(const QString &id) {
 }
 void ProcessedImageProvider::clearBrushPreview() {
     QMutexLocker lock(&m_mutex);++m_brushEpoch;m_brushId.clear();m_brushSource={};m_brushImage={};
+}
+
+bool ProcessedImageProvider::setProofPreview(const QString &id,const QImage &image) {
+    if(!id.startsWith("proof-live/")||image.isNull())return false;
+    QImage lut;QString key;quint64 epoch;
+    {QMutexLocker lock(&m_mutex);lut=m_displayLut;key=m_displayLutKey;epoch=++m_proofEpoch;}
+    const auto display=retainBrushDisplay(displayCopy(image,lut,key),image);
+    if(display.isNull())return false;
+    QMutexLocker lock(&m_mutex);
+    if(epoch!=m_proofEpoch||key!=m_displayLutKey||lut.cacheKey()!=m_displayLut.cacheKey())return false;
+    m_proofId=id;m_proofSource=image;m_proofImage=display;return true;
+}
+bool ProcessedImageProvider::renameProofPreview(const QString &id) {
+    QMutexLocker lock(&m_mutex);if(!id.startsWith("proof-live/")||m_proofImage.isNull())return false;
+    m_proofId=id;++m_proofEpoch;return true;
+}
+void ProcessedImageProvider::clearProofPreview() {
+    QMutexLocker lock(&m_mutex);++m_proofEpoch;m_proofId.clear();m_proofSource={};m_proofImage={};
 }

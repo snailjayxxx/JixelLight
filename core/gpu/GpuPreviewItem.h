@@ -12,11 +12,14 @@ class GpuPreviewItem : public QQuickRhiItem {
     friend void startNativeBrushMonitorSmokeRun(PhotoController *,QQuickWindow *,const QString &);
     Q_OBJECT
     Q_PROPERTY(QObject *controller READ controller WRITE setController NOTIFY controllerChanged)
+    Q_PROPERTY(bool presentationCovered READ presentationCovered WRITE setPresentationCovered NOTIFY presentationCoveredChanged)
 public:
     explicit GpuPreviewItem(QQuickItem *parent=nullptr);
     ~GpuPreviewItem() override;
     void bindNativeRetirement(NativeBrush::DomainRetirement,std::function<void()>);
     void retireNativeResources();
+    bool presentationCovered() const {return m_presentationCovered;}
+    void setPresentationCovered(bool value);
     QObject *controller() const;
     void setController(QObject *controller);
     QQuickRhiItemRenderer *createRenderer() override;
@@ -25,6 +28,7 @@ public:
     QString displayColorProfileName() const { return m_displayColorProfileName; }
 signals:
     void controllerChanged();
+    void presentationCoveredChanged();
 private:
     void checkBackend();
     void refreshDisplayColorManagement();
@@ -34,6 +38,7 @@ private:
     QPointer<QQuickWindow> m_nativeWindow;
     QPointer<PhotoController> m_controller;
     QTimer m_histogramRefresh;
+    bool m_presentationCovered=false;
     QImage m_displayColorLut;
     QString m_displayColorLutKey;
     QString m_displayColorProfileName;

@@ -1,0 +1,65 @@
+#include <QtTest>
+#include <QColorSpace>
+#include <QCryptographicHash>
+#include <QFile>
+#include <QTemporaryDir>
+#include <QtConcurrent>
+#include <QRgba64>
+#include <lcms2.h>
+#include <cmath>
+#include "core/color/SoftProof.h"
+
+class SoftProofTests:public QObject {
+    Q_OBJECT
+    static QByteArray pixels(const QImage &image){QCryptographicHash hash(QCryptographicHash::Sha256);for(int y=0;y<image.height();++y)hash.addData(QByteArrayView(reinterpret_cast<const char *>(image.constScanLine(y)),image.width()*8));return hash.result();}
+    static QImage frame(){QImage image(97,83,QImage::Format_RGBA64);image.setColorSpace(SoftProof::workingColorSpace());const quint16 alpha[]{0,1,20000,65535};for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64((x*677+y*151)%65536,(x*179+y*787)%65536,(x*541+y*83)%65536,alpha[(x+y)%4]);return image;}
+    static QByteArray serialize(cmsHPROFILE profile){cmsUInt32Number size=0;if(!cmsSaveProfileToMem(profile,nullptr,&size))return {};QByteArray bytes(size,Qt::Uninitialized);if(!cmsSaveProfileToMem(profile,bytes.data(),&size))return {};bytes.resize(size);return bytes;}
+    static QByteArray warmOutput(){cmsCIExyY white{.38,.39,1};cmsCIExyYTRIPLE primaries{{.64,.33,1},{.30,.60,1},{.15,.06,1}};cmsToneCurve *curves[3]{cmsBuildGamma(nullptr,2.2),cmsBuildGamma(nullptr,2.2),cmsBuildGamma(nullptr,2.2)};auto profile=cmsCreateRGBProfile(&white,&primaries,curves);for(auto curve:curves)cmsFreeToneCurve(curve);if(!profile)return {};cmsSetDeviceClass(profile,cmsSigOutputClass);auto bytes=serialize(profile);cmsCloseProfile(profile);return bytes;}
+// An owned mathematical CMYK device model, not a measured printer profile.
+static QByteArray ownedCmykOutput(){
+    auto rgb=cmsCreate_sRGBProfile(),lab=cmsCreateLab4Profile(nullptr);
+    auto toLab=cmsCreateTransform(rgb,TYPE_RGB_DBL,lab,TYPE_Lab_16,INTENT_RELATIVE_COLORIMETRIC,cmsFLAGS_NOOPTIMIZE);
+    auto toRgb=cmsCreateTransform(lab,TYPE_Lab_16,rgb,TYPE_RGB_DBL,INTENT_RELATIVE_COLORIMETRIC,cmsFLAGS_NOOPTIMIZE);
+    if(!toLab||!toRgb){if(toLab)cmsDeleteTransform(toLab);if(toRgb)cmsDeleteTransform(toRgb);cmsCloseProfile(rgb);cmsCloseProfile(lab);return {};}
+    auto forward=cmsPipelineAlloc(nullptr,4,3),backward=cmsPipelineAlloc(nullptr,3,4);
+    auto f=cmsStageAllocCLut16bit(nullptr,9,4,3,nullptr),b=cmsStageAllocCLut16bit(nullptr,17,3,4,nullptr);
+    cmsStageSampleCLut16bit(f,[](const cmsUInt16Number in[],cmsUInt16Number out[],void *context)->cmsInt32Number{
+        double v[3];const double k=in[3]/65535.;for(int j=0;j<3;++j)v[j]=(1-in[j]/65535.)*(1-k);
+        cmsDoTransform(static_cast<cmsHTRANSFORM>(context),v,out,1);return 1;
+    },toLab,0);
+    cmsStageSampleCLut16bit(b,[](const cmsUInt16Number in[],cmsUInt16Number out[],void *context)->cmsInt32Number{
+        double v[3];cmsDoTransform(static_cast<cmsHTRANSFORM>(context),in,v,1);for(auto &x:v)x=std::clamp(x,0.,1.);
+        const double k=1-std::max({v[0],v[1],v[2]});for(int j=0;j<3;++j)out[j]=quint16(std::clamp(std::lround((k>=1?0:(1-v[j]-k)/(1-k))*65535.),0l,65535l));
+        out[3]=quint16(std::lround(k*65535.));return 1;
+    },toRgb,0);
+    cmsPipelineInsertStage(forward,cmsAT_END,cmsStageAllocToneCurves(nullptr,4,nullptr));cmsPipelineInsertStage(forward,cmsAT_END,f);cmsPipelineInsertStage(forward,cmsAT_END,cmsStageAllocToneCurves(nullptr,3,nullptr));
+    cmsPipelineInsertStage(backward,cmsAT_END,cmsStageAllocToneCurves(nullptr,3,nullptr));cmsPipelineInsertStage(backward,cmsAT_END,b);cmsPipelineInsertStage(backward,cmsAT_END,cmsStageAllocToneCurves(nullptr,4,nullptr));
+    auto profile=cmsCreateProfilePlaceholder(nullptr);cmsSetProfileVersion(profile,4.3);cmsSetDeviceClass(profile,cmsSigOutputClass);cmsSetColorSpace(profile,cmsSigCmykData);cmsSetPCS(profile,cmsSigLabData);
+    cmsWriteTag(profile,cmsSigMediaWhitePointTag,cmsD50_XYZ());auto description=cmsMLUalloc(nullptr,1);cmsMLUsetASCII(description,"en","US","Owned mathematical CMYK proof fixture");cmsWriteTag(profile,cmsSigProfileDescriptionTag,description);cmsMLUfree(description);
+    bool ok=true;for(auto tag:{cmsSigAToB0Tag,cmsSigAToB1Tag,cmsSigAToB2Tag})ok=cmsWriteTag(profile,tag,forward)&&ok;
+    for(auto tag:{cmsSigBToA0Tag,cmsSigBToA1Tag,cmsSigBToA2Tag})ok=cmsWriteTag(profile,tag,backward)&&ok;
+    const auto bytes=ok?serialize(profile):QByteArray{};cmsCloseProfile(profile);cmsPipelineFree(forward);cmsPipelineFree(backward);
+    cmsDeleteTransform(toLab);cmsDeleteTransform(toRgb);cmsCloseProfile(rgb);cmsCloseProfile(lab);return bytes;
+}
+private slots:
+    void cmykOutputRoundTripsAllIntentsWithExactAlphaAndSource(){
+        const auto bytes=ownedCmykOutput();QVERIFY(!bytes.isEmpty());QVERIFY(bytes.size()<=SoftProof::MaxProfileBytes);
+        QString error;const auto profile=SoftProof::Profile::fromIcc(bytes,&error);QVERIFY2(profile.valid(),qPrintable(error));QCOMPARE(profile.colorModel(),QString("CMYK"));
+        const auto source=frame();const auto before=pixels(source);for(int intent=0;intent<4;++intent){SoftProof::Settings settings;settings.intent=SoftProof::Intent(intent);settings.simulatePaper=intent%2;settings.gamutWarning=intent>=2;
+            const auto result=SoftProof::transform(source,profile,settings);QVERIFY2(!result.image.isNull(),qPrintable(result.error));QCOMPARE(result.image.size(),source.size());QCOMPARE(result.facts["proof_profile_model"].toString(),QString("CMYK"));
+            for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)QCOMPARE(reinterpret_cast<const QRgba64 *>(result.image.constScanLine(y))[x].alpha(),reinterpret_cast<const QRgba64 *>(source.constScanLine(y))[x].alpha());}
+        QCOMPARE(pixels(source),before);
+    }
+    void privateProofInputUsesActualRendererGamma(){const auto bytes=SoftProof::workingColorSpace().iccProfile();auto profile=cmsOpenProfileFromMem(bytes.constData(),cmsUInt32Number(bytes.size()));QVERIFY(profile);const auto curve=static_cast<const cmsToneCurve *>(cmsReadTag(profile,cmsSigRedTRCTag));QVERIFY(curve);for(float v:{.001f,.01f,.02f,.1f,.5f})QVERIFY(std::abs(cmsEvalToneCurveFloat(curve,v)-std::pow(v,1.8f))<1.e-6f);cmsCloseProfile(profile);const auto old=ColorManagement::iccProfile(ColorManagement::OutputSpace::ProPhotoRgb);auto named=cmsOpenProfileFromMem(old.constData(),cmsUInt32Number(old.size()));QVERIFY(named);qInfo()<<"Existing named ProPhoto ICC decode .01"<<cmsEvalToneCurveFloat(static_cast<const cmsToneCurve *>(cmsReadTag(named,cmsSigRedTRCTag)),.01f)<<"actual renderer gamma1.8"<<std::pow(.01f,1.8f);cmsCloseProfile(named);}
+    void builtinProfilesAreBoundedImmutableSnapshots(){for(int i=0;i<4;++i){QString error;const auto profile=SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace(i),&error);QVERIFY2(profile.valid(),qPrintable(error));QCOMPARE(profile.icc(),ColorManagement::iccProfile(ColorManagement::OutputSpace(i)));QCOMPARE(profile.colorModel(),QString("RGB"));QVERIFY(profile.key().startsWith("soft-proof-icc-v1:"));QVERIFY(!profile.description().isEmpty());}}
+    void malformedUnknownAndNonDeviceProfilesAreRejected(){QString error;for(const auto bytes:{QByteArray{},QByteArray("invalid ICC"),QByteArray(SoftProof::MaxProfileBytes+1,'x')})QVERIFY(!SoftProof::Profile::fromIcc(bytes,&error).valid());auto lab=cmsCreateLab4Profile(nullptr);QVERIFY(lab);const auto bytes=serialize(lab);cmsCloseProfile(lab);QVERIFY(!SoftProof::Profile::fromIcc(bytes,&error).valid());QVERIFY(!SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace(100),&error).valid());}
+    void fileReadsRetainSnapshotAfterOriginalChanges(){QTemporaryDir dir;const auto path=dir.filePath("proof with spaces.icc");const auto original=ColorManagement::iccProfile(ColorManagement::OutputSpace::AdobeRgb);{QFile f(path);QVERIFY(f.open(QIODevice::WriteOnly));QCOMPARE(f.write(original),qint64(original.size()));}QString error;const auto profile=SoftProof::Profile::fromFile(path,&error);QVERIFY2(profile.valid(),qPrintable(error));{QFile f(path);QVERIFY(f.open(QIODevice::WriteOnly|QIODevice::Truncate));f.write("changed owned fixture");}QCOMPARE(profile.icc(),original);const auto result=SoftProof::transform(frame(),profile,{});QVERIFY2(!result.image.isNull(),qPrintable(result.error));}
+    void outputIsSrgbWithExactAlphaAndUnchangedInput(){const auto source=frame();const auto before=pixels(source);for(int i=0;i<4;++i){const auto result=SoftProof::transform(source,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace(i)),{});QVERIFY2(!result.image.isNull(),qPrintable(result.error));QCOMPARE(result.image.size(),source.size());QCOMPARE(result.image.format(),QImage::Format_RGBA64);QCOMPARE(result.image.colorSpace(),QColorSpace(QColorSpace::SRgb));QVERIFY(result.facts["presentation_only"].toBool());QVERIFY(!result.facts["monitor_icc_applied"].toBool());QVERIFY(!result.facts["export_or_scopes_modified"].toBool());for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x)QCOMPARE(reinterpret_cast<const QRgba64 *>(result.image.constScanLine(y))[x].alpha(),reinterpret_cast<const QRgba64 *>(source.constScanLine(y))[x].alpha());}QCOMPARE(pixels(source),before);}
+    void clippedDisplayFramesAndOversizedWorkAreRefused(){auto source=frame();source.setColorSpace(QColorSpace(QColorSpace::SRgb));QVERIFY(SoftProof::transform(source,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),{}).image.isNull());source=frame().convertToFormat(QImage::Format_RGBA64_Premultiplied);QVERIFY(SoftProof::transform(source,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),{}).image.isNull());QImage large(4097,2048,QImage::Format_RGBA64);large.setColorSpace(SoftProof::workingColorSpace());QVERIFY(SoftProof::transform(large,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),{}).image.isNull());}
+    void cancellationAndInvalidIntentPublishNoFrame(){const auto source=frame();auto cancel=std::make_shared<std::atomic_bool>(true);const auto stopped=SoftProof::transform(source,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),{},cancel);QVERIFY(stopped.cancelled);QVERIFY(stopped.image.isNull());SoftProof::Settings settings;settings.intent=SoftProof::Intent(9);QVERIFY(SoftProof::transform(source,SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),settings).image.isNull());}
+    void wideInputRetainsGamutInformationLostByEarlySrgbClipping(){const auto source=frame();auto clippedSrgb=source.convertedToColorSpace(QColorSpace(QColorSpace::SRgb),QImage::Format_RGBA64);clippedSrgb.setColorSpace(QColorSpace(QColorSpace::SRgb));auto clipped=clippedSrgb.convertedToColorSpace(source.colorSpace(),QImage::Format_RGBA64);clipped.setColorSpace(source.colorSpace());SoftProof::Settings settings;settings.gamutWarning=true;const auto profile=SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::AdobeRgb);const auto wide=SoftProof::transform(source,profile,settings),early=SoftProof::transform(clipped,profile,settings);QVERIFY2(!wide.image.isNull(),qPrintable(wide.error));QVERIFY2(!early.image.isNull(),qPrintable(early.error));int changedWarnings=0;for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){const auto a=reinterpret_cast<const QRgba64 *>(wide.image.constScanLine(y))[x],b=reinterpret_cast<const QRgba64 *>(early.image.constScanLine(y))[x];const auto alarm=[](QRgba64 v){return v.red()==65535&&v.green()==0&&v.blue()==65535;};changedWarnings+=alarm(a)!=alarm(b);}QVERIFY2(changedWarnings>0,"Owned wide-gamut patches must expose information lost by an sRGB intermediate");}
+    void paperSimulationChangesPresentationWithoutChangingSource(){const auto source=frame();QString error;const auto profile=SoftProof::Profile::fromIcc(warmOutput(),&error);QVERIFY2(profile.valid(),qPrintable(error));SoftProof::Settings settings;const auto relative=SoftProof::transform(source,profile,settings);settings.simulatePaper=true;const auto absolute=SoftProof::transform(source,profile,settings);QVERIFY2(!relative.image.isNull(),qPrintable(relative.error));QVERIFY2(!absolute.image.isNull(),qPrintable(absolute.error));QVERIFY(pixels(relative.image)!=pixels(absolute.image));QVERIFY(absolute.facts["simulate_paper"].toBool());}
+    void concurrentGamutModesHaveIndependentColorContexts(){const auto source=frame();const auto profile=SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb);SoftProof::Settings marked;marked.gamutWarning=true;const auto normal=SoftProof::transform(source,profile,{}),warning=SoftProof::transform(source,profile,marked);QVERIFY(!normal.image.isNull()&&!warning.image.isNull());QVERIFY(pixels(normal.image)!=pixels(warning.image));QList<QFuture<SoftProof::Result>> jobs;for(int i=0;i<8;++i)jobs.push_back(QtConcurrent::run([=]{return SoftProof::transform(source,profile,i%2?marked:SoftProof::Settings{});}));for(int i=0;i<jobs.size();++i){jobs[i].waitForFinished();QCOMPARE(pixels(jobs[i].result().image),pixels(i%2?warning.image:normal.image));}}
+};
+QTEST_GUILESS_MAIN(SoftProofTests)
+#include "SoftProofTests.moc"

@@ -7,6 +7,7 @@ void PhotoController::setDisplayColorLut(const QImage &atlas,const QString &key)
     if(m_displayColorLutKey==effective)return;
     m_displayColorLutKey=effective;
     if(m_provider)m_provider->setDisplayColorLut(atlas,effective);
+    refreshSoftProofDisplay();
     if(!m_brushPreviewId.isEmpty()&&m_provider) {
         const auto id=QStringLiteral("brush-live/%1").arg(++m_brushPreviewSerial);
         if(m_provider->renameBrushPreview(id)){m_brushPreviewId=id;emit brushPreviewChanged();}

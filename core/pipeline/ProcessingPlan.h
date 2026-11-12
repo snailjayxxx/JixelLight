@@ -209,9 +209,20 @@ struct ProcessingPlan {
                                   ColorManagement::OutputSpace output,
                                   bool rawSource,
                                   float baseExposureStops);
+    // Prepared consumers that require admission retain the original immutable
+    // intent even when there are no brush masks. Existing GPU plans keep their
+    // lightweight path; validation still compares every packed parameter.
+    static ProcessingPlan compileRetainingIntent(const AdjustmentState &state,
+                                  ImagePipeline::InputEncoding encoding,
+                                  ColorManagement::OutputSpace output,
+                                  bool rawSource,float baseExposureStops) {
+        auto plan=compile(state,encoding,output,rawSource,baseExposureStops);
+        if(!plan.m_brushIntent)plan.m_brushIntent=std::make_shared<const AdjustmentState>(state);
+        return plan;
+    }
 private:
     // state above is LookProfiles::effective(intent), so recompiling it would
-    // apply the Look twice. Only explicit brush admission may use this snapshot.
+    // apply the Look twice. Only admitted prepared consumers may use this snapshot.
     std::shared_ptr<const AdjustmentState> m_brushIntent;
     friend class BrushRenderRequest;
 };

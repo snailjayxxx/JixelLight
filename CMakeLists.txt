@@ -65,6 +65,7 @@ add_library(JixelLightCore STATIC
     app/RelinkController.cpp
     app/LookController.cpp
     app/DisplayColorController.cpp
+    app/PhotoControllerSoftProof.cpp
     core/cache/SourceCache.cpp
     core/cache/FloatSceneSourceCache.cpp
     core/cache/RenderedPreviewCache.cpp
@@ -73,6 +74,8 @@ add_library(JixelLightCore STATIC
     core/cache/ScopePlotCache.cpp
     core/color/ColorManagement.cpp
     core/color/MonitorColorTransform.cpp
+    core/color/SoftProof.cpp
+    core/preview/SoftProofPreview.cpp
     core/image/ProcessedImageProvider.cpp
     core/image/ThumbnailProvider.cpp
     core/import/CopyImport.cpp
@@ -122,7 +125,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/ColorMaskSmokeRun.cpp app/LuminanceMaskSmokeRun.cpp app/PointColorSmokeRun.cpp app/DehazeSmokeRun.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/SoftProofSmokeRun.cpp app/ColorMaskSmokeRun.cpp app/LuminanceMaskSmokeRun.cpp app/PointColorSmokeRun.cpp app/DehazeSmokeRun.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -130,7 +133,7 @@ if(APPLE)
     target_sources(JixelLight PRIVATE app/GuiSmokeActivity.mm)
     target_link_libraries(JixelLight PRIVATE "-framework Foundation")
 endif()
-set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/BrushCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
+set(QML_SOURCES ui/Main.qml ui/HistogramView.qml ui/ScopePlotView.qml ui/AdjustmentSlider.qml ui/AdjustmentTransferDialog.qml ui/CopyImportDialog.qml ui/CurveEditor.qml ui/PhotoCanvas.qml ui/CropOverlay.qml ui/MaskCanvasOverlay.qml ui/BrushCanvasOverlay.qml ui/SonyLookPanel.qml ui/CameraReferenceView.qml ui/DevelopRightPanel.qml ui/SoftProofPanel.qml ui/LibrarySidebar.qml ui/LibraryWorkspace.qml ui/Filmstrip.qml)
 foreach(file IN LISTS QML_SOURCES)
     get_filename_component(alias ${file} NAME)
     set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${alias})
@@ -584,3 +587,14 @@ target_link_libraries(JixelLightColorMaskWorkflowTests PRIVATE JixelLightCore Qt
 set_target_properties(JixelLightColorMaskWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME color-range-mask-workflows COMMAND JixelLightColorMaskWorkflowTests -o color-mask-workflow-results.txt,txt -o -,txt)
 set_tests_properties(color-range-mask-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_COLOR_MASK_EVIDENCE=${CMAKE_BINARY_DIR}/color-mask-owned")
+
+qt_add_executable(JixelLightSoftProofTests tests/SoftProofTests.cpp)
+target_link_libraries(JixelLightSoftProofTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME soft-proof COMMAND JixelLightSoftProofTests -o soft-proof-results.txt,txt -o -,txt)
+set_tests_properties(soft-proof PROPERTIES TIMEOUT 60)
+
+qt_add_executable(JixelLightSoftProofWorkflowTests tests/SoftProofWorkflowTests.cpp)
+target_link_libraries(JixelLightSoftProofWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightSoftProofWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME soft-proof-workflows COMMAND JixelLightSoftProofWorkflowTests -o soft-proof-workflow-results.txt,txt -o -,txt)
+set_tests_properties(soft-proof-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")

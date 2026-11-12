@@ -19,6 +19,7 @@ class QQuickWindow;
 #include "core/async/LatestFrameJob.h"
 #include "core/export/ExportQueue.h"
 #include "core/import/CopyImportQueue.h"
+#include "core/preview/SoftProofPreview.h"
 #include "core/look/CameraReference.h"
 #include "core/look/LookCalibration.h"
 
@@ -119,6 +120,17 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool pointColorEnabled READ pointColorEnabled WRITE setPointColorEnabled NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool pointColorCpuPrecision READ pointColorCpuPrecision NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool colorMaskCpuPrecision READ colorMaskCpuPrecision NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool softProofEnabled READ softProofEnabled NOTIFY softProofChanged)
+    Q_PROPERTY(bool softProofReady READ softProofReady NOTIFY softProofChanged)
+    Q_PROPERTY(QString softProofUrl READ softProofUrl NOTIFY softProofChanged)
+    Q_PROPERTY(QString softProofTarget READ softProofTarget NOTIFY softProofChanged)
+    Q_PROPERTY(QString softProofProfileName READ softProofProfileName NOTIFY softProofChanged)
+    Q_PROPERTY(int softProofIntent READ softProofIntent NOTIFY softProofChanged)
+    Q_PROPERTY(bool softProofPaper READ softProofPaper NOTIFY softProofChanged)
+    Q_PROPERTY(bool softProofGamutWarning READ softProofGamutWarning NOTIFY softProofChanged)
+    Q_PROPERTY(bool softProofBlackPoint READ softProofBlackPoint NOTIFY softProofChanged)
+    Q_PROPERTY(QString softProofStatus READ softProofStatus NOTIFY softProofChanged)
+    Q_PROPERTY(QVariantMap softProofDiagnostics READ softProofDiagnostics NOTIFY softProofChanged)
     Q_PROPERTY(QColor pointColorColor READ pointColorColor NOTIFY adjustmentsChanged)
     Q_PROPERTY(double pointColorHue READ pointColorHue WRITE setPointColorHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(double pointColorSaturation READ pointColorSaturation WRITE setPointColorSaturation NOTIFY adjustmentsChanged)
@@ -254,9 +266,10 @@ public:
         const double value = m_currentMetadata.value(QStringLiteral("rawBaseExposureStops"), 0.0).toDouble(&ok);
         return ok && std::isfinite(value) ? float(std::clamp(value, -8.0, 8.0)) : 0.0f;
     }
-    ProcessingPlan gpuPlan(bool fullFrame=false) const {
-        auto plan=ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
-                                       ColorManagement::OutputSpace::SRgb, currentIsRaw(), rawBaseExposureStops());
+    ProcessingPlan gpuPlan(bool fullFrame=false,ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb) const {
+        auto plan=output==ColorManagement::OutputSpace::ProPhotoRgb
+            ?ProcessingPlan::compileRetainingIntent(currentState(),ImagePipeline::InputEncoding::LinearProPhoto,output,currentIsRaw(),rawBaseExposureStops())
+            :ProcessingPlan::compile(currentState(),ImagePipeline::InputEncoding::LinearProPhoto,output,currentIsRaw(),rawBaseExposureStops());
         if (!fullFrame) {plan.setFrameRect(m_previewFrameRect);plan.setReferenceFrameSize(m_previewReferenceFrameSize);plan.setDehazeAirlight(m_previewDehazeAirlight);}
         return plan;
     }
@@ -317,6 +330,26 @@ public:
     bool pointColorEnabled() const {return currentState().pointColorEnabled;}
     bool pointColorCpuPrecision() const {return gpuPlan().pointColorNeedsCpuPrecision();}
     bool colorMaskCpuPrecision() const {return gpuPlan().colorMaskNeedsCpuPrecision();}
+    bool softProofEnabled() const {return m_softProofEnabled;}
+    bool softProofReady() const {return m_softProofEnabled&&hasImage()&&!m_softProofId.isEmpty()&&!m_preparing&&!m_loading&&!brushDrawing();}
+    QString softProofUrl() const {return softProofReady()?QStringLiteral("image://processed/")+m_softProofId:QString{};}
+    QString softProofTarget() const {return m_softProofTarget;}
+    QString softProofProfileName() const {return m_softProofProfile.description();}
+    int softProofIntent() const {return int(m_softProofSettings.intent);}
+    bool softProofPaper() const {return m_softProofSettings.simulatePaper;}
+    bool softProofGamutWarning() const {return m_softProofSettings.gamutWarning;}
+    bool softProofBlackPoint() const {return m_softProofSettings.blackPointCompensation;}
+    QString softProofStatus() const;
+    QVariantMap softProofDiagnostics() const;
+    Q_INVOKABLE void setSoftProofEnabled(bool);
+    Q_INVOKABLE bool setSoftProofTarget(const QString &);
+    Q_INVOKABLE void chooseSoftProofProfile();
+    Q_INVOKABLE bool loadSoftProofProfile(const QUrl &);
+    Q_INVOKABLE bool setSoftProofIntent(int);
+    Q_INVOKABLE void setSoftProofPaper(bool);
+    Q_INVOKABLE void setSoftProofGamutWarning(bool);
+    Q_INVOKABLE void setSoftProofBlackPoint(bool);
+    Q_INVOKABLE void refreshSoftProof();
     QColor pointColorColor() const;
     double pointColorHue() const;double pointColorSaturation() const;double pointColorLuminance() const;
     double pointColorHueRange() const;double pointColorChromaRange() const;double pointColorLightnessRange() const;
@@ -554,6 +587,7 @@ signals:
     void curationChanged();
     void presetsChanged();
     void historyChanged();
+    void softProofChanged();
     void adjustmentsChanged(); void projectChanged(); void statusMessageChanged(); void languageChanged();
     void currentMetadataChanged();
     void activityChanged(); void backendChanged(); void exportChanged();
@@ -638,6 +672,20 @@ private:
     std::shared_ptr<SourceCache> m_sourceCache;
     std::shared_ptr<BrushRenderBudget> m_brushBudget;
     std::shared_ptr<RenderedPreviewCache> m_renderCache;
+    void initializeSoftProof();
+    void scheduleSoftProof(bool force=false);
+    void submitSoftProof();
+    void saveSoftProofSettings();
+    void refreshSoftProofDisplay();
+    bool m_softProofEnabled=false;
+    QString m_softProofTarget="srgb",m_softProofPath,m_softProofId,m_softProofState="off",m_softProofError,m_softProofSignature;
+    SoftProof::Profile m_softProofProfile,m_softProofCustom;
+    SoftProof::Settings m_softProofSettings;
+    QJsonObject m_softProofFacts;
+    quint64 m_softProofGeneration=0,m_softProofDisplaySerial=0;
+    QTimer m_softProofDelay,m_softProofDeadline;
+    std::shared_ptr<SoftProofPreviewRenderer> m_softProofRenderer;
+    std::unique_ptr<LatestJob<SoftProofPreviewRequest,SoftProofPreviewResult>> m_softProofJob;
     std::shared_ptr<FullScopesCache> m_fullScopesCache;
     std::shared_ptr<AnalysisFrameCache> m_analysisFrameCache;
     std::shared_ptr<ScopePlotCache> m_scopePlotCache;

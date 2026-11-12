@@ -23,6 +23,7 @@ private:
     std::shared_ptr<const void> reserve(qint64 bytes);
     friend class NativeBrush::BudgetAccess;
     friend class BrushRenderRequest;
+    friend class SoftProofPreviewRenderer;
 };
 
 class BrushImageLease final {
@@ -96,6 +97,13 @@ public:
     bool visitStrips(const StripConsumer &consumer,const CancelToken &cancel={},QString *error=nullptr);
 private:
     BrushRenderRequest()=default;
+    // Private admission for a non-brush prepared consumer. This reserves the
+    // same conservative CPU-stack payload; no brush request is manufactured.
+    static bool validPreparedImagePlan(const ProcessingPlan &,QString *error);
+    static bool validPreparedPlanImpl(const ProcessingPlan &,QString *error,bool requireBrush);
+    static std::shared_ptr<const void> reservePreparedImage(const QImage &,const ProcessingPlan &,
+        const CancelToken &,QString *error,std::shared_ptr<BrushRenderBudget>,qint64 *bytes,BrushAdmissionFailure *failure);
+    friend class SoftProofPreviewRenderer;
     static std::unique_ptr<BrushRenderRequest> createImpl(const QImage &source,const AdjustmentState &state,
         const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
         const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure);

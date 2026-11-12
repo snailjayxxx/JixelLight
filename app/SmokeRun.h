@@ -52,3 +52,6 @@ void startDenoiseSmokeRun(PhotoController *,QQuickWindow *,const QString &,const
 void startLuminanceMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 
 void startColorMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+class ProcessedImageProvider;
+void startSoftProofSmokeRun(PhotoController *,ProcessedImageProvider *,QQuickWindow *,const QString &,const QString &);
