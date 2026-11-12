@@ -1,0 +1,35 @@
+#version 440
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[58];};
+layout(rgba32f,binding=1) readonly uniform image2D sourceImage;
+layout(rgba32f,binding=2) readonly uniform image2D guideImage;
+layout(rgba32f,binding=3) readonly uniform image2D coarseImage;
+layout(rgba32f,binding=4) writeonly uniform image2D linearImage;
+layout(std140,binding=5) uniform Kernel {vec4 weights[2];};
+#include "denoise_common.glsl"
+float weightAt(int n){return weights[n/4][n%4];}
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+    vec4 original=imageLoad(sourceImage,c);
+    precise vec3 linear=p[56].w>0.0?original.rgb:dnInput(original.rgb);
+    if(original.a>1.e-20) {
+        if(p[56].x<0.0) {
+            precise float transmission=1.0+.65*p[56].x;
+            linear=p[57].rgb+(linear-p[57].rgb)*transmission;
+        } else {
+            vec2 center=imageLoad(guideImage,c).rg;int radius=int(ceil(p[56].z));
+            precise float sum=0.0,weighted=0.0;
+            for(int j=-radius;j<=radius;++j)for(int i=-radius;i<=radius;++i) {
+                ivec2 n=clamp(c+ivec2(i,j),ivec2(0),size-1);vec2 g=imageLoad(guideImage,n).rg;if(g.y<=1.e-20)continue;
+                precise float delta=g.x-center.x;
+                precise float weight=weightAt(i+radius)*weightAt(j+radius)*exp(-delta*delta/.02)*g.y;
+                sum+=weight;weighted+=weight*imageLoad(coarseImage,n).r;
+            }
+            precise float refined=sum>1.e-20?clamp(weighted/sum,.1,1.0):imageLoad(coarseImage,c).r;
+            precise float transmission=1.0-p[56].x*(1.0-refined);
+            if(transmission!=1.0)linear=(linear-p[57].rgb)/transmission+p[57].rgb;
+        }
+    }
+    imageStore(linearImage,c,vec4(linear,original.a));
+}

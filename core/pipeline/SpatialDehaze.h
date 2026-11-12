@@ -14,6 +14,7 @@ Airlight estimateAirlight(QSize size,const Sampler &linearProPhoto,const CancelT
 struct Parameters {float amount=0,darkRadius=7,refineRadius=3;Triple airlight{1,1,1};};
 bool valid(Parameters p);
 int halo(Parameters p);
+std::array<float,8> refinementWeights(float radius);
 // Owned RGBA32F16 + intensity/alpha8 + dark/coarse4 + horizontal4 =32B/pixel.
 // Positive removes a bounded atmospheric veil; negative adds a uniform veil.
 QImage apply(QImage linear,Parameters p,const CancelToken &cancel={},bool parallel=true);

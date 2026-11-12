@@ -659,7 +659,7 @@ Rectangle {
                     Layout.maximumWidth: Math.max(240, root.width - 20)
                     ToolButton {
                         objectName: "dehazeToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
-                        text: (root.dehazeExpanded ? "▾ " : "▸ ") + root.t("去雾 · CPU", "DEHAZE · CPU")
+                        text: (root.dehazeExpanded ? "▾ " : "▸ ") + root.t("去雾", "DEHAZE")
                         onClicked: root.dehazeExpanded = !root.dehazeExpanded
                     }
                     Button {

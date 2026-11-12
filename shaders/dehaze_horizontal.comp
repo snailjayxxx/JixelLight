@@ -1,0 +1,11 @@
+#version 440
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[58];};
+layout(rgba32f,binding=1) readonly uniform image2D guideImage;
+layout(rgba32f,binding=2) writeonly uniform image2D horizontalImage;
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+    int radius=int(ceil(p[56].y));float value=2.0;
+    for(int i=-radius;i<=radius;++i)value=min(value,imageLoad(guideImage,ivec2(clamp(c.x+i,0,size.x-1),c.y)).b);
+    imageStore(horizontalImage,c,vec4(value,0,0,0));
+}

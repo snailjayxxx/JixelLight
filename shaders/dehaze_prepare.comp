@@ -1,0 +1,16 @@
+#version 440
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[58];};
+layout(rgba32f,binding=1) readonly uniform image2D sourceImage;
+layout(rgba32f,binding=2) writeonly uniform image2D guideImage;
+#include "denoise_common.glsl"
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(c,ivec2(p[24].xy))))return;
+    vec4 original=imageLoad(sourceImage,c);
+    precise vec3 linear=p[56].w>0.0?original.rgb:dnInput(original.rgb);
+    precise vec3 normalized=linear/p[57].rgb;
+    precise float intensity=clamp(((normalized.r+normalized.g)+normalized.b)/3.0,0.0,4.0);
+    float dark=original.a>1.e-20?clamp(min(min(normalized.r,normalized.g),normalized.b),0.0,1.0):2.0;
+    imageStore(guideImage,c,vec4(intensity,original.a,dark,0));
+}

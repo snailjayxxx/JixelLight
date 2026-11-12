@@ -60,6 +60,12 @@ bool SpatialDehaze::valid(Parameters p) {
         &&std::all_of(p.airlight.begin(),p.airlight.end(),[](float v){return std::isfinite(v)&&v>0&&v<=65536;});
 }
 int SpatialDehaze::halo(Parameters p) {return valid(p)&&p.amount>0?int(std::ceil(p.darkRadius))+int(std::ceil(p.refineRadius)):0;}
+std::array<float,8> SpatialDehaze::refinementWeights(float radius) {
+    std::array<float,8> weights{};if(!std::isfinite(radius)||radius<0||radius>3)return weights;
+    const int extent=int(std::ceil(radius));const float sigma=std::max(.01f,.5f*radius);
+    for(int i=-extent;i<=extent;++i)weights[size_t(i+extent)]=std::clamp(radius+1-std::abs(float(i)),0.f,1.f)*std::exp(-float(i*i)/(2*sigma*sigma));
+    return weights;
+}
 QImage SpatialDehaze::apply(QImage linear,Parameters p,const CancelToken &cancel,bool parallel) {
     if(linear.isNull()||linear.format()!=QImage::Format_RGBA32FPx4||!valid(p)||cancelled(cancel))return {};
     if(p.amount==0)return linear;
@@ -92,8 +98,7 @@ QImage SpatialDehaze::apply(QImage linear,Parameters p,const CancelToken &cancel
         dark[size_t(y)*width+x]=std::isfinite(value)?std::clamp(1-.95f*value,.1f,1.f):1.f;}
     },parallel);if(cancelled(cancel))return {};
     auto *output=linear.bits();if(!output)return {};
-    const int refine=int(std::ceil(p.refineRadius));const float sigma=std::max(.01f,.5f*p.refineRadius);std::array<float,7> weights{};
-    for(int i=-refine;i<=refine;++i)weights[size_t(i+refine)]=std::clamp(p.refineRadius+1-std::abs(float(i)),0.f,1.f)*std::exp(-float(i*i)/(2*sigma*sigma));
+    const int refine=int(std::ceil(p.refineRadius));const auto weights=refinementWeights(p.refineRadius);
     ParallelRows::run(height,width,cancel,[&](int y){auto *row=reinterpret_cast<float *>(output+y*stride);
         for(int x=0;x<width;++x){const size_t index=size_t(y)*width+x;const auto center=guide[index];if(center[1]<=AlphaFloor)continue;
             float sum=0,weighted=0;
