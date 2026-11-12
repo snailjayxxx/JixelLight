@@ -146,6 +146,11 @@ jobs:
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Build
         id: compile
+        env:
+          UseMultiToolTask: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+          EnforceProcessCountAcrossBuilds: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+          CL_MPCount: '4'
+          MultiProcMaxCount: '4'
         run: cmake --build build --config Release --parallel 4
       - name: Download real RAW test sample
         shell: bash
