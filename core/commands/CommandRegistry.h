@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QStringList>
 #include <QRegularExpression>
+#include <QSet>
 #include <algorithm>
 #include <cmath>
 
@@ -43,6 +44,50 @@ struct CommandRegistry {
             {"desktop_reviewed_save","existing exportCurrent adapter retains its explicitly reviewed replacement behavior"}};
         if(desktop)result["quality"]=QJsonArray{1,100};else result["fixed_quality"]=92;
         return result;
+    }
+    struct BatchExport {QString folder,space="srgb",format="jpeg",pattern;QStringList photos;int quality=92,sequenceStart=1;bool all=true;};
+    static bool decodeBatchExport(const QJsonObject &command,BatchExport *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid batch export command";return false;};
+        if(!output||command["command"].toString()!="export.batch"
+            ||!optionalFields(command,{"folder"},{"photos","space","quality","format","pattern","sequenceStart"}))return fail();
+        QJsonObject current{{"command","export.run"},{"destination",command["folder"]}};
+        for(const auto &field:QStringList{"space","quality"})if(command.contains(field))current[field]=command[field];
+        CurrentExport common;if(!decodeCurrentExport(current,ExportScope::Desktop,&common))return fail();
+        BatchExport staged;staged.folder=common.destination;staged.space=common.space;staged.quality=common.quality;
+        if(command.contains("format")) {
+            if(!command["format"].isString())return fail();staged.format=command["format"].toString();
+        }
+        if(!QStringList{"jpeg","png","tiff","webp"}.contains(staged.format))return fail();
+        if(command.contains("pattern")) {
+            if(!command["pattern"].isString())return fail();staged.pattern=command["pattern"].toString();
+            if(staged.pattern.size()>160||staged.pattern.contains(QChar(u'\0')))return fail();
+        }
+        if(command.contains("sequenceStart")) {
+            if(!integer(command,"sequenceStart",1,999999999))return fail();staged.sequenceStart=command["sequenceStart"].toInt();
+        }
+        if(command.contains("photos")) {
+            if(!command["photos"].isArray())return fail();const auto photos=command["photos"].toArray();
+            if(photos.isEmpty()||photos.size()>1000)return fail();QSet<QString> seen;
+            for(const auto &value:photos) {
+                if(!value.isString())return fail();const auto key=value.toString();
+                if(key.isEmpty()||key.size()>32768||key.contains(QChar(u'\0'))||seen.contains(key))return fail();
+                seen.insert(key);staged.photos.append(key);
+            }
+            staged.all=false;
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject batchExportSchema() {
+        return {{"name","export.batch"},{"scope","desktop"},{"fields",QJsonArray{"folder"}},
+            {"optional_fields",QJsonArray{"photos","space","quality","format","pattern","sequenceStart"}},
+            {"photos","omitted means entire catalog; provided means 1–1000 exact existing version keys; empty never widens to all"},
+            {"maximum_selected_photos",1000},{"maximum_folder_utf16_units",32768},{"maximum_photo_identity_utf16_units",32768},
+            {"ordering","existing catalog order; selection, paths, names and states frozen before queuing"},
+            {"default_space","srgb"},{"default_quality",92},{"quality",QJsonArray{1,100}},
+            {"default_format","jpeg"},{"formats",QJsonArray{"jpeg","png","tiff","webp"}},
+            {"maximum_pattern_utf16_units",160},{"sequenceStart",QJsonArray{1,999999999}},{"default_sequenceStart",1},
+            {"overwrite",false},{"source_writes",false},{"completion","true means accepted; observe exportFinished"},
+            {"offline_sessions","use repeated export.run commands; export.batch is not a session command"}};
     }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
@@ -692,7 +737,7 @@ struct CommandRegistry {
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
-                    {"session",currentExportSchema(ExportScope::Session)}}}},
+                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema()}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

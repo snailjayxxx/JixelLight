@@ -4478,7 +4478,9 @@ private slots:
         const auto expectedB=selectedExportCpuReference(cache,b,bState,ColorManagement::OutputSpace::DisplayP3);
         QVERIFY(!expectedA.isNull());QVERIFY(!expectedB.isNull());
         QSignalSpy finished(&c,&PhotoController::exportFinished);
-        QVERIFY(c.exportVersions(captured,QUrl::fromLocalFile(dir.filePath("out")),"display-p3",100,"png","{name}_{version}_{seq:2}",41));
+        const QJsonObject command{{"command","export.batch"},{"folder",dir.filePath("out")},{"photos",QJsonArray::fromStringList(captured)},
+            {"space","display-p3"},{"quality",100},{"format","png"},{"pattern","{name}_{version}_{seq:2}"},{"sequenceStart",41}};
+        QVERIFY(c.executeCommand(command.toVariantMap()));
         QVERIFY(c.exportBusy());
         // Do not pump events until both source states, selection and the copied
         // version's name have changed; the accepted request already owns them.
@@ -4494,6 +4496,11 @@ private slots:
         QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::Files),names);
         QVERIFY(QDir(dir.filePath("out")).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
         QCOMPARE(fixtureBytes(a),aBytes);QCOMPARE(fixtureBytes(b),bBytes);
+        bool canonical=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+            const auto row=value.toObject();if(row["action"].toString()!="selected_export_queued"||row["command"].toObject()["folder"].toString()!=dir.filePath("out"))continue;
+            QCOMPARE(row["command"].toObject(),command);canonical=true;
+        }
+        QVERIFY(canonical);
     }
 
     void newFileExportQueuePreservesExistingTargetsAndCleansStaging() {
@@ -7146,6 +7153,57 @@ private slots:
         QVERIFY(c.exportCurrent(QUrl::fromLocalFile(existing),"display-p3",200));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);
         QCOMPARE(finished[0][0].toInt(),1);QCOMPARE(finished[0][1].toInt(),0);QVERIFY(!QImage(existing).isNull());
         QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);QVERIFY(!QFileInfo::exists(unused));
+    }
+
+    void desktopBatchExportFreezesWholeCatalogBeforeLaterMembershipAndStateChanges() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto source=dir.filePath("source.png"),later=dir.filePath("later.png");
+        QVERIFY(selectedExportPngFixture(source,2));QVERIFY(selectedExportPngFixture(later,6));const auto bytes=fixtureBytes(source),laterBytes=fixtureBytes(later);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.4);c.finishInteraction();const auto original=c.gpuPlan(true).state;
+        QVERIFY(c.createVirtualCopy("Frozen"));c.setExposure(-.6);c.rotatePhoto(1);c.finishInteraction();const auto copy=c.gpuPlan(true).state;
+        const QJsonObject command{{"command","export.batch"},{"folder",dir.filePath("out")},{"space","display-p3"},
+            {"quality",100},{"format","png"},{"pattern","{version}_{seq:2}"},{"sequenceStart",7}};
+        QSignalSpy finished(&c,&PhotoController::exportFinished);const auto history=c.editHistory();
+        QVERIFY(c.executeCommand(command.toVariantMap()));QCOMPARE(c.editHistory(),history);QVERIFY(!c.executeCommand(command.toVariantMap()));
+        c.setExposure(2);c.finishInteraction();QVERIFY(c.renameCurrentVirtualCopy("Changed"));QVERIFY(c.importFile(QUrl::fromLocalFile(later)));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),2);QCOMPARE(finished[0][1].toInt(),0);QVERIFY(!finished[0][2].toBool());
+        SourceCache cache(4*1024*1024,dir.filePath("reference-cache"));
+        const QImage a(dir.filePath("out/Original_07.png")),b(dir.filePath("out/Frozen_08.png"));
+        QCOMPARE(a.convertToFormat(QImage::Format_RGBA64),selectedExportCpuReference(cache,source,original,ColorManagement::OutputSpace::DisplayP3));
+        QCOMPARE(b.convertToFormat(QImage::Format_RGBA64),selectedExportCpuReference(cache,source,copy,ColorManagement::OutputSpace::DisplayP3));
+        QCOMPARE(a.colorSpace().iccProfile(),ColorManagement::iccProfile(ColorManagement::OutputSpace::DisplayP3));QCOMPARE(a.colorSpace().iccProfile(),b.colorSpace().iccProfile());
+        QCOMPARE(QDir(dir.filePath("out")).entryList(QDir::Files),QStringList({"Frozen_08.png","Original_07.png"}));
+        QCOMPARE(fixtureBytes(source),bytes);QCOMPARE(fixtureBytes(later),laterBytes);
+        QVERIFY(!c.executeCommand(command.toVariantMap()));QVERIFY(!QFileInfo::exists(dir.filePath("out/Original_09.png")));
+        bool canonical=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+            const auto row=value.toObject();if(row["action"].toString()!="all_export_queued"||row["command"].toObject()["folder"].toString()!=dir.filePath("out"))continue;
+            QCOMPARE(row["command"].toObject(),command);QCOMPARE(row["count"].toInt(),2);canonical=true;
+        }
+        QVERIFY(canonical);QVERIFY(QDir(dir.filePath("out")).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+    }
+
+    void desktopBatchExportRejectsMalformedStaleAndForeignThreadRequestsWithoutOutputs() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QVERIFY(QDir(dir.path()).mkdir("out"));
+        const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));const auto key=c.library()[0].toMap()["id"].toString();
+        QVERIFY(c.createVirtualCopy("Removed"));const auto removed=c.library()[1].toMap()["id"].toString();QVERIFY(c.removeCurrentVirtualCopy());
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();QSignalSpy finished(&c,&PhotoController::exportFinished);
+        const QJsonObject valid{{"command","export.batch"},{"folder",dir.filePath("out")},{"photos",QJsonArray{key}},{"format","png"}};
+        QJsonArray excessive;for(int i=0;i<1001;++i)excessive.append(QString::number(i));
+        const QList<QPair<QString,QJsonValue>> invalid{{"photos",QJsonArray{}},{"photos",QJsonArray{key,key}},{"photos",QJsonArray{key,removed}},
+            {"photos",QJsonArray{"unknown"}},{"photos",QJsonArray{true}},{"photos",excessive},{"photos","all"},{"folder",true},{"folder",""},
+            {"folder",dir.filePath("missing")},{"space","unknown"},{"space",false},{"quality",0},{"quality",1.25},{"quality",true},
+            {"format","jpg"},{"format","pdf"},{"pattern",true},{"pattern",QString(161,'x')},{"pattern","../{name}"},
+            {"pattern","{capture_date}"},{"sequenceStart",0},{"sequenceStart",1000000000},{"sequenceStart",1.5},{"overwrite",true}};
+        for(const auto &entry:invalid) {
+            auto bad=valid;bad[entry.first]=entry.second;QVERIFY(!c.executeCommand(bad.toVariantMap()));QVERIFY(!c.exportBusy());
+            QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(finished.size(),0);QVERIFY(QDir(dir.filePath("out")).isEmpty());
+        }
+        QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},valid}}}));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(valid.toVariantMap());});worker.join();
+        QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(QDir(dir.filePath("out")).isEmpty());QCOMPARE(fixtureBytes(source),bytes);
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(finished.size(),0);
+        QVERIFY(c.executeCommand(valid.toVariantMap()));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][0].toInt(),1);QCOMPARE(finished[0][1].toInt(),0);
     }
 
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {

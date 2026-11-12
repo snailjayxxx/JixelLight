@@ -39,7 +39,8 @@ def validate_relink(binary: Path, environment: dict[str, str], home: Path,
     required = ("missing_placeholder_passed", "cancel_preserves_catalog",
                 "unknown_identity_acknowledgement", "captured_family_passed",
                 "relink_complete", "reopen_preserves_versions",
-                "selected_export_passed", "compact_dialog_passed", "source_unchanged")
+                "selected_export_passed", "batch_export_command_accepted", "batch_export_trace_passed",
+                "compact_dialog_passed", "source_unchanged")
     screenshots = all(Path(str(report) + suffix).is_file()
                       for suffix in (".missing.png", ".confirm.png", ".restored.png"))
     passed = (code == 0 and data.get("passed") is True and not errors and screenshots

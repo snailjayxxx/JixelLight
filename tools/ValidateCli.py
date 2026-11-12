@@ -132,6 +132,9 @@ def main():
         assert export_forms['desktop']['optional_fields'] == ['space', 'quality'] and not export_forms['desktop']['source_writes']
         assert export_forms['session'] == next(c for c in schema['session']['commands'] if c['name'] == 'export.run')
         assert export_forms['session']['fixed_quality'] == 92
+        batch_form = next(c for c in schema['workflow_commands'] if c['name'] == 'export.batch')
+        assert batch_form['scope'] == 'desktop' and batch_form['fields'] == ['folder'] and batch_form['overwrite'] is False
+        assert all(c['name'] != 'export.batch' for c in schema['session']['commands'])
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -182,7 +185,8 @@ def main():
                      {'command': 'photo.import', 'photo': 'new\n', 'source': source.name},
                      {'command': 'photo.import', 'source': source.name},
                      {'command': 'export.run', 'destination': late_output.name, 'quality': 92},
-                     {'command': 'export.run', 'destination': late_output.name, 'overwrite': True}]:
+                     {'command': 'export.run', 'destination': late_output.name, 'overwrite': True},
+                     {'command': 'export.batch', 'folder': str(root)}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))

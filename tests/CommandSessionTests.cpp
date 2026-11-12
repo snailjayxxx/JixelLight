@@ -128,6 +128,19 @@ private slots:
         QCOMPARE(forms["desktop"].toObject(),CommandRegistry::currentExportSchema(Scope::Desktop));QCOMPARE(forms["session"].toObject(),CommandRegistry::currentExportSchema(Scope::Session));
         QCOMPARE(describedCommand(CommandSession::schema()["commands"].toArray(),"export.run"),CommandRegistry::currentExportSchema(Scope::Session));
     }
+    void desktopBatchExportHasExplicitSelectionAndCannotWidenOfflineSessions(){
+        CommandRegistry::BatchExport request;const QJsonObject all{{"command","export.batch"},{"folder","out"}};
+        QVERIFY(CommandRegistry::decodeBatchExport(all,&request));QVERIFY(request.all);QVERIFY(request.photos.isEmpty());QCOMPARE(request.quality,92);QCOMPARE(request.sequenceStart,1);
+        auto selected=all;selected["photos"]=QJsonArray{"b","a"};selected["format"]="png";selected["sequenceStart"]=9;
+        QVERIFY(CommandRegistry::decodeBatchExport(selected,&request));QVERIFY(!request.all);QCOMPARE(request.photos,QStringList({"b","a"}));QCOMPARE(request.sequenceStart,9);
+        for(const auto &photos:QList<QJsonValue>{QJsonArray{},QJsonArray{"a","a"},QJsonArray{false},QString("all")}) {
+            auto bad=all;bad["photos"]=photos;request.folder="sentinel";QVERIFY(!CommandRegistry::decodeBatchExport(bad,&request));QCOMPARE(request.folder,QString("sentinel"));
+        }
+        CommandSession result;result.photoCount=91;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),all}),base(),source(),&result));
+        QCOMPARE(result.photoCount,91);QVERIFY(result.exports.isEmpty());
+        QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"export.batch"),CommandRegistry::batchExportSchema());
+        QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"export.batch").isEmpty());
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

@@ -487,7 +487,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
     struct State {
         QElapsedTimer elapsed; int phase=0; bool finished=false;
         bool missing=false,cancel=false,ack=false,frozen=false,complete=false,reopened=false,exported=false,compact=false;
-        bool exportFinished=false; int succeeded=0,failed=0; bool stopped=false;
+        bool exportFinished=false,exportCommand=false,exportTrace=false; int succeeded=0,failed=0; bool stopped=false;
         QString project,original,candidate,copy,request; QByteArray checksum;
     };
     const auto state=std::make_shared<State>();state->elapsed.start();
@@ -498,13 +498,15 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
         QFile source(state->candidate);const bool unchanged=source.open(QIODevice::ReadOnly)
             && QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256)==state->checksum;
         const bool passed=error.isEmpty()&&state->missing&&state->cancel&&state->ack&&state->frozen&&state->complete
-            &&state->reopened&&state->exported&&state->compact&&unchanged;
+            &&state->reopened&&state->exported&&state->exportCommand&&state->exportTrace&&state->compact&&unchanged;
         const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"elapsed_ms",state->elapsed.elapsed()},{"phase",state->phase},{"error",error},
             {"missing_placeholder_passed",state->missing},{"cancel_preserves_catalog",state->cancel},
             {"unknown_identity_acknowledgement",state->ack},{"captured_family_passed",state->frozen},
             {"relink_complete",state->complete},{"reopen_preserves_versions",state->reopened},
             {"selected_export_passed",state->exported},{"compact_dialog_passed",state->compact},{"source_unchanged",unchanged},
+            {"batch_export_command_accepted",state->exportCommand},{"batch_export_trace_passed",state->exportTrace},
+            {"qpa_platform",QGuiApplication::platformName()},{"device_pixel_ratio",window->devicePixelRatio()},
             {"file_picker_automated",false}};
         QSaveFile output(reportPath);const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
         const bool saved=output.open(QIODevice::WriteOnly)&&output.write(data)==data.size()&&output.commit();
@@ -571,8 +573,15 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
                 &&(!dialog||!dialog->property("visible").toBool());
             if(!state->complete){finish("Relink did not publish restored source");return;}
             window->setProperty("workspaceIndex",1);
-            if(!controller->exportVersions({state->candidate,state->copy},QUrl::fromLocalFile(dir->filePath("exports")),"display-p3",92,"png","{name}_{seq:4}")){
+            const QJsonObject command{{"command","export.batch"},{"folder",dir->filePath("exports")},
+                {"photos",QJsonArray{state->candidate,state->copy}},{"space","display-p3"},{"quality",92},
+                {"format","png"},{"pattern","{name}_{seq:4}"},{"sequenceStart",1}};
+            state->exportCommand=controller->executeCommand(command.toVariantMap());
+            if(!state->exportCommand){
                 finish("Restored selected-version export refused");return;
+            }
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();if(row["action"].toString()=="selected_export_queued"&&row["command"].toObject()==command)state->exportTrace=true;
             }
             state->phase=6;
         } else if(state->phase==6) {

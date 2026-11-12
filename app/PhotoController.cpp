@@ -681,6 +681,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="export.batch")return executeBatchExport(object);
     if(object["command"].toString()=="export.run")return executeCurrentExport(object,true);
     if(object["command"].toString()=="photo.import")return executePhotoImport(object,true);
     if(object["command"].toString()=="photo.select") {
@@ -1681,78 +1682,79 @@ QVariantMap PhotoController::exportVersionNamePreview(const QStringList &keys, c
             {"error",uiText(plan.errorZh,plan.error)}};
 }
 
+static QJsonObject desktopBatchExportCommand(const QUrl &folder,const QString &space,int quality,
+                                             const QString &format,const QString &pattern,int sequenceStart) {
+    auto codec=format.toLower();if(codec=="jpg")codec="jpeg";if(codec=="tif")codec="tiff";
+    return {{"command","export.batch"},{"folder",folder.toLocalFile()},
+        {"space",ColorManagement::key(ColorManagement::fromKey(space))},{"quality",std::clamp(quality,1,100)},
+        {"format",codec},{"pattern",pattern},{"sequenceStart",pattern.isEmpty()?1:sequenceStart}};
+}
+
 bool PhotoController::exportVersions(const QStringList &keys, const QUrl &folder, const QString &colorSpaceKey,
                                      int quality, const QString &format, const QString &pattern, int sequenceStart) {
-    if (exportBusy() || m_relinkBusy || !folder.isLocalFile()) return false;
-    QString error;
-    const auto resolved=resolveExportVersions(keys,&error);
-    if (!error.isEmpty()) { setStatus(error); return false; }
-    for(const auto &photo:resolved)if(!photo.available || !sourceReadable(photo)) {
-        setStatus(uiText("所选版本包含缺失或不可读的源文件，请先重新关联。", "Selected versions include a missing or unreadable source. Relink it first.")); return false;
-    }
-    QDir directory(folder.toLocalFile());
-    if (!directory.exists()) return false;
-    // One resolved catalog-order snapshot drives both names and requests.
-    // Neither a later selection nor an index shift can redirect the batch.
-    QVector<ExportNameSource> sources; sources.reserve(resolved.size());
-    for (const auto &photo:resolved) sources.append({photo.path,photo.versionName,photo.timeline.captureTime});
-    const auto names=planExportNames(sources,{pattern,sequenceStart},format,
-        directory.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
-    if (!names.error.isEmpty()) { setStatus(uiText(names.errorZh,names.error)); return false; }
-    for (const auto &name:names.names) {
-        const auto path=directory.filePath(name);
-        if (isProtectedPhoto(path)) {
-            setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph."));
-            return false;
-        }
-        const QFileInfo target(path);
-        if (target.exists() || target.isSymLink()) {
-            setStatus(uiText("目标文件已存在，请选择新的文件名。", "Destination already exists. Choose a new filename."));
-            return false;
-        }
-    }
-    if (!flushEdits()) return false;
-    QVector<ExportRequest> requests; requests.reserve(resolved.size());
-    QStringList exportKeys; exportKeys.reserve(resolved.size());
-    const auto target=ColorManagement::fromKey(colorSpaceKey);
-    quality=std::clamp(quality,1,100);
-    for (qsizetype i=0;i<resolved.size();++i) {
-        const auto &photo=resolved[i];
-        requests.append({photo.path,directory.filePath(names.names[i]),{},photo.state,target,quality,true});
-        exportKeys.append(photo.storageKey());
-    }
-    const bool queued=m_exportQueue->start(std::move(requests));
-    if (queued) {
-        m_exportProgress=0;
-        ActionTrace::instance().record("selected_export_queued",{{"count",resolved.size()},{"version_keys",QJsonArray::fromStringList(exportKeys)}});
-        setStatus(uiText("所选版本导出已开始，可继续编辑。", "Selected-version export started; editing remains available."));
-        emit exportChanged();
-    }
-    return queued;
+    if(!folder.isLocalFile())return false;
+    auto command=desktopBatchExportCommand(folder,colorSpaceKey,quality,format,pattern,sequenceStart);
+    command["photos"]=QJsonArray::fromStringList(keys);return executeBatchExport(command);
 }
 
 bool PhotoController::exportAll(const QUrl &folder, const QString &colorSpaceKey, int quality, const QString &format,
                                 const QString &pattern, int sequenceStart) {
-    if (m_photos.isEmpty() || exportBusy() || m_relinkBusy || !folder.isLocalFile()) return false;
-    for(const auto &photo:m_photos)if(!photo.available || !sourceReadable(photo)) {
-        setStatus(uiText("目录包含缺失或不可读的源文件，请先重新关联或只导出可用版本。", "Catalog contains a missing or unreadable source. Relink it or export available selected versions.")); return false;
+    if(!folder.isLocalFile())return false;
+    return executeBatchExport(desktopBatchExportCommand(folder,colorSpaceKey,quality,format,pattern,sequenceStart));
+}
+
+bool PhotoController::executeBatchExport(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::BatchExport batch;
+    if(!CommandRegistry::decodeBatchExport(command,&batch)) {
+        setStatus(uiText("批量导出参数无效，请重新选择照片和导出设置。", "Invalid batch export request. Review the photos and export settings."));return false;
     }
-    QDir directory(folder.toLocalFile());
-    if (!directory.exists()) return false;
-    QVector<ExportNameSource> sources; sources.reserve(m_photos.size());
-    for (const auto &photo : m_photos) sources.push_back({photo.path,photo.versionName,photo.timeline.captureTime});
-    const auto names=planExportNames(sources,{pattern,sequenceStart},format,
+    if(exportBusy()||m_relinkBusy)return false;
+    QString error;
+    const auto resolved=batch.all?m_photos:resolveExportVersions(batch.photos,&error);
+    if(!error.isEmpty()){setStatus(error);return false;}
+    if(resolved.isEmpty())return false;
+    for(const auto &photo:resolved)if(!photo.available||!sourceReadable(photo)) {
+        setStatus(batch.all
+            ?uiText("目录包含缺失或不可读的源文件，请先重新关联或只导出可用版本。", "Catalog contains a missing or unreadable source. Relink it or export available selected versions.")
+            :uiText("所选版本包含缺失或不可读的源文件，请先重新关联。", "Selected versions include a missing or unreadable source. Relink it first."));return false;
+    }
+    QDir directory(batch.folder);if(!directory.exists())return false;
+    // One catalog-order snapshot drives both names and immutable requests.
+    QVector<ExportNameSource> sources;sources.reserve(resolved.size());
+    for(const auto &photo:resolved)sources.append({photo.path,photo.versionName,photo.timeline.captureTime});
+    const auto names=planExportNames(sources,{batch.pattern,batch.sequenceStart},batch.format,
         directory.entryList(QDir::AllEntries|QDir::Hidden|QDir::System|QDir::NoDotAndDotDot));
-    if (!names.error.isEmpty()) { setStatus(uiText(names.errorZh,names.error)); return false; }
-    if (!flushEdits()) return false;
-    QVector<ExportRequest> requests;
-    for (qsizetype i=0;i<m_photos.size();++i) {
-        const auto &photo=m_photos[i];
-        requests.push_back({photo.path,directory.filePath(names.names[i]),{},photo.state,
-            ColorManagement::fromKey(colorSpaceKey),std::clamp(quality,1,100),true});
+    if(!names.error.isEmpty()){setStatus(uiText(names.errorZh,names.error));return false;}
+    for(const auto &name:names.names) {
+        const auto path=directory.filePath(name);
+        if(isProtectedPhoto(path)) {
+            setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph."));return false;
+        }
+        const QFileInfo target(path);
+        if(target.exists()||target.isSymLink()) {
+            setStatus(uiText("目标文件已存在，请选择新的文件名。", "Destination already exists. Choose a new filename."));return false;
+        }
     }
-    const bool queued = m_exportQueue->start(std::move(requests));
-    if (queued) { m_exportProgress = 0; emit exportChanged(); }
+    if(!flushEdits())return false;
+    QVector<ExportRequest> requests;requests.reserve(resolved.size());QStringList exportKeys;
+    const auto target=ColorManagement::fromKey(batch.space);
+    for(qsizetype i=0;i<resolved.size();++i) {
+        const auto &photo=resolved[i];requests.append({photo.path,directory.filePath(names.names[i]),{},photo.state,target,batch.quality,true});
+        if(!batch.all)exportKeys.append(photo.storageKey());
+    }
+    const bool queued=m_exportQueue->start(std::move(requests));
+    if(queued) {
+        m_exportProgress=0;
+        QJsonObject canonical{{"command","export.batch"},{"folder",batch.folder},{"space",batch.space},{"quality",batch.quality},
+            {"format",batch.format},{"pattern",batch.pattern},{"sequenceStart",batch.sequenceStart}};
+        QJsonObject details{{"count",resolved.size()}};
+        if(!batch.all){canonical["photos"]=QJsonArray::fromStringList(exportKeys);details["version_keys"]=QJsonArray::fromStringList(exportKeys);}
+        details["command"]=canonical;
+        ActionTrace::instance().record(batch.all?"all_export_queued":"selected_export_queued",details);
+        setStatus(uiText("批量导出已开始，可继续编辑。", "Batch export started; editing remains available."));
+        emit exportChanged();
+    }
     return queued;
 }
 void PhotoController::cancelExport() { m_exportQueue->cancel(); }
