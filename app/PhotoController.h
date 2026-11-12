@@ -842,6 +842,7 @@ private:
     AdjustmentState *mutableCurrentState();
     bool importPath(const QString &path, bool notifyImmediately);
     bool executePhotoImport(const QJsonObject &command,bool notifyImmediately);
+    bool executeCurrentExport(const QJsonObject &command,bool newFileOnly);
     void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();

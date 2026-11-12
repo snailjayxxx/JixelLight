@@ -128,6 +128,10 @@ def main():
         import_forms = next(c for c in schema['workflow_commands'] if c['name'] == 'photo.import')
         assert import_forms['desktop']['fields'] == ['source'] and not import_forms['desktop']['source_writes']
         assert import_forms['session'] == next(c for c in schema['session']['commands'] if c['name'] == 'photo.import')
+        export_forms = next(c for c in schema['workflow_commands'] if c['name'] == 'export.run')
+        assert export_forms['desktop']['optional_fields'] == ['space', 'quality'] and not export_forms['desktop']['source_writes']
+        assert export_forms['session'] == next(c for c in schema['session']['commands'] if c['name'] == 'export.run')
+        assert export_forms['session']['fixed_quality'] == 92
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -176,7 +180,9 @@ def main():
                      {'command': 'develop.set', 'parameter': 'unknown', 'value': 1},
                      {'command': 'photo.import', 'photo': 'a', 'source': source.name},
                      {'command': 'photo.import', 'photo': 'new\n', 'source': source.name},
-                     {'command': 'photo.import', 'source': source.name}]:
+                     {'command': 'photo.import', 'source': source.name},
+                     {'command': 'export.run', 'destination': late_output.name, 'quality': 92},
+                     {'command': 'export.run', 'destination': late_output.name, 'overwrite': True}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))

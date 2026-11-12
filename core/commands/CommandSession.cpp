@@ -12,11 +12,6 @@ bool fields(const QJsonObject &object,const QStringList &required,const QStringL
     for(auto it=object.begin();it!=object.end();++it)if(!required.contains(it.key())&&!optional.contains(it.key()))return false;
     return true;
 }
-bool text(const QJsonValue &value) {
-    if(!value.isString()||value.toString().isEmpty()||value.toString().size()>32768)return false;
-    for(const auto ch:value.toString())if(ch.unicode()<32||ch.unicode()==127)return false;
-    return true;
-}
 }
 bool CommandSession::compile(const QJsonObject &manifest,const QString &baseDirectory,const SourceContext &sourceContext,CommandSession *output,QString *error) {
     if(error)error->clear();
@@ -58,11 +53,11 @@ bool CommandSession::compile(const QJsonObject &manifest,const QString &baseDire
         if(current.isEmpty())return reject("Import/select a photo before editing or exporting");
         auto &photo=photos[current];
         if(name=="export.run"){
-            if(!fields(command,{"command","destination"},{"space"})||!text(command["destination"])
-                ||(command.contains("space")&&!command["space"].isString())||staged.exports.size()>=1000)return reject("Invalid or excessive export");
-            const auto space=command.value("space").toString("srgb");if(!ColorManagement::keys().contains(space))return reject("Unknown output color space");
+            CommandRegistry::CurrentExport request;
+            if(!CommandRegistry::decodeCurrentExport(command,CommandRegistry::ExportScope::Session,&request)
+                ||staged.exports.size()>=1000)return reject("Invalid or excessive export");
             if(!charge(photo.state))return reject("Session state budget exceeded");
-            staged.exports.push_back({current,photo.source,QDir::cleanPath(base.absoluteFilePath(command["destination"].toString())),space,photo.state});continue;
+            staged.exports.push_back({current,photo.source,QDir::cleanPath(base.absoluteFilePath(request.destination)),request.space,photo.state});continue;
         }
         if(name=="history.undo"||name=="history.redo"){
             CommandRegistry::Control control;
@@ -106,5 +101,5 @@ QJsonObject CommandSession::schema(){
             CommandRegistry::photoSelectionSchema(),
             QJsonObject{{"name","edit.batch"},{"fields",QJsonArray{"commands"}}},
             QJsonObject{{"name","history.undo"},{"fields",QJsonArray{}}},QJsonObject{{"name","history.redo"},{"fields",QJsonArray{}}},
-            QJsonObject{{"name","export.run"},{"fields",QJsonArray{"destination"}},{"optional_fields",QJsonArray{"space"}},{"default_space","srgb"},{"operation","freeze current state; publish after complete plan validates; never overwrite"}}}}};
+            CommandRegistry::currentExportSchema(CommandRegistry::ExportScope::Session)}}};
 }
