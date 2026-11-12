@@ -91,6 +91,11 @@ struct ProcessingPlan {
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
     }
     bool colorMaskActive() const {return data[ColorMask].x!=0;}
+    bool colorMaskNeedsCpuPrecision() const {
+        const auto range=data[ColorMaskRange];
+        // The selector shares Point Color's FP32-sensitive narrow shoulders.
+        return colorMaskActive()&&(range.x<45.f||range.y<.003f||range.z<.003f);
+    }
     ColorRangeMask::Parameters colorMaskParameters() const {
         if(!colorMaskActive())return {};
         const auto c=data[ColorMask],r=data[ColorMaskRange];

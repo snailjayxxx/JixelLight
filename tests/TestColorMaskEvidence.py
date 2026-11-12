@@ -24,9 +24,9 @@ def report_fixture(mode='gpu', qpa='cocoa'):
     data['active_whole_Develop']['exposure'] = .3
     data['active_whole_Develop']['colorMask'].update(exposure=-1.5, inverted=True)
     data['reset_whole_Develop'] = {k: v for k, v in data['active_whole_Develop'].items() if k != 'colorMask'}
-    data.update(active_mask_changes_pixels=True,undo_steps_to_first=3, colorMask_cache_hit_delta=1 if mode == 'cpu' else 0,
-                colorMask_cache_required=mode == 'cpu',
-                colorMask_processing_policy='cached-cpu-reference' if mode == 'cpu' else 'uncached-cpu-reference-upload',
+    data.update(active_mask_changes_pixels=True,undo_steps_to_first=3, colorMask_cache_hit_delta=1,
+                colorMask_cache_required=True,
+                colorMask_processing_policy='cached-cpu-reference' if mode == 'cpu' else 'cached-gpu-compute',
                 colorMask_header_text='COLOR RANGE MASK' if mode == 'cpu' else '颜色范围蒙版',
                 colorMask_reset_text='Reset' if mode == 'cpu' else '重置')
     prototype = data['pointers'][0]
@@ -45,8 +45,8 @@ def diagnostic_fixture(mode='gpu'):
     color['color_mask']=dict(backend='cpu-reference',enabled=True,active=True,monitor_icc=False,output_boundary='Vignette',selection_oklab=[.6,.02,.01],settings=deepcopy(data['active_whole_Develop']['colorMask']))
     if mode == 'gpu':
         stages['gpu_working_output'].pop('point_color')
-        stages['gpu_working_output'].update(producer='cpu-reference-upload', color_mask='cpu-reference',
-                                             spatial_denoise='cpu-reference', numeric_source_policy='color-range-mask-cpu-stage')
+        stages['gpu_working_output'].update(producer='gpu-compute', color_mask='gpu-compute',
+                                             spatial_denoise='gpu-compute', numeric_source_policy='none')
     return {'adjustments': deepcopy(data['active_whole_Develop'])}, stages
 
 
@@ -78,19 +78,21 @@ class ColorMaskEvidenceTests(unittest.TestCase):
             data = report_fixture(); data['active_whole_Develop']['colorMask']['hueRange'] = value
             with self.subTest(value=value), self.assertRaises(ValueError): validate_report(data, 'gpu', 'cocoa')
 
-    def test_cache_policy_distinguishes_cpu_lru_and_complete_upload(self):
-        data = report_fixture('cpu'); data['colorMask_cache_hit_delta'] = 0
-        with self.assertRaises(ValueError): validate_report(data, 'cpu', 'cocoa')
+    def test_both_cpu_and_gpu_require_real_cache_reuse(self):
         for mode in ('cpu', 'gpu'):
-            data = report_fixture(mode); data['colorMask_processing_policy'] = 'cached-gpu-compute'
+            data = report_fixture(mode); data['colorMask_cache_hit_delta'] = 0
             with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
-            data = report_fixture(mode); data['colorMask_cache_required'] = mode != 'cpu'
+        for mode in ('cpu', 'gpu'):
+            data = report_fixture(mode); data['colorMask_processing_policy'] = 'uncached-cpu-reference-upload'
+            with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
+            data = report_fixture(mode); data['colorMask_cache_required'] = False
             with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
 
-    def test_false_compute_and_stale_mask_diagnostics_are_rejected(self):
-        edits = [(('gpu_working_output', 'producer'), 'gpu-compute'),
-                 (('gpu_working_output', 'color_mask'), 'gpu-compute'),
-                 (('gpu_working_output', 'numeric_source_policy'), 'none'),
+    def test_false_upload_and_stale_mask_diagnostics_are_rejected(self):
+        edits = [(('gpu_working_output', 'producer'), 'cpu-reference-upload'),
+                 (('gpu_working_output', 'color_mask'), 'cpu-reference'),
+                 (('gpu_working_output', 'spatial_denoise'), 'cpu-reference'),
+                 (('gpu_working_output', 'numeric_source_policy'), 'color-range-mask-cpu-stage'),
                  (('gpu_working_output', 'source_cache_key'), '49'),
                  (('color_stages','color_mask','settings','hueRange'), 90),
                  (('color_stages', 'color_mask', 'monitor_icc'), True),

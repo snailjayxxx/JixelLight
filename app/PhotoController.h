@@ -118,6 +118,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double sharpenRadius READ sharpenRadius WRITE setSharpenRadius NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool pointColorEnabled READ pointColorEnabled WRITE setPointColorEnabled NOTIFY adjustmentsChanged)
     Q_PROPERTY(bool pointColorCpuPrecision READ pointColorCpuPrecision NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool colorMaskCpuPrecision READ colorMaskCpuPrecision NOTIFY adjustmentsChanged)
     Q_PROPERTY(QColor pointColorColor READ pointColorColor NOTIFY adjustmentsChanged)
     Q_PROPERTY(double pointColorHue READ pointColorHue WRITE setPointColorHue NOTIFY adjustmentsChanged)
     Q_PROPERTY(double pointColorSaturation READ pointColorSaturation WRITE setPointColorSaturation NOTIFY adjustmentsChanged)
@@ -315,6 +316,7 @@ public:
     double sharpenAmount() const; double sharpenRadius() const;
     bool pointColorEnabled() const {return currentState().pointColorEnabled;}
     bool pointColorCpuPrecision() const {return gpuPlan().pointColorNeedsCpuPrecision();}
+    bool colorMaskCpuPrecision() const {return gpuPlan().colorMaskNeedsCpuPrecision();}
     QColor pointColorColor() const;
     double pointColorHue() const;double pointColorSaturation() const;double pointColorLuminance() const;
     double pointColorHueRange() const;double pointColorChromaRange() const;double pointColorLightnessRange() const;

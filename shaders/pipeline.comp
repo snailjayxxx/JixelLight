@@ -103,22 +103,27 @@ float pointRange(float distance,float radius) {
     if(distance>=radius) return 0.0;
     return 1.0-smooth01((distance-radius*.5)/(radius*.5));
 }
-vec3 applyPointColor(vec3 v) {
-    if(p[58].x==0.0) return v;
-    vec3 lab=toLab(v);float chroma=chromaLength(lab.yz);
-    float wL=pointRange(abs(lab.x-p[59].x),p[60].z);
-    float wC=pointRange(abs(chroma-p[59].y),p[60].y);
-    if(wL==0.0||wC==0.0) return v;
+float selectionWeight(vec3 lab,vec3 center,vec3 range) {
+    float chroma=chromaLength(lab.yz);
+    float wL=pointRange(abs(lab.x-center.x),range.z);
+    float wC=pointRange(abs(chroma-center.y),range.y);
+    if(wL==0.0||wC==0.0) return 0.0;
     float wH=1.0;
-    if(p[60].x<180.0) {
-        precise float confidence=smooth01((chroma-.005)/.02)*smooth01((p[59].y-.005)/.02);
+    if(range.x<180.0) {
+        precise float confidence=smooth01((chroma-.005)/.02)*smooth01((center.y-.005)/.02);
         if(confidence>0.0) {
             float hue=wrapHue(atan(lab.z,lab.y)*180.0/PI);
-            float distance=abs(hue-p[59].z);distance=min(distance,360.0-distance);
-            wH=1.0+(pointRange(distance,p[60].x)-1.0)*confidence;
+            float distance=abs(hue-center.z);distance=min(distance,360.0-distance);
+            wH=1.0+(pointRange(distance,range.x)-1.0)*confidence;
         }
     }
     precise float weight=(wL*wC)*wH;
+    return weight;
+}
+vec3 applyPointColor(vec3 v) {
+    if(p[58].x==0.0) return v;
+    vec3 lab=toLab(v);
+    precise float weight=selectionWeight(lab,p[59].xyz,p[60].xyz);
     if(weight==0.0) return v;
     precise float saturation=1.0+p[58].z*weight;
     precise vec3 adjusted=vec3(lab.x+p[58].w*weight,lab.yz*saturation);
@@ -205,9 +210,19 @@ void main() {
     if(p[24].w==0.0 && p[5].y==0.0) v=mulRows(25,vec3(decode(v.r),decode(v.g),decode(v.b)));
     // Selection is measured before white balance and every exposure gain.
     precise float maskY=max(0.0,luminancePro(v));
+    precise float colorMaskGain=1.0;
+    if(p[63].x!=0.0) {
+        vec3 maskLab=toLab(mulRows(28,v));
+        if(!any(isnan(maskLab))&&!any(isinf(maskLab))) {
+            precise float weight=selectionWeight(maskLab,p[63].yzw,p[64].xyz);
+            if(p[64].w==1.0) weight=1.0-weight;
+            if(weight!=0.0) colorMaskGain=exp2(p[63].x*weight);
+        }
+    }
     v=mulRows(0,v);
     // p[10].w is 0 for non-RAW and the camera/model baseline gain for RAW.
     if(p[10].w>0.0) v*=p[10].w;
+    if(colorMaskGain!=1.0) v*=colorMaskGain;
     if(p[61].x!=0.0) {
         precise float rising=smooth01(1.0+(maskY-p[61].y)/p[61].w);
         precise float falling=smooth01(1.0+(p[61].z-maskY)/p[61].w);

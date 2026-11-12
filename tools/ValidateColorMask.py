@@ -78,9 +78,9 @@ def validate_report(data, mode, qpa, expected_commit=None):
     require(first_other==initial_other and active_other==dict(initial_other,exposure=.3) and reset==active_other
             and active['grain']==initial['grain'] and active['grain']['amount']==17, 'all unrelated edits preserved')
     require(data['undo_steps_to_first']==3 and finite(data['colorMask_cache_hit_delta'])
-            and data['colorMask_cache_hit_delta']>=(1 if mode=='cpu' else 0), 'actual cache and undo granularity')
-    require(data['colorMask_cache_required'] is (mode=='cpu')
-            and data['colorMask_processing_policy']==('cached-cpu-reference' if mode=='cpu' else 'uncached-cpu-reference-upload'), 'honest complete CPU policy')
+            and data['colorMask_cache_hit_delta']>=1, 'actual cache and undo granularity')
+    require(data['colorMask_cache_required'] is True
+            and data['colorMask_processing_policy']==('cached-cpu-reference' if mode=='cpu' else 'cached-gpu-compute'), 'actual cached CPU/GPU policy')
     require(('COLOR RANGE MASK' if mode=='cpu' else '颜色范围') in data['colorMask_header_text']
             and data['colorMask_reset_text']==('Reset' if mode=='cpu' else '重置'), 'actual translated controls')
     picker=data['picker'];require(picker['working_space']=='oklab' and picker['sample_before_user_WB_EV'] is True
@@ -119,9 +119,9 @@ def validate_diagnostic(data, manifest, stages, mode):
             and all(v['pixels']==307*211 and v['non_finite_values']==0 for v in color['entries']), 'complete finite original working boundaries')
     gpu=stages['gpu_working_output']
     if mode=='gpu':
-        require(gpu['available'] is True and gpu['producer']=='cpu-reference-upload'
-                and gpu['color_mask']=='cpu-reference' and gpu['spatial_denoise']=='cpu-reference'
-                and gpu['numeric_source_policy']=='color-range-mask-cpu-stage' and gpu['monitor_icc'] is False
+        require(gpu['available'] is True and gpu['producer']=='gpu-compute'
+                and gpu['color_mask']=='gpu-compute' and gpu['spatial_denoise']=='gpu-compute'
+                and gpu['numeric_source_policy']=='none' and gpu['monitor_icc'] is False
                 and gpu['pixels']==307*211 and gpu['bytes']==307*211*16 and gpu['nonfinite_rgba']==[0,0,0,0]
                 and str(gpu['parameter_revision'])==data['diagnostic']['request_revision']
                 and gpu['source_cache_key']==data['diagnostic']['source_key'], 'actual complete CPU color-mask upload on Metal/D3D/OpenGL')
