@@ -51,10 +51,11 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
     }
     struct State {
         QElapsedTimer clock;QTimer *timer=nullptr;int phase=0,lastPhase=-1,frames=0,stableFrame=0,resizes=0;ulong stamp=5000;
-        bool done=false,initialized=false,admitted=false,exportStarted=false,exportPassed=false,diagnosticStarted=false,reopened=false;
+        bool done=false,initialized=false,admitted=false,exportStarted=false,exportPassed=false,diagnosticStarted=false,reopened=false,reopenInteractionFinished=false;
         std::unique_ptr<QTemporaryDir> owned;QString baseline,destination,projectRoot,project,recoveryJournal;
         QStringList sources,before;QList<QByteArray> originalHashes;QList<MoveImportBatch> batches;
-        QImage fixture,reference;ScopesResult scopes;QByteArray baselineHash;qint64 sourceKey=0;quint64 revision=0;
+        QImage fixture,reference;ScopesResult scopes;QByteArray baselineHash;qint64 sourceKey=0,reopenedSourceKey=0;quint64 revision=0,reopenedRevision=0;
+        QElapsedTimer reopenStableClock;int reopenSettledMs=0;QJsonArray reopenSignature,events;
         QSize logical,physical;double dpr=0;QJsonObject initial,admission,diagnostic,exportResult,review;
         QJsonArray history,signature,pointers,captures,records,phases;
     };
@@ -76,6 +77,12 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         &&(!sameBuffer||(c->gpuSource().cacheKey()==s->sourceKey&&c->renderRevision()==s->revision))&&c->scopesStatus()==(language=="zh_CN"?QString::fromUtf8("全分辨率统计"):QStringLiteral("Full-resolution statistics"))&&c->scopesPixelCount()==s->scopes.pixelCount
         &&c->shadowClipPercent()==s->scopes.shadowClipPercent&&c->highlightClipPercent()==s->scopes.highlightClipPercent
         &&c->redHistogram()==s->scopes.red&&c->greenHistogram()==s->scopes.green&&c->blueHistogram()==s->scopes.blue&&c->lumaHistogram()==s->scopes.luma;};
+    const auto reopenedOwnerCurrent=[=]{return c->gpuSource().cacheKey()==s->reopenedSourceKey&&c->renderRevision()==s->reopenedRevision;};
+    const auto trace=[=](const QString &event){s->events.append(QJsonObject{{"event",event},{"at_ms",s->clock.elapsed()},{"phase",s->phase},
+        {"source_key",QString::number(c->gpuSource().cacheKey())},{"revision",QString::number(c->renderRevision())},{"loading",c->loading()},{"rendering",c->rendering()},{"preview_ready",c->previewReady()}});while(s->events.size()>64)s->events.removeFirst();};
+    QObject::connect(c,&PhotoController::gpuFrameChanged,c,[=]{trace("frame_changed");});
+    QObject::connect(c,&PhotoController::previewGeometryChanged,c,[=]{trace("geometry_changed");});
+    QObject::connect(c,&PhotoController::activityChanged,c,[=]{trace("activity_changed");});
     const auto checkpoint=[=]{writeObject(evidence+".progress.json",{{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"move",QJsonObject::fromVariantMap(c->moveImportDiagnostics())},{"pointers",s->pointers},{"records",s->records}},true);};
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;s->timer->stop();
@@ -90,6 +97,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
             {"initial_whole_Develop",s->initial},{"final_whole_Develop",intent()},{"initial_history",s->history},{"final_history",history()},
             {"initial_source_key",QString::number(s->sourceKey)},{"initial_render_revision",QString::number(s->revision)},
             {"final_source_key",QString::number(c->gpuSource().cacheKey())},{"final_render_revision",QString::number(c->renderRevision())},{"catalog_count",c->library().size()},
+            {"reopened_source_key",QString::number(s->reopenedSourceKey)},{"reopened_render_revision",QString::number(s->reopenedRevision)},{"reopen_settled_ms",s->reopenSettledMs},{"reopened_owner_current",reopenedOwnerCurrent()},{"events",s->events},
             {"records",s->records},{"review",s->review},{"pointers",s->pointers},{"window_capture_admission",s->admission},{"window_captures",s->captures},{"phase_checkpoints",s->phases},
             {"scope",QJsonObject{{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"four_histograms_exact",true},{"shadow_clip_percent",s->scopes.shadowClipPercent},{"highlight_clip_percent",s->scopes.highlightClipPercent},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
@@ -107,7 +115,8 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         if(signature!=s->signature){s->signature=signature;s->stableFrame=s->frames;return false;}if(s->frames-s->stableFrame<3){w->update();return false;}return true;};
     const auto capture=[=](const QString &role){const auto image=w->grabWindow();if(!s->admitted||image.size()!=s->physical||QSize(w->width(),w->height())!=s->logical||w->devicePixelRatio()!=s->dpr||image.depth()!=32)return false;
         const auto path=evidence+"."+role+".window.png";if(!image.save(path))return false;s->captures.append(QJsonObject{{"role",role},{"path",path},{"phase",s->phase},{"logical_width",w->width()},{"logical_height",w->height()},
-            {"physical_width",image.width()},{"physical_height",image.height()},{"DPR",s->dpr},{"presented_frames",s->frames-s->stableFrame},{"source_key",QString::number(c->gpuSource().cacheKey())},{"render_revision",QString::number(c->renderRevision())},{"at_ms",s->clock.elapsed()}});return true;};
+            {"physical_width",image.width()},{"physical_height",image.height()},{"DPR",s->dpr},{"presented_frames",s->frames-s->stableFrame},{"source_key",QString::number(c->gpuSource().cacheKey())},{"render_revision",QString::number(c->renderRevision())},
+            {"preview_ready",c->previewReady()},{"loading",c->loading()},{"rendering",c->rendering()},{"source_available",!c->gpuSource().isNull()},{"at_ms",s->clock.elapsed()}});return true;};
     const auto click=[=](const QString &name){auto *target=item(name);if(!target)return false;const auto point=target->mapToScene({target->width()/2,target->height()/2});if(!inClips(w,target,point))return false;
         const auto source=c->gpuSource().cacheKey();const auto revision=c->renderRevision();const auto text=target->property("text").toString();
         for(const auto type:{QEvent::MouseButtonPress,QEvent::MouseButtonRelease})QWindowSystemInterface::handleMouseEvent(w,s->stamp+=3,QHighDpi::toNativePixels(point,w),QHighDpi::toNativePixels(w->mapToGlobal(point),w),type==QEvent::MouseButtonPress?Qt::LeftButton:Qt::NoButton,Qt::LeftButton,type);
@@ -139,6 +148,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         if(qGuiApp->applicationState()!=Qt::ApplicationActive){QWindowSystemInterface::handleApplicationStateChanged(Qt::ApplicationActive);QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);return;}
         if(!w->isActive()){QWindowSystemInterface::handleFocusWindowChanged(w);QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);return;}
         if(!c->previewReady()||c->loading()||c->rendering()||c->gpuSource().isNull()||(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")&&!c->gpuActive()))return;
+        if(s->reopened&&!reopenedOwnerCurrent()){finish("Frozen reopened source/revision changed before export/diagnostic completion");return;}
         if(s->phase==0&&!s->initialized){s->initialized=true;c->setExposure(.2);c->finishInteraction();c->setExactScopes(true);
             if(!c->createProject(QUrl::fromLocalFile(s->projectRoot),"OwnedMove")){finish("Cannot create actual move QA project");return;}s->project=c->projectPath();return;}
         if(!stable())return;
@@ -164,12 +174,18 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
             if(!original(true)||!record(s->recoveryJournal,{2})||c->library().size()!=4||!capture("recovered")||!c->flushEdits()){finish("Reviewed recovery or saved original state differs");return;}
             s->phase=7;if(!c->openProject(QUrl::fromLocalFile(s->project))){finish("Cannot reopen saved move project");return;}return;}
         if(s->phase==7){if(c->currentFile()!=s->baseline){const auto library=c->library();for(int i=0;i<library.size();++i)if(library[i].toMap()["path"].toString()==s->baseline){c->selectPhoto(i);return;}finish("Original baseline missing from reopened catalog");return;}
-            if(c->scopesPixelCount()!=s->scopes.pixelCount||c->redHistogram().size()!=1024)return;if(!original(false)||c->library().size()!=4||!capture("reopened")){finish("Reopened original history/scopes/catalog differ");return;}s->reopened=true;s->phase=8;return;}
+            if(!s->reopenInteractionFinished){s->reopenInteractionFinished=true;c->finishInteraction();return;}
+            const QJsonArray owner{QString::number(c->gpuSource().cacheKey()),QString::number(c->renderRevision()),w->width(),w->height()};
+            if(owner!=s->reopenSignature){s->reopenSignature=owner;s->reopenStableClock.restart();return;}
+            if(s->reopenStableClock.elapsed()<200)return;
+            if(c->scopesPixelCount()!=s->scopes.pixelCount||c->redHistogram().size()!=1024)return;
+            s->reopenedSourceKey=c->gpuSource().cacheKey();s->reopenedRevision=c->renderRevision();s->reopenSettledMs=int(s->reopenStableClock.elapsed());
+            if(!original(false)||c->library().size()!=4||!capture("reopened")){finish("Reopened original history/scopes/catalog differ");return;}s->reopened=true;s->phase=8;return;}
         if(s->phase==8){s->phase=9;return;}
         if(s->phase==9&&!s->exportStarted){s->exportStarted=true;if(!c->exportCurrent(QUrl::fromLocalFile(evidence+".export.png"),"srgb",100))finish("Unselected original export refused");return;}
         if(s->phase==10&&!s->diagnosticStarted){s->diagnosticStarted=true;if(!c->requestBugReport())finish("Frozen move diagnostic refused");return;}
         if(s->phase==11){if(!original(false)){finish("Export/diagnostic changed unselected original");return;}s->phase=12;finish({});}
     });
-    c->setLanguage(language);w->resize(1180,780);w->setProperty("workspaceIndex",1);
+    c->setLanguage(language);w->resize(1180,720);w->setProperty("workspaceIndex",1);
     if(!c->importFile(QUrl::fromLocalFile(s->baseline))){finish("Cannot import owned baseline image");return;}s->timer->start();
 }
