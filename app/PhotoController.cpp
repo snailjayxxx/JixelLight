@@ -746,6 +746,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="project.create"||object["command"].toString()=="project.open")return executeProjectCommand(object);
     if(QStringList{"edit.copy","edit.paste","edit.sync"}.contains(object["command"].toString()))return executeAdjustmentTransfer(object)>=0;
     if(object["command"].toString().startsWith("preset."))return executePresetCommand(object);
     if(QStringList{"version.create","version.rename","version.remove"}.contains(object["command"].toString()))return executeVirtualVersion(object);
@@ -1461,6 +1462,25 @@ void PhotoController::applyCurrent() {
 }
 
 bool PhotoController::createProject(const QUrl &folder, const QString &name) {
+    return executeProjectCommand({{"command","project.create"},{"folder",folder.isLocalFile()?folder.toLocalFile():folder.toString()},{"name",name}});
+}
+bool PhotoController::openProject(const QUrl &url) {
+    return url.isLocalFile()&&executeProjectCommand({{"command","project.open"},{"path",url.toLocalFile()}});
+}
+bool PhotoController::executeProjectCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Project request;
+    if(!CommandRegistry::decodeProject(command,&request)){setStatus(uiText("项目参数无效", "Invalid project parameters"));return false;}
+    const bool created=request.kind==CommandRegistry::ProjectKind::Create;
+    const bool accepted=created?createProjectImpl(QUrl::fromLocalFile(request.path),request.name):openProjectImpl(QUrl::fromLocalFile(request.path));
+    if(accepted) {
+        const QJsonObject canonical=created?QJsonObject{{"command","project.create"},{"folder",QFileInfo(m_project.projectPath()).absolutePath()},{"name",m_project.projectName()}}
+            :QJsonObject{{"command","project.open"},{"path",m_project.projectPath()}};
+        ActionTrace::instance().record("project_command",{{"command",canonical},{"project",m_project.projectPath()}});
+    }
+    return accepted;
+}
+bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name) {
     if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     const QString path = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
     if (!flushEdits()) return false;
@@ -1502,7 +1522,7 @@ bool PhotoController::createProject(const QUrl &folder, const QString &name) {
     return ok;
 }
 
-bool PhotoController::openProject(const QUrl &url) {
+bool PhotoController::openProjectImpl(const QUrl &url) {
     if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     if (!url.isLocalFile() || !flushEdits()) return false;
     QVector<ProjectDatabase::SavedPhoto> saved;

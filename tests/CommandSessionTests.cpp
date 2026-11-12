@@ -197,6 +197,16 @@ private slots:
             QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::adjustmentTransferSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopProjectLifecycleCannotWriteCatalogsThroughOfflineSessions(){
+        CommandRegistry::Project request;QVERIFY(CommandRegistry::decodeProject({{"command","project.create"},{"folder","parent"}},&request));QCOMPARE(request.name,QString("JixelLight Project"));
+        QVERIFY(CommandRegistry::decodeProject({{"command","project.create"},{"folder","parent"},{"name"," Name "}},&request));QCOMPARE(request.name,QString("Name"));
+        for(const auto &bad:QList<QJsonObject>{{{"command","project.create"},{"folder","parent"},{"name",".."}},{{"command","project.open"},{"path",true}}}){request.path="sentinel";QVERIFY(!CommandRegistry::decodeProject(bad,&request));QCOMPARE(request.path,QString("sentinel"));}
+        for(const auto &name:QStringList{"project.create","project.open"}) {
+            QJsonObject command{{"command",name},{name=="project.create"?"folder":"path","project.jlp"}};QVERIFY(CommandRegistry::decodeProject(command,&request));CommandSession result;result.photoCount=84;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,84);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::projectSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

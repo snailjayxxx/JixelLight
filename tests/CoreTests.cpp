@@ -7492,6 +7492,41 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void projectCommandsPreserveVersionsHistoriesCurationAndOriginalBytesAcrossReopen() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");QVERIFY(selectedExportPngFixture(a,4));QVERIFY(selectedExportPngFixture(b,6));const auto bytesA=fixtureBytes(a),bytesB=fixtureBytes(b);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(a)));QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.setExposure(.5);c.finishInteraction();c.setRating(3);QVERIFY(c.setSelectionKeywords("retained"));
+        QVERIFY(c.createVirtualCopy("Alternative"));c.setExposure(-.75);c.finishInteraction();c.setRating(1);const auto copyKey=c.library()[2].toMap()["id"].toString();
+        QVERIFY(c.executeCommand({{"command","project.create"},{"folder",dir.path()},{"name","  Lifecycle  "}}));QVERIFY(c.projectPath().endsWith("Lifecycle.jlp"));const auto project=c.projectPath();QVERIFY(c.flushEdits());
+        QMap<QString,QJsonObject> states;QMap<QString,QVariantList> histories;QMap<QString,QVariantMap> tags;
+        const auto metadata=[&]{return QVariantMap{{"rating",c.currentRating()},{"flag",c.currentFlag()},{"keywords",c.currentKeywords()},{"label",c.currentColorLabel()},{"albums",c.currentAlbums()},{"name",c.library()[c.currentIndex()].toMap()["versionName"]}};};
+        for(int i=0;i<3;++i){c.selectPhoto(i);const auto key=c.library()[i].toMap()["id"].toString();states[key]=c.gpuPlan(true).state.toJson();histories[key]=c.editHistory();tags[key]=metadata();}
+        QVERIFY(!c.executeCommand({{"command","project.create"},{"folder",dir.path()},{"name","Lifecycle"}}));QCOMPARE(c.projectPath(),project);
+        QVERIFY(c.executeCommand({{"command","project.open"},{"path",project}}));QCOMPARE(c.library().size(),3);QSet<QString> seen;
+        for(int i=0;i<3;++i){c.selectPhoto(i);const auto key=c.library()[i].toMap()["id"].toString();QVERIFY(states.contains(key));QVERIFY(!seen.contains(key));seen.insert(key);QCOMPARE(c.gpuPlan(true).state.toJson(),states[key]);QCOMPARE(c.editHistory(),histories[key]);QCOMPARE(metadata(),tags[key]);}
+        QVERIFY(seen.contains(copyKey));QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
+        const QJsonObject create{{"command","project.create"},{"folder",QFileInfo(project).absolutePath()},{"name","Lifecycle"}},open{{"command","project.open"},{"path",project}};QJsonArray traced;
+        for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"].toString()=="project_command"&&row["project"].toString()==project)traced.append(row["command"]);}
+        QVERIFY(traced.contains(create));QVERIFY(traced.contains(open));
+    }
+
+    void projectCommandsRejectMalformedNestedAndForeignRequestsBeforeCreatingPaths() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());PhotoController c(nullptr);const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.25);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto forbidden=dir.filePath("not-created");
+        const QList<QJsonObject> invalid{{{"command","project.create"},{"folder",forbidden},{"name",true}},{{"command","project.create"},{"folder",forbidden},{"name",".."}},
+            {{"command","project.create"},{"folder",forbidden},{"name","a/b"}},{{"command","project.create"},{"folder",forbidden},{"name","a\\b"}},
+            {{"command","project.create"},{"folder",forbidden},{"name",QString(32769,'x')}},{{"command","project.create"},{"folder",false}},
+            {{"command","project.open"},{"path",QString::fromUtf8("bad\0path",8)}},{{"command","project.open"},{"path",""}},
+            {{"command","project.open"},{"path",forbidden},{"extra",true}}};
+        for(const auto &command:invalid){QVERIFY(!c.executeCommand(command.toVariantMap()));QVERIFY(c.projectPath().isEmpty());QVERIFY(!QFileInfo::exists(forbidden));QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);}
+        ProjectDatabase existing;QVERIFY(existing.create(dir.path(),"ForeignOpen"));QVERIFY(existing.flush());const auto existingProject=existing.projectPath();
+        const QList<QJsonObject> workflows{{{"command","project.create"},{"folder",forbidden}},{{"command","project.open"},{"path",existingProject}}};
+        for(const auto &command:workflows){QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},command}}}));
+            bool foreign=false,accepted=true,legacy=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(command.toVariantMap());
+                legacy=command["command"].toString()=="project.create"?c.createProject(QUrl::fromLocalFile(forbidden),{}):c.openProject(QUrl::fromLocalFile(existingProject));});worker.join();QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!legacy);}
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QVERIFY(!QFileInfo::exists(forbidden));
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path())," "));QVERIFY(c.projectPath().endsWith("JixelLight Project.jlp"));QVERIFY(c.flushEdits());QCOMPARE(fixtureBytes(source),bytes);
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;
