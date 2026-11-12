@@ -1,0 +1,2 @@
+# CMake 4.4.4, PyPI py3-none-win_amd64 wheel. Keep Ninja depfile escaping intact.
+cmake==4.4.4 --hash=sha256:ad8e0a38b5707e27882701146bdfffecacd80e7703fa0fc36c77528518d545af

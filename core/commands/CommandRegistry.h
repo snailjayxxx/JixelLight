@@ -271,6 +271,33 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    enum class ProjectKind { Create, Open };
+    struct Project {ProjectKind kind=ProjectKind::Create;QString path,name;};
+    static bool decodeProject(const QJsonObject &command,Project *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid project command";return false;};
+        if(!output)return fail();Project staged;const auto action=command["command"].toString();
+        if(action=="project.create") {
+            if(!optionalFields(command,{"folder"},{"name"}))return fail();
+            if(command.contains("name")&&!command["name"].isString())return fail();
+            staged.name=command["name"].toString().trimmed();if(staged.name.isEmpty())staged.name="JixelLight Project";
+            if(staged.name.size()>32768||staged.name.contains(QChar(u'\0'))||staged.name=="."||staged.name==".."||staged.name.contains('/')||staged.name.contains('\\'))return fail();
+        }else if(action=="project.open") {
+            if(!fields(command,{"path"}))return fail();staged.kind=ProjectKind::Open;
+        }else return fail();
+        const auto field=staged.kind==ProjectKind::Create?"folder":"path";
+        if(!command[field].isString())return fail();staged.path=command[field].toString();
+        if(staged.path.isEmpty()||staged.path.size()>32768||staged.path.contains(QChar(u'\0')))return fail();
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject projectSchema(const QString &name) {
+        const bool creating=name=="project.create";
+        return {{"name",name},{"scope","desktop"},{"fields",creating?QJsonArray{"folder"}:QJsonArray{"path"}},
+            {"optional_fields",creating?QJsonArray{"name"}:QJsonArray{}},{"maximum_path_utf16_units",32768},
+            {"name_policy","existing trimmed/default JixelLight Project title; dot and slash names refused; native filesystem limits still apply"},
+            {"catalog_writes",true},{"source_writes",false},{"history","existing project flush/snapshot/reopen semantics; no new Develop step"},
+            {"completion","existing synchronous project acceptance; image loading and queued persistence retain their existing readiness/error signals"},
+            {"offline_sessions","unsupported; ordinary CLI project listing/export remains read-only"}};
+    }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
     static bool decodePhotoImport(const QJsonObject &command,ImportScope scope,PhotoImport *output,QString *error=nullptr) {
@@ -923,7 +950,8 @@ struct CommandRegistry {
                 virtualVersionSchema("version.create"),virtualVersionSchema("version.rename"),virtualVersionSchema("version.remove"),
                 presetSchema("preset.save"),presetSchema("preset.apply"),presetSchema("preset.remove"),presetSchema("preset.rename"),
                 presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import"),
-                adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync")}},
+                adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync"),
+                projectSchema("project.create"),projectSchema("project.open")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

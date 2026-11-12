@@ -487,7 +487,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
     struct State {
         QElapsedTimer elapsed; int phase=0; bool finished=false;
         bool missing=false,cancel=false,ack=false,frozen=false,complete=false,reopened=false,exported=false,compact=false;
-        bool exportFinished=false,exportCommand=false,exportTrace=false; int succeeded=0,failed=0; bool stopped=false;
+        bool exportFinished=false,exportCommand=false,exportTrace=false,projectCommands=false; int succeeded=0,failed=0; bool stopped=false;
         QString project,original,candidate,copy,request; QByteArray checksum;
     };
     const auto state=std::make_shared<State>();state->elapsed.start();
@@ -498,7 +498,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
         QFile source(state->candidate);const bool unchanged=source.open(QIODevice::ReadOnly)
             && QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256)==state->checksum;
         const bool passed=error.isEmpty()&&state->missing&&state->cancel&&state->ack&&state->frozen&&state->complete
-            &&state->reopened&&state->exported&&state->exportCommand&&state->exportTrace&&state->compact&&unchanged;
+            &&state->reopened&&state->exported&&state->exportCommand&&state->exportTrace&&state->projectCommands&&state->compact&&unchanged;
         const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"elapsed_ms",state->elapsed.elapsed()},{"phase",state->phase},{"error",error},
             {"missing_placeholder_passed",state->missing},{"cancel_preserves_catalog",state->cancel},
@@ -506,6 +506,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
             {"relink_complete",state->complete},{"reopen_preserves_versions",state->reopened},
             {"selected_export_passed",state->exported},{"compact_dialog_passed",state->compact},{"source_unchanged",unchanged},
             {"batch_export_command_accepted",state->exportCommand},{"batch_export_trace_passed",state->exportTrace},
+            {"project_lifecycle_command_trace_passed",state->projectCommands},
             {"qpa_platform",QGuiApplication::platformName()},{"device_pixel_ratio",window->devicePixelRatio()},
             {"file_picker_automated",false}};
         QSaveFile output(reportPath);const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -596,6 +597,10 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
             state->reopened=controller->library().size()==2&&controller->currentSourceAvailable()
                 &&controller->currentFile()==state->candidate&&controller->currentRating()==4
                 &&controller->currentKeywords().contains("retained")&&std::abs(controller->exposure()-.35)<1e-9;
+            const QJsonObject create{{"command","project.create"},{"folder",dir->path()},{"name","CommandBootstrap"}},open{{"command","project.open"},{"path",state->project}};QJsonArray commands;
+            for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"].toString()=="project_command")commands.append(row["command"]);}
+            state->projectCommands=commands.contains(create)&&commands.contains(open);
+            if(!state->projectCommands){finish("Project lifecycle canonical traces missing");return;}
             finish(state->reopened?QString():QStringLiteral("Reopened project lost version state"));
         }
     });
@@ -616,7 +621,8 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
         state->project=db.projectPath();
     }
     resizeForSmoke(window,1180,720);window->setProperty("workspaceIndex",0);controller->setGpuEnabled(false);
-    if(!QFile::rename(state->original,state->candidate)||!controller->openProject(QUrl::fromLocalFile(state->project))){finish("Cannot open missing-source fixture");return;}
+    if(!QFile::rename(state->original,state->candidate)||!controller->createProject(QUrl::fromLocalFile(dir->path()),"CommandBootstrap")
+        ||!controller->openProject(QUrl::fromLocalFile(state->project))){finish("Cannot open missing-source fixture");return;}
     timer->start();
 }
 

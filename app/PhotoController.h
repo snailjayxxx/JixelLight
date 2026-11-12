@@ -849,6 +849,9 @@ private:
     bool executeVirtualVersion(const QJsonObject &command);
     bool executePresetCommand(const QJsonObject &command);
     int executeAdjustmentTransfer(const QJsonObject &command);
+    bool executeProjectCommand(const QJsonObject &command);
+    bool createProjectImpl(const QUrl &folder,const QString &name);
+    bool openProjectImpl(const QUrl &folder);
     void copyAdjustmentsImpl();
     bool pasteAdjustmentGroupsImpl(const QStringList &groups);
     int syncAdjustmentGroupsImpl(const QStringList &groups,bool selectedOnly);

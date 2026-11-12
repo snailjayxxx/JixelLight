@@ -1,4 +1,5 @@
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/U16Quantize.h"
 #include <bit>
 #include "core/pipeline/FilmGrain.h"
 #include "core/pipeline/SpatialDenoise.h"
@@ -573,7 +574,11 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     v=outputTransfer(v,kernel); observe(ColorStage::OutputTransfer,v);
     v=lookLut(v,kernel); observe(ColorStage::LookLut,v);
     v=applyGrain(v,kernel,x,y); observe(ColorStage::Grain,v);
+#if defined(_WIN32) && defined(_MSC_VER) && !defined(__clang__)
+    const auto quantize = [](float value) { return quint16(U16Quantize::bounded(value)); };
+#else
     const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
+#endif
     return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),alpha);
 }
 template<class Observer> inline QRgba64 colorPixel(QRgba64 original,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
