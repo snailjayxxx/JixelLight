@@ -18,7 +18,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
     data['reset_whole_Develop']={k:v for k,v in data['active_whole_Develop'].items() if k!='pointColor'}
     for key in list(data):
         if key.startswith('dehaze_'):del data[key]
-    data.update(pointColor_cache_hit_delta=1 if mode=='cpu' else 0,pointColor_cache_required=mode=='cpu',pointColor_processing_policy='cached-cpu-reference' if mode=='cpu' else 'uncached-cpu-reference-upload',pointColor_header_text='POINT COLOR' if mode=='cpu' else '点颜色',pointColor_reset_text='Reset' if mode=='cpu' else '重置')
+    data.update(pointColor_cache_hit_delta=1,pointColor_cache_required=True,pointColor_processing_policy='cached-cpu-reference' if mode=='cpu' else 'cached-gpu-compute',pointColor_header_text='POINT COLOR' if mode=='cpu' else '点颜色',pointColor_reset_text='Reset' if mode=='cpu' else '重置')
     prototype=data['pointers'][0];data['pointers']=[dict(prototype,target=key,render_revision=str(5+i),post_event_render_revision=str(6+i))for i,key in enumerate(['pickerButton','canvasPick','positiveHue','negativeHue','pointColorReset'])]
     data['picker']=dict(working_space='oklab',sample_before_point_color=True,exact_working_selection=True,reference_center=selection['center'],actual_center=selection['center'],pixel=[153,105],source_key='50')
     return data
@@ -26,7 +26,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
 def diagnostic_fixture(mode='gpu'):
     data=report_fixture(mode);manifest={'adjustments':deepcopy(data['active_whole_Develop'])}
     color=dict(available=True,backend='cpu-reference',point_color=dict(backend='cpu-reference',enabled=True,active=True,monitor_icc=False,selection_oklab=[.65,-.03,-.02],output_boundary='PerceptualLook'),spatial_denoise={'backend':'cpu-reference'},entries=[dict(id=key,pixels=64777,non_finite_values=0)for key in ['input_linear','wb_exposure','vignette','highlight_recovery','tone_neutral','perceptual_look','output_linear','output_transfer','look_lut','grain']])
-    gpu={'available':False}if mode=='cpu'else dict(available=True,producer='cpu-reference-upload',point_color='cpu-reference',spatial_denoise='cpu-reference',numeric_source_policy='point-color-cpu-stage',monitor_icc=False,pixels=64777,bytes=1036432,nonfinite_rgba=[0,0,0,0],parameter_revision=30,source_cache_key='50')
+    gpu={'available':False}if mode=='cpu'else dict(available=True,producer='gpu-compute',point_color='gpu-compute',spatial_denoise='gpu-compute',numeric_source_policy='none',monitor_icc=False,pixels=64777,bytes=1036432,nonfinite_rgba=[0,0,0,0],parameter_revision=30,source_cache_key='50')
     return manifest,dict(parameter_revision=30,gpu_context={'source_cache_key':'50'},color_stages=color,gpu_working_output=gpu)
 
 class PointColorEvidenceTests(unittest.TestCase):
@@ -46,14 +46,14 @@ class PointColorEvidenceTests(unittest.TestCase):
         for key,value in [('source_key','49'),('working_space','display-p3'),('sample_before_point_color',False),('actual_center',[.6,0,0]),('exact_working_selection',False),('pixel',[154,105])]:
             data=report_fixture();data['picker'][key]=value
             with self.subTest(key=key),self.assertRaises(ValueError):validate_report(data,'gpu','cocoa')
-    def test_cached_cpu_and_uncached_upload_policies_are_distinct(self):
+    def test_actual_cache_reuse_and_compute_policy_are_required(self):
         for mode in ['cpu','gpu']:
-            data=report_fixture(mode);data['pointColor_cache_hit_delta']=0 if mode=='cpu'else 1
+            data=report_fixture(mode);data['pointColor_cache_hit_delta']=0
             with self.assertRaises(ValueError):validate_report(data,mode,'cocoa')
-            data=report_fixture(mode);data['pointColor_processing_policy']='gpu-compute'
+            data=report_fixture(mode);data['pointColor_processing_policy']='cpu-reference-upload'
             with self.assertRaises(ValueError):validate_report(data,mode,'cocoa')
     def test_false_compute_and_stale_diagnostics_are_rejected(self):
-        edits=[(('gpu_working_output','producer'),'gpu-compute'),(('gpu_working_output','point_color'),'gpu-compute'),(('gpu_working_output','numeric_source_policy'),'none'),(('gpu_working_output','source_cache_key'),'49'),(('gpu_working_output','parameter_revision'),29),(('color_stages','point_color','selection_oklab'),[.6,0,0]),(('color_stages','point_color','monitor_icc'),True),(('color_stages','entries',5,'pixels'),1),(('color_stages','entries',5,'non_finite_values'),1)]
+        edits=[(('gpu_working_output','producer'),'cpu-reference-upload'),(('gpu_working_output','point_color'),'cpu-reference'),(('gpu_working_output','numeric_source_policy'),'point-color-cpu-stage'),(('gpu_working_output','source_cache_key'),'49'),(('gpu_working_output','parameter_revision'),29),(('color_stages','point_color','selection_oklab'),[.6,0,0]),(('color_stages','point_color','monitor_icc'),True),(('color_stages','entries',5,'pixels'),1),(('color_stages','entries',5,'non_finite_values'),1)]
         for path,value in edits:
             manifest,stages=diagnostic_fixture();cursor=stages
             for key in path[:-1]:cursor=cursor[key]

@@ -410,7 +410,7 @@ Rectangle {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {
                         objectName: "pointColorToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
-                        text: (root.pointColorExpanded ? "▾ " : "▸ ") + root.t("点颜色（CPU）", "POINT COLOR (CPU)")
+                        text: (root.pointColorExpanded ? "▾ " : "▸ ") + root.t("点颜色", "POINT COLOR")
                         onClicked: root.pointColorExpanded = !root.pointColorExpanded
                     }
                     Button { objectName: "pointColorReset"; text: root.t("重置", "Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetPointColor() }
@@ -435,9 +435,15 @@ Rectangle {
                     AdjustmentSlider { objectName: "pointColorChromaRangeControl"; labelWidth: 100; sliderObjectName: "pointColorChromaRangeSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("彩度范围", "Chroma range"); from: 0.1; to: 100; decimals: 1; value: root.controller.pointColorChromaRange * 100; onEdited: function(newValue) { root.controller.pointColorChromaRange = newValue / 100 } }
                     AdjustmentSlider { objectName: "pointColorLightnessRangeControl"; labelWidth: 100; sliderObjectName: "pointColorLightnessRangeSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("明度范围", "Lightness range"); from: 0.1; to: 100; decimals: 1; value: root.controller.pointColorLightnessRange * 100; onEdited: function(newValue) { root.controller.pointColorLightnessRange = newValue / 100 } }
                     Label {
+                        objectName: "pointColorPrecisionPolicy"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                        visible: root.controller.pointColorCpuPrecision
+                        text: root.t("精细范围使用 CPU 处理，以保持选区精度。", "Fine ranges use CPU processing to preserve selection precision.")
+                        color: "#aeb9c7"; font.pixelSize: 10
+                    }
+                    Label {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
-                        text: root.t("当前使用 CPU 处理。吸管在点颜色调整前取样；色相、彩度和明度范围共同确定选区。切换显示器或导出色域不改变选区。",
-                            "CPU processing. The picker samples before Point Color. Hue, chroma and lightness ranges define the selection together. Display and export profiles preserve the selection.")
+                        text: root.t("吸管在点颜色调整前取样；色相、彩度和明度范围共同确定选区。切换显示器或导出色域不改变选区。",
+                            "The picker samples before Point Color. Hue, chroma and lightness ranges define the selection together. Display and export profiles preserve the selection.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
