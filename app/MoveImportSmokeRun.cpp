@@ -55,7 +55,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         std::unique_ptr<QTemporaryDir> owned;QString baseline,destination,projectRoot,project,recoveryJournal;
         QStringList sources,before;QList<QByteArray> originalHashes;QList<MoveImportBatch> batches;
         QImage fixture,reference;ScopesResult scopes;QByteArray baselineHash;qint64 sourceKey=0,reopenedSourceKey=0;quint64 revision=0,reopenedRevision=0;
-        QElapsedTimer reopenStableClock;int reopenSettledMs=0;QJsonArray reopenSignature,events;
+        QElapsedTimer reopenStableClock;int reopenSettledMs=0,scopeWaits=0;QJsonArray reopenSignature,events,scopeWaitStates;QString initialScopeStatus;
         QSize logical,physical;double dpr=0;QJsonObject initial,admission,diagnostic,exportResult,review;
         QJsonArray history,signature,pointers,captures,records,phases;
     };
@@ -99,7 +99,8 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
             {"final_source_key",QString::number(c->gpuSource().cacheKey())},{"final_render_revision",QString::number(c->renderRevision())},{"catalog_count",c->library().size()},
             {"reopened_source_key",QString::number(s->reopenedSourceKey)},{"reopened_render_revision",QString::number(s->reopenedRevision)},{"reopen_settled_ms",s->reopenSettledMs},{"reopened_owner_current",reopenedOwnerCurrent()},{"events",s->events},
             {"records",s->records},{"review",s->review},{"pointers",s->pointers},{"window_capture_admission",s->admission},{"window_captures",s->captures},{"phase_checkpoints",s->phases},
-            {"scope",QJsonObject{{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"four_histograms_exact",true},{"shadow_clip_percent",s->scopes.shadowClipPercent},{"highlight_clip_percent",s->scopes.highlightClipPercent},{"red",QJsonArray::fromVariantList(s->scopes.red)},
+            {"scope_wait_observations",s->scopeWaits},{"scope_wait_states",s->scopeWaitStates},
+            {"scope",QJsonObject{{"status",s->initialScopeStatus},{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"four_histograms_exact",true},{"shadow_clip_percent",s->scopes.shadowClipPercent},{"highlight_clip_percent",s->scopes.highlightClipPercent},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
             {"project_path",s->project},{"durable_identities_verified",s->records.size()==3},{"project_reopened",s->reopened},{"export",s->exportResult},{"diagnostic",s->diagnostic},
             {"move",QJsonObject::fromVariantMap(c->moveImportDiagnostics())},{"physical_device_verified",false},{"native_float_RAW_decoder",false},{"product_development_complete",false}};
@@ -152,7 +153,9 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         if(s->phase==0&&!s->initialized){s->initialized=true;c->setExposure(.2);c->finishInteraction();c->setExactScopes(true);
             if(!c->createProject(QUrl::fromLocalFile(s->projectRoot),"OwnedMove")){finish("Cannot create actual move QA project");return;}s->project=c->projectPath();return;}
         if(!stable())return;
-        if(s->phase==0){s->reference=ImagePipeline::processWithPlan(s->fixture,c->gpuPlan(true));s->scopes=ScopesEngine::analyze(s->reference);if(c->scopesPixelCount()!=s->scopes.pixelCount||c->redHistogram().size()!=1024)return;
+        if(s->phase==0){const auto expectedStatus=language=="zh_CN"?QString::fromUtf8("全分辨率统计"):QStringLiteral("Full-resolution statistics");
+            if(c->scopesStatus()!=expectedStatus){++s->scopeWaits;s->scopeWaitStates.append(QJsonObject{{"status",c->scopesStatus()},{"revision",QString::number(c->renderRevision())},{"pixels",qint64(c->scopesPixelCount())}});while(s->scopeWaitStates.size()>16)s->scopeWaitStates.removeFirst();return;}
+            s->initialScopeStatus=c->scopesStatus();s->reference=ImagePipeline::processWithPlan(s->fixture,c->gpuPlan(true));s->scopes=ScopesEngine::analyze(s->reference);if(c->scopesPixelCount()!=s->scopes.pixelCount||c->redHistogram().size()!=1024)return;
             s->initial=intent();s->history=history();s->sourceKey=c->gpuSource().cacheKey();s->revision=c->renderRevision();if(!original(true)||!s->reference.save(evidence+".reference.png")){finish("Original baseline state/scopes differ before move");return;}
             const auto observed=w->grabWindow();s->dpr=w->devicePixelRatio();const QSize logical(w->width(),w->height()),physical(qRound(logical.width()*s->dpr),qRound(logical.height()*s->dpr));
             if(observed.size()!=physical){const QSize fit(qRound(observed.width()/s->dpr),qRound(observed.height()/s->dpr));if(s->resizes||fit.width()<w->minimumWidth()||fit.height()<w->minimumHeight()||QSize(qRound(fit.width()*s->dpr),qRound(fit.height()*s->dpr))!=observed.size()){finish("Actual drawable cannot hold complete move window");return;}++s->resizes;w->resize(fit);return;}

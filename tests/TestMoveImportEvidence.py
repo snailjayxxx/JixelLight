@@ -1,5 +1,6 @@
 """Reject stale, unreviewed or falsely attributed source-retirement evidence."""
 from copy import deepcopy
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -32,7 +33,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
     d['review']=dict(read_only_before_click=True,visible_rows=1,source_still_present=True,catalog_count_before=3,record_digest='e'*64)
     d['pointers']=[dict(target=target,text=text,QPA_mouse_route=True,x=100,y=200,source_key='50',post_event_source_key='50',render_revision='8',post_event_render_revision='8',at_ms=time)
                    for target,text,time in [('copyImportApply','Start move'if mode=='cpu'else'开始移动',220),('moveImportResume','Verify and resume move'if mode=='cpu'else'核对并继续移动',520)]]
-    d['scope']=dict(pixels=307*211,bins=1024,four_histograms_exact=True,shadow_clip_percent=0,highlight_clip_percent=0,
+    d['scope']=dict(status='Full-resolution statistics'if mode=='cpu'else'全分辨率统计',pixels=307*211,bins=1024,four_histograms_exact=True,shadow_clip_percent=0,highlight_clip_percent=0,
                     **{key:[307*211]+[0]*1023 for key in ('red','green','blue','luma')})
     d['window_capture_admission']=dict(accepted=True,before_any_input=True,resize_count=0,DPR=2,logical_width=1180,logical_height=780,physical_width=2360,physical_height=1560,presented_frames=3)
     d['window_captures']=[dict(role=role,phase=phase,DPR=2,logical_width=1180,logical_height=780,physical_width=2360,physical_height=1560,presented_frames=3,at_ms=phase*100+20,
@@ -52,7 +53,7 @@ def catalog_fixture(root):
     d=report_fixture();project=root/'owned.jlp';project.mkdir();d['project_path']=str(project);d['baseline_path']=str(root/'baseline.png')
     for i,row in enumerate(d['records']):row['destination']=str(root/('copy-'+str(i)+'.png'))
     db=project/'Project.db'
-    with sqlite3.connect(db)as c:
+    with closing(sqlite3.connect(db))as c,c:
         c.execute('CREATE TABLE photos(path TEXT PRIMARY KEY,adjustment_json TEXT)');c.execute('CREATE TABLE original_identity(source_key TEXT PRIMARY KEY,schema INTEGER,size_bytes INTEGER,sha256 TEXT)')
         c.execute('INSERT INTO photos VALUES(?,?)',(d['baseline_path'],json.dumps(dict(d['initial_whole_Develop'],_history={'cursor':1,'entries':[]}))))
         for row in d['records']:
@@ -124,11 +125,31 @@ class MoveImportEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory()as temp:
             d,db=catalog_fixture(Path(temp));before=db.read_bytes();self.assertTrue(validate_catalog(d));self.assertEqual(db.read_bytes(),before)
 
+    def test_catalog_reader_is_closed_with_retained_references_on_success_and_failure(self):
+        original=sqlite3.connect
+        for invalid in [False,True]:
+            with tempfile.TemporaryDirectory()as temp:
+                d,db=catalog_fixture(Path(temp));connections=[]
+                if invalid:d['records'][0]['sha256']='f'*64
+                def connect(*args,**kwargs):
+                    connection=original(*args,**kwargs);connections.append(connection);return connection
+                with patch('ValidateMoveImport.sqlite3.connect',side_effect=connect):
+                    if invalid:
+                        with self.assertRaises(ValueError):validate_catalog(d)
+                    else:self.assertTrue(validate_catalog(d))
+                self.assertEqual(len(connections),1)
+                with self.assertRaises(sqlite3.ProgrammingError):connections[0].execute('SELECT 1')
+
+    def test_old_or_preview_original_statistics_are_rejected(self):
+        for status in ['更新中（旧统计）','GPU 预览统计','全分辨率统计 · 全分辨率更新中']:
+            d=report_fixture('gpu','windows');d['scope']['status']=status
+            with self.assertRaises(ValueError):validate_report(d,'gpu','windows')
+
     def test_independent_catalog_rejects_changed_identity_state_or_missing_source(self):
         for change in ('sha','state','missing'):
             with tempfile.TemporaryDirectory()as temp:
                 d,db=catalog_fixture(Path(temp))
-                with sqlite3.connect(db)as c:
+                with closing(sqlite3.connect(db))as c,c:
                     if change=='sha':c.execute('UPDATE original_identity SET sha256=? WHERE source_key=?',('f'*64,d['records'][1]['destination']))
                     elif change=='state':c.execute('UPDATE photos SET adjustment_json=? WHERE path=?',(json.dumps(dict(d['initial_whole_Develop'],exposure=.3,_history={})),d['baseline_path']))
                     else:c.execute('DELETE FROM photos WHERE path=?',(d['records'][1]['destination'],))

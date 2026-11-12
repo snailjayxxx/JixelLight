@@ -1,6 +1,7 @@
 """Independent byte, catalog and actual-system-trash evidence for owned move import."""
 from __future__ import annotations
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -55,6 +56,7 @@ def validate_report(data,mode,qpa,expected_commit=None):
                 and p['render_revision']==p['post_event_render_revision']==data['initial_render_revision']and finite(p['x'])and finite(p['y'])and integer(p['at_ms']),'original frame unchanged by real pointer actions')
     require(pointers[0]['at_ms']<=pointers[1]['at_ms']<=data['elapsed_ms'],'ordered explicit input')
     scope=data['scope'];require(scope['pixels']==307*211 and scope['bins']==1024 and scope['four_histograms_exact']is True,'complete original statistics')
+    require(scope['status']==('全分辨率统计'if data['language']=='zh_CN'else'Full-resolution statistics'),'current completed original full statistics')
     for key in ('red','green','blue','luma'):require(len(scope[key])==1024 and all(integer(v)for v in scope[key])and sum(scope[key])==scope['pixels'],'all original histogram bins')
     for key in ('shadow_clip_percent','highlight_clip_percent'):require(finite(scope[key])and 0<=scope[key]<=100,'original clipping facts')
     move=data['move'];require(move['phase']=='done'and move['retirement_backend']=='system-trash'and move['busy']is False and all(type(move[k])is int for k in ('requested','copied','retired'))and move['requested']==move['copied']==move['retired']==1
@@ -92,7 +94,7 @@ def validate_diagnostic(data,manifest,stages,performance,mode):
 def validate_catalog(data):
     project=Path(data['project_path']).resolve();db=project/'Project.db';require(project.suffix.lower()=='.jlp'and db.is_file()and not db.is_symlink(),'actual saved catalog')
     before=file_sha(db)
-    with sqlite3.connect(db.as_uri()+'?mode=ro&immutable=1',uri=True)as catalog:
+    with closing(sqlite3.connect(db.as_uri()+'?mode=ro&immutable=1',uri=True))as catalog:
         photos=catalog.execute('SELECT path,adjustment_json FROM photos').fetchall();identities=catalog.execute('SELECT source_key,schema,size_bytes,sha256 FROM original_identity').fetchall()
     def path(key):
         p=Path(key);return(p if p.is_absolute()else project/p).resolve()
