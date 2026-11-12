@@ -632,6 +632,9 @@ jobs:
           $pressureVerifier = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightBrushPressureExportVerifier.exe | Select-Object -First 1
           if (-not $pressureVerifier) { throw 'Pressure export verifier not found' }
           Copy-Item $pressureVerifier.FullName package/JixelLightBrushPressureExportVerifier.exe
+          $pngRows = Get-ChildItem -Path build/bin -Recurse -Filter JixelLightPngRows.dll | Select-Object -First 1
+          if (-not $pngRows) { throw 'Independent PNG row verifier not found' }
+          Copy-Item $pngRows.FullName package/JixelLightPngRows.dll
           New-Item -ItemType Directory -Force -Path package/profiles | Out-Null
           Copy-Item build/sony-real-reports/dataset/empirical.jlook.json package/profiles/Sony-ILCE7M4-ST-experimental.jlook.json
           Copy-Item docs/SONY_REAL_VALIDATION.md package/profiles/README.md
@@ -652,6 +655,7 @@ jobs:
           cp build/bin/JixelLightSonyValidation "$APP/Contents/MacOS/JixelLightSonyValidation"
           cp build/bin/JixelLightCli "$APP/Contents/MacOS/JixelLightCli"
           cp build/bin/JixelLightBrushPressureExportVerifier "$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
+          cp build/bin/libJixelLightPngRows.dylib "$APP/Contents/MacOS/libJixelLightPngRows.dylib"
           mkdir -p "$APP/Contents/Resources/profiles"
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"

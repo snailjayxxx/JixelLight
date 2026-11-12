@@ -14,6 +14,9 @@
 #include <QStandardPaths>
 #include <QScopeGuard>
 #include <QSemaphore>
+#include <QLibrary>
+#include <cstddef>
+#include <cstdint>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QUuid>
 #include <QUrl>
@@ -7245,6 +7248,65 @@ private slots:
         bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(valid.toVariantMap());});worker.join();
         QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!c.copyImportBusy());QCOMPARE(c.library().size(),1);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
         QCOMPARE(fixtureBytes(source),bytes);QVERIFY(QDir(out).isEmpty());
+    }
+
+    void independentPngRowLibraryRestoresAllByteFiltersAndKeepsSixteenBitSamples() {
+#if defined(Q_OS_WIN)
+        const QString name="JixelLightPngRows.dll";
+#elif defined(Q_OS_MACOS)
+        const QString name="libJixelLightPngRows.dylib";
+#else
+        const QString name="libJixelLightPngRows.so";
+#endif
+        const auto path=QDir(QCoreApplication::applicationDirPath()).filePath(name);QLibrary library(path);QVERIFY2(library.load(),qPrintable(library.errorString()));
+        using Filter=int(*)(std::uint8_t *,const std::uint8_t *,std::size_t,std::size_t,unsigned int)noexcept;
+        using Abi=unsigned int(*)()noexcept;using Stamp=const char *(*)()noexcept;
+        const auto filter=reinterpret_cast<Filter>(library.resolve("jixel_png_unfilter_row"));
+        const auto abi=reinterpret_cast<Abi>(library.resolve("jixel_png_rows_abi"));const auto stamp=reinterpret_cast<Stamp>(library.resolve("jixel_png_rows_commit"));
+        QVERIFY(filter);QVERIFY(abi);QVERIFY(stamp);QCOMPARE(abi(),1U);QCOMPARE(QString::fromLatin1(stamp()),QStringLiteral(JIXELLIGHT_GIT_COMMIT));
+        const auto byte=[](const QByteArray &values,int index){return int(static_cast<unsigned char>(values[index]));};
+        const auto prediction=[](int kind,int left,int up,int corner) {
+            if(kind==0)return 0;if(kind==1)return left;if(kind==2)return up;if(kind==3)return(left+up)/2;
+            const int estimate=left+up-corner;const std::array<int,3> distances{std::abs(estimate-left),std::abs(estimate-up),std::abs(estimate-corner)};
+            const std::array<int,3> values{left,up,corner};return values[std::min_element(distances.begin(),distances.end())-distances.begin()];
+        };
+        std::uint32_t seed=0x71cfea23U;const auto randomByte=[&]{seed=seed*1664525U+1013904223U;return char(seed>>24);};int cases=0;
+        for(const int bpp:{1,2,3,4,6,8})for(const int width:{1,2,17,63})for(int kind=0;kind<5;++kind)for(int first=0;first<2;++first)for(int pattern=0;pattern<5;++pattern) {
+            const int size=bpp*width;QByteArray raw(size,'\0'),previous(size,'\0');
+            for(int x=0;x<size;++x) {
+                raw[x]=pattern==0?randomByte():pattern==1?char(0):pattern==2?char(255):pattern==3?char(x%2?255:0):char((x*73+19)&255);
+                previous[x]=first?char(0):pattern==0?randomByte():pattern==1?char(0):pattern==2?char(255):pattern==3?char(x%2?0:255):char((x*19+73)&255);
+            }
+            const auto preserved=previous;QByteArray encoded(size,'\0');
+            for(int x=0;x<size;++x)encoded[x]=char((byte(raw,x)-prediction(kind,x>=bpp?byte(raw,x-bpp):0,byte(previous,x),x>=bpp?byte(previous,x-bpp):0))&255);
+            QCOMPARE(filter(reinterpret_cast<std::uint8_t *>(encoded.data()),reinterpret_cast<const std::uint8_t *>(previous.constData()),size,bpp,kind),1);
+            QCOMPARE(encoded,raw);QCOMPARE(previous,preserved);++cases;
+        }
+        for(const auto &row:QList<QList<QByteArray>>{{QByteArray::fromHex("0202"),QByteArray::fromHex("0100"),QByteArray::fromHex("0305")},
+                                                   {QByteArray::fromHex("ff02"),QByteArray::fromHex("0103"),QByteArray::fromHex("0005")}}) {
+            auto encoded=row[0];QCOMPARE(filter(reinterpret_cast<std::uint8_t *>(encoded.data()),reinterpret_cast<const std::uint8_t *>(row[1].constData()),2,1,4),1);QCOMPARE(encoded,row[2]);
+        }
+        QCOMPARE(cases,1200);qInfo().noquote()<<"PNG_ROW_LIBRARY_EVIDENCE"<<QJsonDocument(QJsonObject{{"ABI",1},{"source_commit",QString::fromLatin1(stamp())},
+            {"library_sha256",QString::fromLatin1(QCryptographicHash::hash(fixtureBytes(path),QCryptographicHash::Sha256).toHex())},{"row_cases",cases},{"all_filters",5},{"Paeth_ties",true}}).toJson(QJsonDocument::Compact);
+    }
+
+    void independentPngRowLibraryRejectsInvalidContractsBeforeWriting() {
+#if defined(Q_OS_WIN)
+        const QString name="JixelLightPngRows.dll";
+#elif defined(Q_OS_MACOS)
+        const QString name="libJixelLightPngRows.dylib";
+#else
+        const QString name="libJixelLightPngRows.so";
+#endif
+        QLibrary library(QDir(QCoreApplication::applicationDirPath()).filePath(name));QVERIFY2(library.load(),qPrintable(library.errorString()));
+        using Filter=int(*)(std::uint8_t *,const std::uint8_t *,std::size_t,std::size_t,unsigned int)noexcept;
+        const auto filter=reinterpret_cast<Filter>(library.resolve("jixel_png_unfilter_row"));QVERIFY(filter);
+        auto row=QByteArray::fromHex("ff00017f80feff00"),previous=QByteArray::fromHex("0102feff00010203");const auto before=row,above=previous;
+        auto *bytes=reinterpret_cast<std::uint8_t *>(row.data());const auto *prior=reinterpret_cast<const std::uint8_t *>(previous.constData());
+        for(const auto &contract:std::array<std::array<std::size_t,3>,6>{{{0,1,1},{8,0,1},{8,9,1},{8,1,5},{1,2,4},{64U*1024U*1024U+1U,1,1}}}) {
+            QCOMPARE(filter(bytes,prior,contract[0],contract[1],unsigned(contract[2])),0);QCOMPARE(row,before);QCOMPARE(previous,above);
+        }
+        QCOMPARE(filter(nullptr,prior,8,1,1),0);QCOMPARE(filter(bytes,nullptr,8,1,1),0);QCOMPARE(filter(bytes,bytes,8,1,1),0);QCOMPARE(row,before);QCOMPARE(previous,above);
     }
 
     void catalogCurationCommandsPreserveDevelopHistoriesOriginalsAndVersionStorageDomains() {

@@ -42,6 +42,10 @@ def png16_pixels(path):
         kind = encoded[y * (stride + 1)]
         assert 0 <= kind <= 4
         row = bytearray(encoded[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        if kind == 0:
+            pixels.extend(row)
+            previous = row
+            continue
         for x in range(stride):
             left = row[x-pixel_bytes] if x >= pixel_bytes else 0
             up, corner = previous[x], previous[x-pixel_bytes] if x >= pixel_bytes else 0
