@@ -68,6 +68,8 @@
 #include <numeric>
 #include "diagnostics/ZipStoreWriter.h"
 #include "diagnostics/DiagnosticBundle.h"
+#include "diagnostics/DiagnosticReplay.h"
+#include "core/commands/CommandSession.h"
 #include "diagnostics/PerformanceRecorder.h"
 
 namespace {
@@ -6914,6 +6916,43 @@ private slots:
         const auto cleanup=qScopeGuard([&] { QFile::remove(path); });
         QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"stage_outputs.json")).object(),outputs);
         QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object().value("stage_outputs").toObject(),outputs);
+        const auto unavailable=QJsonDocument::fromJson(storedZipEntry(path,"command_replay.json")).object();
+        QVERIFY(!unavailable["available"].toBool());QVERIFY(storedZipEntry(path,"replay_session.json").isEmpty());
+        QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object()["command_replay"].toObject(),unavailable);
+    }
+
+    void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
+        QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;
+        stored.luminanceMaskEnabled=true;stored.luminanceMaskLower=.2;stored.luminanceMaskUpper=1.2;
+        stored.geometry.crop={.1,.2,.8,.7};stored.geometry.quarterTurns=1;
+        const auto before=stored.toJson();
+        const auto replay=DiagnosticReplay::capture(stored,true,source,"virtual-copy",123,456);QVERIFY(replay.available());
+        const auto info=replay.metadata();QVERIFY(info["available"].toBool());QCOMPARE(info["photo_epoch"].toString(),QString("123"));
+        QCOMPARE(info["parameter_revision"].toString(),QString("456"));QCOMPARE(info["version_key"].toString(),QString("virtual-copy"));
+        QVERIFY(!info["source_content_verified_at_capture"].toBool());QVERIFY(!info["source_hash_enforced"].toBool());
+        QCOMPARE(info["session_sha256"].toString(),QString::fromLatin1(QCryptographicHash::hash(replay.session(),QCryptographicHash::Sha256).toHex()));
+        QCOMPARE(info["stored_intent_sha256"].toString(),QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(before).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex()));
+        const auto manifest=QJsonDocument::fromJson(replay.session()).object();CommandSession compiled;
+        const auto context=[](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{return CommandRegistry::LookContext{true,{}};};
+        QVERIFY(CommandSession::compile(manifest,dir.path(),context,&compiled));QCOMPARE(compiled.exports.size(),1);
+        QCOMPARE(compiled.exports[0].state.toJson(),before);QCOMPARE(compiled.exports[0].destination,dir.filePath("replay.png"));
+        QCOMPARE(compiled.exports[0].source,source);QCOMPARE(stored.toJson(),before);QVERIFY(!QFileInfo::exists(source));
+    }
+
+    void unavailableDiagnosticReplayPreservesTheRemainingBundle() {
+        AdjustmentState stored;stored.look.error="missing profile";const auto source=QDir::temp().filePath("missing.png");
+        const auto replay=DiagnosticReplay::capture(stored,false,source,"original",12,34);
+        QVERIFY(!replay.available());QCOMPARE(replay.metadata()["reason"].toString(),QString("unsupported_look"));
+        QVERIFY(!DiagnosticReplay::capture({},false,{},"",0,0).available());
+        QVERIFY(!DiagnosticReplay::capture({},false,"relative.png","",0,0).available());
+        QVERIFY(!DiagnosticReplay::capture({},false,QDir::temp().filePath("invalid\nsource.png"),"",0,0).available());
+        const auto path=DiagnosticBundle::create({},source,{},stored,0,0,"test",{},{},replay);QVERIFY(!path.isEmpty());
+        const auto cleanup=qScopeGuard([&]{QFile::remove(path);});
+        const auto info=QJsonDocument::fromJson(storedZipEntry(path,"command_replay.json")).object();QCOMPARE(info,replay.metadata());
+        QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object()["command_replay"].toObject(),info);
+        QVERIFY(storedZipEntry(path,"replay_session.json").isEmpty());QVERIFY(!storedZipEntry(path,"actions.json").isEmpty());
+        QVERIFY(!storedZipEntry(path,"performance.json").isEmpty());
     }
 
     void controllerDiagnosticHashesUseCurrentParametersAndGeometry() {
@@ -6998,6 +7037,15 @@ private slots:
         const auto cleanup=qScopeGuard([&]{QFile::remove(path);});
         const auto manifest=QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object();
         QCOMPARE(manifest["current_file"].toString(),source); QCOMPARE(manifest["adjustments"].toObject(),state);
+        const auto replayInfo=QJsonDocument::fromJson(storedZipEntry(path,"command_replay.json")).object();
+        QCOMPARE(manifest["command_replay"].toObject(),replayInfo);QVERIFY(replayInfo["available"].toBool());
+        QCOMPARE(replayInfo["source"].toString(),source);QCOMPARE(replayInfo["parameter_revision"].toString(),QString::number(revision));
+        const auto replayBytes=storedZipEntry(path,"replay_session.json");
+        QCOMPARE(replayInfo["session_sha256"].toString(),QString::fromLatin1(QCryptographicHash::hash(replayBytes,QCryptographicHash::Sha256).toHex()));
+        CommandSession replaySession;
+        const auto replayContext=[](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{return CommandRegistry::LookContext{false,{}};};
+        QVERIFY(CommandSession::compile(QJsonDocument::fromJson(replayBytes).object(),dir.path(),replayContext,&replaySession));
+        QCOMPARE(replaySession.exports.size(),1);QCOMPARE(replaySession.exports[0].source,source);QCOMPARE(replaySession.exports[0].state.toJson(),state);
         const auto stages=QJsonDocument::fromJson(storedZipEntry(path,"stage_outputs.json")).object();
         QCOMPARE(stages["parameter_revision"].toInteger(),qint64(revision));
         QCOMPARE(stages["gpu_working_output"].toObject()["pixel_sha256"],output["pixel_sha256"]);
@@ -8064,6 +8112,20 @@ private slots:
         QCOMPARE(controller.editHistory(),initialHistory);
         controller.setViewport(320,240,1,0,.5,.5);
         controller.setExposure(.5); controller.finishInteraction();
+        const auto rawDiagnostic=controller.reportBug();QVERIFY(!rawDiagnostic.isEmpty());
+        const auto removeRawDiagnostic=qScopeGuard([&]{QFile::remove(rawDiagnostic);});
+        const auto rawReplayInfo=QJsonDocument::fromJson(storedZipEntry(rawDiagnostic,"command_replay.json")).object();
+        QVERIFY(rawReplayInfo["available"].toBool());QVERIFY(rawReplayInfo["source_is_RAW"].toBool());
+        QCOMPARE(rawReplayInfo["source"].toString(),source);
+        CommandSession rawReplaySession;
+        QVERIFY(CommandSession::compile(QJsonDocument::fromJson(storedZipEntry(rawDiagnostic,"replay_session.json")).object(),dir.path(),
+            [](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{return CommandRegistry::LookContext{true,{}};},&rawReplaySession));
+        QCOMPARE(rawReplaySession.exports[0].state.look.mode,QString("as-shot"));QVERIFY(rawReplaySession.exports[0].state.look.code.isEmpty());
+        QVERIFY(rawReplaySession.exports[0].state.look.parameters.isEmpty());QCOMPARE(rawReplaySession.exports[0].state.exposure,.5);
+        const auto replayEvidence=qEnvironmentVariable("JIXELLIGHT_DIAGNOSTIC_REPLAY_EVIDENCE");
+        if(!replayEvidence.isEmpty()) {
+            QVERIFY(QDir().mkpath(replayEvidence));QVERIFY(QFile::copy(rawDiagnostic,QDir(replayEvidence).filePath("sony-as-shot-diagnostic.zip")));
+        }
         QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"AsShot")); QVERIFY(controller.flushEdits());
         controller.setExposure(1); controller.finishInteraction(); QVERIFY(controller.flushEdits());
         ProjectDatabase db; QVector<ProjectDatabase::SavedPhoto> photos; QVERIFY2(db.open(controller.projectPath(),&photos),qPrintable(db.lastError()));

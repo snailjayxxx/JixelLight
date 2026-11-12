@@ -130,7 +130,7 @@ def main() -> int:
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)
-            results.append(validate_diagnostic(executable, env, home, reports, mode))
+            results.append(validate_diagnostic(executable, env, home, reports, mode, args.cli))
             brush_home = Path(temp) / ("brush-" + mode)
             brush_home.mkdir()
             results.append(validate_brush(executable, env, brush_home,

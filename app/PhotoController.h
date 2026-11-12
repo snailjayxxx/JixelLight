@@ -25,6 +25,7 @@ class QQuickWindow;
 #include "core/look/LookCalibration.h"
 
 #include "core/pipeline/AdjustmentState.h"
+#include "diagnostics/DiagnosticReplay.h"
 #include "core/pipeline/BrushInputStabilizer.h"
 #include "core/commands/EditHistory.h"
 #include "core/project/ProjectDatabase.h"
@@ -622,6 +623,7 @@ private:
         QImage gpuSource;
         QRectF gpuFrameRect;
         AdjustmentState state;
+        DiagnosticReplay::Snapshot replay;
         QString file, project, pipeline;
         double shadowClip = 0, highlightClip = 0;
         QJsonObject scopeContext, performanceValues;

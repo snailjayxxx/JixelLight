@@ -120,6 +120,7 @@ add_library(JixelLightCore STATIC
     diagnostics/PerformanceRecorder.cpp
     diagnostics/ZipStoreWriter.cpp
     diagnostics/DiagnosticBundle.cpp
+    diagnostics/DiagnosticReplay.cpp
 )
 target_include_directories(JixelLightCore PUBLIC ${CMAKE_SOURCE_DIR})
 target_compile_definitions(JixelLightCore PUBLIC JIXELLIGHT_VERSION="${PROJECT_VERSION}-alpha.11" JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")

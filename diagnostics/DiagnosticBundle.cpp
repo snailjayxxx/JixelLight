@@ -24,7 +24,8 @@
 QString DiagnosticBundle::create(const QImage &preview, const QString &currentFile,
                                  const QString &projectPath, const AdjustmentState &state,
                                  double shadowClip, double highlightClip,
-                                 const QString &pipelineDescription, const QJsonObject &scopeContext, const QJsonObject &stageOutputs) {
+                                 const QString &pipelineDescription, const QJsonObject &scopeContext, const QJsonObject &stageOutputs,
+                                 const DiagnosticReplay::Snapshot &replay) {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QDir().mkpath(dir);
@@ -53,7 +54,10 @@ QString DiagnosticBundle::create(const QImage &preview, const QString &currentFi
     manifest["log_lines_dropped"] = qint64(LoggingEngine::droppedLines());
     manifest["preview_capture"] = QStringLiteral("CPU reference of frozen parameters; GPU working-output fingerprint is separate from current_preview.png");
     if (!stageOutputs.isEmpty()) manifest["stage_outputs"] = stageOutputs;
+    manifest["command_replay"] = replay.metadata();
     bool written = zip.addFile("manifest.json", QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+    written &= zip.addFile("command_replay.json",QJsonDocument(replay.metadata()).toJson(QJsonDocument::Indented));
+    if(replay.available())written &= zip.addFile("replay_session.json",replay.session());
     written &= zip.addFile("actions.json", QJsonDocument(ActionTrace::instance().snapshot()).toJson(QJsonDocument::Indented));
 
     written &= zip.addFile("performance.json", QJsonDocument(PerformanceRecorder::snapshot()).toJson(QJsonDocument::Indented));
