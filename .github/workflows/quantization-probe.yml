@@ -1,0 +1,36 @@
+name: Independent U16 quantization probe
+on:
+  pull_request:
+    paths:
+      - tools/QuantizeU16Probe.cpp
+      - .github/workflows/quantization-probe.yml
+permissions:
+  contents: read
+jobs:
+  windows-arithmetic-probe:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile isolated probe with strict floating point
+        shell: pwsh
+        run: |
+          & cl.exe /nologo /O2 /std:c++20 /fp:strict /EHsc tools/QuantizeU16Probe.cpp /Fe:QuantizeU16Probe.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Arithmetic probe compilation failed' }
+      - name: Check exact boundaries and measure alternating pairs
+        id: probe
+        shell: pwsh
+        run: |
+          & ./QuantizeU16Probe.exe | Tee-Object -FilePath u16-quantization-probe.json
+          if ($LASTEXITCODE -ne 0) { throw 'Arithmetic probe exactness failed' }
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.probe.outcome != 'skipped'
+        with:
+          name: u16-quantization-probe-Windows
+          path: u16-quantization-probe.json
+          if-no-files-found: error
