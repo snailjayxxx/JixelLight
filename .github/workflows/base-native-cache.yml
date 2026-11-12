@@ -1,0 +1,76 @@
+name: Base branch dependency cache
+on:
+  push:
+    branches: ['codex/**']
+permissions:
+  contents: read
+concurrency:
+  group: base-native-cache-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  cache:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            triplet: x64-windows-static-md
+          - os: macos-15
+            triplet: arm64-osx-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binaries
+      VCPKG_MAX_CONCURRENCY: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Warm the same Qt SDK cache used by product jobs
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: qtshadertools qtimageformats
+          cache: true
+      - name: Checkout the same vcpkg revision
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+          path: .vcpkg
+          fetch-depth: 1
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - name: Bootstrap vcpkg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Prepare native dependency cache
+        id: dependency-key
+        shell: bash
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          echo "vcpkg=$(git -C .vcpkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Restore native dependency cache
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-
+      - name: Build dependency cache with normal vcpkg ABI checks
+        id: dependencies
+        shell: bash
+        run: >-
+          ./.vcpkg/vcpkg install
+          --triplet=${{ matrix.triplet }}
+          --overlay-triplets="$GITHUB_WORKSPACE/triplets"
+          --x-install-root="$RUNNER_TEMP/jixellight-native-cache-installed"
+      - name: Save native dependency cache on this base branch
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' && steps.native-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}

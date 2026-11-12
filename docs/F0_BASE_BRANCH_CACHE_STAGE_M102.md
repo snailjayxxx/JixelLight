@@ -1,0 +1,9 @@
+# Base-branch dependency cache warming — M102
+
+Original CI411 Windows records the exact native dependency cache miss and restores0 vcpkg packages; its install runs18:16:14–18:22:23UTC before the rest of configuration. The current default branch has no listed cache, while recent identical Windows keys live under individual PR merge refs. GitHub limits those refs to their own PR reruns; sibling/child PRs cannot reuse them as base-branch caches. This explains the observed cache miss separately from product-stage timings, without attributing the entire Windows deadline failure to dependencies.
+
+A separate codex-branch push workflow warms the existing desktop Qt and native dependency caches on the actual branch ref. It uses the same Qt version/modules, vcpkg revision, triplets, paths and exact cache keys as normal product jobs. Direct vcpkg install still checks compiler/package ABIs; an incompatible entry causes the normal rebuild. A four-process cap bounds this preparatory work. A later PR targeting the warmed branch can use GitHub's ordinary permitted base-branch lookup.
+
+The product workflow is unchanged from the Release Ninja candidate: all preflight/full102/native/RAW/88-context package and strict-delivery checks remain, with all existing deadlines and precision/resource limits. This additional20-minute dependency-only workflow neither builds the App nor accepts product checks. It adds no public dependency package/artifact registry and uses the existing Actions cache with read-only repository permissions. Source changes and actual cache transfer/ABI reuse/elapsed benefit remain unqualified until cloud execution demonstrates them. No Windows deadline repair, installed package pass or overall completion is claimed.
+
+Primary policy: [GitHub cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
