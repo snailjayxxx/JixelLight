@@ -1,0 +1,7 @@
+# F0 M79 — wait for final preview in the asynchronous picker regression
+
+CI392 macOS passes the real-Sony/complete-GPU preflight2/2, then fails1/97 in `ColorMaskWorkflowTests::asynchronousPickerKeepsItsTargetAndRejectsLaterEdits`: the final new pick is correctly refused while the prior manual Point Color edit's preview refinement is running. The original1169516-byte job log is retained, SHA256 a34e83f7486a7a5449d0695d9bcb48e388e6e9a9b518d5362c58897375111929. The failed head remains unaccepted on macOS; Linux completes successfully.
+
+The fixture now finishes each actual selection edit and waits for its final ready preview, nonempty immutable staging source and no render before issuing the next legitimate picker request. It still enqueues each older sample before the subsequent edit, target switch, same-value manual choice or photo switch that must cancel it. Same-value cancellation assertions and fixed200ms observation windows remain. No picker call is retried, production admission is not changed, and the existing10s waits/120s test deadline are not increased.
+
+Only this regression fixture and documentation change. Product C++/QML/shaders, engine/profile/source semantics, all pixels, budgets, package86 contexts, Core220/GPU82 and CTest98/93 Qt groups remain unchanged from frozen parentf64f2cf, which passes full98 and all14 exact-head native contexts locally. New targeted fixture execution and this head's complete platform gates remain required. No failed run is retried or accepted as a pass.
