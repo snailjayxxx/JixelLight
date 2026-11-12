@@ -204,7 +204,13 @@ SourceData loadSourceImpl(SourceCache *cache, const QString &path, const CancelT
             out.image = reader.read();
             if (out.image.isNull()) out.error = reader.errorString();
             else {
-                if (!out.image.colorSpace().isValid()) out.image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+                const bool providedProfile=out.image.colorSpace().isValid();
+                if (!providedProfile) out.image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+                const auto inputSpace=out.image.colorSpace();
+                const auto profile=inputSpace.iccProfile();
+                out.metadata["inputColorInterpretation"]=providedProfile?QStringLiteral("provided-profile"):QStringLiteral("assumed-srgb");
+                out.metadata["inputColorProfileDescription"]=inputSpace.description().left(160).simplified();
+                out.metadata["inputColorProfileSha256"]=profile.isEmpty()?QString():QString::fromLatin1(QCryptographicHash::hash(profile,QCryptographicHash::Sha256).toHex());
                 const auto working = QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear);
                 out.image = out.image.convertedToColorSpace(working,QImage::Format_RGBA64);
             }
