@@ -57,6 +57,13 @@ private slots:
         const auto base=plan();QCOMPARE(int(ProcessingPlan::SlotCount),63);QCOMPARE(sizeof(base.data),std::size_t(1008));QVERIFY(base.validPointColor());
         for(int slot=58;slot<61;++slot){auto packed=base;packed.data[slot].x=1;QVERIFY(!packed.validPointColor());QVERIFY(ImagePipeline::processWithPlan(scene(),packed).isNull());}
     }
+    void narrowHuePrecisionPolicyMatchesControllerAndNeutralBypass() {
+        QTemporaryDir dir;const auto path=dir.filePath("source.png");QVERIFY(scene({40,30},false).convertToFormat(QImage::Format_RGBA64).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.setViewport(40,30,1,0,.5,.5);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);
+        c.setPointColorEnabled(true);c.setPointColorHue(25);
+        for(double radius:{1.,2.,3.,4.9,5.,45.,180.}) {c.setPointColorHueRange(radius);const bool expected=radius<5;QCOMPARE(c.pointColorCpuPrecision(),expected);QCOMPARE(c.gpuPlan(false).pointColorNeedsCpuPrecision(),expected);}
+        c.setPointColorHueRange(1);c.setPointColorHue(0);QVERIFY(!c.pointColorCpuPrecision());c.setPointColorHue(25);c.setPointColorEnabled(false);QVERIFY(!c.pointColorCpuPrecision());
+    }
     void transferPresetsAndXmpKeepSelection() {
         auto s=edits();s.exposure=.4;AdjustmentState target;target.temperature=19;QVERIFY(AdjustmentTransfer::apply(target,s,{"color"}));QCOMPARE(target.pointColorLab,s.pointColorLab);QCOMPARE(target.pointColorHue,s.pointColorHue);QCOMPARE(target.temperature,19.0);QCOMPARE(target.exposure,0.0);
         QTemporaryDir dir;QString error;NamedPresets presets(dir.filePath("presets.json"));QVERIFY(presets.load(&error));QVERIFY(presets.save("Point Color",s,&error));AdjustmentState loaded;QVERIFY(presets.get("Point Color",&loaded));QCOMPARE(loaded.toJson(),s.toJson());
