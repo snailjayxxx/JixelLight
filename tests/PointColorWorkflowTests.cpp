@@ -61,7 +61,7 @@ private slots:
         QTemporaryDir dir;const auto path=dir.filePath("source.png");QVERIFY(scene({40,30},false).convertToFormat(QImage::Format_RGBA64).save(path));
         ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.setViewport(40,30,1,0,.5,.5);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);
         c.setPointColorEnabled(true);c.setPointColorHue(25);
-        for(double radius:{1.,2.,3.,4.9,5.,45.,180.}) {c.setPointColorHueRange(radius);const bool expected=radius<5;QCOMPARE(c.pointColorCpuPrecision(),expected);QCOMPARE(c.gpuPlan(false).pointColorNeedsCpuPrecision(),expected);}
+        for(double radius:{1.,2.,3.,4.9,5.,10.,20.,44.9,45.,180.}) {c.setPointColorHueRange(radius);const bool expected=radius<45;QCOMPARE(c.pointColorCpuPrecision(),expected);QCOMPARE(c.gpuPlan(false).pointColorNeedsCpuPrecision(),expected);}
         c.setPointColorHueRange(1);c.setPointColorHue(0);QVERIFY(!c.pointColorCpuPrecision());c.setPointColorHue(25);c.setPointColorEnabled(false);QVERIFY(!c.pointColorCpuPrecision());
     }
     void transferPresetsAndXmpKeepSelection() {

@@ -114,9 +114,9 @@ struct ProcessingPlan {
     bool pointColorActive() const {return data[PointColorAdjust].x!=0;}
     bool pointColorNeedsCpuPrecision() const {
         const auto range=data[PointColorRange];
-        // D3D11 WARP exceeds40/65535 at a1-degree hue shoulder (CI381).
+        // D3D11 WARP exceeds40/65535 at1- and5-degree hue shoulders (CI381/384).
         // Keep one shared conservative precision region on every backend.
-        return pointColorActive()&&(range.x<5.f||range.y<.003f||range.z<.003f);
+        return pointColorActive()&&(range.x<45.f||range.y<.003f||range.z<.003f);
     }
     PointColor::Parameters pointColorParameters() const {
         const auto a=data[PointColorAdjust],c=data[PointColorCenter],r=data[PointColorRange];

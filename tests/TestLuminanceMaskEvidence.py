@@ -25,9 +25,9 @@ def report_fixture(mode='gpu', qpa='cocoa'):
     data['active_whole_Develop']['exposure'] = .3
     data['active_whole_Develop']['luminanceMask'].update(exposure=-1.5, inverted=True)
     data['reset_whole_Develop'] = {k: v for k, v in data['active_whole_Develop'].items() if k != 'luminanceMask'}
-    data.update(undo_steps_to_first=3, luminanceMask_cache_hit_delta=1 if mode == 'cpu' else 0,
-                luminanceMask_cache_required=mode == 'cpu',
-                luminanceMask_processing_policy='cached-cpu-reference' if mode == 'cpu' else 'uncached-cpu-reference-upload',
+    data.update(undo_steps_to_first=3, luminanceMask_cache_hit_delta=1,
+                luminanceMask_cache_required=True,
+                luminanceMask_processing_policy='cached-cpu-reference' if mode == 'cpu' else 'cached-gpu-compute',
                 luminanceMask_header_text='LUMINANCE MASK' if mode == 'cpu' else '亮度范围蒙版',
                 luminanceMask_reset_text='Reset' if mode == 'cpu' else '重置')
     prototype = data['pointers'][0]
@@ -48,8 +48,8 @@ def diagnostic_fixture(mode='gpu'):
                                    exposure_ev=-1.5, inverted=True)
     if mode == 'gpu':
         stages['gpu_working_output'].pop('point_color')
-        stages['gpu_working_output'].update(producer='cpu-reference-upload', luminance_mask='cpu-reference',
-                                             spatial_denoise='cpu-reference', numeric_source_policy='luminance-mask-cpu-stage')
+        stages['gpu_working_output'].update(producer='gpu-compute', luminance_mask='gpu-compute',
+                                             spatial_denoise='gpu-compute', numeric_source_policy='none')
     return {'adjustments': deepcopy(data['active_whole_Develop'])}, stages
 
 
@@ -81,19 +81,21 @@ class LuminanceMaskEvidenceTests(unittest.TestCase):
             data = report_fixture(); data['active_whole_Develop']['luminanceMask']['lower'] = value
             with self.subTest(value=value), self.assertRaises(ValueError): validate_report(data, 'gpu', 'cocoa')
 
-    def test_cache_policy_distinguishes_cpu_lru_and_complete_upload(self):
-        data = report_fixture('cpu'); data['luminanceMask_cache_hit_delta'] = 0
-        with self.assertRaises(ValueError): validate_report(data, 'cpu', 'cocoa')
+    def test_both_cpu_and_gpu_require_real_cache_reuse(self):
         for mode in ('cpu', 'gpu'):
-            data = report_fixture(mode); data['luminanceMask_processing_policy'] = 'cached-gpu-compute'
+            data = report_fixture(mode); data['luminanceMask_cache_hit_delta'] = 0
             with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
-            data = report_fixture(mode); data['luminanceMask_cache_required'] = mode != 'cpu'
+        for mode in ('cpu', 'gpu'):
+            data = report_fixture(mode); data['luminanceMask_processing_policy'] = 'uncached-cpu-reference-upload'
+            with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
+            data = report_fixture(mode); data['luminanceMask_cache_required'] = False
             with self.assertRaises(ValueError): validate_report(data, mode, 'cocoa')
 
-    def test_false_compute_and_stale_mask_diagnostics_are_rejected(self):
-        edits = [(('gpu_working_output', 'producer'), 'gpu-compute'),
-                 (('gpu_working_output', 'luminance_mask'), 'gpu-compute'),
-                 (('gpu_working_output', 'numeric_source_policy'), 'none'),
+    def test_false_upload_and_stale_mask_diagnostics_are_rejected(self):
+        edits = [(('gpu_working_output', 'producer'), 'cpu-reference-upload'),
+                 (('gpu_working_output', 'luminance_mask'), 'cpu-reference'),
+                 (('gpu_working_output', 'spatial_denoise'), 'cpu-reference'),
+                 (('gpu_working_output', 'numeric_source_policy'), 'luminance-mask-cpu-stage'),
                  (('gpu_working_output', 'source_cache_key'), '49'),
                  (('color_stages', 'luminance_mask', 'lower_y'), .2),
                  (('color_stages', 'luminance_mask', 'monitor_icc'), True),
