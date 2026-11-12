@@ -653,7 +653,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "point_color_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "point_color_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "luminance_mask_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -844,6 +844,30 @@ QPointF PhotoController::maskCanvasPoint(double x,double y,double width,double h
     return MaskCanvasGeometry::imageAt({x,y},{width,height},m_previewFrameRect);
 }
 
+bool PhotoController::applyLuminanceMaskCommand(const QJsonObject &command,const QString &action,bool finish) {
+    auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
+    if(!CommandRegistry::execute(next,command))return false;
+    if(next.toJson()==state->toJson())return true;
+    if(finish)m_photos[m_currentIndex].history.finish();
+    *state=std::move(next);persistAndApply(action);return true;
+}
+bool PhotoController::setLuminanceMaskEnabled(bool enabled) {
+    return applyLuminanceMaskCommand({{"command","mask.luminance.enable"},{"enabled",enabled}},"luminance_mask_toggle",true);
+}
+bool PhotoController::setLuminanceMaskInverted(bool inverted) {
+    return applyLuminanceMaskCommand({{"command","mask.luminance.invert"},{"inverted",inverted}},"luminance_mask_invert",true);
+}
+bool PhotoController::setLuminanceMaskParameter(const QString &parameter,double value) {
+    if(!std::isfinite(value))return false;
+    return applyLuminanceMaskCommand({{"command","mask.luminance.set"},{"parameter",parameter},{"value",value}},"luminance_mask_adjustment",false);
+}
+bool PhotoController::setLuminanceMaskRange(double lower,double upper,double feather) {
+    if(!std::isfinite(lower)||!std::isfinite(upper)||!std::isfinite(feather))return false;
+    return applyLuminanceMaskCommand({{"command","mask.luminance.range"},{"lower",lower},{"upper",upper},{"feather",feather}},"luminance_mask_adjustment",false);
+}
+bool PhotoController::resetLuminanceMask() {
+    return applyLuminanceMaskCommand({{"command","mask.luminance.reset"}},"luminance_mask_reset",true);
+}
 bool PhotoController::setRadialMaskCenter(double x,double y) {
     if (!std::isfinite(x) || !std::isfinite(y) || x<0 || x>1 || y<0 || y>1) return false;
     auto *state=mutableCurrentState();

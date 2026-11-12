@@ -54,7 +54,7 @@ private slots:
         for(const auto value:{QJsonValue(true),QJsonValue("0.5"),QJsonValue(),QJsonValue(5.)}){auto bad=good;auto section=object;section["center"]=QJsonArray{value,0,0};bad["pointColor"]=section;QVERIFY(!AdjustmentState::validPointColorJson(bad));}
         for(const auto &key:QStringList{"space","schema","future"}){auto bad=good;auto section=object;section[key]=key=="space"?QJsonValue("srgb"):QJsonValue(2);bad["pointColor"]=section;QVERIFY(!AdjustmentState::validPointColorJson(bad));}
         auto bad=edits();bad.pointColorLab[0]=std::numeric_limits<double>::infinity();QVERIFY(!AdjustmentState::validPointColorJson(bad.toJson()));
-        const auto base=plan();QCOMPARE(int(ProcessingPlan::SlotCount),61);QCOMPARE(sizeof(base.data),std::size_t(976));QVERIFY(base.validPointColor());
+        const auto base=plan();QCOMPARE(int(ProcessingPlan::SlotCount),63);QCOMPARE(sizeof(base.data),std::size_t(1008));QVERIFY(base.validPointColor());
         for(int slot=58;slot<61;++slot){auto packed=base;packed.data[slot].x=1;QVERIFY(!packed.validPointColor());QVERIFY(ImagePipeline::processWithPlan(scene(),packed).isNull());}
     }
     void transferPresetsAndXmpKeepSelection() {

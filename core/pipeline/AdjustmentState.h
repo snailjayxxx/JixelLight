@@ -68,6 +68,9 @@ struct AdjustmentState {
     double radialMaskRadiusY = 0.35; // vertical fraction .05..1
     double radialMaskFeather = 0.25; // transition fraction .02..1
     double radialMaskAngle = 0.0; // ellipse rotation degrees [-180, 180]
+    // Independent selection from source scene-linear luminance, before WB/EV.
+    bool luminanceMaskEnabled=false,luminanceMaskInverted=false;
+    double luminanceMaskExposure=0,luminanceMaskLower=0,luminanceMaskUpper=1,luminanceMaskFeather=.1;
     // Canonical bounded brush intent. Enabled layers use explicit admitted
     // production render/export/statistics paths; research APIs keep their cap.
     BrushMaskDocument::Document brushMasks;
@@ -141,6 +144,10 @@ struct AdjustmentState {
             auto m=result.value("radialMask").toObject();
             m.insert("angle",radialMaskAngle); result.insert("radialMask",m);
         }
+        if(luminanceMaskEnabled||luminanceMaskInverted||luminanceMaskExposure!=0
+            ||luminanceMaskLower!=0||luminanceMaskUpper!=1||luminanceMaskFeather!=.1)
+            result["luminanceMask"]=QJsonObject{{"schema",1},{"enabled",luminanceMaskEnabled},{"inverted",luminanceMaskInverted},
+                {"exposure",luminanceMaskExposure},{"lower",luminanceMaskLower},{"upper",luminanceMaskUpper},{"feather",luminanceMaskFeather}};
         QJsonObject brushDraft;
         if (BrushMaskDocument::toJson(brushMasks,&brushDraft) && !brushDraft.isEmpty())
             result["brushMasks"]=brushDraft;
@@ -244,6 +251,18 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validLuminanceMaskJson(const QJsonObject &object) {
+        if(!object.contains("luminanceMask"))return true;
+        if(!object["luminanceMask"].isObject())return false;
+        const auto m=object["luminanceMask"].toObject();
+        if(m.size()!=7||!m["schema"].isDouble()||m["schema"].toDouble()!=1
+            ||!m["enabled"].isBool()||!m["inverted"].isBool())return false;
+        const auto number=[&](const char *key,double lo,double hi){const auto v=m[key];return v.isDouble()&&std::isfinite(v.toDouble())&&v.toDouble()>=lo&&v.toDouble()<=hi;};
+        if(!number("exposure",-3,3)||!number("lower",0,2)||!number("upper",0,2)||!number("feather",.001,1)
+            ||m["lower"].toDouble()>m["upper"].toDouble())return false;
+        return m["enabled"].toBool()||m["inverted"].toBool()||m["exposure"].toDouble()!=0
+            ||m["lower"].toDouble()!=0||m["upper"].toDouble()!=1||m["feather"].toDouble()!=.1;
+    }
     static bool validPointColorJson(const QJsonObject &object) {
         if(!object.contains("pointColor"))return true;
         if(!object["pointColor"].isObject())return false;
@@ -404,6 +423,10 @@ struct AdjustmentState {
         if (o.contains("sharpen") && validSharpenJson(o)) {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
+        }
+        if(o.contains("luminanceMask")&&validLuminanceMaskJson(o)) {
+            const auto m=o["luminanceMask"].toObject();s.luminanceMaskEnabled=m["enabled"].toBool();s.luminanceMaskInverted=m["inverted"].toBool();
+            s.luminanceMaskExposure=m["exposure"].toDouble();s.luminanceMaskLower=m["lower"].toDouble();s.luminanceMaskUpper=m["upper"].toDouble();s.luminanceMaskFeather=m["feather"].toDouble();
         }
         if(o.contains("pointColor")&&validPointColorJson(o)) {
             const auto p=o["pointColor"].toObject();s.pointColorEnabled=p["enabled"].toBool();

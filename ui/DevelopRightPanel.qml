@@ -102,6 +102,7 @@ Rectangle {
     property bool denoiseExpanded: false
     property bool linearMaskExpanded: false
     property bool radialMaskExpanded: false
+    property bool luminanceMaskExpanded: false
     property bool blackWhiteExpanded: false
     property bool colorGradingExpanded: false
     property bool pointColorExpanded: false
@@ -126,6 +127,7 @@ Rectangle {
         property alias denoiseExpanded: root.denoiseExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
         property alias radialMaskExpanded: root.radialMaskExpanded
+        property alias luminanceMaskExpanded: root.luminanceMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
         property alias colorGradingExpanded: root.colorGradingExpanded
         property alias pointColorExpanded: root.pointColorExpanded
@@ -935,6 +937,25 @@ Rectangle {
                         text: root.t("一个独立椭圆蒙版，可调整内部或外部。基于裁切/旋转后的整张照片，无 AI；支持旋转椭圆及画布两侧羽化手柄（Shift 精调）；多个同类渐变仍待支持。",
                                      "One independent oval mask, inside or outside. Anchored to the entire post-crop/rotation photo, no AI. Rotated oval and two-sided feather handles support Shift precision; multiple radial gradients remain future work.")
                     }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    ToolButton { objectName: "luminanceMaskToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.luminanceMaskExpanded ? "▾ " : "▸ ")+root.t("亮度范围蒙版","LUMINANCE MASK")
+                        onClicked: root.luminanceMaskExpanded=!root.luminanceMaskExpanded
+                    }
+                    Button { objectName: "luminanceMaskReset"; text: root.t("重置","Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetLuminanceMask() }
+                }
+                ColumnLayout {
+                    objectName: "luminanceMaskSection"; visible: root.luminanceMaskExpanded; Layout.fillWidth: true; spacing: 6
+                    CheckBox { objectName: "luminanceMaskEnable"; Layout.fillWidth: true; enabled: root.controller.hasImage; text: root.t("启用亮度蒙版","Enable luminance mask"); checked: root.controller.luminanceMask.enabled; onToggled: root.controller.setLuminanceMaskEnabled(checked) }
+                    CheckBox { objectName: "luminanceMaskInvert"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.luminanceMask.enabled; text: root.t("反选范围","Invert range"); checked: root.controller.luminanceMask.inverted; onToggled: root.controller.setLuminanceMaskInverted(checked) }
+                    AdjustmentSlider { objectName: "luminanceMaskExposureControl"; sliderObjectName: "luminanceMaskExposureSlider"; labelWidth: 100; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.luminanceMask.enabled; label: root.t("局部曝光 EV","Local EV"); from: -3; to: 3; decimals: 2; value: root.controller.luminanceMask.exposure; onEdited: function(v) { root.controller.setLuminanceMaskParameter("exposure",v) } }
+                    AdjustmentSlider { objectName: "luminanceMaskLowerControl"; sliderObjectName: "luminanceMaskLowerSlider"; labelWidth: 100; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.luminanceMask.enabled; label: root.t("最低亮度 %","Lower Y %"); from: 0; to: root.controller.luminanceMask.upper*100; decimals: 1; value: root.controller.luminanceMask.lower*100; onEdited: function(v) { root.controller.setLuminanceMaskParameter("lower",v/100) } }
+                    AdjustmentSlider { objectName: "luminanceMaskUpperControl"; sliderObjectName: "luminanceMaskUpperSlider"; labelWidth: 100; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.luminanceMask.enabled; label: root.t("最高亮度 %","Upper Y %"); from: root.controller.luminanceMask.lower*100; to: 200; decimals: 1; value: root.controller.luminanceMask.upper*100; onEdited: function(v) { root.controller.setLuminanceMaskParameter("upper",v/100) } }
+                    AdjustmentSlider { objectName: "luminanceMaskFeatherControl"; sliderObjectName: "luminanceMaskFeatherSlider"; labelWidth: 100; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.luminanceMask.enabled; label: root.t("羽化宽度 %","Feather %"); from: .1; to: 100; decimals: 1; value: root.controller.luminanceMask.feather*100; onEdited: function(v) { root.controller.setLuminanceMaskParameter("feather",v/100) } }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#8996a7"; font.pixelSize: 10; text: root.t("CPU 参考计算。按输入线性亮度选择区域；曝光和白平衡调整不移动选区。范围外按羽化宽度平滑过渡，反选选择其余区域。","CPU reference. Selects input linear luminance; exposure and white balance preserve the selection. Feathering softens both boundaries; invert selects the remainder.") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

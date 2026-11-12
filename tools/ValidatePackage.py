@@ -29,6 +29,7 @@ from ValidateClarity import validate_clarity
 from ValidateTexture import validate_texture
 from ValidateDehaze import validate_dehaze
 from ValidatePointColor import validate_pointColor
+from ValidateLuminanceMask import validate_luminance_mask
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -324,6 +325,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_pointColor(executable, environment, Path(point_color_temp) / mode,
                 reports / ('point-color-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Keep all80 existing contexts before the two luminance-mask CPU/display workflows.
+    with tempfile.TemporaryDirectory(prefix='jixellight-luminance-mask-package-') as luminance_mask_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_luminance_mask(executable, environment, Path(luminance_mask_temp) / mode,
+                reports / ('luminance-mask-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

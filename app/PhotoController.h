@@ -130,6 +130,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double clarityAmount READ clarityAmount WRITE setClarityAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseLuma READ denoiseLuma WRITE setDenoiseLuma NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseChroma READ denoiseChroma WRITE setDenoiseChroma NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantMap luminanceMask READ luminanceMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantList brushLayers READ brushLayers NOTIFY adjustmentsChanged)
@@ -326,6 +327,15 @@ public:
     double textureAmount() const;
     double clarityAmount() const;
     double denoiseLuma() const; double denoiseChroma() const;
+    QVariantMap luminanceMask() const {
+        const auto s=currentState();return {{"enabled",s.luminanceMaskEnabled},{"inverted",s.luminanceMaskInverted},
+            {"exposure",s.luminanceMaskExposure},{"lower",s.luminanceMaskLower},{"upper",s.luminanceMaskUpper},{"feather",s.luminanceMaskFeather}};
+    }
+    Q_INVOKABLE bool setLuminanceMaskEnabled(bool);
+    Q_INVOKABLE bool setLuminanceMaskInverted(bool);
+    Q_INVOKABLE bool setLuminanceMaskParameter(const QString &,double);
+    Q_INVOKABLE bool setLuminanceMaskRange(double lower,double upper,double feather);
+    Q_INVOKABLE bool resetLuminanceMask();
     QVariantMap linearMask() const {
         const auto state=currentState();
         return {{"enabled",state.linearMaskEnabled},{"exposure",state.linearMaskExposure},
@@ -785,6 +795,7 @@ private:
     void showXmpMergeProgress(const QString &message, bool cancelable);
     void showXmpMergeReview(ProjectDatabase::XmpReviewRecord);
     void commitXmpMergeAfterVerification();
+    bool applyLuminanceMaskCommand(const QJsonObject &,const QString &,bool finish);
     void persistAndApply(const QString &action, const QVariantMap &details = {});
     void setStatus(const QString &message);
     QString uiText(const QString &zh, const QString &en) const;

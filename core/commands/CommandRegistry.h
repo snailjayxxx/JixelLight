@@ -221,6 +221,37 @@ struct CommandRegistry {
             }
             return fail(); // Unknown identity never selects an arbitrary layer.
         }
+        if(name=="mask.luminance.enable"||name=="mask.luminance.invert") {
+            const bool enable=name=="mask.luminance.enable";const auto key=enable?"enabled":"inverted";
+            if(!fields(command,{key})||!command[key].isBool())return fail();
+            if(enable)state.luminanceMaskEnabled=command[key].toBool();else state.luminanceMaskInverted=command[key].toBool();
+            return true;
+        }
+        if(name=="mask.luminance.set"||name=="mask.luminance.range") {
+            auto candidate=state;
+            const auto set=[&](const QString &key,const QJsonValue &value) {
+                if(!value.isDouble()||!std::isfinite(value.toDouble()))return false;
+                const double v=value.toDouble();
+                if(key=="exposure"&&v>=-3&&v<=3)candidate.luminanceMaskExposure=v;
+                else if(key=="lower"&&v>=0&&v<=2)candidate.luminanceMaskLower=v;
+                else if(key=="upper"&&v>=0&&v<=2)candidate.luminanceMaskUpper=v;
+                else if(key=="feather"&&v>=.001&&v<=1)candidate.luminanceMaskFeather=v;
+                else return false;
+                return true;
+            };
+            if(name=="mask.luminance.set") {
+                if(!fields(command,{"parameter","value"})||!command["parameter"].isString()
+                    ||!set(command["parameter"].toString(),command["value"]))return fail();
+            } else if(!fields(command,{"lower","upper","feather"})||!set("lower",command["lower"])
+                ||!set("upper",command["upper"])||!set("feather",command["feather"]))return fail();
+            if(candidate.luminanceMaskLower>candidate.luminanceMaskUpper)return fail();
+            state=std::move(candidate);return true;
+        }
+        if(name=="mask.luminance.reset") {
+            if(!fields(command,{}))return fail();
+            state.luminanceMaskEnabled=false;state.luminanceMaskInverted=false;state.luminanceMaskExposure=0;
+            state.luminanceMaskLower=0;state.luminanceMaskUpper=1;state.luminanceMaskFeather=.1;return true;
+        }
         if (name == "mask.radial.enable") {
             if (!fields(command,{"enabled"}) || !command.value("enabled").isBool()) return fail();
             state.radialMaskEnabled=command.value("enabled").toBool(); return true;
@@ -460,6 +491,14 @@ struct CommandRegistry {
                 {"operation","remove only the indexed whole stroke; remove its layer when empty"}},
             QJsonObject{{"name","mask.brush.reset"},{"fields",QJsonArray{}},
                 {"operation","remove brush layers only; preserve gradients and other edits"}},
+            QJsonObject{{"name","mask.luminance.enable"},{"fields",QJsonArray{"enabled"}}},
+            QJsonObject{{"name","mask.luminance.invert"},{"fields",QJsonArray{"inverted"}}},
+            QJsonObject{{"name","mask.luminance.set"},{"fields",QJsonArray{"parameter","value"}},
+                {"parameters",QJsonArray{"exposure","lower","upper","feather"}},
+                {"ranges","exposure [-3,3] EV; linear luminance lower/upper [0,2], lower <= upper; feather [.001,1]"},{"range_policy","reject"}},
+            QJsonObject{{"name","mask.luminance.range"},{"fields",QJsonArray{"lower","upper","feather"}},
+                {"operation","set both linear-luminance bounds and feather atomically"}},
+            QJsonObject{{"name","mask.luminance.reset"},{"fields",QJsonArray{}},{"operation","reset luminance mask only"}},
             QJsonObject{{"name","mask.radial.enable"},{"fields",QJsonArray{"enabled"}},
                 {"operation","enable or disable one independent oval local exposure gradient"}},
             QJsonObject{{"name","mask.radial.invert"},{"fields",QJsonArray{"inverted"}},
