@@ -1,5 +1,6 @@
 #include "app/SmokeRun.h"
 #include "app/PhotoController.h"
+#include "core/commands/CommandRegistry.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QMimeData>
@@ -48,6 +49,13 @@ public:
     explicit RecipeClipboardRaceProxy(QObject *source,QObject *parent=nullptr):QObject(parent),original(source) {}
     bool qaMutateAfterSnapshot()const{return mutate;}
     void setQaMutateAfterSnapshot(bool value){mutate=value;}
+    Q_INVOKABLE QVariantMap copy(const QString &text) {
+        if(text.size()>1048576)return {{"status","too-long"}};
+        if(!testClipboardIsIsolated()||!original)return {{"status","unavailable"}};
+        QVariantMap result;
+        if(!QMetaObject::invokeMethod(original,"copy",Q_RETURN_ARG(QVariantMap,result),Q_ARG(QString,text)))return {{"status","unavailable"}};
+        return result;
+    }
     Q_INVOKABLE QVariantMap snapshot() {
         if(!testClipboardIsIsolated()||!original)return {{"status","unavailable"}};
         QVariantMap result;
@@ -75,7 +83,7 @@ public:
 private:
     PhotoController *c;QPointer<QQuickWindow>w;QPointer<QObject>dialog;RecipeClipboardRaceProxy *provider=nullptr;QObject *originalProvider=nullptr;QString report,source,project;
     QTemporaryDir files;QByteArray sourceHash;QTimer*timer=nullptr;QElapsedTimer clock;
-    QJsonArray rows,captures,keys;QJsonObject before,applied;QVariantList history;int phase=0,settle=0,negativeIndex=0,focus=0;bool done=false,clipboardExercised=false,simulatedRaceObserved=false;
+    QJsonArray rows,captures,keys;QJsonObject before,applied,copiedTarget;QString copiedRecipe;int copiedTargetHistory=0;QVariantList history;int phase=0,settle=0,negativeIndex=0,focus=0;bool done=false,clipboardExercised=false,simulatedRaceObserved=false;
     QQuickItem *find(const QString &s)const{return w?findItem(w->contentItem(),s):nullptr;}
     bool visible()const{return dialog&&dialog->property("visible").toBool();}
     QJsonObject state()const{return c->gpuPlan(true).state.toJson();}
@@ -113,7 +121,7 @@ private:
         captures.append(QJsonObject{{"label",label},{"path",path},{"sha256",QString::fromLatin1(hashFile(path))},{"width",image.width()},{"height",image.height()},{"actual_dpr",w->effectiveDevicePixelRatio()}});return true;
     }
     bool layout() {
-        for(const auto &n:{"editRecipeText","editRecipeApply","editRecipeCancel"}) {
+        for(const auto &n:{"editRecipeText","editRecipePaste","editRecipeCopyCurrent","editRecipeApply","editRecipeCancel"}) {
             auto *q=find(QString::fromLatin1(n));if(!q||!q->isVisible()||q->width()<1||q->height()<1)return false;
             const auto pos=q->mapToScene({0,0});if(pos.x()<0||pos.y()<0||pos.x()+q->width()>w->width()+1||pos.y()+q->height()>w->height()+1)return false;
         }
@@ -124,7 +132,7 @@ private:
         const QString original=dialog->property("recipeText").toString();
         dialog->setProperty("recipeText",QStringLiteral("[{\"command\":\"develop.set\",\"parameter\":\"exposure\",\"value\":0.5}]"));
         bool all=true;
-        for(const auto *name:{"editRecipePaste","editRecipeApply","editRecipeCancel"}) {
+        for(const auto *name:{"editRecipePaste","editRecipeCopyCurrent","editRecipeApply","editRecipeCancel"}) {
             auto *item=find(QString::fromLatin1(name));if(!item||!item->isVisible()||!item->isEnabled()){all=false;break;}
             w->setProperty("workspaceIndex",1);item->forceActiveFocus();const bool focusG=item->hasActiveFocus();key(Qt::Key_G,"g");
             const bool g=focusG&&w->property("workspaceIndex").toInt()==1&&unchanged()&&visible();
@@ -133,7 +141,7 @@ private:
             checks.append(QJsonObject{{"focus",QString::fromLatin1(name)},{"g_isolated",g},{"d_isolated",d},{"photo_and_history_unchanged",unchanged()},{"dialog_visible",visible()}});all=all&&g&&d;
         }
         w->setProperty("workspaceIndex",1);dialog->setProperty("recipeText",original);area->forceActiveFocus();
-        return all&&checks.size()==3&&area->hasActiveFocus()&&unchanged()&&visible();
+        return all&&checks.size()==4&&area->hasActiveFocus()&&unchanged()&&visible();
     }
     bool snapshotCases() {
         if(!testClipboardIsIsolated()){finish("Refuse clipboard test outside offscreen or isolated CI");return false;}
@@ -185,14 +193,14 @@ private:
         area->forceActiveFocus();provider->setQaMutateAfterSnapshot(text.size()==177);if(text.size()==177)w->setProperty("recipeClipboardAdapter",QVariant::fromValue<QObject*>(provider));progress("offscreen-clipboard-put-begin",text.size());clipboard->setText(text);progress("offscreen-clipboard-put-end",text.size());
         const auto bindings=QKeySequence::keyBindings(QKeySequence::Paste);if(bindings.isEmpty()){finish("Paste key binding unavailable");return false;}
         const auto seq=bindings.first()[0];progress("offscreen-paste-key-begin",text.size());key(seq.key(),{},seq.keyboardModifiers());progress("offscreen-paste-key-end",text.size());
-        const QString actual=area->property("text").toString();const bool raceCorrect=text.size()!=177||clipboard->text().size()==4194307;const bool correct=(text.size()>1048576 ? actual.isEmpty() : actual==text)&&raceCorrect;clipboard->clear();provider->setQaMutateAfterSnapshot(false);w->setProperty("recipeClipboardAdapter",QVariant::fromValue<QObject*>(originalProvider));
+        const QString actual=area->property("text").toString();const bool raceCorrect=text.size()!=177||clipboard->text().size()==4194307;const bool correct=(text.size()>1048576 ? actual.isEmpty() : dialog->property("recipeText").toString()==text&&actual==text.left(4096))&&raceCorrect;clipboard->clear();provider->setQaMutateAfterSnapshot(false);w->setProperty("recipeClipboardAdapter",QVariant::fromValue<QObject*>(originalProvider));
         if(!correct){finish("Clipboard paste gate result mismatch");return false;}if(text.size()==177&&raceCorrect)simulatedRaceObserved=true;return true;
     }
     void setText(const QString &text){progress("setText-begin",text.size());dialog->setProperty("recipeText",text);progress("setText-end",text.size());}
     void open(){QMetaObject::invokeMethod(dialog,"open");}
     void finish(const QString &error) {
         if(done)return;done=true;if(timer)timer->stop();
-        const bool passed=error.isEmpty()&&rows.size()==34&&hashFile(source)==sourceHash&&clock.elapsed()<60000;
+        const bool passed=error.isEmpty()&&rows.size()==38&&hashFile(source)==sourceHash&&clock.elapsed()<60000;
         if(!passed)capture("failure");
         QJsonObject out{{"passed",passed},{"error",error},{"phase",phase},{"elapsed_ms",clock.elapsed()},{"deadline_ms",60000},
             {"actual_App_UI",true},{"owned_small_fixture_not_real_Sony",true},{"source_pixels",128*96},{"source_unchanged",hashFile(source)==sourceHash},
@@ -283,7 +291,7 @@ private:
         }
         if(phase==14) {
             auto *apply=find("editRecipeApply"),*error=find("editRecipeError");
-            if(!record("same-source-virtual-copy-invalidates-target",visible()&&apply&&!apply->isEnabled()&&error&&error->isVisible()&&state()==applied))return;
+            if(!record("same-source-virtual-copy-invalidates-target",visible()&&apply&&!apply->isEnabled()&&find("editRecipeCopyCurrent")&&!find("editRecipeCopyCurrent")->isEnabled()&&error&&error->isVisible()&&state()==applied))return;
             if(!click(find("editRecipeCancel"))){finish("Stale recipe cancel unavailable");return;}
             c->setLanguage("zh_CN");open();next(15);return;
         }
@@ -320,6 +328,37 @@ private:
         }
         if(phase==20) {
             if(!record("ten-thousand-commands-undo-atomically",state()==before&&c->canRedo()))return;
+            before=state();history=c->editHistory();open();next(21);return;
+        }
+        if(phase==21) {
+            if(!click(find("editRecipeCopyCurrent"))){finish("Copy current edits unavailable");return;}
+            copiedRecipe=dialog->property("recipeText").toString();
+            const auto parsed=QJsonDocument::fromJson(copiedRecipe.toUtf8());AdjustmentState replay;
+            const bool exact=parsed.isArray()&&CommandRegistry::executeBatch(replay,parsed.array())&&replay.toJson()==before;
+            QFile recipeFile(report+".copied-recipe.json");
+            const bool saved=recipeFile.open(QIODevice::WriteOnly|QIODevice::NewOnly)&&recipeFile.write(copiedRecipe.toUtf8())==copiedRecipe.toUtf8().size();recipeFile.close();
+            if(!record("copy-current-edits-is-readonly-and-exact",exact&&saved&&QGuiApplication::clipboard()->text()==copiedRecipe&&unchanged(),
+                {{"commands",parsed.array().size()},{"utf16_units",copiedRecipe.size()},{"recipe_path",recipeFile.fileName()},
+                 {"recipe_sha256",QString::fromLatin1(hashFile(recipeFile.fileName()))},{"source_state",before},{"replayed_state",replay.toJson()}}))return;
+            if(!click(find("editRecipeCancel"))){finish("Copy dialog cancel unavailable");return;}
+            c->setExposure(-.5);c->finishInteraction();next(22);return;
+        }
+        if(phase==22) {
+            copiedTarget=state();copiedTargetHistory=c->editHistory().size();open();next(23);return;
+        }
+        if(phase==23) {
+            if(!paste(copiedRecipe)||!click(find("editRecipeApply"))){finish("Copied recipe apply unavailable");return;}next(24);return;
+        }
+        if(phase==24) {
+            if(!record("copied-recipe-replaces-edits-one-history-step",!visible()&&state()==before&&c->editHistory().size()==copiedTargetHistory+1))return;
+            if(!click(find("undoEditButton"))){finish("Copied recipe undo unavailable");return;}next(25);return;
+        }
+        if(phase==25) {
+            if(!record("copied-recipe-undo-restores-target",state()==copiedTarget))return;
+            if(!click(find("redoEditButton"))){finish("Copied recipe redo unavailable");return;}next(26);return;
+        }
+        if(phase==26) {
+            if(!record("copied-recipe-redo-restores-source",state()==before))return;
             finish("");return;
         }
     }

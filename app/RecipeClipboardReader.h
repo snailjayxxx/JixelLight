@@ -7,4 +7,5 @@ class RecipeClipboardReader final : public QObject {
 public:
     explicit RecipeClipboardReader(QObject *parent=nullptr):QObject(parent) {}
     Q_INVOKABLE QVariantMap snapshot() const;
+    Q_INVOKABLE QVariantMap copy(const QString &text) const;
 };

@@ -8052,8 +8052,16 @@ private slots:
         }
         QVERIFY2(!source.isEmpty(),"No verified Sony As Shot fixture found");
         QTemporaryDir dir; QVERIFY(dir.isValid()); PhotoController controller(nullptr);
+        QCOMPARE(controller.currentEditRecipe().value("status").toString(),QString("unavailable"));
         QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));
         QTRY_VERIFY_WITH_TIMEOUT(controller.currentMetadata().value("sonyLook").toMap().value("autoEligible").toBool(),60000);
+        const auto initialHistory=controller.editHistory();
+        const auto recipe=controller.currentEditRecipe();QCOMPARE(recipe.value("status").toString(),QString("ok"));
+        const auto copiedCommands=QJsonDocument::fromJson(recipe.value("text").toString().toUtf8()).array();
+        AdjustmentState copiedIntent;const CommandRegistry::LookContext rawContext{true,{}};
+        QVERIFY(CommandRegistry::executeBatch(copiedIntent,copiedCommands,nullptr,&rawContext));
+        QCOMPARE(copiedIntent.look.mode,QString("as-shot"));QVERIFY(copiedIntent.look.code.isEmpty());QVERIFY(copiedIntent.look.parameters.isEmpty());
+        QCOMPARE(controller.editHistory(),initialHistory);
         controller.setViewport(320,240,1,0,.5,.5);
         controller.setExposure(.5); controller.finishInteraction();
         QVERIFY(controller.createProject(QUrl::fromLocalFile(dir.path()),"AsShot")); QVERIFY(controller.flushEdits());

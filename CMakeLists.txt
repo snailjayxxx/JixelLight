@@ -52,6 +52,7 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
 endif()
 add_library(JixelLightCore STATIC
     core/commands/CommandSession.cpp
+    core/commands/EditRecipe.cpp
     app/PhotoController.cpp
     app/PhotoControllerMoveImport.cpp
     app/PhotoControllerXmp.cpp
@@ -173,6 +174,11 @@ qt_add_executable(JixelLightCommandSessionTests tests/CommandSessionTests.cpp)
 target_link_libraries(JixelLightCommandSessionTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME command-session COMMAND JixelLightCommandSessionTests -o command-session-results.txt,txt -o -,txt)
 set_tests_properties(command-session PROPERTIES TIMEOUT 60)
+qt_add_executable(JixelLightEditRecipeTests tests/EditRecipeTests.cpp)
+target_link_libraries(JixelLightEditRecipeTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME edit-recipe COMMAND JixelLightEditRecipeTests -o edit-recipe-results.txt,txt -o -,txt)
+set_tests_properties(edit-recipe PROPERTIES TIMEOUT 60)
+set_target_properties(JixelLightEditRecipeTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 qt_add_executable(JixelLightProjectRelinkTests tests/ProjectRelinkTests.cpp)
 target_link_libraries(JixelLightProjectRelinkTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME project-relink COMMAND JixelLightProjectRelinkTests -o project-relink-results.txt,txt -o -,txt)

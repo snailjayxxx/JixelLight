@@ -120,6 +120,24 @@ ApplicationWindow {
             recipeText = result.text
             errorText = ""
         }
+        function copyCurrentRecipe() {
+            if (!targetCurrent || !photoController.currentSourceAvailable) {
+                errorText = window.t("当前版本已变更，请重新打开此窗口。", "The current version changed. Reopen this dialog.")
+                return
+            }
+            const recipe = photoController.currentEditRecipe()
+            if (recipe.status !== "ok") {
+                errorText = recipe.error
+                return
+            }
+            const result = window.recipeClipboardAdapter ? window.recipeClipboardAdapter.copy(recipe.text) : null
+            if (!result || result.status !== "ok") {
+                errorText = window.t("剪贴板不可用。", "Clipboard unavailable.")
+                return
+            }
+            recipeText = recipe.text
+            errorText = ""
+        }
         function applyRecipe() {
             errorText = ""
             if (!targetCurrent || !photoController.currentSourceAvailable) {
@@ -167,8 +185,8 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.fillWidth: true
-                text: window.t("粘贴离线命令行使用的 JSON 编辑命令数组。所有命令成功后一次应用，可一步撤销。",
-                    "Paste a JSON edit-command array used by the offline CLI. All commands apply together and can be undone in one step.")
+                text: window.t("粘贴 JSON 编辑配方，或复制当前调整。复制的配方会替换全部调整；RAW 的原样 Look 按目标原片解析。应用后可一步撤销。",
+                    "Paste a JSON edit recipe or copy the current edits. Copied recipes replace all adjustments; RAW as-shot Look follows the target source. Apply can be undone in one step.")
                 wrapMode: Text.WordWrap
             }
             Label {
@@ -185,6 +203,12 @@ ApplicationWindow {
                     objectName: "editRecipePaste"
                     text: window.t("粘贴配方", "Paste recipe")
                     onClicked: editRecipeDialog.pasteRecipe()
+                }
+                Button {
+                    objectName: "editRecipeCopyCurrent"
+                    text: window.t("复制当前调整", "Copy current edits")
+                    enabled: editRecipeDialog.targetCurrent && photoController.currentSourceAvailable
+                    onClicked: editRecipeDialog.copyCurrentRecipe()
                 }
                 Label {
                     objectName: "editRecipePreviewNote"
