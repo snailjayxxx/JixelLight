@@ -4,7 +4,6 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include <QDir>
 #include <QJsonDocument>
-#include <QRegularExpression>
 #include <QHash>
 
 namespace {
@@ -42,14 +41,14 @@ bool CommandSession::compile(const QJsonObject &manifest,const QString &baseDire
         if(!command["command"].isString())return reject("Expected command name");
         const auto name=command["command"].toString();
         if(name=="photo.import"){
-            static const QRegularExpression id("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$");
-            if(!fields(command,{"command","photo","source"})||!command["photo"].isString()||!id.match(command["photo"].toString()).hasMatch()
-                ||photos.contains(command["photo"].toString())||photos.size()>=1000||!text(command["source"]))return reject("Invalid, duplicate or excessive photo identity/source");
-            const auto path=QDir::cleanPath(base.absoluteFilePath(command["source"].toString()));QString why;
+            CommandRegistry::PhotoImport request;
+            if(!CommandRegistry::decodePhotoImport(command,CommandRegistry::ImportScope::Session,&request)
+                ||photos.contains(request.photo)||photos.size()>=1000)return reject("Invalid, duplicate or excessive photo identity/source");
+            const auto path=QDir::cleanPath(base.absoluteFilePath(request.source));QString why;
             const auto context=sourceContext(path,false,&why);if(!context)return reject(why.isEmpty()?QStringLiteral("Source unavailable"):why);
             Photo photo;photo.source=path;if(context->rawSource)photo.state.look.mode="as-shot";
             if(!charge(photo.state))return reject("Session state budget exceeded");
-            photo.history.initialize(photo.state);current=command["photo"].toString();photos.insert(current,std::move(photo));continue;
+            photo.history.initialize(photo.state);current=request.photo;photos.insert(current,std::move(photo));continue;
         }
         if(name=="photo.select"){
             QString photo;
@@ -103,7 +102,7 @@ QJsonObject CommandSession::schema(){
         {"history","per-photo desktop EditHistory; edit.batch is one undo step; invalid boundary rejects whole plan"},
         {"shared_controls",CommandRegistry::controlSchema()},
         {"commands",QJsonArray{
-            QJsonObject{{"name","photo.import"},{"fields",QJsonArray{"photo","source"}},{"operation","register a transient photo and select it; no file copy/catalog write"}},
+            CommandRegistry::photoImportSchema(CommandRegistry::ImportScope::Session),
             CommandRegistry::photoSelectionSchema(),
             QJsonObject{{"name","edit.batch"},{"fields",QJsonArray{"commands"}}},
             QJsonObject{{"name","history.undo"},{"fields",QJsonArray{}}},QJsonObject{{"name","history.redo"},{"fields",QJsonArray{}}},

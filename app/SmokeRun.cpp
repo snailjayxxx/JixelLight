@@ -1218,7 +1218,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             // The actual Copy test now publishes a dated JPEG. Keep an
             // independent undated fixture for the export refusal check.
             const auto before=controller->library().size();
-            controller->importFiles({QUrl::fromLocalFile(importFixture->filePath("copy-test.png"))});
+            exportNamesTrace->insert("import_command_accepted",controller->executeCommand(
+                {{"command","photo.import"},{"source",importFixture->filePath("copy-test.png")}}));
             exportNamesTrace->insert("missing_date_fixture_added",controller->library().size()==before+1);
             auto *menu=window->findChild<QObject *>("exportActionsMenu");
             exportNamesTrace->insert("before",controller->gpuPlan(true).state.toJson());
@@ -1399,7 +1400,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                                 "balance_control_found","grading_preserved","closed"})
             gradingUiOk=gradingUiOk && gradingUiTrace->value(key).toBool();
         bool exportNamesOk=true;
-        for (const auto *key : {"missing_date_fixture_added","menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
+        for (const auto *key : {"import_command_accepted","missing_date_fixture_added","menu_opened","menu_visible","action_clicked","dialog_visible","preview_valid","continue_enabled","compact_fit",
                                "translated_buttons","invalid_template_blocked","missing_date_blocked","cancel_clicked","closed","edits_unchanged","no_export_queued"})
             exportNamesOk=exportNamesOk && exportNamesTrace->value(key).toBool();
         bool exportSelectionOk=true;

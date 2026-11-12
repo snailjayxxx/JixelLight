@@ -11,6 +11,11 @@ class CommandSessionTests:public QObject {
     static QJsonObject ev(double value){return {{"command","develop.set"},{"parameter","exposure"},{"value",value}};}
     static CommandSession::SourceContext source(){return [](const QString &path,bool,QString *)->std::optional<CommandRegistry::LookContext>{return CommandRegistry::LookContext{path.endsWith(".ARW"),{}};};}
     static QString base(){return QDir::rootPath()+"session";}
+    static QJsonObject describedCommand(const QJsonArray &descriptions,const QString &name){
+        QJsonObject result;for(const auto &entry:descriptions)if(entry.toObject()["name"].toString()==name){
+            if(!result.isEmpty())return {};result=entry.toObject();
+        }return result;
+    }
 private slots:
     void exportSnapshotsAndHistoryStayPerPhoto(){
         CommandSession result;QString error;
@@ -79,9 +84,32 @@ private slots:
             QCOMPARE(result.exports[0].state.toJson(),previous);QCOMPARE(result.exports[0].photo,QString("A"));
         }
         QString key="unchanged";QVERIFY(!CommandRegistry::decodePhotoSelection({{"command","photo.select"},{"photo",1}},&key));QCOMPARE(key,QString("unchanged"));
-        const auto description=CommandRegistry::schema()["workflow_commands"].toArray();QCOMPARE(description.size(),1);
-        QCOMPARE(description[0].toObject(),CommandRegistry::photoSelectionSchema());
-        QCOMPARE(CommandSession::schema()["commands"].toArray()[1].toObject(),CommandRegistry::photoSelectionSchema());
+        const auto description=CommandRegistry::schema()["workflow_commands"].toArray();
+        QCOMPARE(describedCommand(description,"photo.select"),CommandRegistry::photoSelectionSchema());
+        QCOMPARE(describedCommand(CommandSession::schema()["commands"].toArray(),"photo.select"),CommandRegistry::photoSelectionSchema());
+    }
+    void photoImportValidationSeparatesNativeCatalogPathsFromSessionAliasesWithoutReadingSources(){
+        using Scope=CommandRegistry::ImportScope;CommandRegistry::PhotoImport request;QString error;
+        const auto native=QJsonObject{{"command","photo.import"},{"source","relative.png"}};
+        QVERIFY(CommandRegistry::decodePhotoImport(native,Scope::Desktop,&request));QCOMPARE(request.source,QString("relative.png"));QVERIFY(request.photo.isEmpty());
+        QVERIFY(!CommandRegistry::decodePhotoImport(native,Scope::Session,&request));
+        const auto transient=photoImport("a","relative.png");QVERIFY(CommandRegistry::decodePhotoImport(transient,Scope::Session,&request));QCOMPARE(request.photo,QString("a"));
+        QVERIFY(!CommandRegistry::decodePhotoImport(transient,Scope::Desktop,&request));
+        CommandSession previous;previous.photoCount=71;int reads=0;
+        const auto context=[&](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{++reads;return CommandRegistry::LookContext{};};
+        for(const auto &bad:QList<QJsonObject>{photoImport("a\n"),photoImport(" a"),photoImport(QString(65,'a')),photoImport("a",QString("bad\nsource")),
+            QJsonObject{{"command","photo.import"},{"photo","a"},{"source",true}},QJsonObject{{"command","photo.import"},{"photo","a"},{"source","ok.png"},{"extra",1}}}) {
+            request={"sentinel-source","sentinel-photo"};QVERIFY(!CommandRegistry::decodePhotoImport(bad,Scope::Session,&request));
+            QCOMPARE(request.source,QString("sentinel-source"));QCOMPARE(request.photo,QString("sentinel-photo"));
+            QVERIFY(!CommandSession::compile(manifest({bad,save()}),base(),context,&previous,&error));QCOMPARE(previous.photoCount,71);QCOMPARE(reads,0);
+        }
+        auto newline=native;newline["source"]="native\nname.png";
+        QVERIFY(CommandRegistry::decodePhotoImport(newline,Scope::Desktop,&request));
+        auto nul=native;nul["source"]=QString("bad")+QChar(u'\0')+"name.png";QVERIFY(!CommandRegistry::decodePhotoImport(nul,Scope::Desktop,&request));
+        QVERIFY(CommandRegistry::decodePhotoImport(photoImport(QString(64,'a')),Scope::Session,&request));
+        QCOMPARE(describedCommand(CommandSession::schema()["commands"].toArray(),"photo.import"),CommandRegistry::photoImportSchema(Scope::Session));
+        const auto imports=describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"photo.import");
+        QCOMPARE(imports["desktop"].toObject(),CommandRegistry::photoImportSchema(Scope::Desktop));QCOMPARE(imports["session"].toObject(),CommandRegistry::photoImportSchema(Scope::Session));
     }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;

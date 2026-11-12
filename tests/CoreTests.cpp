@@ -7054,6 +7054,52 @@ private slots:
         QVERIFY(c.prepareToClose());QVERIFY(c.executeCommand({{"command","photo.select"},{"photo",keyB}}));QCOMPARE(c.currentIndex(),1);
     }
 
+    void desktopImportCommandsPreserveBatchSelectionNotificationsAndCanonicalTrace() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        QStringList paths;for(const auto &name:QStringList{"a.png","b.png","c.png","d.png"}){paths<<dir.filePath(name);QVERIFY(image.save(paths.last()));}
+        QFile original(paths[0]);QVERIFY(original.open(QIODevice::ReadOnly));const auto bytes=original.readAll();original.close();
+        PhotoController c(nullptr);QSignalSpy changed(&c,&PhotoController::libraryChanged);
+        QVERIFY(c.executeCommand({{"command","photo.import"},{"source",paths[0]}}));QCOMPARE(c.currentIndex(),0);QCOMPARE(changed.size(),2);
+        c.setExposure(.4);c.finishInteraction();const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();changed.clear();
+        QVERIFY(c.executeCommand({{"command","photo.import"},{"source",paths[1]}}));QCOMPARE(c.currentIndex(),0);QCOMPARE(changed.size(),1);changed.clear();
+        c.importFiles({QUrl::fromLocalFile(paths[0]),QUrl::fromLocalFile(paths[2]),QUrl::fromLocalFile(dir.filePath("missing.png")),QUrl::fromLocalFile(paths[3])});
+        QCOMPARE(c.library().size(),4);QCOMPARE(c.currentIndex(),0);QCOMPARE(changed.size(),1);
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
+        for(int i=0;i<paths.size();++i)QCOMPARE(c.library()[i].toMap()["path"].toString(),paths[i]);
+        int canonical=0;for(const auto &entry:ActionTrace::instance().snapshot()) {
+            const auto row=entry.toObject(),command=row["command"].toObject();const auto file=row["file"].toString();
+            if(row["action"].toString()!="import_file"||!paths.contains(file))continue;
+            QCOMPARE(command,(QJsonObject{{"command","photo.import"},{"source",file}}));QCOMPARE(row["photo_key"].toString(),file);++canonical;
+        }
+        QCOMPARE(canonical,4);const auto aggregate=ActionTrace::instance().snapshot().last().toObject();
+        QCOMPARE(aggregate["action"].toString(),QString("import_files"));QCOMPARE(aggregate["count"].toInt(),2);QCOMPARE(aggregate["raw_count"].toInt(),0);
+        PhotoController empty(nullptr);QSignalSpy initial(&empty,&PhotoController::libraryChanged);
+        empty.importFiles({QUrl::fromLocalFile(dir.filePath("missing.png")),QUrl::fromLocalFile(paths[0]),QUrl::fromLocalFile(paths[1])});
+        QCOMPARE(empty.library().size(),2);QCOMPARE(empty.currentIndex(),0);QCOMPARE(empty.currentFile(),paths[0]);QCOMPARE(initial.size(),2);
+        QVERIFY(original.open(QIODevice::ReadOnly));QCOMPARE(original.readAll(),bytes);
+    }
+
+    void desktopImportCommandsRejectInvalidAliasNestedAndForeignThreadMutation() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");QVERIFY(image.save(a));QVERIFY(image.save(b));
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(a)));c.setExposure(.5);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto before=c.library();QSignalSpy changed(&c,&PhotoController::libraryChanged);
+        const QList<QJsonObject> bad{
+            {{"command","photo.import"},{"source",true}},{{"command","photo.import"},{"source",QJsonArray{b}}},{{"command","photo.import"},{"source",""}},
+            {{"command","photo.import"},{"source",QString(32769,'a')}},{{"command","photo.import"},{"source",QString("bad")+QChar(u'\0')+".png"}},
+            {{"command","photo.import"},{"source",b},{"photo","alias"}},{{"command","photo.import"},{"source",b},{"index",0}},
+            {{"command","photo.import"},{"source",a}},{{"command","photo.import"},{"source",dir.filePath("missing.png")}},
+            {{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},QJsonObject{{"command","photo.import"},{"source",b}}}}}};
+        for(const auto &command:bad) {
+            QVERIFY(!c.executeCommand(command.toVariantMap()));QCOMPARE(c.library(),before);QCOMPARE(c.currentIndex(),0);
+            QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
+        }
+        bool foreignThread=false,accepted=true;std::thread worker([&]{foreignThread=QThread::currentThread()!=c.thread();
+            accepted=c.executeCommand({{"command","photo.import"},{"source",b}});c.importFiles({QUrl::fromLocalFile(b)});});worker.join();
+        QVERIFY(foreignThread);QVERIFY(!accepted);QCOMPARE(changed.size(),0);QCOMPARE(c.library(),before);QCOMPARE(c.editHistory(),history);
+        QVERIFY(c.prepareToClose());QVERIFY(c.executeCommand({{"command","photo.import"},{"source",b}}));QCOMPARE(c.library().size(),2);QCOMPARE(c.currentIndex(),0);
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;
