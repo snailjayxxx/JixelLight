@@ -1,0 +1,42 @@
+name: Windows Ninja depfile probe
+
+on:
+  push:
+    branches: [codex/f0-ninja-depfile-cmake]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shader-dependencies:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the product Windows CMake
+        shell: pwsh
+        run: ./tools/InstallWindowsCMake.ps1
+      - name: Install the product Qt SDK
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: qtshadertools qtimageformats
+          cache: true
+      - name: Require actual unchanged and changed shader rebuilds
+        shell: pwsh
+        run: |
+          cmake --version
+          ninja --version
+          python tests/TestQsbDepfile.py --cmake (Get-Command cmake).Source --qsb (Get-Command qsb).Source --generator Ninja --make-program (Get-Command ninja).Source --report-directory build/qsb-depfile-probe --results-file build/qsb-depfile-probe-results.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve complete dependency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ninja-depfile-probe
+          path: |
+            build/qsb-depfile-probe/
+            build/qsb-depfile-probe-results.txt
+          include-hidden-files: true
+          if-no-files-found: error
