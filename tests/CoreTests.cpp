@@ -62,6 +62,7 @@
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/commands/NamedPresets.h"
+#include "core/pipeline/U16Quantize.h"
 #include "core/raw/RawDecoder.h"
 #include "core/raw/SensorMosaicAudit.h"
 #include "core/raw/SensorFloatDevelop.h"
@@ -7475,6 +7476,20 @@ private slots:
         QVERIFY(c.executeCommand({{"command","edit.sync"},{"target","selection"}}));QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
         QVERIFY(c.executeCommand({{"command","edit.paste"}}));QCOMPARE(c.exposure(),.5);c.selectPhoto(1);QCOMPARE(c.gpuPlan(true).state.toJson(),other);QCOMPARE(c.editHistory(),otherHistory);
         QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
+    }
+
+    void boundedU16ConversionMatchesLegacyAtEveryBoundaryAndSeededInput() {
+        quint64 cases=0;bool equal=true;
+        const auto check=[&](float value) {
+            ++cases;const auto expected=quint16(std::lround(std::clamp(value,0.f,1.f)*65535.f));const auto actual=U16Quantize::bounded(value);
+            if(actual!=expected){if(equal)qWarning()<<"U16 boundary mismatch"<<value<<expected<<actual;equal=false;}
+        };
+        for(unsigned i=0;i<65535;++i) {
+            const float value=(float(i)+.5f)/65535.f;check(std::nextafter(value,-std::numeric_limits<float>::infinity()));check(value);check(std::nextafter(value,std::numeric_limits<float>::infinity()));
+        }
+        for(float value:std::array<float,9>{-1e9f,-1.f,-0.f,0.f,1.f,2.f,1e9f,-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()})check(value);
+        std::uint32_t seed=0x4a495845;for(int i=0;i<2*1024*1024;++i){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;check(float(seed&0xffffffu)/float(0xffffffu));}
+        QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
