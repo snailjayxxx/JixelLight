@@ -131,20 +131,23 @@ QJsonObject sliderPointerPose(QQuickWindow *window,QQuickItem *item,double fract
 }
 
 void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath) {
-    struct State { QElapsedTimer elapsed; int phase=0; quint64 revision=0; qint64 sourceKey=0; QSize size; QJsonObject adjustments; bool finished=false; };
+    struct State { QElapsedTimer elapsed; int phase=0; quint64 revision=0; qint64 sourceKey=0; QSize size; QJsonObject adjustments; QString source; QByteArray sourceSha; bool finished=false; };
     const auto state=std::make_shared<State>();state->elapsed.start();
-    const auto fixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     const auto finish=[=](const QString &path,const QString &error) {
         if(state->finished)return;
         state->finished=true;timer->stop();
         const bool gpuRequired=qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU");
-        const bool passed=!path.isEmpty()&&error.isEmpty()&&state->elapsed.elapsed()<15000&&(!gpuRequired||controller->gpuActive());
+        QFile owned(state->source);bool sourceUnchanged=false;
+        if(!state->sourceSha.isEmpty()&&owned.open(QIODevice::ReadOnly))
+            sourceUnchanged=QCryptographicHash::hash(owned.readAll(),QCryptographicHash::Sha256).toHex()==state->sourceSha;
+        const bool passed=!path.isEmpty()&&error.isEmpty()&&sourceUnchanged&&state->elapsed.elapsed()<15000&&(!gpuRequired||controller->gpuActive());
         const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"engine",ProcessingPlan::EngineVersion},{"elapsed_ms",state->elapsed.elapsed()},
             {"gpu_active",controller->gpuActive()},{"backend",controller->processingBackend()},
             {"bundle",path},{"error",error},{"parameter_revision",qint64(state->revision)},
             {"source_cache_key",QString::number(state->sourceKey)},
+            {"owned_source_path",state->source},{"owned_source_sha256",QString::fromLatin1(state->sourceSha)},{"source_unchanged",sourceUnchanged},
             {"width",state->size.width()},{"height",state->size.height()},{"adjustments",state->adjustments}};
         QSaveFile output(reportPath);
         const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -153,7 +156,6 @@ void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, 
     };
     QObject::connect(controller,&PhotoController::diagnosticFinished,timer,[=](const QString &path){finish(path,{});});
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
-        if(!fixture->isValid()){finish({},QStringLiteral("Diagnostic fixture unavailable"));return;}
         if(state->elapsed.elapsed()>=15000){finish({},QStringLiteral("Diagnostic integration timed out"));return;}
         const bool ready=controller->previewReady()&&!controller->loading()&&!controller->rendering()&&!controller->gpuSource().isNull();
         if(!ready)return;
@@ -170,9 +172,18 @@ void startDiagnosticSmokeRun(PhotoController *controller, QQuickWindow *window, 
     window->setProperty("workspaceIndex",1);
     QImage image(64,48,QImage::Format_RGB32);
     for(int y=0;y<48;++y)for(int x=0;x<64;++x)image.setPixel(x,y,qRgb(32+x*3,16+y*4,48+(x+y)%128));
-    const QString source=fixture->filePath("diagnostic-owned.png");
-    if(!fixture->isValid()||!image.save(source)||!controller->importFile(QUrl::fromLocalFile(source)))
-        finish({},QStringLiteral("Cannot create diagnostic fixture"));
+    // Retain only these generated pixels beside the report so the independent
+    // driver can execute the exact ZIP session after the App exits.
+    state->source=QFileInfo(reportPath).absoluteFilePath()+".source.png";
+    QFile source(state->source);
+    if(!source.open(QIODevice::WriteOnly|QIODevice::NewOnly)||!image.save(&source,"PNG")) {
+        finish({},QStringLiteral("Cannot create a new diagnostic fixture"));return;
+    }
+    source.close();
+    state->source=QFileInfo(source).canonicalFilePath();
+    if(!source.open(QIODevice::ReadOnly)){finish({},QStringLiteral("Cannot read owned diagnostic fixture"));return;}
+    state->sourceSha=QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256).toHex();source.close();
+    if(!controller->importFile(QUrl::fromLocalFile(state->source)))finish({},QStringLiteral("Cannot import diagnostic fixture"));
     else timer->start();
 }
 

@@ -575,7 +575,7 @@ jobs:
         run: |
           $process = Start-Process -FilePath ./build/bin/Release/JixelLight.exe -ArgumentList @('--smoke-report','gui-gpu.json','--screenshot','gui-gpu.png',"$env:RUNNER_TEMP/JixelLight-test.DNG") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw 'GUI Direct3D validation failed' }
-          python tools/ValidateDiagnostic.py ./build/bin/Release/JixelLight.exe --mode gpu
+          python tools/ValidateDiagnostic.py ./build/bin/Release/JixelLight.exe --mode gpu --cli ./build/bin/Release/JixelLightCli.exe
           if ($LASTEXITCODE -ne 0) { throw 'GUI Direct3D diagnostic capture failed' }
       - name: GUI Metal integration
         if: runner.os == 'macOS'
@@ -587,7 +587,7 @@ jobs:
           APP=$(find build -name JixelLight.app -type d | head -1)
           test -n "$APP"
           "$APP/Contents/MacOS/JixelLight" --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/JixelLight-test.DNG"
-          python tools/ValidateDiagnostic.py "$APP/Contents/MacOS/JixelLight" --mode gpu
+          python tools/ValidateDiagnostic.py "$APP/Contents/MacOS/JixelLight" --mode gpu --cli ./build/bin/JixelLightCli
       - name: Synthetic CPU benchmark
         shell: bash
         run: |
@@ -1165,14 +1165,14 @@ jobs:
           JIXELLIGHT_REQUIRE_GPU: '1'
         run: |
           xvfb-run -a ./build/bin/JixelLight --smoke-report gui-gpu.json --screenshot gui-gpu.png "$RUNNER_TEMP/test.DNG"
-          xvfb-run -a python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode gpu
+          xvfb-run -a python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode gpu --cli ./build/bin/JixelLightCli
       - name: GUI CPU fallback
         env:
           QT_QPA_PLATFORM: offscreen
           JIXELLIGHT_FORCE_CPU: '1'
         run: |
           ./build/bin/JixelLight --smoke-report gui-cpu.json "$RUNNER_TEMP/test.DNG"
-          python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode cpu
+          python tools/ValidateDiagnostic.py ./build/bin/JixelLight --mode cpu --cli ./build/bin/JixelLightCli
       - name: Print validation summaries
         if: always()
         run: |

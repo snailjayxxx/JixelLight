@@ -1714,6 +1714,8 @@ PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
     snapshot.revision = m_requestedRevision; snapshot.photoEpoch = m_photoEpoch;
     snapshot.state = currentState();
     snapshot.file = currentFile(); snapshot.project = projectPath(); snapshot.pipeline = pipelineDescription();
+    if(hasImage())snapshot.replay=DiagnosticReplay::capture(m_photos[m_currentIndex].state,currentIsRaw(),snapshot.file,
+        m_photos[m_currentIndex].storageKey(),snapshot.photoEpoch,snapshot.revision);
     snapshot.prepare.image = m_fullSource.isNull() ? m_loadedPreview : m_fullSource;
     snapshot.prepare.viewport = m_viewport;
     snapshot.prepare.zoom = m_zoom; snapshot.prepare.centerX = m_centerX; snapshot.prepare.centerY = m_centerY;
@@ -1794,7 +1796,7 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
     for (auto it = snapshot.performanceValues.begin(); it != snapshot.performanceValues.end(); ++it)
         PerformanceRecorder::value(it.key(), it.value());
     const QString path = DiagnosticBundle::create(capture, snapshot.file, snapshot.project, snapshot.state,
-        snapshot.shadowClip, snapshot.highlightClip, snapshot.pipeline, snapshot.scopeContext, stageOutputs);
+        snapshot.shadowClip, snapshot.highlightClip, snapshot.pipeline, snapshot.scopeContext, stageOutputs,snapshot.replay);
     ActionTrace::instance().record("bug_snapshot_created", {{"path", path}, {"ok", !path.isEmpty()}});
     setStatus(path.isEmpty() ? uiText(QStringLiteral("诊断包生成失败"), QStringLiteral("Diagnostic bundle failed"))
                              : uiText(QStringLiteral("诊断包：") + path, QStringLiteral("Diagnostic bundle: ") + path));

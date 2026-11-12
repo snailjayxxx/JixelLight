@@ -8,17 +8,23 @@ import re
 import shutil
 import subprocess
 import zipfile
+from ValidateDiagnosticReplay import execute_replay
 
 
 def validate_diagnostic(executable: Path, environment: dict, cwd: Path,
-                        reports: Path, mode: str) -> dict:
+                        reports: Path, mode: str, cli: Path | None = None) -> dict:
     reports.mkdir(parents=True, exist_ok=True)
     report = reports / f'diagnostic-{mode}.json'
     log = reports / f'diagnostic-{mode}.log'
-    report.unlink(missing_ok=True)
     result = {'mode': f'{mode}-diagnostic', 'passed': False}
+    if any(reports.glob(f'diagnostic-{mode}*')):
+        return {**result,'error':'Diagnostic evidence namespace already exists'}
     try:
-        with log.open('w', encoding='utf-8') as stream:
+        with (reports / f'diagnostic-{mode}.namespace').open('x') as stream: stream.write('exclusive evidence namespace\n')
+    except FileExistsError:
+        return {**result,'error':'Diagnostic evidence namespace already exists'}
+    try:
+        with log.open('x', encoding='utf-8') as stream:
             run = subprocess.run([str(executable.resolve()), '--diagnostic-smoke-report', str(report.resolve())],
                 cwd=cwd, env=environment, stdout=stream, stderr=subprocess.STDOUT, timeout=25, check=False)
         data = json.loads(report.read_text(encoding='utf-8'))
@@ -36,6 +42,7 @@ def validate_diagnostic(executable: Path, environment: dict, cwd: Path,
             manifest = json.loads(archive.read('manifest.json'))
             performance = json.loads(archive.read('performance.json'))
             assert archive.read('current_preview.png').startswith(b'\x89PNG\r\n\x1a\n')
+            result['command_replay'] = execute_replay(cli, environment, reports, mode, archive, manifest, data, report)
         assert manifest['stage_outputs'] == stages and manifest['adjustments'] == data['adjustments']
         assert manifest['git_commit'] == data['source_commit'] and stages['engine'] == data['engine']
         assert stages['parameter_revision'] == data['parameter_revision']
@@ -67,7 +74,8 @@ def validate_diagnostic(executable: Path, environment: dict, cwd: Path,
             bundle.unlink()
     except (OSError, ValueError, KeyError, AssertionError, subprocess.TimeoutExpired, zipfile.BadZipFile) as error:
         result['error'] = str(error)
-    (reports / f'diagnostic-{mode}-check.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    with (reports / f'diagnostic-{mode}-check.json').open('x', encoding='utf-8') as stream:
+        json.dump(result, stream, indent=2)
     return result
 
 
@@ -76,11 +84,12 @@ def main() -> int:
     parser.add_argument('executable', type=Path)
     parser.add_argument('--mode', choices=('gpu', 'cpu'), required=True)
     parser.add_argument('--reports', type=Path, default=Path('diagnostic-validation'))
+    parser.add_argument('--cli', type=Path)
     args = parser.parse_args()
     environment = os.environ.copy()
     environment.pop('JIXELLIGHT_FORCE_CPU' if args.mode == 'gpu' else 'JIXELLIGHT_REQUIRE_GPU', None)
     environment['JIXELLIGHT_REQUIRE_GPU' if args.mode == 'gpu' else 'JIXELLIGHT_FORCE_CPU'] = '1'
-    result = validate_diagnostic(args.executable, environment, Path.cwd(), args.reports.resolve(), args.mode)
+    result = validate_diagnostic(args.executable, environment, Path.cwd(), args.reports.resolve(), args.mode, args.cli)
     print(json.dumps(result, indent=2), flush=True)
     return 0 if result['passed'] else 1
 
