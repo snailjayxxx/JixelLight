@@ -7492,6 +7492,21 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void automaticCpuBudgetKeepsUiCapacityWithoutSerializingThreeCoreHosts() {
+        QCOMPARE(ParallelRows::automaticThreadBudget(std::numeric_limits<int>::min()),1);
+        for(int cores=-1;cores<=2;++cores)QCOMPARE(ParallelRows::automaticThreadBudget(cores),1);
+        QCOMPARE(ParallelRows::automaticThreadBudget(3),2);
+        QCOMPARE(ParallelRows::automaticThreadBudget(4),2);
+        QCOMPARE(ParallelRows::automaticThreadBudget(8),6);
+        QCOMPARE(ParallelRows::automaticThreadBudget(std::numeric_limits<int>::max()),8);
+        for(int cores=1;cores<=128;++cores) {
+            const int budget=ParallelRows::automaticThreadBudget(cores);
+            QVERIFY(budget>=1&&budget<=8);
+            if(cores>1)QVERIFY(budget<cores);
+            if(cores>=4)QVERIFY(cores-budget>=2);
+        }
+    }
+
     void projectCommandsPreserveVersionsHistoriesCurationAndOriginalBytesAcrossReopen() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");QVERIFY(selectedExportPngFixture(a,4));QVERIFY(selectedExportPngFixture(b,6));const auto bytesA=fixtureBytes(a),bytesB=fixtureBytes(b);
         PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(a)));QVERIFY(c.importFile(QUrl::fromLocalFile(b)));c.setExposure(.5);c.finishInteraction();c.setRating(3);QVERIFY(c.setSelectionKeywords("retained"));

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <thread>
 #include "core/pipeline/BrushRenderRequest.h"
+#include "core/async/ParallelRows.h"
 #include "core/cache/SourceCache.h"
 #include "core/export/JpegExporter.h"
 #include "core/export/RasterExporter.h"
@@ -25,7 +26,7 @@ QByteArray fileHash(const QString &path) {
     while(!file.atEnd()){const auto chunk=file.read(1024*1024);if(chunk.isEmpty())return {};hash.addData(chunk);}return hash.result().toHex();
 }
 QByteArray imageHash(const QImage &image) {
-    QCryptographicHash hash(QCryptographicHash::Sha256);const auto visible=qsizetype(image.width())*(image.format()==QImage::Format_RGBA32FPx4?16:8);
+    QCryptographicHash hash(QCryptographicHash::Sha256);const auto visible=qsizetype(image.width())*image.depth()/8;
     for(int y=0;y<image.height();++y)hash.addData(QByteArrayView(reinterpret_cast<const char *>(image.constScanLine(y)),visible));return hash.result().toHex();
 }
 struct MemorySample {
@@ -84,6 +85,7 @@ void report(QJsonObject data,const BrushRenderBudget &budget,MemorySample &memor
     const auto snapshot=budget.snapshot();data["elapsed_ms"]=timer.elapsed();data["operation_budget_bytes"]=snapshot.limit;
     data["operation_peak_reserved_bytes"]=snapshot.peak;data["operation_end_charged_bytes"]=snapshot.charged;
     data["sampled_process_rss_peak_bytes"]=memory.finish();data["rss_sampling_ms"]=5;data["timing_gate"]=false;
+    data["cpu_thread_budget"]=ParallelRows::threadBudget();
     data["source_commit"]=QStringLiteral(JIXELLIGHT_GIT_COMMIT);data["engine"]=ProcessingPlan::EngineVersion;
     data["source_snapshot"]="deep-pixel-copy";
     data["native_float_raw_decoder"]=false;data["producer"]="cpu-reference";
@@ -196,14 +198,18 @@ private slots:
         QImageReader reader(path);QCOMPARE(reader.size(),QSize(7028,4688));auto decoded=reader.read();QVERIFY2(!decoded.isNull(),qPrintable(reader.errorString()));
         phase("decode-complete");
         const auto referenceFormat=raster==RasterFormat::WebP8?QImage::Format_RGB888:QImage::Format_RGBA64;
+        QElapsedTimer referenceTimer;referenceTimer.start();
         const auto expected=legacyEncoded(source.image,planFor(state,spec),referenceFormat);QVERIFY(!expected.isNull());
+        const auto referenceMs=referenceTimer.elapsed();
         phase("reference-complete");
         QCOMPARE(decoded.colorSpace(),ColorManagement::colorSpace(spec.output));QCOMPARE(decoded.convertToFormat(referenceFormat),expected);
         phase("all-pixels-and-icc-complete");
         request.reset();QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source.image),before);
         report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-raster"},{"format",suffix},{"space",space},{"source_pixels",32947264},
             {"decoded_pixels",32947264},{"exact_pixels",true},{"icc_exact",true},{"encoded_file_bytes",fileBytes},
-            {"source_unchanged",true},{"raw_sha256",SonyHash}},*budget,memory,timer);
+            {"source_unchanged",true},{"raw_sha256",SonyHash},{"reference_elapsed_ms",referenceMs},
+            {"reference_pixel_sha256",QString::fromLatin1(imageHash(expected))},
+            {"reference_icc_sha256",QString::fromLatin1(QCryptographicHash::hash(expected.colorSpace().iccProfile(),QCryptographicHash::Sha256).toHex())}},*budget,memory,timer);
     }
     void sony33MpJpegCancellationPreservesTargetAndHealthyOutputMatchesCpu_data() {
         QTest::addColumn<bool>("erased");QTest::newRow("paint")<<false;QTest::newRow("erase")<<true;

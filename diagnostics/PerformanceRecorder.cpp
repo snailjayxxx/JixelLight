@@ -1,4 +1,5 @@
 #include "diagnostics/PerformanceRecorder.h"
+#include "core/async/ParallelRows.h"
 #include <QDateTime>
 #include <QFile>
 #include <QJsonArray>
@@ -107,10 +108,12 @@ qint64 PerformanceRecorder::residentBytes() {
 }
 QJsonObject PerformanceRecorder::snapshot() {
     const qint64 rss = residentBytes();
+    const int cpuBudget = ParallelRows::threadBudget();
     QMutexLocker lock(&mutex);
     QJsonArray array;
     for (const auto &entry : samples) array.append(entry);
     return {{"schema", 1}, {"timings", array}, {"counters", counters}, {"values", values},
             {"resident_bytes_at_snapshot", rss}, {"logical_processors", QThread::idealThreadCount()},
+            {"cpu_thread_budget", cpuBudget},
             {"note", "duration_ms measures elapsed work. Optional process_cpu_ms includes concurrent process threads; thread_cpu_ms covers the span thread. Null means unavailable. CPU/elapsed gaps do not isolate a waiting cause. GPU submit/readback are not presentation latency. No original RAW bytes included."}};
 }
