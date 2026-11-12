@@ -122,6 +122,9 @@ def main():
         # The same checks execute against both SDK-stripped installed CLIs.
         assert schema['session']['maximum_commands'] == 10000
         assert not schema['session']['catalog_writes'] and not schema['session']['source_writes']
+        selection_schema = next(c for c in schema['workflow_commands'] if c['name'] == 'photo.select')
+        assert selection_schema['fields'] == ['photo'] and selection_schema['maximum_identity_utf16_units'] == 32768
+        assert next(c for c in schema['session']['commands'] if c['name'] == 'photo.select') == selection_schema
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -165,6 +168,8 @@ def main():
             run('--session', session_file, *extra, success=False)
         late_output = root / 'session-late-invalid.png'
         for tail in [{'command': 'history.redo'}, {'command': 'photo.select', 'photo': 'missing'},
+                     {'command': 'photo.select', 'photo': True}, {'command': 'photo.select', 'photo': 'a', 'index': 0},
+                     {'command': 'photo.select', 'photo': 'A'},
                      {'command': 'develop.set', 'parameter': 'unknown', 'value': 1},
                      {'command': 'photo.import', 'photo': 'a', 'source': source.name}]:
             invalid_session = copy.deepcopy(session_manifest)
