@@ -23,6 +23,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
            baseline_path=base+'case.native.json.baseline-source.png',baseline_sha256='b'*64,unselected_original_unchanged=True,
            initial_whole_Develop=initial,final_whole_Develop=deepcopy(initial),initial_history=history,final_history=deepcopy(history),
            initial_source_key='50',initial_render_revision='8',final_source_key='70',final_render_revision='14',catalog_count=4,
+           reopened_source_key='70',reopened_render_revision='14',reopen_settled_ms=220,reopened_owner_current=True,
            project_path=base+'case.native.json.project-root/Owned.jlp',durable_identities_verified=True,project_reopened=True,
            export=dict(RGBA16_exact=True,ICC_srgb=True),phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(12)])
     d['records']=[dict(index=i,source=base+'JixelLight-owned-move-unit/JixelLight-owned-unit-'+str(i)+'.png',before=base+'case.native.json.source-'+str(i)+'-before.png',
@@ -35,7 +36,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
                     **{key:[307*211]+[0]*1023 for key in ('red','green','blue','luma')})
     d['window_capture_admission']=dict(accepted=True,before_any_input=True,resize_count=0,DPR=2,logical_width=1180,logical_height=780,physical_width=2360,physical_height=1560,presented_frames=3)
     d['window_captures']=[dict(role=role,phase=phase,DPR=2,logical_width=1180,logical_height=780,physical_width=2360,physical_height=1560,presented_frames=3,at_ms=phase*100+20,
-                               source_key='70'if phase==7 else'50',render_revision='14'if phase==7 else'8')for role,phase in zip(('moved','recovery','recovered','reopened'),(3,5,6,7))]
+                               source_key='70'if phase==7 else'50',render_revision='14'if phase==7 else'8',preview_ready=True,source_available=True,loading=False,rendering=False)for role,phase in zip(('moved','recovery','recovered','reopened'),(3,5,6,7))]
     d['move']=dict(phase='done',retirement_backend='system-trash',busy=False,requested=1,copied=1,retired=1,cancelled=False,error='')
     return d
 
@@ -85,6 +86,14 @@ class MoveImportEvidenceTests(unittest.TestCase):
     def test_changed_original_edit_history_or_catalog_is_rejected(self):
         for key,value in [('final_whole_Develop',{}),('final_history',[]),('unselected_original_unchanged',False),('catalog_count',3),('project_reopened',False)]:
             d=report_fixture();d[key]=value
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
+    def test_transient_reopened_owner_or_busy_capture_cannot_pass(self):
+        for key,value in [('reopened_source_key','50'),('reopened_render_revision','12'),('reopen_settled_ms',199),('reopened_owner_current',False)]:
+            d=report_fixture();d[key]=value
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+        for key,value in [('preview_ready',False),('source_available',False),('loading',True),('rendering',True)]:
+            d=report_fixture();d['window_captures'][-1][key]=value
             with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
 
     def test_unreviewed_or_stale_recovery_or_fake_qpa_mutation_is_rejected(self):

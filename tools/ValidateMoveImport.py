@@ -35,6 +35,8 @@ def validate_report(data,mode,qpa,expected_commit=None):
     require(type(data['initial_history'])is list and len(data['initial_history'])==2 and data['initial_history']==data['final_history'],'whole original durable history')
     require(type(data['catalog_count'])is int and data['catalog_count']==4 and positive_id(data['initial_source_key'])and positive_id(data['initial_render_revision'])and positive_id(data['final_source_key'])
             and positive_id(data['final_render_revision'])and int(data['final_render_revision'])>=int(data['initial_render_revision']),'original/catalog owners across reopen')
+    require(data['reopened_source_key']==data['final_source_key']and data['reopened_render_revision']==data['final_render_revision']
+            and data['reopened_owner_current']is True and integer(data['reopen_settled_ms'],200),'frozen final reopened owner')
     records=data['records'];require(all(type(r['index'])is int for r in records)and [r['index']for r in records]==[0,1,2],'two original moves and one reviewed recovery')
     source_paths=[];targets=[]
     for r in records:
@@ -74,6 +76,7 @@ def validate_windows(data):
                 and phases[phase]['at_ms']<=capture['at_ms']<=phases[phase+1]['at_ms'],'current complete capture with actual phase/DPR')
         key='final'if phase==7 else'initial'
         require(capture['source_key']==data[key+'_source_key']and capture['render_revision']==data[key+'_render_revision'],'current original-buffer owner for window')
+        require(capture['preview_ready']is True and capture['source_available']is True and capture['loading']is False and capture['rendering']is False,'ready current frame at each capture')
     return True
 
 
