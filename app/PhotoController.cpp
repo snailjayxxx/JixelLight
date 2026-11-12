@@ -681,6 +681,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="photo.import")return executePhotoImport(object,true);
     if(object["command"].toString()=="photo.select") {
         QString key;
         if(!CommandRegistry::decodePhotoSelection(object,&key)||xmpMergeBusy())return false;
@@ -1147,7 +1148,8 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     m_importedPaths.insert(identity);
     markPhotoDirty(entry); m_catalogDateTimer.start();
     queueSourceIdentity(entry.path);
-    ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw}});
+    ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw},
+        {"photo_key",entry.storageKey()},{"command",QVariantMap{{"command","photo.import"},{"source",entry.path}}}});
 
     if (notifyImmediately) {
         emit libraryChanged();
@@ -1187,16 +1189,8 @@ void PhotoController::openImportDialog() {
     }
 
     settings.setValue(QStringLiteral("ui/lastImportDir"), QFileInfo(files.first()).absolutePath());
-    int added = 0;
-    int rawAdded = 0;
-    for (const QString &path : files) {
-        const bool raw = RawDecoder::isRawFile(path);
-        if (importPath(path, false)) {
-            ++added;
-            if (raw) ++rawAdded;
-        }
-    }
-    finishImportBatch(added, rawAdded);
+    QVariantList urls;for(const auto &path:files)urls.append(QUrl::fromLocalFile(path));
+    importFiles(urls);
 }
 
 QVariantMap PhotoController::previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart) {
@@ -1275,18 +1269,26 @@ bool PhotoController::prepareToClose() {
     return flushEdits();
 }
 
+bool PhotoController::executePhotoImport(const QJsonObject &command,bool notifyImmediately) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::PhotoImport request;
+    if(!CommandRegistry::decodePhotoImport(command,CommandRegistry::ImportScope::Desktop,&request))return false;
+    return importPath(request.source,notifyImmediately);
+}
+
 bool PhotoController::importFile(const QUrl &url) {
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
-    return importPath(path, true);
+    return executePhotoImport({{"command","photo.import"},{"source",path}},true);
 }
 
 void PhotoController::importFiles(const QVariantList &urls) {
+    if(QThread::currentThread()!=thread()||m_closing)return;
     int added = 0, rawAdded = 0;
     for (const QVariant &v : urls) {
         const QUrl u = v.canConvert<QUrl>() ? v.toUrl() : QUrl(v.toString());
         const QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
         const bool raw = RawDecoder::isRawFile(path);
-        if (importPath(path, false)) { ++added; if (raw) ++rawAdded; }
+        if (executePhotoImport({{"command","photo.import"},{"source",path}},false)) { ++added; if (raw) ++rawAdded; }
     }
     finishImportBatch(added, rawAdded);
 }

@@ -4,6 +4,7 @@
 #include "core/look/LookProfiles.h"
 #include <QJsonArray>
 #include <QStringList>
+#include <QRegularExpression>
 #include <algorithm>
 #include <cmath>
 
@@ -12,6 +13,34 @@ struct CommandRegistry {
     // Constructed by GUI/CLI from the actual source; never accepted in command
     // JSON. A single batch uses one immutable source metadata snapshot.
     struct LookContext { bool rawSource=false; QVariantMap metadata; };
+    enum class ImportScope { Desktop, Session };
+    struct PhotoImport {QString source,photo;};
+    static bool decodePhotoImport(const QJsonObject &command,ImportScope scope,PhotoImport *output,QString *error=nullptr) {
+        if(error)error->clear();
+        const auto fail=[&]{if(error)*error="Invalid photo import command";return false;};
+        if(!output || command["command"].toString()!="photo.import"
+            || !fields(command,scope==ImportScope::Desktop?QStringList{"source"}:QStringList{"photo","source"})
+            || !command["source"].isString())return fail();
+        PhotoImport staged;staged.source=command["source"].toString();
+        if(staged.source.isEmpty()||staged.source.size()>32768||staged.source.contains(QChar(u'\0')))return fail();
+        if(scope==ImportScope::Session) {
+            static const QRegularExpression id("\\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\\z");
+            if(!command["photo"].isString()||!id.match(command["photo"].toString()).hasMatch())return fail();
+            for(const auto ch:staged.source)if(ch.unicode()<32||ch.unicode()==127)return fail();
+            staged.photo=command["photo"].toString();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject photoImportSchema(ImportScope scope) {
+        const bool session=scope==ImportScope::Session;
+        return {{"name","photo.import"},{"scope",session?"offline-session":"desktop"},
+            {"fields",session?QJsonArray{"photo","source"}:QJsonArray{"source"}},
+            {"source","native file path; desktop uses its existing working directory, session uses manifest directory"},
+            {"maximum_source_utf16_units",32768},{"source_writes",false},
+            {"identity",session?"new session-local ASCII id, 1–64 characters":"derived catalog key exposed by library[].id; session aliases are rejected"},
+            {"selection",session?"select the newly registered transient photo":"preserve an existing current photo; select first successful import when empty"},
+            {"operation",session?"register an existing source without copying or catalog writes":"Add existing file through the normal catalog importer; no file copying"}};
+    }
     enum class ControlKind { EditBatch, Undo, Redo };
     struct Control {ControlKind kind=ControlKind::EditBatch;QJsonArray edits;};
     static bool isControlCommand(const QString &name) {
@@ -622,7 +651,9 @@ struct CommandRegistry {
             QJsonObject{{"name","curve.reset"},{"fields",QJsonArray{"channel"}},{"channel",QJsonArray{"master","red","green","blue"}}}
         };
         return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"control_commands",controlSchema()},
-            {"workflow_commands",QJsonArray{photoSelectionSchema()}},{"unknown_fields","reject"},{"range_policy","clamp"},
+            {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
+                {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}}}},
+            {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
     }

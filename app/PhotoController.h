@@ -841,6 +841,7 @@ private:
     GeometryState previewGeometry() const;
     AdjustmentState *mutableCurrentState();
     bool importPath(const QString &path, bool notifyImmediately);
+    bool executePhotoImport(const QJsonObject &command,bool notifyImmediately);
     void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();
