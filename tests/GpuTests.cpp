@@ -44,6 +44,8 @@ private:
         const auto callback=statistics ? GpuEngine::HistogramReady([&](quint64,QByteArray data,quint64){ counts=std::move(data); }) : GpuEngine::HistogramReady{};
         auto plan=ProcessingPlan::compile(state,encoding,output); plan.setReferenceFrameSize(referenceFrameSize);plan.setFrameRect(frameRect);
         if(inputRows)std::copy(inputRows->begin(),inputRows->end(),plan.data.begin()+ProcessingPlan::Input0);
+        // These owned fixtures represent complete corrected frames; density/viewport metadata is simulated.
+        if(plan.dehazeActive())plan.setDehazeAirlight(ImagePipeline::estimateDehazeAirlight(input,plan));
         const bool ok=engine->process(cb,floatImage,plan,++revision,callback,true);
         QJsonObject captured;
         if (ok && diagnostic && !engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){captured=std::move(value);})) {
@@ -74,6 +76,8 @@ private:
         QVERIFY2(!actual.image.isNull(),qPrintable(engine->error()));
         auto plan=ProcessingPlan::compile(state,encoding,space);plan.setReferenceFrameSize(referenceFrameSize);plan.setFrameRect(frameRect);
         if(inputRows)std::copy(inputRows->begin(),inputRows->end(),plan.data.begin()+ProcessingPlan::Input0);
+        // These owned fixtures represent complete corrected frames; density/viewport metadata is simulated.
+        if(plan.dehazeActive())plan.setDehazeAirlight(ImagePipeline::estimateDehazeAirlight(input,plan));
         const auto reference=ImagePipeline::processWithPlan(input,plan);
         int maximum=0,worstX=0,worstY=0;
         quint64 absolute=0,overTolerance=0;
@@ -205,6 +209,55 @@ private slots:
         }
     }
 
+    void dehazeMatchesReferenceAcrossSourcesAndDensities() {
+        QImage integer(137,139,QImage::Format_RGBA64),floating(137,139,QImage::Format_RGBA32FPx4);
+        const quint16 alpha16[]{0,655,24576,65535};const float alpha32[]{0,1.e-8f,.375f,1.f};
+        for(int y=0;y<139;++y)for(int x=0;x<137;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,alpha16[(x+y)%4]);
+            auto *pixel=reinterpret_cast<float *>(floating.scanLine(y))+4*x;
+            pixel[0]=-.04f+2.f*x/136.f;pixel[1]=.02f+1.5f*y/138.f;pixel[2]=.1f+1.2f*((x+y)%101)/100.f;pixel[3]=alpha32[(x+y)%4];
+        }
+        int compute=0,cpu=0;
+        for(bool fp32:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)
+        for(double amount:{-73.,87.})for(bool preview:{false,true}) {
+            const auto &source=fp32?floating:integer;AdjustmentState state;state.dehazeAmount=amount;state.textureAmount=57;state.clarityAmount=41;
+            state.denoiseLuma=71;state.denoiseChroma=83;state.sharpenAmount=61;state.grainAmount=19;
+            state.look.mode="manual";state.look.code="ST";state.look.parameters={{"sharpness",3},{"clarity",2}};
+            const auto space=ColorManagement::OutputSpace(output);const auto input=ImagePipeline::InputEncoding(encoding);
+            const auto frame=preview?QRectF(.25,.125,.5,.5):QRectF(0,0,1,1);const auto reference=preview?source.size()*4:QSize{};
+            verifyParity(source,state,input,space,true,"spatial dehaze",frame,reference);if(QTest::currentTestFailed())return;
+            const bool fallback=space==ColorManagement::OutputSpace::AdobeRgb||(fp32&&encoding==1&&space==ColorManagement::OutputSpace::ProPhotoRgb);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);fallback?++cpu:++compute;
+            const auto actual=render(source,state,false,input,space,frame,true,reference);
+            QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["spatial_dehaze"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+        }
+        QCOMPARE(compute,44);QCOMPARE(cpu,20);qInfo()<<"dehaze64: actual compute"<<compute<<"explicit CPU policies"<<cpu;
+    }
+    void dehazeDarkFieldsFractionalRadiiAndAlphaHoles() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);const float alpha[]{0,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.001f+.015f*float((x*17+y*7)%23)/23;p[1]=.003f+.01f*float((x+y)%13)/13;p[2]=.008f;p[3]=alpha[(x+y)%4];
+            if(p[3]==0){p[0]=64000;p[1]=32000;p[2]=16000;}
+        }
+        for(int output=0;output<4;++output)for(double amount:{-100.,100.})for(bool denoise:{false,true})for(bool tiny:{false,true}) {
+            AdjustmentState state;state.dehazeAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"dehaze dark/holes",{0,0,1,1},source.size()*(tiny?40:2));
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
+    void dehazeRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const auto source=loaded.image.copy((loaded.image.width()-512)/2,(loaded.image.height()-512)/2,512,512);
+        for(int output=0;output<4;++output)for(bool denoise:{false,true}) {
+            AdjustmentState state;state.dehazeAmount=65;if(denoise){state.denoiseLuma=70;state.denoiseChroma=90;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"real Sony dehaze");
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
     void textureMatchesReferenceAcrossSourcesAndDensities() {
         QImage integer(137,139,QImage::Format_RGBA64),floating(137,139,QImage::Format_RGBA32FPx4);
         const quint16 alpha16[]{0,655,24576,65535};const float alpha32[]{0,1.e-8f,.375f,1.f};
@@ -254,6 +307,39 @@ private slots:
             if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
         }
     }
+    void dehazeResidentStagesTrackCompleteDependencies() {
+        QImage source(73,79,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.03f*std::sin(float(x));p[1]=.2f+.02f*std::cos(float(y));p[2]=.12f;p[3]=1;}
+        AdjustmentState state;state.dehazeAmount=73;QSize reference;
+        auto encoding=ImagePipeline::InputEncoding::LinearProPhoto;auto output=ColorManagement::OutputSpace::SRgb;
+        std::array<Float4,3> rows{};const std::array<Float4,3> *customRows=nullptr;
+        const auto verify=[&]{verifyParity(source,state,encoding,output,true,"dehaze cache",{0,0,1,1},reference,customRows);QVERIFY(!engine->lastProcessUsedCpuFallback());};
+        verify();auto guide=engine->dehazeGuideDispatches(),horizontal=engine->dehazeHorizontalDispatches(),vertical=engine->dehazeVerticalDispatches(),filter=engine->dehazeFilterDispatches(),uploads=engine->sourceUploads();
+        const auto counts=[&]{QCOMPARE(engine->dehazeGuideDispatches(),guide);QCOMPARE(engine->dehazeHorizontalDispatches(),horizontal);QCOMPARE(engine->dehazeVerticalDispatches(),vertical);QCOMPARE(engine->dehazeFilterDispatches(),filter);};
+        const auto allMiss=[&]{++guide;++horizontal;++vertical;++filter;};
+        state.exposure=.2;state.temperature=17;state.tint=-13;verify();counts();
+        state.dehazeAmount=49;++filter;verify();counts();
+        state.dehazeAmount=-73;++filter;verify();counts();
+        state.exposure=.3;verify();counts();
+        state.dehazeAmount=87;++filter;verify();counts(); // Reuse positive guide/coarse across a negative veil.
+        reference=source.size()*4;++horizontal;++vertical;++filter;verify();counts();
+        output=ColorManagement::OutputSpace::DisplayP3;verify();counts();
+        state.denoiseLuma=71;state.denoiseChroma=83;allMiss();verify();counts();
+        state.denoiseChroma=19;allMiss();verify();counts();
+        state.textureAmount=57;state.clarityAmount=41;verify();counts();
+        const auto textureGuide=engine->textureGuideDispatches(),clarityGuide=engine->clarityGuideDispatches();
+        state.dehazeAmount=35;++filter;verify();counts();
+        QCOMPARE(engine->textureGuideDispatches(),textureGuide+1);QCOMPARE(engine->clarityGuideDispatches(),clarityGuide+1);
+        state.textureAmount=-35;verify();counts();
+        state.dehazeAmount=-49;++filter;verify();counts();
+        encoding=ImagePipeline::InputEncoding::SRgb;++filter;verify();counts(); // New negative input invalidates retained positive helpers.
+        state.dehazeAmount=73;allMiss();verify();counts();
+        {const auto p=ProcessingPlan::compile(state,encoding,output);std::copy_n(p.data.data()+ProcessingPlan::Input0,3,rows.data());rows[0].x+=.005f;customRows=&rows;}
+        allMiss();verify();counts();
+        auto next=source.copy();source=next;state.dehazeAmount=0;state.denoiseLuma=0;state.denoiseChroma=0;state.textureAmount=0;state.clarityAmount=0;verify();counts();
+        QCOMPARE(engine->sourceUploads(),uploads+1);state.dehazeAmount=73;allMiss();verify();counts();QCOMPARE(engine->sourceUploads(),uploads+1);
+        source=source.copy(0,0,47,53);reference={};customRows=nullptr;allMiss();verify();counts();QCOMPARE(engine->sourceUploads(),uploads+2);
+    }
     void textureResidentStagesTrackCompleteDependencies() {
         QImage source(73,79,QImage::Format_RGBA32FPx4);
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.03f*std::sin(float(x));p[1]=.2f+.02f*std::cos(float(y));p[2]=.12f;p[3]=1;}
@@ -281,10 +367,13 @@ private slots:
         allMiss();verify();counts();output=ColorManagement::OutputSpace::SRgb;verify();counts();
     }
     void rejectedPlanPreservesAcceptedFrameProvenance_data() {
-        QTest::addColumn<bool>("invalidLut");QTest::newRow("spatial-settings")<<false;QTest::newRow("lut-atlas")<<true;
+        QTest::addColumn<bool>("invalidLut");QTest::addColumn<bool>("resized");QTest::addColumn<bool>("invalidFloat");
+        QTest::newRow("spatial-settings")<<false<<false<<false;QTest::newRow("lut-atlas")<<true<<false<<false;
+        QTest::newRow("resized-spatial-settings")<<false<<true<<false;QTest::newRow("resized-lut-atlas")<<true<<true<<false;
+        QTest::newRow("resized-invalid-float")<<false<<true<<true;
     }
     void rejectedPlanPreservesAcceptedFrameProvenance() {
-        QFETCH(bool,invalidLut);
+        QFETCH(bool,invalidLut);QFETCH(bool,resized);QFETCH(bool,invalidFloat);
         auto saved=std::move(engine);engine=std::make_unique<GpuEngine>(rhi.get());
         auto restore=qScopeGuard([&]{engine=std::move(saved);});
         QImage original(9,7,QImage::Format_RGBA32FPx4);
@@ -293,9 +382,10 @@ private slots:
         const auto accepted=render(original,state,false,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,{0,0,1,1},true);
         QVERIFY(!accepted.image.isNull());QCOMPARE(accepted.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
         const auto uploads=engine->sourceUploads(),acceptedRevision=engine->renderedRevision();
-        auto other=original.copy();for(int y=0;y<other.height();++y)for(int x=0;x<other.width();++x)reinterpret_cast<float *>(other.scanLine(y))[4*x+3]=1;
+        auto other=resized?original.copy(0,0,7,5):original.copy();for(int y=0;y<other.height();++y)for(int x=0;x<other.width();++x)reinterpret_cast<float *>(other.scanLine(y))[4*x+3]=1;
         auto malformed=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto);
         if(invalidLut){auto lut=std::make_shared<LookLut>();lut->digest="invalid-owned-lut";malformed.state.look.lut=lut;malformed.data[ProcessingPlan::LookStyle].w=1;}
+        else if(invalidFloat)reinterpret_cast<float *>(other.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();
         else malformed.data[ProcessingPlan::Texture].y=1;
         QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
         const bool processed=engine->process(cb,other,malformed,++revision,{});rhi->endOffscreenFrame();rhi->finish();
@@ -304,6 +394,9 @@ private slots:
         const bool captured=engine->captureWorkingFrame(cb,acceptedRevision,[&](QJsonObject value){frozen=std::move(value);});
         rhi->endOffscreenFrame();rhi->finish();QVERIFY(captured);QVERIFY(frozen["available"].toBool());
         QCOMPARE(frozen["source_cache_key"],accepted.diagnostic["source_cache_key"]);
+        QCOMPARE(accepted.diagnostic["pixel_sha256"].toString().size(),64);
+        QCOMPARE(frozen["pixel_sha256"],accepted.diagnostic["pixel_sha256"]);
+        QCOMPARE(frozen["pixels"],accepted.diagnostic["pixels"]);
         QCOMPARE(frozen["producer"].toString(),QString("cpu-reference-upload"));
         QCOMPARE(frozen["spatial_texture"].toString(),QString("cpu-reference"));
         QCOMPARE(frozen["numeric_source_policy"].toString(),QString("texture-near-zero-alpha"));
@@ -319,14 +412,16 @@ private slots:
         for(int output=0;output<4;++output)for(double amount:{-100.,73.})for(bool denoise:{false,true}) {
             AdjustmentState state;state.dehazeAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
             state.sharpenAmount=61;state.grainAmount=19;state.textureAmount=57;state.clarityAmount=-41;
-            const auto input=integer?ImagePipeline::rgba64Source(source):source;
+            auto input=integer?ImagePipeline::rgba64Source(source):source;
+            if(!integer)reinterpret_cast<float *>(input.scanLine(0))[3]=std::numeric_limits<float>::denorm_min();
+            if(integer){BrushMaskGeometry::Stroke paint;paint.style={.2,.4,.8};paint.dabs={{{.5,.5},.7}};state.brushMasks.layers={{"dehaze-reference",true,.6,{paint}}};}
             const auto space=ColorManagement::OutputSpace(output);const auto actual=render(input,state,true,ImagePipeline::InputEncoding(encoding),space,{0,0,1,1},true);
             QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
             const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),space));
             for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
             QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
             QCOMPARE(actual.diagnostic["spatial_dehaze"].toString(),QString("cpu-reference"));
-            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("dehaze-cpu-stage"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),integer?QString("existing-color-or-brush"):QString("dehaze-near-zero-alpha"));
             const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
         }
     }

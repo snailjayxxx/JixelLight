@@ -44,6 +44,10 @@ public:
     quint64 sourceUploads() const { return m_uploads; }
     quint64 denoiseGuideDispatches() const { return m_denoiseGuideDispatches; }
     quint64 denoiseFilterDispatches() const { return m_denoiseFilterDispatches; }
+    quint64 dehazeGuideDispatches() const {return m_dehazeGuideDispatches;}
+    quint64 dehazeHorizontalDispatches() const {return m_dehazeHorizontalDispatches;}
+    quint64 dehazeVerticalDispatches() const {return m_dehazeVerticalDispatches;}
+    quint64 dehazeFilterDispatches() const {return m_dehazeFilterDispatches;}
     quint64 textureGuideDispatches() const {return m_textureGuideDispatches;}
     quint64 textureSmallHorizontalDispatches() const {return m_textureSmallHorizontalDispatches;}
     quint64 textureSmallVerticalDispatches() const {return m_textureSmallVerticalDispatches;}
@@ -61,6 +65,7 @@ private:
     bool initialize(QSize size);
     bool ensureDetail();
     bool ensureDenoise();
+    bool ensureDehaze();
     bool ensureTexture();
     bool ensureClarity();
     bool createDisplay(QRhiRenderTarget *target,bool premultipliedAlpha,QRhiTexture *input);
@@ -83,31 +88,44 @@ private:
     std::unique_ptr<QRhiTexture> m_denoiseGuide,m_denoiseLinear;
     std::unique_ptr<QRhiShaderResourceBindings> m_denoisePrepareBindings,m_denoiseFilterBindings,m_denoiseColorBindings,m_denoiseDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_denoisePreparePipeline,m_denoiseFilterPipeline;
+    std::unique_ptr<QRhiTexture> m_dehazeGuide,m_dehazeHorizontal,m_dehazeCoarse,m_dehazeLinear;
+    std::unique_ptr<QRhiBuffer> m_dehazeKernel;
+    std::unique_ptr<QRhiShaderResourceBindings> m_dehazePrepareBindings,m_dehazePrepareDenoisedBindings,
+        m_dehazeHorizontalBindings,m_dehazeVerticalBindings,m_dehazeFilterBindings,m_dehazeFilterDenoisedBindings,
+        m_dehazeColorBindings,m_dehazeDetailBindings;
+    std::unique_ptr<QRhiComputePipeline> m_dehazePreparePipeline,m_dehazeHorizontalPipeline,m_dehazeVerticalPipeline,m_dehazeFilterPipeline;
+    qint64 m_dehazeSourceKey=0;
+    int m_dehazeEncoding=-1;
+    std::array<Float4,3> m_dehazeInputRows{};
+    Float4 m_dehazeDenoiseSettings{},m_dehazeAirlight{},m_dehazeSettings{};
+    float m_dehazeDarkRadius=-1;
+    bool m_dehazeIdentityValid=false,m_dehazeGuideValid=false,m_dehazeCoarseValid=false,m_dehazeOutputValid=false;
+    quint64 m_dehazeGuideDispatches=0,m_dehazeHorizontalDispatches=0,m_dehazeVerticalDispatches=0,m_dehazeFilterDispatches=0;
     std::unique_ptr<QRhiTexture> m_textureGuide,m_textureHorizontal,m_textureSmallBand,m_textureLinear;
     std::unique_ptr<QRhiBuffer> m_textureKernel;
-    std::unique_ptr<QRhiShaderResourceBindings> m_texturePrepareBindings,m_texturePrepareDenoisedBindings,
-        m_textureHorizontalBindings,m_textureSmallVerticalBindings,m_textureFilterBindings,m_textureFilterDenoisedBindings,
+    std::unique_ptr<QRhiShaderResourceBindings> m_texturePrepareBindings,m_texturePrepareDenoisedBindings,m_texturePrepareDehazedBindings,
+        m_textureHorizontalBindings,m_textureSmallVerticalBindings,m_textureFilterBindings,m_textureFilterDenoisedBindings,m_textureFilterDehazedBindings,
         m_textureColorBindings,m_textureDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_texturePreparePipeline,m_textureSmallHorizontalPipeline,
         m_textureSmallVerticalPipeline,m_textureLargeHorizontalPipeline,m_textureFilterPipeline;
     qint64 m_textureSourceKey=0;
     int m_textureEncoding=-1;
     std::array<Float4,3> m_textureInputRows{};
-    Float4 m_textureDenoiseSettings{},m_textureSettings{};
+    Float4 m_textureDenoiseSettings{},m_textureDehazeSettings{},m_textureDehazeAirlight{},m_textureSettings{};
     float m_textureSmallRadius=-1,m_textureLargeRadius=-1;
     bool m_textureGuideValid=false,m_textureNeighborhoodValid=false,m_textureOutputValid=false;
     quint64 m_textureGuideDispatches=0,m_textureSmallHorizontalDispatches=0,m_textureSmallVerticalDispatches=0,
         m_textureLargeHorizontalDispatches=0,m_textureFilterDispatches=0;
     std::unique_ptr<QRhiTexture> m_clarityGuide,m_clarityHorizontal,m_clarityLinear;
     std::unique_ptr<QRhiBuffer> m_clarityKernel;
-    std::unique_ptr<QRhiShaderResourceBindings> m_clarityPrepareBindings,m_clarityPrepareDenoisedBindings,m_clarityPrepareTexturedBindings,
-        m_clarityHorizontalBindings,m_clarityFilterBindings,m_clarityFilterDenoisedBindings,m_clarityFilterTexturedBindings,
+    std::unique_ptr<QRhiShaderResourceBindings> m_clarityPrepareBindings,m_clarityPrepareDenoisedBindings,m_clarityPrepareTexturedBindings,m_clarityPrepareDehazedBindings,
+        m_clarityHorizontalBindings,m_clarityFilterBindings,m_clarityFilterDenoisedBindings,m_clarityFilterTexturedBindings,m_clarityFilterDehazedBindings,
         m_clarityColorBindings,m_clarityDetailBindings;
     std::unique_ptr<QRhiComputePipeline> m_clarityPreparePipeline,m_clarityHorizontalPipeline,m_clarityFilterPipeline;
     qint64 m_claritySourceKey=0;
     int m_clarityEncoding=-1;
     std::array<Float4,3> m_clarityInputRows{};
-    Float4 m_clarityDenoiseSettings{},m_clarityTextureSettings{},m_claritySettings{};
+    Float4 m_clarityDenoiseSettings{},m_clarityDehazeSettings{},m_clarityDehazeAirlight{},m_clarityTextureSettings{},m_claritySettings{};
     float m_clarityHorizontalRadius=-1;
     bool m_clarityGuideValid=false,m_clarityHorizontalValid=false,m_clarityOutputValid=false;
     quint64 m_clarityGuideDispatches=0,m_clarityHorizontalDispatches=0,m_clarityFilterDispatches=0;

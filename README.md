@@ -2,7 +2,7 @@
 
 # JixelLight
 
-Independent CPU dehaze is in development with full-frame viewport context and explicit CPU-upload diagnostics. Local/native evidence and remaining clean/platform/package gates are recorded in [M61](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md). Whole fusion development remains incomplete.
+Independent dehaze now has a QRhi follow-up with resident full-frame context. Local GPU/native evidence and remaining clean/platform/package gates are recorded in [M62](docs/F4_QRHI_DEHAZE_CACHE_STAGE_M62.md). The [CPU parent](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md) separately passes clean90/90; whole fusion development remains incomplete.
 
 > **开发进度（2026-11-12）：** 胶片颗粒、独立锐化、降噪、清晰度和纹理已覆盖预览、示波器、导出及持久化。纹理 CPU 干净提交 `5662c3e` 通过完整 87/87（789 秒）及真实主界面验证，草稿 PR #22 的跨平台/76 项安装包验证正在运行。后续五阶段 QRhi 纹理本机 GPU 56 项、15 项相关回归和 CPU/Metal 主界面／缓存验证通过；一并修正了失败请求误改上一帧诊断来源与上传计数的问题，当前干净提交及跨平台验证待完成。整体 F0–F6 尚未完成，接续去雾等功能，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)和[QRhi 纹理与缓存](docs/F4_QRHI_TEXTURE_CACHE_STAGE_M60.md)。
 

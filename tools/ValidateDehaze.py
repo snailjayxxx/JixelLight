@@ -69,9 +69,9 @@ def validate_report(data, mode, qpa, expected_commit=None):
     first_other={k:v for k,v in first.items() if k!='dehaze'};active_other={k:v for k,v in active.items() if k!='dehaze'}
     require(first_other==initial and active_other==dict(initial,exposure=.3) and reset==active_other
             and active['grain']==initial['grain'] and active['grain']['amount']==17, 'all unrelated edits preserved')
-    require(data['undo_steps_to_first']==2 and finite(data['dehaze_cache_hit_delta']) and (data['dehaze_cache_hit_delta']==0 if mode=='gpu' else data['dehaze_cache_hit_delta']>=1), 'actual color-edit stage reuse and undo granularity')
-    require(data['dehaze_cache_required'] is (mode=='cpu') and data['dehaze_processing_policy']==('cached-cpu-reference' if mode=='cpu' else 'complete-cpu-reference-upload; uncached'), 'explicit CPU cache versus uncached GPU display policy')
-    require(('DEHAZE' if mode=='cpu' else '去雾') in data['dehaze_header_text'] and 'CPU' in data['dehaze_header_text'] and data['dehaze_reset_text']==('Reset' if mode=='cpu' else '重置'), 'actual translated controls')
+    require(data['undo_steps_to_first']==2 and finite(data['dehaze_cache_hit_delta']) and data['dehaze_cache_hit_delta']>=1, 'actual color-edit stage reuse and undo granularity')
+    require(data['dehaze_cache_required'] is True and data['dehaze_processing_policy']==('cached-cpu-reference' if mode=='cpu' else 'cached-gpu-compute'), 'actual CPU/GPU spatial-cache policy')
+    require(('DEHAZE' if mode=='cpu' else '去雾') in data['dehaze_header_text'] and data['dehaze_reset_text']==('Reset' if mode=='cpu' else '重置'), 'actual translated controls')
     staging=data['staging'];require(staging['bit_exact'] is True and staging['complete_pixels']==307*211 and staging['actual_FP32_staging_sha256']==staging['expected_FP32_staging_sha256'], 'complete unchanged staging')
     scope=data['scope'];require(scope['pixels']==307*211 and scope['bins']==1024 and scope['four_histograms_exact'] is True and scope['clipping_exact'] is True, 'full exact scopes')
     for key in ('red','green','blue','luma'):require(len(scope[key])==1024 and all(integer(x) for x in scope[key]) and sum(scope[key])==scope['pixels'], 'all exact histogram bins')
@@ -108,12 +108,12 @@ def validate_diagnostic(data, manifest, stages, mode):
     require(dehaze['input']['pixel_sha256']!=dehaze['output']['pixel_sha256'], 'active dehaze changes the noisy fixture')
     gpu=stages['gpu_working_output']
     if mode=='gpu':
-        require(gpu['available'] is True and gpu['producer']=='cpu-reference-upload'
-                and gpu['spatial_dehaze']=='cpu-reference' and gpu['spatial_denoise']=='cpu-reference'
-                and gpu['numeric_source_policy']=='dehaze-cpu-stage' and gpu['monitor_icc'] is False
+        require(gpu['available'] is True and gpu['producer']=='gpu-compute'
+                and gpu['spatial_dehaze']=='gpu-compute' and gpu['spatial_denoise']=='gpu-compute'
+                and gpu['numeric_source_policy']=='none' and gpu['monitor_icc'] is False
                 and gpu['pixels']==307*211 and gpu['bytes']==307*211*16 and gpu['nonfinite_rgba']==[0,0,0,0]
                 and str(gpu['parameter_revision'])==data['diagnostic']['request_revision']
-                and gpu['source_cache_key']==data['diagnostic']['source_key'], 'actual complete CPU dehaze upload producer')
+                and gpu['source_cache_key']==data['diagnostic']['source_key'], 'actual native dehaze compute producer')
     else:
         require(gpu['available'] is False, 'CPU workflow does not claim GPU output')
     return True

@@ -1,0 +1,12 @@
+#version 440
+layout(local_size_x=16,local_size_y=16) in;
+layout(std140,binding=0) uniform Plan {vec4 p[58];};
+layout(rgba32f,binding=1) readonly uniform image2D horizontalImage;
+layout(rgba32f,binding=2) writeonly uniform image2D coarseImage;
+void main() {
+    ivec2 c=ivec2(gl_GlobalInvocationID.xy),size=ivec2(p[24].xy);if(any(greaterThanEqual(c,size)))return;
+    int radius=int(ceil(p[56].y));float value=2.0;
+    for(int j=-radius;j<=radius;++j)value=min(value,imageLoad(horizontalImage,ivec2(c.x,clamp(c.y+j,0,size.y-1))).r);
+    precise float transmission=value>1.0?1.0:clamp(1.0-.95*value,.1,1.0);
+    imageStore(coarseImage,c,vec4(transmission,0,0,0));
+}
