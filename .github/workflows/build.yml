@@ -135,6 +135,7 @@ jobs:
         shell: bash
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          ${{ runner.os == 'Windows' && '-DCMAKE_CONFIGURATION_TYPES=Release' || '' }}
           -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"

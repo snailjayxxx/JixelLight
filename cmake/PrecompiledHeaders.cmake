@@ -17,10 +17,20 @@ set_source_files_properties(core/pipeline/ImagePipeline.cpp core/look/LookDetail
 
 # REUSE_FROM requires an owner header in every generated configuration. A
 # Release-only owner has no Debug/MinSizeRel/RelWithDebInfo header for VS to
-# reference. Keep QtTest's original path in multi-config/non-Release builds;
-# Core/App still have their own independent Release C++ PCH artifacts.
-if(CMAKE_CONFIGURATION_TYPES OR NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-    message(STATUS "Release C++ PCH: core/app target-local; QtTest reuse disabled for multi-config/non-Release")
+# reference. Reuse is safe when Release is the only generated configuration,
+# including a multi-config CI build explicitly restricted to Release. Keep the
+# original path when any non-Release configuration can be generated.
+get_property(jixel_pch_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+set(jixel_pch_release_only FALSE)
+if(jixel_pch_multi_config)
+    if(CMAKE_CONFIGURATION_TYPES STREQUAL "Release")
+        set(jixel_pch_release_only TRUE)
+    endif()
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(jixel_pch_release_only TRUE)
+endif()
+if(NOT jixel_pch_release_only)
+    message(STATUS "Release C++ PCH: core/app target-local; QtTest reuse disabled when non-Release configurations are available")
     return()
 endif()
 target_precompile_headers(JixelLightCoreTests PRIVATE
