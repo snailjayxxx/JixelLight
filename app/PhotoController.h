@@ -843,6 +843,7 @@ private:
     bool importPath(const QString &path, bool notifyImmediately);
     bool executePhotoImport(const QJsonObject &command,bool notifyImmediately);
     bool executeCurrentExport(const QJsonObject &command,bool newFileOnly);
+    bool executeBatchExport(const QJsonObject &command);
     void finishImportBatch(int added, int rawAdded);
     void applyCurrent();
     void loadCurrent();
