@@ -61,10 +61,10 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
     }
     struct State {
         QElapsedTimer clock;QTimer *timer=nullptr;int phase=0,lastPhase=-1,frames=0,stableFrame=0,resizes=0;
-        bool done=false,initialized=false,prepared=false,admitted=false,exportStarted=false,exportPassed=false,projectPassed=false;
+        bool done=false,initialized=false,prepared=false,projectInteractionFinished=false,admitted=false,exportStarted=false,exportPassed=false,projectPassed=false;
         ulong stamp=5000;quint64 sourceKey=0,revision=0;QString source,profile,project,oldUrl;
         QImage fixture,reference,wide,relative,paper,warning;SoftProof::Profile target;ScopesResult scopes;
-        QJsonObject initial,diagnostic,exportResult,windowAdmission,composition,proofProbe;QJsonArray history,pointers,captures,proofs,phases,signature;
+        QJsonObject initial,diagnostic,exportResult,windowAdmission,composition,proofProbe;QJsonArray history,pointers,captures,proofs,phases,signature,events;
         QByteArray sourceSha;QSize windowLogical,windowPhysical;double dpr=0;
     };
     auto s=std::make_shared<State>();s->clock.start();s->source=report+".source.png";s->profile=report+".output.icc";
@@ -93,6 +93,15 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
     const auto unchanged=[=]{return c->gpuSource().cacheKey()==s->sourceKey&&c->renderRevision()==s->revision&&intent()==s->initial&&history()==s->history
         &&c->redHistogram()==s->scopes.red&&c->greenHistogram()==s->scopes.green&&c->blueHistogram()==s->scopes.blue&&c->lumaHistogram()==s->scopes.luma
         &&c->scopesPixelCount()==s->scopes.pixelCount&&c->shadowClipPercent()==s->scopes.shadowClipPercent&&c->highlightClipPercent()==s->scopes.highlightClipPercent;};
+    const auto liveInvariants=[=]{return QJsonObject{{"source_key",QString::number(c->gpuSource().cacheKey())},{"revision",QString::number(c->renderRevision())},
+        {"source_same",c->gpuSource().cacheKey()==s->sourceKey},{"revision_same",c->renderRevision()==s->revision},{"state_same",intent()==s->initial},{"history_same",history()==s->history},
+        {"red_same",c->redHistogram()==s->scopes.red},{"green_same",c->greenHistogram()==s->scopes.green},{"blue_same",c->blueHistogram()==s->scopes.blue},{"luma_same",c->lumaHistogram()==s->scopes.luma},{"shadow_same",c->shadowClipPercent()==s->scopes.shadowClipPercent},{"highlight_same",c->highlightClipPercent()==s->scopes.highlightClipPercent},
+        {"pixels",qint64(c->scopesPixelCount())},{"scope_mode",c->scopesStatus()},{"shadow",c->shadowClipPercent()},{"highlight",c->highlightClipPercent()}};};
+    const auto trace=[=](const QString &event){s->events.append(QJsonObject{{"event",event},{"at_ms",s->clock.elapsed()},{"phase",s->phase},{"live",liveInvariants()},
+        {"proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())}});while(s->events.size()>64)s->events.removeFirst();};
+    QObject::connect(c,&PhotoController::gpuFrameChanged,c,[=]{trace("frame_changed");});
+    QObject::connect(c,&PhotoController::previewGeometryChanged,c,[=]{trace("geometry_changed");});
+    QObject::connect(c,&PhotoController::activityChanged,c,[=]{trace("activity_changed");});
     const auto checkpoint=[=]{writeObject(report+".progress.json",{{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())},{"pointers",s->pointers},{"captures",s->captures}},true);};
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;s->timer->stop();
@@ -110,7 +119,7 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
             {"presentation_only",true},{"proof_independent_CPU_reference",true},{"exact_scopes_preserved",true},{"original_GPU_parity_covered_by_separate_suite",true},
             {"scope",QJsonObject{{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
-            {"current_proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())},{"proof_probe",s->proofProbe},{"proofs",s->proofs},{"pointers",s->pointers},{"window_capture_admission",s->windowAdmission},{"window_captures",s->captures},{"alpha_composition",s->composition},
+            {"current_proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())},{"live_invariants",liveInvariants()},{"events",s->events},{"proof_probe",s->proofProbe},{"proofs",s->proofs},{"pointers",s->pointers},{"window_capture_admission",s->windowAdmission},{"window_captures",s->captures},{"alpha_composition",s->composition},
             {"phase_checkpoints",s->phases},{"export",s->exportResult},{"diagnostic",s->diagnostic},{"project_path",s->project},{"durable_edit_history_preserved",s->projectPassed},
             {"physical_device_verified",false},{"real_printer_profile_verified",false},{"native_float_RAW_decoder",false},{"product_development_complete",false}};
         const bool saved=writeObject(report,r);QTimer::singleShot(0,c,[=]{QCoreApplication::exit(passed&&saved?0:1);});
@@ -246,6 +255,7 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
             if(!read.readSnapshot(s->project,&photos)||photos.size()!=1||photos[0].adjustments.toJson()!=s->initial){finish("Soft proof leaked into saved Develop");return;}
             s->phase=10;if(!c->openProject(QUrl::fromLocalFile(s->project))){finish("Cannot reopen original proof-on project");return;}return;}
         if(s->phase==10){if(!c->softProofReady())return;
+            if(!s->projectInteractionFinished){s->projectInteractionFinished=true;c->finishInteraction();return;}
             if(intent()!=s->initial||history()!=s->history||fileHash(c->currentFile())!=s->sourceSha){finish("Reopened proof project/history differs");return;}
             s->sourceKey=c->gpuSource().cacheKey();s->revision=c->renderRevision();if(!unchanged())return;s->projectPassed=true;s->phase=11;return;}
         if(s->phase==11){if(!c->softProofReady()||!unchanged())return;s->phase=12;return;}
@@ -253,6 +263,6 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
         if(s->phase==13&&s->diagnostic.isEmpty()){s->diagnostic={{"pending",true}};if(!c->requestBugReport())finish("Frozen proof diagnostic refused");return;}
         if(s->phase==14){if(!unchanged()){finish("Export/diagnostic mutated proof-on edits/scopes");return;}s->phase=15;finish({});}
     });
-    c->setLanguage(language);w->resize(1180,780);w->setProperty("workspaceIndex",1);
+    c->setLanguage(language);w->resize(1180,720);w->setProperty("workspaceIndex",1);
     if(!c->importFile(QUrl::fromLocalFile(s->source))){finish("Cannot import owned proof fixture");return;}s->timer->start();
 }

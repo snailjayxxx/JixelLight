@@ -28,6 +28,7 @@ def report_fixture(mode='gpu',qpa='cocoa'):
            physical_device_verified=False,real_printer_profile_verified=False,native_float_RAW_decoder=False,product_development_complete=False,
            export=dict(proof_enabled_during_export=True,RGBA16_exact=True,ICC_srgb=True,pixels=pixels),
            phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(15)])
+    d['live_invariants']=dict(source_key='70',revision='14',pixels=307*211,**{k:True for k in ('source_same','revision_same','state_same','history_same','red_same','green_same','blue_same','luma_same','shadow_same','highlight_same')})
     d['final_history']=deepcopy(d['initial_history'])
     d['scope']=dict(pixels=pixels,bins=1024,**{key:[pixels]+[0]*1023 for key in ('red','green','blue','luma')})
     targets=['softProofPanelToggle','softProofEnable','softProofPaper','softProofGamut','softProofBlackPoint','softProofRefresh','softProofEnable','softProofEnable']
@@ -112,6 +113,11 @@ class SoftProofEvidenceTests(unittest.TestCase):
             d=report_fixture();d[key]=value
             with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
         with self.assertRaises(ValueError):validate_report(report_fixture(),'gpu','cocoa','d'*40)
+
+    def test_live_final_source_revision_and_scopes_cannot_drift(self):
+        for key,value in [('source_same',False),('revision_same',False),('red_same',False),('highlight_same',False),('revision','13')]:
+            d=report_fixture();d['live_invariants'][key]=value
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
 
     def test_occupied_report_namespace_never_launches_or_replaces_original(self):
         with tempfile.TemporaryDirectory()as temp:
