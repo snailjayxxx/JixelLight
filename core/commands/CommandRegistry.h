@@ -36,6 +36,21 @@ struct CommandRegistry {
             QJsonObject{{"name","history.undo"},{"fields",QJsonArray{}}},QJsonObject{{"name","history.redo"},{"fields",QJsonArray{}}}};
         return {{"scope","desktop dispatcher and offline sessions; controls are not valid inside edit-only batches"},{"commands",commands}};
     }
+    static bool decodePhotoSelection(const QJsonObject &command,QString *photo,QString *error=nullptr) {
+        if(error)error->clear();
+        if(!photo || command["command"].toString()!="photo.select" || !fields(command,{"photo"})
+            || !command["photo"].isString() || command["photo"].toString().isEmpty()
+            || command["photo"].toString().size()>32768) {
+            if(error)*error="Invalid photo selection command";
+            return false;
+        }
+        *photo=command["photo"].toString();return true;
+    }
+    static QJsonObject photoSelectionSchema() {
+        return {{"name","photo.select"},{"fields",QJsonArray{"photo"}},{"maximum_identity_utf16_units",32768},
+            {"identity","exact desktop catalog version key or session-local photo id; namespaces are separate"},
+            {"normalization","none; no path, index or case fallback"},{"history","selection does not add an edit-history step"}};
+    }
     struct Parameter { const char *name; double AdjustmentState::*member; double minimum, maximum; };
     struct GeometryParameter { const char *name; double GeometryState::*member; double minimum, maximum; };
     static const auto &geometryParameters() {
@@ -606,7 +621,8 @@ struct CommandRegistry {
             QJsonObject{{"name","curve.set"},{"fields",QJsonArray{"channel","point","value"}},{"channel",QJsonArray{"master","red","green","blue"}},{"point",QJsonArray{0,4}},{"value",QJsonArray{0,1}}},
             QJsonObject{{"name","curve.reset"},{"fields",QJsonArray{"channel"}},{"channel",QJsonArray{"master","red","green","blue"}}}
         };
-        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"control_commands",controlSchema()},{"unknown_fields","reject"},{"range_policy","clamp"},
+        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"control_commands",controlSchema()},
+            {"workflow_commands",QJsonArray{photoSelectionSchema()}},{"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
     }

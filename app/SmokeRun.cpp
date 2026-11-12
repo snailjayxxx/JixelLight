@@ -3,6 +3,7 @@
 #include "app/PhotoController.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include "diagnostics/LoggingEngine.h"
+#include "diagnostics/ActionTrace.h"
 #include <QCoreApplication>
 #include <QQuickWindow>
 #include <QQuickItem>
@@ -48,13 +49,13 @@ QVariantMap objectMap(QObject *object,const char *property) {
     const auto value=object->property(property);
     return value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toMap() : value.toMap();
 }
-bool clickItem(QQuickWindow *window,QQuickItem *item) {
+bool clickItem(QQuickWindow *window,QQuickItem *item,Qt::KeyboardModifiers modifiers=Qt::NoModifier) {
     if (!item || !item->isVisible() || !item->isEnabled()) return false;
     const auto point=item->mapToScene(QPointF(item->width()/2,item->height()/2));
     const auto global=window->mapToGlobal(point.toPoint());
-    QMouseEvent press(QEvent::MouseButtonPress,point,point,global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QMouseEvent press(QEvent::MouseButtonPress,point,point,global,Qt::LeftButton,Qt::LeftButton,modifiers);
     QCoreApplication::sendEvent(window,&press);
-    QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease,point,point,global,Qt::LeftButton,Qt::NoButton,modifiers);
     QCoreApplication::sendEvent(window,&release); return true;
 }
 bool revealItem(QQuickItem *item) {
@@ -640,6 +641,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto gradingUiTrace=std::make_shared<QJsonObject>();
     auto exportNamesTrace=std::make_shared<QJsonObject>();
     auto exportSelectionTrace=std::make_shared<QJsonObject>();
+    auto photoSelectionTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -759,9 +761,62 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             const auto sort = window->findChild<QQuickItem *>(QStringLiteral("catalogSortMode"));
             state->catalogDatesPassed = state->catalogDatesPassed && sort && sort->property("count").toInt() == 6;
             if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath + ".versions.png");
-            resizeForSmoke(window,1540,920);
-            window->setProperty("workspaceIndex", 1);
-            state->phase=21;
+            const int copy=controller->currentIndex(),other=copy==0?1:0;
+            const auto rowsNow=controller->library();
+            photoSelectionTrace->insert("copy_index",copy);photoSelectionTrace->insert("other_index",other);
+            photoSelectionTrace->insert("copy_key",rowsNow.value(copy).toMap()["id"].toString());
+            photoSelectionTrace->insert("other_key",rowsNow.value(other).toMap()["id"].toString());
+            photoSelectionTrace->insert("copy_state",controller->gpuPlan(true).state.toJson());
+            photoSelectionTrace->insert("copy_history",QJsonArray::fromVariantList(controller->editHistory()));
+            state->phase=2050;
+        } else if(state->phase>=2050 && state->phase<=2056) {
+            const int copy=photoSelectionTrace->value("copy_index").toInt(),other=photoSelectionTrace->value("other_index").toInt();
+            const auto copyKey=photoSelectionTrace->value("copy_key").toString(),otherKey=photoSelectionTrace->value("other_key").toString();
+            const auto selected=[&](int index,bool pair=false) {
+                const auto indices=controller->selectedIndices();
+                return controller->currentIndex()==index && (pair
+                    ? indices.size()==2 && indices.contains(copy) && indices.contains(other)
+                    : indices==QVariantList{index});
+            };
+            if(state->phase==2050) {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"libraryPhoto-"+QString::number(other)));
+                photoSelectionTrace->insert("grid_pointer",clicked&&selected(other));
+                photoSelectionTrace->insert("other_state",controller->gpuPlan(true).state.toJson());
+                photoSelectionTrace->insert("other_history",QJsonArray::fromVariantList(controller->editHistory()));
+            }else if(state->phase==2051) {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"libraryPhoto-"+QString::number(copy)),Qt::ControlModifier);
+                photoSelectionTrace->insert("grid_control_selection",clicked&&selected(copy,true));
+            }else if(state->phase==2052) {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"libraryPhoto-"+QString::number(other)),Qt::ShiftModifier);
+                // The current two endpoints must both survive the visible-order range.
+                const auto indices=controller->selectedIndices();
+                photoSelectionTrace->insert("grid_shift_selection",clicked&&controller->currentIndex()==other&&indices.contains(copy)&&indices.contains(other));
+            }else if(state->phase==2053) {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"libraryPhoto-"+QString::number(copy)));
+                photoSelectionTrace->insert("grid_single_selection",clicked&&selected(copy));
+                if(!screenshotPath.isEmpty())saveScreenshot(screenshotPath+".photo-selection.png");
+            }else if(state->phase==2054) {
+                resizeForSmoke(window,1540,920);window->setProperty("workspaceIndex",1);
+            }else if(state->phase==2055) {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"sidebarPhoto-"+QString::number(other)));
+                photoSelectionTrace->insert("sidebar_pointer",clicked&&selected(other));
+                photoSelectionTrace->insert("other_intent_history_unchanged",controller->gpuPlan(true).state.toJson()==photoSelectionTrace->value("other_state").toObject()
+                    &&QJsonArray::fromVariantList(controller->editHistory())==photoSelectionTrace->value("other_history").toArray());
+            }else {
+                const bool clicked=clickItem(window,visualChild(window->contentItem(),"filmstripPhoto-"+QString::number(copy)));
+                photoSelectionTrace->insert("filmstrip_pointer",clicked&&selected(copy));
+                photoSelectionTrace->insert("copy_intent_history_unchanged",controller->gpuPlan(true).state.toJson()==photoSelectionTrace->value("copy_state").toObject()
+                    &&QJsonArray::fromVariantList(controller->editHistory())==photoSelectionTrace->value("copy_history").toArray());
+                int canonical=0;bool valid=true;
+                for(const auto &entry:ActionTrace::instance().snapshot()) {
+                    const auto row=entry.toObject();const auto key=row["photo_key"].toString();
+                    if(row["action"].toString()!="select_photo"||(key!=copyKey&&key!=otherKey))continue;
+                    valid=valid&&row["command"].toObject()==QJsonObject{{"command","photo.select"},{"photo",key}};++canonical;
+                }
+                photoSelectionTrace->insert("canonical_trace",valid&&canonical>=6);photoSelectionTrace->insert("canonical_trace_count",canonical);
+                state->phase=21;return;
+            }
+            ++state->phase;
         } else if(state->phase==21) {
             if(auto *canvas=window->findChild<QQuickItem *>(QStringLiteral("photoCanvas"))) {
                 canvas->setProperty("zoom", 1.0);
@@ -1351,7 +1406,11 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                                "preview_valid","selection_changed","preview_stays_frozen","continue_enabled","cancel_clicked",
                                "closed","edits_unchanged","no_export_queued"})
             exportSelectionOk=exportSelectionOk && exportSelectionTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && (!gpuRequired || controller->gpuActive());
+        bool photoSelectionOk=true;
+        for(const auto *key:{"grid_pointer","grid_control_selection","grid_shift_selection","grid_single_selection","sidebar_pointer","filmstrip_pointer",
+                            "other_intent_history_unchanged","copy_intent_history_unchanged","canonical_trace"})
+            photoSelectionOk=photoSelectionOk&&photoSelectionTrace->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -1381,6 +1440,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_export_naming_trace"]=*exportNamesTrace;
         report["ui_selected_export_passed"]=exportSelectionOk;
         report["ui_selected_export_trace"]=*exportSelectionTrace;
+        report["ui_photo_selection_passed"]=photoSelectionOk;
+        report["ui_photo_selection_trace"]=*photoSelectionTrace;
         report["smoke_phase_milestones"]=*phaseMilestones;
         report["smoke_deadline_ms"]=SmokePhasePolicy::DeadlineMs;
         report["smoke_final_image_ready"]=ready;

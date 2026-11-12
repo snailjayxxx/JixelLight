@@ -52,8 +52,9 @@ bool CommandSession::compile(const QJsonObject &manifest,const QString &baseDire
             photo.history.initialize(photo.state);current=command["photo"].toString();photos.insert(current,std::move(photo));continue;
         }
         if(name=="photo.select"){
-            if(!fields(command,{"command","photo"})||!command["photo"].isString()||!photos.contains(command["photo"].toString()))return reject("Unknown photo identity");
-            current=command["photo"].toString();continue;
+            QString photo;
+            if(!CommandRegistry::decodePhotoSelection(command,&photo)||!photos.contains(photo))return reject("Unknown or invalid photo identity");
+            current=photo;continue;
         }
         if(current.isEmpty())return reject("Import/select a photo before editing or exporting");
         auto &photo=photos[current];
@@ -103,7 +104,7 @@ QJsonObject CommandSession::schema(){
         {"shared_controls",CommandRegistry::controlSchema()},
         {"commands",QJsonArray{
             QJsonObject{{"name","photo.import"},{"fields",QJsonArray{"photo","source"}},{"operation","register a transient photo and select it; no file copy/catalog write"}},
-            QJsonObject{{"name","photo.select"},{"fields",QJsonArray{"photo"}}},
+            CommandRegistry::photoSelectionSchema(),
             QJsonObject{{"name","edit.batch"},{"fields",QJsonArray{"commands"}}},
             QJsonObject{{"name","history.undo"},{"fields",QJsonArray{}}},QJsonObject{{"name","history.redo"},{"fields",QJsonArray{}}},
             QJsonObject{{"name","export.run"},{"fields",QJsonArray{"destination"}},{"optional_fields",QJsonArray{"space"}},{"default_space","srgb"},{"operation","freeze current state; publish after complete plan validates; never overwrite"}}}}};

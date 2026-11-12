@@ -113,6 +113,7 @@ Rectangle {
             delegate: Rectangle {
                 required property int index
                 required property var modelData
+                objectName: "sidebarPhoto-" + index
                 width: photoList.width
                 height: 38
                 radius: 4
@@ -141,10 +142,10 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.LeftButton
-                    onClicked: root.controller.selectPhoto(index)
+                    onClicked: root.controller.executeCommand({command: "photo.select", photo: modelData.id})
                     onDoubleClicked: {
-                        root.controller.selectPhoto(index)
-                        root.editRequested()
+                        if (root.controller.executeCommand({command: "photo.select", photo: modelData.id}))
+                            root.editRequested()
                     }
                 }
             }

@@ -64,6 +64,25 @@ private slots:
         QVERIFY(!CommandSession::compile(manifest({photoImport(),save()}),base(),unavailable,&result,&error));QVERIFY(error.contains("offline"));
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","look.mode"},{"mode","as_shot"}},save()}),base(),source(),&result));
     }
+    void photoSelectionUsesSharedExactIdentityValidationAndPreservesCallerOutput(){
+        CommandSession result;QString error;int reads=0;
+        const auto context=[&](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{++reads;return CommandRegistry::LookContext{};};
+        const auto select=QJsonObject{{"command","photo.select"},{"photo","A"}};
+        QVERIFY(CommandSession::compile(manifest({photoImport("A"),ev(.5),photoImport("a","peer.png"),ev(-.5),select,save()}),base(),context,&result,&error));
+        QCOMPARE(reads,2);QCOMPARE(result.exports[0].photo,QString("A"));QCOMPARE(result.exports[0].state.exposure,.5);
+        const auto previous=result.exports[0].state.toJson();
+        for(const auto &bad:QList<QJsonObject>{
+            {{"command","photo.select"},{"photo",true}},{{"command","photo.select"},{"photo",""}},
+            {{"command","photo.select"},{"photo",QString(32769,'a')}},{{"command","photo.select"},{"photo","A"},{"index",0}},
+            {{"command","photo.select"},{"photo","a"}},{{"command","photo.select"},{"photo","0"}}}) {
+            QVERIFY(!CommandSession::compile(manifest({photoImport("A"),save(),bad}),base(),context,&result,&error));
+            QCOMPARE(result.exports[0].state.toJson(),previous);QCOMPARE(result.exports[0].photo,QString("A"));
+        }
+        QString key="unchanged";QVERIFY(!CommandRegistry::decodePhotoSelection({{"command","photo.select"},{"photo",1}},&key));QCOMPARE(key,QString("unchanged"));
+        const auto description=CommandRegistry::schema()["workflow_commands"].toArray();QCOMPARE(description.size(),1);
+        QCOMPARE(description[0].toObject(),CommandRegistry::photoSelectionSchema());
+        QCOMPARE(CommandSession::schema()["commands"].toArray()[1].toObject(),CommandRegistry::photoSelectionSchema());
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

@@ -681,6 +681,17 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="photo.select") {
+        QString key;
+        if(!CommandRegistry::decodePhotoSelection(object,&key)||xmpMergeBusy())return false;
+        int selected=-1;
+        for(int i=0;i<m_photos.size();++i)if(m_photos[i].storageKey()==key) {
+            if(selected>=0)return false;
+            selected=i;
+        }
+        if(selected<0)return false;
+        selectPhoto(selected);return m_currentIndex==selected;
+    }
     if(!CommandRegistry::isControlCommand(object["command"].toString()))return executeEditCommand(command);
     CommandRegistry::Control control;QString error;
     if(!CommandRegistry::decodeControl(object,&control,&error)) {
@@ -1316,7 +1327,13 @@ void PhotoController::selectPhoto(int index) {
     emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
     emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
     emit activityChanged();
-    ActionTrace::instance().record("select_photo", {{"index", index}, {"file", currentFile()}, {"raw", currentIsRaw()}, {"photo_epoch", qint64(m_photoEpoch)}});
+    QVariantMap selectionTrace{{"index",index},{"file",currentFile()},{"raw",currentIsRaw()},{"photo_epoch",qint64(m_photoEpoch)}};
+    if(hasImage()) {
+        const auto key=m_photos[index].storageKey();
+        selectionTrace["photo_key"]=key;
+        selectionTrace["command"]=QVariantMap{{"command","photo.select"},{"photo",key}};
+    }
+    ActionTrace::instance().record("select_photo",selectionTrace);
     if (currentSourceAvailable()) loadCurrent();
     else {
         m_scopesUpdating=false; setBusy(false);

@@ -103,6 +103,12 @@ private slots:
         controller.selectPhoto(otherIndex);QVERIFY(controller.confirmRelink(requestId));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
         QCOMPARE(controller.relinkPreview().value("status").toString(),QString("complete"));QCOMPARE(controller.currentFile(),other);
         const auto after=controller.library();int members=0;for(const auto &row:after)if(row.toMap().value("path")==moved){++members;QVERIFY(row.toMap().value("available").toBool());}QCOMPARE(members,2);
+        QVERIFY(!controller.executeCommand({{"command","photo.select"},{"photo",original}}));QCOMPARE(controller.currentFile(),other);
+        QVERIFY(controller.executeCommand({{"command","photo.select"},{"photo",copyKey}}));QCOMPARE(controller.currentFile(),moved);
+        QCOMPARE(controller.library()[controller.currentIndex()].toMap()["id"].toString(),copyKey);
+        QVERIFY(controller.executeCommand({{"command","photo.select"},{"photo",moved}}));QCOMPARE(controller.currentFile(),moved);
+        QCOMPARE(controller.library()[controller.currentIndex()].toMap()["id"].toString(),moved);
+        QVERIFY(controller.executeCommand({{"command","photo.select"},{"photo",other}}));QCOMPARE(controller.currentIndex(),otherIndex);
         QSignalSpy finished(&controller,&PhotoController::exportFinished);QVERIFY(controller.exportVersions({copyKey},QUrl::fromLocalFile(out),"display-p3",92,"png","{version}"));
         QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QCOMPARE(finished[0][1].toInt(),0);
         QImage actual(out+"/Copy.png");QVERIFY(!actual.isNull());const auto expected=reference(moved,state);

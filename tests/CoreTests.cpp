@@ -25,6 +25,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <thread>
 #include <vector>
 
 #include "app/PhotoController.h"
@@ -6973,6 +6974,77 @@ private slots:
         CommandRegistry::Control output;output.kind=CommandRegistry::ControlKind::Redo;
         QVERIFY(!CommandRegistry::decodeControl({{"command","history.undo"},{"extra",1}},&output));
         QCOMPARE(output.kind,CommandRegistry::ControlKind::Redo);
+    }
+
+    void desktopPhotoSelectionKeepsExactVersionIdentityAcrossRemovalAndReopen() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        const auto a=dir.filePath("a.png"),b=dir.filePath("b.png");QVERIFY(image.save(a));QVERIFY(image.save(b));
+        QFile original(a);QVERIFY(original.open(QIODevice::ReadOnly));const auto bytes=original.readAll();original.close();
+        PhotoController c(nullptr);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Selection"));
+        QVERIFY(c.importFile(QUrl::fromLocalFile(a)));QVERIFY(c.importFile(QUrl::fromLocalFile(b)));
+        const auto keyA=c.library()[0].toMap()["id"].toString(),keyB=c.library()[1].toMap()["id"].toString();
+        const auto choose=[&](const QString &key){return c.executeCommand({{"command","photo.select"},{"photo",key}});};
+        QVERIFY(choose(keyA));c.setExposure(.5);c.finishInteraction();
+        const auto stateA=c.gpuPlan(true).state.toJson();const auto historyA=c.editHistory();
+        QVERIFY(choose(keyB));c.setExposure(-.25);c.finishInteraction();
+        const auto stateB=c.gpuPlan(true).state.toJson();const auto historyB=c.editHistory();
+        QVERIFY(choose(keyA));QVERIFY(c.createVirtualCopy("Remove"));c.setExposure(-.75);c.finishInteraction();
+        const auto removed=c.library()[2].toMap()["id"].toString();
+        QVERIFY(c.createVirtualCopy("Keep"));c.setExposure(1.25);c.finishInteraction();
+        const auto kept=c.library()[3].toMap()["id"].toString();QVERIFY(kept!=keyA&&kept!=removed);
+        QVERIFY(c.executeCommand({{"command","history.undo"}}));QVERIFY(c.canRedo());
+        const auto stateKept=c.gpuPlan(true).state.toJson();const auto historyKept=c.editHistory();
+        QVERIFY(choose(removed));QVERIFY(c.removeCurrentVirtualCopy());QCOMPARE(c.library().size(),3);
+        QVERIFY(choose(keyB));QVERIFY(choose(kept));QCOMPARE(c.currentIndex(),2);
+        QCOMPARE(c.currentFile(),a);QCOMPARE(c.gpuPlan(true).state.toJson(),stateKept);QCOMPARE(c.editHistory(),historyKept);QVERIFY(c.canRedo());
+        QVERIFY(!choose(removed));QCOMPARE(c.currentIndex(),2);QCOMPARE(c.editHistory(),historyKept);
+        QVERIFY(choose(keyA));QCOMPARE(c.gpuPlan(true).state.toJson(),stateA);QCOMPARE(c.editHistory(),historyA);
+        QVERIFY(choose(keyB));QCOMPARE(c.gpuPlan(true).state.toJson(),stateB);QCOMPARE(c.editHistory(),historyB);
+        QVERIFY(c.flushEdits());PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        QVERIFY(reopened.executeCommand({{"command","photo.select"},{"photo",kept}}));
+        QCOMPARE(reopened.currentFile(),a);QCOMPARE(reopened.gpuPlan(true).state.toJson(),stateKept);QCOMPARE(reopened.editHistory(),historyKept);
+        QVERIFY(reopened.executeCommand({{"command","history.redo"}}));QCOMPARE(reopened.exposure(),1.25);
+        bool canonical=false;
+        for(const auto &entry:ActionTrace::instance().snapshot()) {
+            const auto row=entry.toObject();if(row["action"]!="select_photo"||row["photo_key"]!=kept)continue;
+            QCOMPARE(row["command"].toObject(),(QJsonObject{{"command","photo.select"},{"photo",kept}}));canonical=true;
+        }
+        QVERIFY(canonical);QVERIFY(original.open(QIODevice::ReadOnly));QCOMPARE(original.readAll(),bytes);
+    }
+
+    void desktopPhotoSelectionRejectsInvalidStaleAndOffThreadRequestsWithoutMutation() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        const auto a=dir.filePath(QString::fromUtf8("owned-\xc3\xa9.png")),b=dir.filePath("peer.png");QVERIFY(image.save(a));QVERIFY(image.save(b));
+        PhotoController c(nullptr);QVERIFY(!c.executeCommand({{"command","photo.select"},{"photo",a}}));
+        QVERIFY(c.importFile(QUrl::fromLocalFile(a)));QVERIFY(c.importFile(QUrl::fromLocalFile(b)));
+        const auto keyA=c.library()[0].toMap()["id"].toString(),keyB=c.library()[1].toMap()["id"].toString();
+        QVERIFY(c.executeCommand({{"command","photo.select"},{"photo",keyB}}));c.setExposure(.3);c.finishInteraction();
+        QVERIFY(c.setPhotoSelection({0,1}));const auto before=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto selection=c.selectedIndices();
+        QSignalSpy indexChanged(&c,&PhotoController::currentIndexChanged),libraryChanged(&c,&PhotoController::libraryChanged);
+        const auto otherNormalization=keyA.normalized(keyA==keyA.normalized(QString::NormalizationForm_C)?QString::NormalizationForm_D:QString::NormalizationForm_C);
+        QVERIFY(otherNormalization!=keyA);
+        const QList<QJsonObject> invalid{
+            {{"command","photo.select"}},{{"command","photo.select"},{"photo",true}},{{"command","photo.select"},{"photo",0}},
+            {{"command","photo.select"},{"photo",QJsonArray{keyA}}},{{"command","photo.select"},{"photo",""}},
+            {{"command","photo.select"},{"photo",QString(32769,'a')}},{{"command","photo.select"},{"photo",keyA},{"extra",true}},
+            {{"command","photo.select"},{"photo",keyA.toUpper()}},{{"command","photo.select"},{"photo",otherNormalization}},
+            {{"command","photo.select"},{"photo","0"}},{{"command","photo.select"},{"photo","removed-version"}},
+            {{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},QJsonObject{{"command","photo.select"},{"photo",keyA}}}}}};
+        QString output="sentinel";
+        for(const auto &command:invalid) {
+            QVERIFY(!c.executeCommand(command.toVariantMap()));QCOMPARE(c.currentIndex(),1);QCOMPARE(c.gpuPlan(true).state.toJson(),before);
+            QCOMPARE(c.editHistory(),history);QCOMPARE(c.selectedIndices(),selection);
+            output="sentinel";
+            if(command["command"]=="photo.select"&&!CommandRegistry::decodePhotoSelection(command,&output))QCOMPARE(output,QString("sentinel"));
+        }
+        bool foreignThread=false,accepted=true;
+        std::thread worker([&]{foreignThread=QThread::currentThread()!=c.thread();
+            accepted=c.executeCommand({{"command","photo.select"},{"photo",keyA}});});
+        worker.join();QVERIFY(foreignThread);QVERIFY(!accepted);QCOMPARE(indexChanged.size(),0);QCOMPARE(libraryChanged.size(),0);
+        QVERIFY(CommandRegistry::decodePhotoSelection({{"command","photo.select"},{"photo",keyA}},&output));QCOMPARE(output,keyA);
+        QVERIFY(QFile::remove(a));QVERIFY(c.executeCommand({{"command","photo.select"},{"photo",keyA}}));
+        QVERIFY(c.hasImage());QVERIFY(!c.currentSourceAvailable());QCOMPARE(c.currentIndex(),0);
+        QVERIFY(c.prepareToClose());QVERIFY(!c.executeCommand({{"command","photo.select"},{"photo",keyB}}));QCOMPARE(c.currentIndex(),0);
     }
 
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
