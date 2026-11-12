@@ -746,6 +746,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(QStringList{"edit.copy","edit.paste","edit.sync"}.contains(object["command"].toString()))return executeAdjustmentTransfer(object)>=0;
     if(object["command"].toString().startsWith("preset."))return executePresetCommand(object);
     if(QStringList{"version.create","version.rename","version.remove"}.contains(object["command"].toString()))return executeVirtualVersion(object);
     if(object["command"].toString()=="catalog.curate")return executeCurationCommand(object);
@@ -1595,12 +1596,31 @@ void PhotoController::resetAdjustments() {
 }
 
 void PhotoController::copyAdjustments() {
+    executeAdjustmentTransfer({{"command","edit.copy"}});
+}
+bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+    return executeAdjustmentTransfer({{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}})>=0;
+}
+int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+    return executeAdjustmentTransfer({{"command","edit.sync"},{"groups",QJsonArray::fromStringList(groups)},{"target",selectedOnly?"selection":"all"}});
+}
+int PhotoController::executeAdjustmentTransfer(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return -1;
+    CommandRegistry::Transfer request;if(!CommandRegistry::decodeAdjustmentTransfer(command,&request))return -1;
+    switch(request.kind) {
+        case CommandRegistry::TransferKind::Copy:if(!hasImage())return -1;copyAdjustmentsImpl();return 0;
+        case CommandRegistry::TransferKind::Paste:return pasteAdjustmentGroupsImpl(request.groups)?0:-1;
+        case CommandRegistry::TransferKind::Sync:return syncAdjustmentGroupsImpl(request.groups,request.selectedOnly);
+    }
+    return -1;
+}
+void PhotoController::copyAdjustmentsImpl() {
     if (!hasImage()) return;
     m_clipboard = m_photos[m_currentIndex].state;
     m_clipboardName = m_photos[m_currentIndex].name;
     m_hasClipboard = true;
     emit adjustmentClipboardChanged();
-    ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()}});
+    ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()},{"photo_key",m_photos[m_currentIndex].storageKey()},{"command",QJsonObject{{"command","edit.copy"}}}});
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
 }
 
@@ -1608,13 +1628,14 @@ void PhotoController::pasteAdjustments() {
     pasteAdjustmentGroups(AdjustmentTransfer::allGroups());
 }
 
-bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+bool PhotoController::pasteAdjustmentGroupsImpl(const QStringList &groups) {
     if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
     auto *state=mutableCurrentState();
     AdjustmentTransfer::apply(*state,m_clipboard,groups);
     m_photos[m_currentIndex].history.finish();
-    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName}});
+    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName},
+        {"command",QJsonObject{{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}}}});
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
     return true;
 }
@@ -1623,7 +1644,7 @@ void PhotoController::syncAdjustmentsToAll() {
     syncAdjustmentGroups(AdjustmentTransfer::allGroups(),false);
 }
 
-int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+int PhotoController::syncAdjustmentGroupsImpl(const QStringList &groups,bool selectedOnly) {
     if (xmpMergeBusy()) return -1;
     if (!currentSourceAvailable() || !AdjustmentTransfer::validGroups(groups)) return -1;
     for(int i=0;i<m_photos.size();++i)
@@ -1643,7 +1664,8 @@ int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selecte
         changedKeys.append(photo.storageKey());
     }
     ActionTrace::instance().record("sync_adjustments",QVariantMap{{"source_key",sourceKey},{"groups",groups},
-        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()}});
+        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()},
+        {"command",QJsonObject{{"command","edit.sync"},{"groups",QJsonArray::fromStringList(groups)},{"target",selectedOnly?"selection":"all"}}}});
     if (!changedKeys.isEmpty()) emit libraryChanged();
     setStatus(uiText("同步完成：更新 %1 / %2 个目标版本", "Sync complete: updated %1 / %2 target version(s)").arg(changedKeys.size()).arg(targets));
     // A failed write remains pending via the existing per-photo retry path.

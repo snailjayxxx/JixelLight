@@ -186,6 +186,17 @@ private slots:
             QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::presetSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void controllerClipboardAndSelectionTransfersCannotEnterOfflineSessions(){
+        CommandRegistry::Transfer request;QVERIFY(CommandRegistry::decodeAdjustmentTransfer({{"command","edit.paste"}},&request));QCOMPARE(request.groups,AdjustmentTransfer::allGroups());
+        for(const auto &bad:QList<QJsonObject>{{{"command","edit.copy"},{"groups",QJsonArray{}}},{{"command","edit.paste"},{"groups",QJsonArray{"exposure","exposure"}}},{{"command","edit.sync"},{"target","current"}}}) {
+            request.groups={"sentinel"};QVERIFY(!CommandRegistry::decodeAdjustmentTransfer(bad,&request));QCOMPARE(request.groups,QStringList{"sentinel"});
+        }
+        for(const auto &name:QStringList{"edit.copy","edit.paste","edit.sync"}) {
+            QJsonObject command{{"command",name}};if(name=="edit.sync")command["target"]="all";QVERIFY(CommandRegistry::decodeAdjustmentTransfer(command,&request));
+            CommandSession result;result.photoCount=83;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,83);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::adjustmentTransferSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

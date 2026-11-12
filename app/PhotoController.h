@@ -848,6 +848,10 @@ private:
     bool executeCurationCommand(const QJsonObject &command);
     bool executeVirtualVersion(const QJsonObject &command);
     bool executePresetCommand(const QJsonObject &command);
+    int executeAdjustmentTransfer(const QJsonObject &command);
+    void copyAdjustmentsImpl();
+    bool pasteAdjustmentGroupsImpl(const QStringList &groups);
+    int syncAdjustmentGroupsImpl(const QStringList &groups,bool selectedOnly);
     bool saveNamedPresetImpl(const QString &name);
     bool applyNamedPresetImpl(const QString &name);
     bool removeNamedPresetImpl(const QString &name);

@@ -1088,6 +1088,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 const auto row=value.toObject();if(row["action"].toString()=="copy_import_started"&&row["command"].toObject()==copyCommand)commandTraced=true;
             }
             copyTrace->insert("canonical_command_traced",commandTraced);
+            const auto beforeTransfer=controller->gpuPlan(true).state.toJson();const auto beforeTransferHistory=controller->editHistory();
+            controller->copyAdjustments();
+            transferTrace->insert("clipboard_noop",controller->hasAdjustmentClipboard()&&controller->pasteAdjustmentGroups({"exposure"})
+                &&controller->gpuPlan(true).state.toJson()==beforeTransfer&&controller->editHistory()==beforeTransferHistory);
             transferTrace->insert("source_index",controller->currentIndex());
             transferTrace->insert("source_exposure",controller->exposure());
             controller->setPhotoSelection({controller->currentIndex(),controller->library().size()-1});
@@ -1113,6 +1117,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if (state->phase==49 && ready) {
             auto *dialog=window->findChild<QObject *>(QStringLiteral("adjustmentTransferDialog"));
             transferTrace->insert("closed",dialog && !dialog->property("visible").toBool());
+            const QJsonArray expectedTransfer{QJsonObject{{"command","edit.copy"}},QJsonObject{{"command","edit.paste"},{"groups",QJsonArray{"exposure"}}},
+                QJsonObject{{"command","edit.sync"},{"groups",QJsonArray{"exposure"}},{"target","selection"}}};
+            QJsonArray tracedTransfers;for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto command=value.toObject()["command"].toObject();if(expectedTransfer.contains(command))tracedTransfers.append(command);
+            }
+            bool transferCommands=true;for(const auto &command:expectedTransfer)transferCommands=transferCommands&&tracedTransfers.contains(command);
+            transferTrace->insert("canonical_commands",transferCommands);transferTrace->insert("commands",tracedTransfers);
             controller->selectPhoto(controller->library().size()-1);
             const auto expected=transferTrace->value("source_exposure").toDouble();
             const bool changed=controller->exposure()==expected && controller->saturation()==0 && controller->canUndo();
@@ -1438,7 +1449,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool()
             && copyTrace->value("canonical_command_traced").toBool();
         bool transferOk=true;
-        for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
+        for (const auto &key : {"clipboard_noop","canonical_commands","opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
             transferOk=transferOk && transferTrace->value(key).toBool();
         bool correctionOk=true;
         for (const auto *key : {"toggle_revealed","opened","controls_found","perspective_revealed","perspective_clicked","perspective_changed","ca_revealed","ca_clicked","ca_changed","other_values_set","full_scopes","undo_restored"})
