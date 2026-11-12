@@ -48,6 +48,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/color-mask-owned
         build/luminance-mask-owned
         build/point-color-owned
         build/native-brush-monitor.json
@@ -77,6 +78,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-color-mask-*
         gui-luminance-mask-*
         gui-point-color-*
         diagnostic-validation/
@@ -288,6 +290,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestLuminanceMaskEvidence.py' -v
           python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-gpu.json gpu --expected-commit "$STAMP"
+      - name: Color range mask picker, durable selection and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestColorMaskEvidence.py' -v
+          python tools/ValidateColorMask.py "$EXE" gui-color-mask-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateColorMask.py "$EXE" gui-color-mask-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -732,6 +747,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/color-mask-owned
         build/luminance-mask-owned
         build/point-color-owned
         build/native-brush-monitor.json
@@ -759,6 +775,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-color-mask-*
         gui-luminance-mask-*
         gui-point-color-*
         diagnostic-validation/
@@ -890,6 +907,15 @@ jobs:
           python -m unittest discover -s tests -p 'TestLuminanceMaskEvidence.py' -v
           python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-gpu.json gpu --expected-commit "$STAMP"
+      - name: Color range mask picker, durable selection and exact export
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestColorMaskEvidence.py' -v
+          python tools/ValidateColorMask.py "$EXE" gui-color-mask-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateColorMask.py "$EXE" gui-color-mask-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |

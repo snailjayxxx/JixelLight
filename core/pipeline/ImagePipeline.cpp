@@ -382,6 +382,12 @@ inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
     if (kernel.flags.w > 0.0f) v = scale(v, kernel.flags.w); // camera/model exposure zero-point only
     return v;
 }
+inline Vec3 applyColorMask(Vec3 v,Vec3 input,const ColorKernel &kernel) {
+    if(!kernel.plan.colorMaskActive())return v;
+    const auto lab=linearSrgbToOklab(multiply(kernel.plan.data.data()+ProcessingPlan::Working0,input));
+    const float gain=ColorRangeMask::gain({lab.L,lab.a,lab.b},kernel.plan.colorMaskParameters());
+    return gain==1?v:scale(v,gain);
+}
 inline Vec3 applyLuminanceMask(Vec3 v,Vec3 input,const ColorKernel &kernel) {
     if(!kernel.plan.luminanceMaskActive())return v;
     const float gain=LuminanceRangeMask::gain(proPhotoToXyzD50(input).y,kernel.plan.luminanceMaskParameters());
@@ -552,6 +558,7 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     const Vec3 selectionInput=v;
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
     // Preexisting vignette diagnostic boundary includes this spatial gain.
+    v=applyColorMask(v,selectionInput,kernel);
     v=applyLuminanceMask(v,selectionInput,kernel);
     v=applyLinearMask(v,kernel,x,y);
     v=applyRadialMask(v,kernel,x,y);
@@ -709,6 +716,12 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    const float colorMaskEv=finite(state.colorMaskExposure,0,-3,3);
+    if(state.colorMaskEnabled&&colorMaskEv!=0) {
+        const Oklab lab{finite(state.colorMaskLab[0],AdjustmentState::DefaultPointColorLab[0],-4,4),finite(state.colorMaskLab[1],AdjustmentState::DefaultPointColorLab[1],-4,4),finite(state.colorMaskLab[2],AdjustmentState::DefaultPointColorLab[2],-4,4)};
+        plan.data[ColorMask]={colorMaskEv,lab.L,std::hypot(lab.a,lab.b),wrapHue(std::atan2(lab.b,lab.a)*180.f/kPi)};
+        plan.data[ColorMaskRange]={finite(state.colorMaskHueRange,45,1,180),finite(state.colorMaskChromaRange,.12,.001,1),finite(state.colorMaskLightnessRange,.4,.001,1),state.colorMaskInverted?1.f:0.f};
+    }
     if(state.luminanceMaskEnabled&&state.luminanceMaskExposure!=0) {
         plan.data[LuminanceMask]={float(state.luminanceMaskExposure),float(state.luminanceMaskLower),float(state.luminanceMaskUpper),float(state.luminanceMaskFeather)};
         plan.data[LuminanceMaskOptions]={state.luminanceMaskInverted?1.f:0.f,0,0,0};
@@ -1289,6 +1302,9 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("source_fp32_bounds",double(MaxLinearInputMagnitude));
         result.stages.insert("note","CPU FP32 scene input, quantized RGBA64 display output; RAW decoder not yet FP32");
     }
+    result.stages.insert("color_mask",QJsonObject{{"settings",plan.state.toJson().value("colorMask")},{"backend","cpu-reference"},{"enabled",plan.state.colorMaskEnabled},{"active",plan.colorMaskActive()},
+        {"selection_oklab",QJsonArray{plan.state.colorMaskLab[0],plan.state.colorMaskLab[1],plan.state.colorMaskLab[2]}},
+        {"selection","post-spatial source Oklab before WB/global/local exposure"},{"output_boundary","Vignette"},{"monitor_icc",false}});
     result.stages.insert("luminance_mask",QJsonObject{{"backend","cpu-reference"},{"active",plan.luminanceMaskActive()},{"enabled",plan.state.luminanceMaskEnabled},
         {"lower_y",plan.state.luminanceMaskLower},{"upper_y",plan.state.luminanceMaskUpper},{"feather_y",plan.state.luminanceMaskFeather},
         {"exposure_ev",plan.state.luminanceMaskExposure},{"inverted",plan.state.luminanceMaskInverted},
@@ -1311,7 +1327,13 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     return result;
 }
 
-std::optional<PointColor::Lab> ImagePipeline::samplePointColor(const QImage &source,const ProcessingPlan &requestedPlan,const QPoint &point,const CancelToken &token) {
+std::optional<PointColor::Lab> ImagePipeline::samplePointColor(const QImage &source,const ProcessingPlan &plan,const QPoint &point,const CancelToken &token) {
+    return sampleWorkingColor(source,plan,point,false,token);
+}
+std::optional<PointColor::Lab> ImagePipeline::sampleMaskColor(const QImage &source,const ProcessingPlan &plan,const QPoint &point,const CancelToken &token) {
+    return sampleWorkingColor(source,plan,point,true,token);
+}
+std::optional<PointColor::Lab> ImagePipeline::sampleWorkingColor(const QImage &source,const ProcessingPlan &requestedPlan,const QPoint &point,bool inputMask,const CancelToken &token) {
     if(source.isNull()||!source.rect().contains(point)||cancelled(token))return {};
     auto plan=requestedPlan;
     if(!plan.validSpatialSettings()||!BrushMaskDocument::validDocument(plan.state.brushMasks)
@@ -1348,10 +1370,13 @@ std::optional<PointColor::Lab> ImagePipeline::samplePointColor(const QImage &sou
         alpha=q.alpha()/65535.f;v=inputLinear(q,kernel);
     }
     if(alpha<=1.e-20f)return {};
-    const Vec3 selectionInput=v;v=wbExposure(v,kernel);v=applyLuminanceMask(v,selectionInput,kernel);v=applyLinearMask(v,kernel,point.x(),point.y());v=applyRadialMask(v,kernel,point.x(),point.y());
-    if(brushEv!=0)v=scale(v,std::exp2(brushEv));
-    v=applyVignette(v,kernel,point.x(),point.y());v=applyHighlightRecovery(v,kernel.tone.y);
-    v=toneNeutral(v,kernel);v=perceptualLook(v,kernel,false);
+    if(inputMask)v=multiply(plan.data.data()+ProcessingPlan::Working0,v);
+    else {
+        const Vec3 selectionInput=v;v=wbExposure(v,kernel);v=applyColorMask(v,selectionInput,kernel);v=applyLuminanceMask(v,selectionInput,kernel);v=applyLinearMask(v,kernel,point.x(),point.y());v=applyRadialMask(v,kernel,point.x(),point.y());
+        if(brushEv!=0)v=scale(v,std::exp2(brushEv));
+        v=applyVignette(v,kernel,point.x(),point.y());v=applyHighlightRecovery(v,kernel.tone.y);
+        v=toneNeutral(v,kernel);v=perceptualLook(v,kernel,false);
+    }
     const auto lab=linearSrgbToOklab(v);
     if(cancelled(token)||!std::isfinite(lab.L)||!std::isfinite(lab.a)||!std::isfinite(lab.b)
         ||std::max({std::abs(lab.L),std::abs(lab.a),std::abs(lab.b)})>4)return {};

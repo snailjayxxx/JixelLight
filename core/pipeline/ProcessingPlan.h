@@ -1,6 +1,7 @@
 #pragma once
 #include "core/pipeline/ImagePipeline.h"
 #include "core/pipeline/LuminanceRangeMask.h"
+#include "core/pipeline/ColorRangeMask.h"
 #include <array>
 #include <algorithm>
 #include <QRectF>
@@ -27,7 +28,7 @@ struct ProcessingPlan {
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
                 GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
-                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, PointColorAdjust=58, PointColorCenter=59, PointColorRange=60, LuminanceMask=61, LuminanceMaskOptions=62, SlotCount=63 };
+                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, PointColorAdjust=58, PointColorCenter=59, PointColorRange=60, LuminanceMask=61, LuminanceMaskOptions=62, ColorMask=63, ColorMaskRange=64, SlotCount=65 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -88,6 +89,17 @@ struct ProcessingPlan {
         if(d.z==0&&d.w==0)return true;
         return denoiseActive()&&std::isfinite(d.z)&&std::isfinite(d.w)&&d.z>=1&&d.w>=1
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
+    }
+    bool colorMaskActive() const {return data[ColorMask].x!=0;}
+    ColorRangeMask::Parameters colorMaskParameters() const {
+        if(!colorMaskActive())return {};
+        const auto c=data[ColorMask],r=data[ColorMaskRange];
+        return {{true,0,0,0,c.y,c.z,c.w,r.x,r.y,r.z},c.x,r.w==1};
+    }
+    bool validColorMask() const {
+        const auto c=data[ColorMask],r=data[ColorMaskRange];
+        if(c.x==0)return c.y==0&&c.z==0&&c.w==0&&r.x==0&&r.y==0&&r.z==0&&r.w==0;
+        return (r.w==0||r.w==1)&&ColorRangeMask::valid(colorMaskParameters());
     }
     bool luminanceMaskActive() const {return data[LuminanceMask].x!=0;}
     LuminanceRangeMask::Parameters luminanceMaskParameters() const {
@@ -172,7 +184,7 @@ struct ProcessingPlan {
             density=std::min(float(size.width())/(c.z*frame.z),float(size.height())/(c.w*frame.w));
         return {c.x,std::clamp(24.f*density,0.f,24.f),0,0};
     }
-    bool validSpatialSettings() const {return validLuminanceMask()&&validPointColor()&&validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
+    bool validSpatialSettings() const {return validColorMask()&&validLuminanceMask()&&validPointColor()&&validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
     Float4 denoise(const QSize &size) const {
         const auto d=data[Denoise],frame=data[FrameRect];if(!denoiseActive()||!validDenoise())return {};
         float density=1;
@@ -199,4 +211,4 @@ private:
     friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 1008);
+static_assert(sizeof(ProcessingPlan::data) == 1040);

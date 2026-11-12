@@ -98,7 +98,7 @@ bool validState(const AdjustmentState &state) {
     return AdjustmentState::fromJson(json).toJson()==json
         &&GeometryState::validJson(state.geometry.toJson())
         &&AdjustmentState::validRadialMaskJson(json)&&AdjustmentState::validLinearMaskJson(json)
-        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validLuminanceMaskJson(json)&&AdjustmentState::validPointColorJson(json)&&AdjustmentState::validDehazeJson(json)&&AdjustmentState::validTextureJson(json)&&AdjustmentState::validClarityJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
+        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validColorMaskJson(json)&&AdjustmentState::validLuminanceMaskJson(json)&&AdjustmentState::validPointColorJson(json)&&AdjustmentState::validDehazeJson(json)&&AdjustmentState::validTextureJson(json)&&AdjustmentState::validClarityJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
         &&AdjustmentState::validColorGradingJson(json);
 }
 bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provided) {

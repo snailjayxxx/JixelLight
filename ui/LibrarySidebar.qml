@@ -24,6 +24,8 @@ Rectangle {
             vignette_adjustment: ["暗角", "Vignette"], vignette_reset: ["重置暗角", "Reset vignette"],
             grain_adjustment: ["胶片颗粒", "Film grain"], grain_reset: ["重置颗粒", "Reset grain"],
             sharpen_adjustment: ["独立锐化", "Independent sharpen"], sharpen_reset: ["重置独立锐化", "Reset independent sharpen"],
+            color_mask_adjustment: ["颜色范围蒙版","Color range mask"],color_mask_toggle: ["切换颜色蒙版","Toggle color mask"],
+            color_mask_select: ["选择蒙版颜色","Select mask color"],color_mask_invert: ["反选颜色范围","Invert color range"],color_mask_reset: ["重置颜色蒙版","Reset color mask"],
             luminance_mask_adjustment: ["亮度范围蒙版", "Luminance mask"], luminance_mask_toggle: ["切换亮度蒙版", "Toggle luminance mask"],
             luminance_mask_invert: ["反选亮度范围", "Invert luminance range"], luminance_mask_reset: ["重置亮度蒙版", "Reset luminance mask"],
             point_color_adjustment: ["点颜色", "Point Color"], point_color_enable: ["启用点颜色", "Enable Point Color"],

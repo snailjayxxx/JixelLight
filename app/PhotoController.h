@@ -130,6 +130,8 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double clarityAmount READ clarityAmount WRITE setClarityAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseLuma READ denoiseLuma WRITE setDenoiseLuma NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseChroma READ denoiseChroma WRITE setDenoiseChroma NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QVariantMap colorMask READ colorMask NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QColor colorMaskColor READ colorMaskColor NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap luminanceMask READ luminanceMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap linearMask READ linearMask NOTIFY adjustmentsChanged)
     Q_PROPERTY(QVariantMap radialMask READ radialMask NOTIFY adjustmentsChanged)
@@ -319,7 +321,7 @@ public:
     void setPointColorEnabled(bool);
     Q_INVOKABLE bool selectPointColor(const QColor &);
     Q_INVOKABLE bool pickPointColor(double x,double y,double width,double height);
-    Q_INVOKABLE void requestPointColorPicker() {emit pointColorPickerRequested();}
+    Q_INVOKABLE void requestPointColorPicker();
     Q_INVOKABLE void resetPointColor();
     void setPointColorHue(double);void setPointColorSaturation(double);void setPointColorLuminance(double);
     void setPointColorHueRange(double);void setPointColorChromaRange(double);void setPointColorLightnessRange(double);
@@ -327,6 +329,18 @@ public:
     double textureAmount() const;
     double clarityAmount() const;
     double denoiseLuma() const; double denoiseChroma() const;
+    QVariantMap colorMask() const {
+        const auto s=currentState();return {{"enabled",s.colorMaskEnabled},{"inverted",s.colorMaskInverted},{"exposure",s.colorMaskExposure},
+            {"hueRange",s.colorMaskHueRange},{"chromaRange",s.colorMaskChromaRange},{"lightnessRange",s.colorMaskLightnessRange}};
+    }
+    QColor colorMaskColor() const;
+    Q_INVOKABLE bool selectColorMask(const QColor &);
+    Q_INVOKABLE bool pickColorMask(double x,double y,double width,double height);
+    Q_INVOKABLE void requestColorMaskPicker();
+    Q_INVOKABLE bool setColorMaskEnabled(bool);
+    Q_INVOKABLE bool setColorMaskInverted(bool);
+    Q_INVOKABLE bool setColorMaskParameter(const QString &,double);
+    Q_INVOKABLE bool resetColorMask();
     QVariantMap luminanceMask() const {
         const auto s=currentState();return {{"enabled",s.luminanceMaskEnabled},{"inverted",s.luminanceMaskInverted},
             {"exposure",s.luminanceMaskExposure},{"lower",s.luminanceMaskLower},{"upper",s.luminanceMaskUpper},{"feather",s.luminanceMaskFeather}};
@@ -518,6 +532,7 @@ public:
 signals:
     void pipelineDescriptionChanged();
     void pointColorPickerRequested();
+    void colorMaskPickerRequested();
     void xmpMergeChanged();
     void brushDrawingChanged();
     void brushCapacityWarningChanged();
@@ -666,7 +681,7 @@ private:
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;
     std::unique_ptr<LatestJob<RenderRequest, RenderedFrame>> m_render;
-    struct PointColorRequest {QImage source;ProcessingPlan plan;QPoint point;quint64 photo=0,generation=0,revision=0;};
+    struct PointColorRequest {QImage source;ProcessingPlan plan;QPoint point;quint64 photo=0,generation=0,revision=0;bool inputMask=false;};
     std::unique_ptr<LatestJob<PointColorRequest,std::optional<PointColor::Lab>>> m_pointColorJob;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
     std::unique_ptr<LatestJob<ScopePlotRequest, ScopePlotResult>> m_plotJob;
@@ -795,6 +810,8 @@ private:
     void showXmpMergeProgress(const QString &message, bool cancelable);
     void showXmpMergeReview(ProjectDatabase::XmpReviewRecord);
     void commitXmpMergeAfterVerification();
+    bool pickWorkingColor(double x,double y,double width,double height,bool inputMask);
+    bool applyColorMaskCommand(const QJsonObject &,const QString &,bool finish);
     bool applyLuminanceMaskCommand(const QJsonObject &,const QString &,bool finish);
     void persistAndApply(const QString &action, const QVariantMap &details = {});
     void setStatus(const QString &message);

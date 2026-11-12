@@ -1,7 +1,7 @@
 #version 440
 #extension GL_GOOGLE_include_directive : require
 layout(local_size_x=16,local_size_y=16,local_size_z=1) in;
-layout(std140,binding=0) uniform Plan {vec4 p[63];};
+layout(std140,binding=0) uniform Plan {vec4 p[65];};
 layout(rgba32f,binding=1) readonly uniform image2D sourceImage;
 layout(rgba32f,binding=2) writeonly uniform image2D guideImage;
 #include "denoise_common.glsl"

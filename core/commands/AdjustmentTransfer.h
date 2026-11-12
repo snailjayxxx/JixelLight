@@ -31,7 +31,7 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         || (groups.contains("masks") &&
             (!BrushMaskDocument::validDocument(source.brushMasks)
              || !AdjustmentState::validBrushMaskJson(source.toJson())
-             || !AdjustmentState::validLuminanceMaskJson(source.toJson()))))
+             || !AdjustmentState::validColorMaskJson(source.toJson()) || !AdjustmentState::validLuminanceMaskJson(source.toJson()))))
         return false;
     for (const auto &group : groups) {
         if (group=="exposure") target.exposure=source.exposure;
@@ -57,6 +57,8 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
         }
         else if (group=="detail") {target.sharpenAmount=source.sharpenAmount;target.sharpenRadius=source.sharpenRadius;target.denoiseLuma=source.denoiseLuma;target.denoiseChroma=source.denoiseChroma;target.clarityAmount=source.clarityAmount;target.textureAmount=source.textureAmount;target.dehazeAmount=source.dehazeAmount;}
         else if (group=="masks") {
+            target.colorMaskEnabled=source.colorMaskEnabled;target.colorMaskInverted=source.colorMaskInverted;target.colorMaskLab=source.colorMaskLab;
+            target.colorMaskExposure=source.colorMaskExposure;target.colorMaskHueRange=source.colorMaskHueRange;target.colorMaskChromaRange=source.colorMaskChromaRange;target.colorMaskLightnessRange=source.colorMaskLightnessRange;
             target.luminanceMaskEnabled=source.luminanceMaskEnabled;target.luminanceMaskInverted=source.luminanceMaskInverted;
             target.luminanceMaskExposure=source.luminanceMaskExposure;target.luminanceMaskLower=source.luminanceMaskLower;
             target.luminanceMaskUpper=source.luminanceMaskUpper;target.luminanceMaskFeather=source.luminanceMaskFeather;

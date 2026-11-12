@@ -58,7 +58,7 @@ private slots:
         auto s=edits();s.luminanceMaskEnabled=false;QCOMPARE(ImagePipeline::processWithPlan(source,plan(s)),identity);
         s.luminanceMaskEnabled=true;s.luminanceMaskExposure=0;QCOMPARE(ImagePipeline::processWithPlan(source,plan(s)),identity);
         const auto base=plan(),active=plan(edits());QVERIFY(active.validLuminanceMask());QVERIFY(active.luminanceMaskActive());
-        QCOMPARE(sizeof(base.data),std::size_t(1008));for(int i=0;i<61;++i)QCOMPARE(QByteArrayView(reinterpret_cast<const char *>(&base.data[i]),16),QByteArrayView(reinterpret_cast<const char *>(&active.data[i]),16));
+        QCOMPARE(sizeof(base.data),std::size_t(1040));for(int i=0;i<61;++i)QCOMPARE(QByteArrayView(reinterpret_cast<const char *>(&base.data[i]),16),QByteArrayView(reinterpret_cast<const char *>(&active.data[i]),16));
         for(int slot=61;slot<63;++slot) {auto bad=base;bad.data[slot].y=1;QVERIFY(!bad.validLuminanceMask());QVERIFY(ImagePipeline::processWithPlan(source,bad).isNull());}
         s=edits();s.luminanceMaskLower=1.5;QVERIFY(!plan(s).validLuminanceMask());QVERIFY(ImagePipeline::processWithPlan(source,plan(s)).isNull());
     }
