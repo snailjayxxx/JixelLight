@@ -89,6 +89,10 @@ struct ProcessingPlan {
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
     }
     bool pointColorActive() const {return data[PointColorAdjust].x!=0;}
+    bool pointColorNeedsCpuPrecision() const {
+        const auto range=data[PointColorRange];
+        return pointColorActive()&&(range.y<.003f||range.z<.003f);
+    }
     PointColor::Parameters pointColorParameters() const {
         const auto a=data[PointColorAdjust],c=data[PointColorCenter],r=data[PointColorRange];
         return {a.x>.5f,a.y,a.z,a.w,c.x,c.y,c.z,r.x,r.y,r.z};
