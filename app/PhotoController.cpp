@@ -1149,7 +1149,7 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
     markPhotoDirty(entry); m_catalogDateTimer.start();
     queueSourceIdentity(entry.path);
     ActionTrace::instance().record("import_file", {{"file", entry.path}, {"raw", isRaw},
-        {"photo_key",entry.storageKey()},{"command",QVariantMap{{"command","photo.import"},{"source",entry.path}}}});
+        {"photo_key",entry.storageKey()},{"command",QJsonObject{{"command","photo.import"},{"source",entry.path}}}});
 
     if (notifyImmediately) {
         emit libraryChanged();
