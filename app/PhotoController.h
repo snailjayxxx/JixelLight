@@ -75,7 +75,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentIndexChanged)
     Q_PROPERTY(QString currentFormat READ currentFormat NOTIFY currentIndexChanged)
     Q_PROPERTY(bool currentIsRaw READ currentIsRaw NOTIFY currentIndexChanged)
-    Q_PROPERTY(QString pipelineDescription READ pipelineDescription NOTIFY currentIndexChanged)
+    Q_PROPERTY(QString pipelineDescription READ pipelineDescription NOTIFY pipelineDescriptionChanged)
     Q_PROPERTY(QVariantMap currentMetadata READ currentMetadata NOTIFY currentMetadataChanged)
     Q_PROPERTY(QString projectName READ projectName NOTIFY projectChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY projectChanged)
@@ -506,6 +506,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void pipelineDescriptionChanged();
     void pointColorPickerRequested();
     void xmpMergeChanged();
     void brushDrawingChanged();

@@ -46,6 +46,9 @@
 
 PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget)
     : QObject(parent),m_provider(provider),m_brushBudget(brushBudget?std::move(brushBudget):BrushRenderBudget::sharedDefault()) {
+    connect(this,&PhotoController::currentIndexChanged,this,&PhotoController::pipelineDescriptionChanged);
+    connect(this,&PhotoController::currentMetadataChanged,this,&PhotoController::pipelineDescriptionChanged);
+    connect(this,&PhotoController::languageChanged,this,&PhotoController::pipelineDescriptionChanged);
     connect(this,&PhotoController::currentIndexChanged,this,&PhotoController::cancelBrushStroke);
     connect(this,&PhotoController::adjustmentsChanged,this,&PhotoController::cancelBrushStroke);
     connect(this,&PhotoController::cropEditingChanged,this,&PhotoController::cancelBrushStroke);
@@ -127,9 +130,19 @@ QString PhotoController::currentFormat() const {
 bool PhotoController::currentIsRaw() const { return hasImage() && m_photos[m_currentIndex].raw; }
 QString PhotoController::pipelineDescription() const {
     if (!hasImage()) return QString();
-    return currentIsRaw()
-        ? QStringLiteral("RAW → Camera WB/Matrix → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview")
-        : QStringLiteral("Input ICC (sRGB fallback) → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview");
+    if(currentIsRaw())return QStringLiteral("RAW → Camera WB/Matrix → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview");
+    const auto interpretation=m_currentMetadata.value(QStringLiteral("inputColorInterpretation")).toString();
+    QString input;
+    if(m_fullSource.isNull())
+        input=uiText(QStringLiteral("输入色彩配置尚未就绪"),QStringLiteral("Input color profile pending"));
+    else if(interpretation==QStringLiteral("assumed-srgb"))
+        input=uiText(QStringLiteral("输入色彩配置不可用，按 sRGB 解释"),QStringLiteral("Input profile unavailable; assumed sRGB"));
+    else if(interpretation==QStringLiteral("provided-profile")) {
+        const auto name=m_currentMetadata.value(QStringLiteral("inputColorProfileDescription")).toString();
+        input=uiText(QStringLiteral("输入色彩配置："),QStringLiteral("Input color profile: "))
+            +(name.isEmpty()?uiText(QStringLiteral("未命名配置"),QStringLiteral("Unnamed profile")):name);
+    } else input=uiText(QStringLiteral("输入色彩配置未知"),QStringLiteral("Input color profile unavailable"));
+    return input+QStringLiteral(" → Linear ProPhoto RGB → Perceptual Color/HSL → Tone/RGB Curves → ICC sRGB Preview");
 }
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }

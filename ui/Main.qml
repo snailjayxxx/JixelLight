@@ -809,7 +809,7 @@ ApplicationWindow {
             ToolButton { visible: photoController.copyImportBusy; text: window.t("取消复制", "Cancel copy"); onClicked: photoController.cancelCopyImport() }
             CheckBox { text: "GPU"; checked: photoController.gpuEnabled; onToggled: photoController.gpuEnabled = checked }
             Label { text: photoController.statusMessage; textFormat: Text.PlainText; color: "#9eabb9"; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: 11 }
-            Label { visible: photoController.hasImage; text: photoController.pipelineDescription; color: "#687b8d"; elide: Text.ElideMiddle; Layout.maximumWidth: 500; font.pixelSize: 10 }
+            Label { visible: photoController.hasImage; text: photoController.pipelineDescription; textFormat: Text.PlainText; color: "#687b8d"; elide: Text.ElideMiddle; Layout.maximumWidth: 500; font.pixelSize: 10 }
             Label { visible: photoController.hasImage; text: photoController.currentFormat; color: photoController.currentIsRaw ? "#7ee2c3" : "#8ca1b5"; font.bold: true; font.pixelSize: 11 }
         }
     }

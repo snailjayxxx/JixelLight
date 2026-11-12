@@ -7490,6 +7490,38 @@ private slots:
         QVERIFY(!metadata.model.isEmpty());
     }
 
+    void inputColorFactsUseDecodedProfileBeforeWorkingConversionAndSurviveCaches() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(64,48,QImage::Format_RGBA64);image.fill(QColor(31,93,177,129));
+        QColorSpace input(QColorSpace::DisplayP3);input.setDescription("<b>Tagged P3</b>");image.setColorSpace(input);
+        const auto tagged=dir.filePath("tagged.png"),plain=dir.filePath("plain.png");QVERIFY(image.save(tagged));image.setColorSpace({});QVERIFY(image.save(plain));
+        const auto bytes=[](const QString &path){QFile f(path);return f.open(QIODevice::ReadOnly)?f.readAll():QByteArray{};};const auto beforeTagged=bytes(tagged),beforePlain=bytes(plain);
+        SourceCache cache(8*1024*1024,dir.filePath("cache"));const auto first=loadSource(cache,tagged,{});QVERIFY2(!first.image.isNull(),qPrintable(first.error));
+        QCOMPARE(first.metadata.value("inputColorInterpretation").toString(),QString("provided-profile"));QCOMPARE(first.metadata.value("inputColorProfileDescription").toString(),QString("<b>Tagged P3</b>"));
+        const auto expectedHash=QString::fromLatin1(QCryptographicHash::hash(input.iccProfile(),QCryptographicHash::Sha256).toHex());QCOMPARE(first.metadata.value("inputColorProfileSha256").toString(),expectedHash);
+        const auto working=QColorSpace(QColorSpace::ProPhotoRgb).withTransferFunction(QColorSpace::TransferFunction::Linear);QCOMPARE(first.image.colorSpace(),working);
+        QImageReader taggedReader(tagged);taggedReader.setAutoTransform(true);const auto expected=taggedReader.read().convertedToColorSpace(working,QImage::Format_RGBA64);
+        QCOMPARE(first.image.size(),expected.size());QCOMPARE(first.image.format(),expected.format());
+        for(int y=0;y<expected.height();++y)QCOMPARE(QByteArray(reinterpret_cast<const char *>(first.image.constScanLine(y)),first.image.width()*8),QByteArray(reinterpret_cast<const char *>(expected.constScanLine(y)),expected.width()*8));
+        QCOMPARE(first.image.text("JixelLightWorkingSpace"),QString("Linear ProPhoto RGB"));
+        const auto warm=loadSource(cache,tagged,{});QCOMPARE(warm.image.cacheKey(),first.image.cacheKey());QCOMPARE(warm.metadata,first.metadata);
+        const auto disk=cache.diskPreview(first.key);QVERIFY(!disk.image.isNull());QCOMPARE(disk.metadata.value("inputColorInterpretation"),first.metadata.value("inputColorInterpretation"));QCOMPARE(disk.metadata.value("inputColorProfileSha256").toString(),expectedHash);
+        const auto assumed=loadSourceFresh(plain,{});QVERIFY(!assumed.image.isNull());QCOMPARE(assumed.metadata.value("inputColorInterpretation").toString(),QString("assumed-srgb"));
+        QCOMPARE(assumed.metadata.value("inputColorProfileSha256").toString(),QString::fromLatin1(QCryptographicHash::hash(QColorSpace(QColorSpace::SRgb).iccProfile(),QCryptographicHash::Sha256).toHex()));
+        QCOMPARE(bytes(tagged),beforeTagged);QCOMPARE(bytes(plain),beforePlain);
+    }
+    void controllerInputProfileCaptionRefreshesAfterLoadAndLanguageWithoutRendering() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(64,48,QImage::Format_RGBA64);image.fill(QColor(31,93,177,129));
+        QColorSpace profile(QColorSpace::DisplayP3);profile.setDescription("<b>Tagged P3</b>");image.setColorSpace(profile);
+        const auto tagged=dir.filePath("tagged.png"),plain=dir.filePath("plain.png");QVERIFY(image.save(tagged));image.setColorSpace({});QVERIFY(image.save(plain));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.setLanguage("en_US");c.setViewport(160,120,1,0,.5,.5);QSignalSpy captions(&c,&PhotoController::pipelineDescriptionChanged);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(tagged)));QVERIFY(c.pipelineDescription().contains("pending"));
+        QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering()&&c.currentMetadata().value("inputColorInterpretation").toString()=="provided-profile",10000);
+        QVERIFY(c.pipelineDescription().contains("Input color profile: <b>Tagged P3</b>"));QVERIFY(!c.pipelineDescription().contains("assumed sRGB"));QVERIFY(captions.count()>=2);
+        const auto revision=c.renderRevision();const auto count=captions.count();c.setLanguage("zh_CN");QVERIFY(captions.count()>count);QVERIFY(c.pipelineDescription().contains(QStringLiteral("输入色彩配置：")));QCOMPARE(c.renderRevision(),revision);
+        c.setLanguage("en_US");QVERIFY(c.importFile(QUrl::fromLocalFile(plain)));c.selectPhoto(1);QVERIFY(c.pipelineDescription().contains("pending"));
+        QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering()&&c.currentMetadata().value("inputColorInterpretation").toString()=="assumed-srgb",10000);
+        QVERIFY(c.pipelineDescription().contains("Input profile unavailable; assumed sRGB"));QVERIFY(!c.pipelineDescription().contains("Tagged P3"));
+    }
     void controllerImportsRealRawIntoWideGamutPipeline() {
         const QString rawPath = qEnvironmentVariable("JIXELLIGHT_TEST_RAW");
         if (rawPath.isEmpty()) QSKIP("JIXELLIGHT_TEST_RAW is not set");
