@@ -190,6 +190,7 @@ jobs:
           test -f "$EXE"
           STAMP=$(git rev-parse --short HEAD)
           python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python -m unittest discover -s tests -p 'TestPngUnfilter.py' -v
           python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
       - name: Manual tangential geometry complete photo App
@@ -789,6 +790,7 @@ jobs:
           test -f "$EXE"
           STAMP=$(git rev-parse --short HEAD)
           python -m unittest discover -s tests -p 'TestRawPressureQpaEvidence.py' -v
+          python -m unittest discover -s tests -p 'TestPngUnfilter.py' -v
           python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateRawPressureQpa.py "$EXE" gui-raw-qpa-gpu.json gpu --expected-commit "$STAMP"
       - name: Manual tangential geometry complete photo App

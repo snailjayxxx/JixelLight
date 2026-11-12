@@ -102,6 +102,44 @@ def inflate(data, maximum):
     assert not decoder.unused_data and not decoder.unconsumed_tail
     return result
 
+def _unfilter_row(row, previous, bpp, kind, lane_mask):
+    # PNG filter arithmetic is byte-wise, including16-bit samples. The widened
+    # integer lanes keep carries separate; every addition is reduced modulo256.
+    if kind == 0:
+        return row
+    if kind in (1, 2):
+        packed = int.from_bytes(row.decode('latin1').encode('utf-16le'), 'little')
+        if kind == 1:
+            shift, limit = bpp * 16, len(row) * 16
+            while shift < limit:
+                packed = (packed + (packed << shift)) & lane_mask
+                shift *= 2
+        else:
+            above = int.from_bytes(previous.decode('latin1').encode('utf-16le'), 'little')
+            packed = (packed + above) & lane_mask
+        return bytearray(packed.to_bytes(len(row) * 2, 'little')[::2])
+    if kind == 3:
+        for x in range(bpp):
+            row[x] = (row[x] + previous[x] // 2) & 255
+        for x in range(bpp, len(row)):
+            row[x] = (row[x] + (row[x - bpp] + previous[x]) // 2) & 255
+        return row
+    # Preserve Paeth's left/above/upper-left tie order exactly. Flat neighbors
+    # have an exact shortcut; other bytes still use the complete predictor.
+    for x in range(bpp):
+        row[x] = (row[x] + previous[x]) & 255
+    for x in range(bpp, len(row)):
+        a, b, c = row[x - bpp], previous[x], previous[x - bpp]
+        if b == c:
+            prediction = a
+        elif a == c:
+            prediction = b
+        else:
+            pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+            prediction = a if pa <= pb and pa <= pc else b if pb <= pc else c
+        row[x] = (row[x] + prediction) & 255
+    return row
+
 def png(path):
     data = path.read_bytes()
     assert data[:8] == b'\x89PNG\r\n\x1a\n' and len(data) < 32 * 1024 * 1024
@@ -153,6 +191,7 @@ def png(path):
     encoded = inflate(image, expected)
     assert len(encoded) == expected
     previous = bytearray(stride)
+    lane_mask = int.from_bytes(b'\xff\0' * stride, 'little')
     pixels = bytearray()
     filters = [0] * 5
     for y in range(h):
@@ -160,22 +199,7 @@ def png(path):
         assert kind <= 4
         filters[kind] += 1
         row = bytearray(encoded[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
-        for x in range(stride):
-            a = row[x - bpp] if x >= bpp else 0
-            b = previous[x]
-            c = previous[x - bpp] if x >= bpp else 0
-            prediction = 0
-            if kind == 1:
-                prediction = a
-            elif kind == 2:
-                prediction = b
-            elif kind == 3:
-                prediction = (a + b) // 2
-            elif kind == 4:
-                estimate = a + b - c
-                distances = (abs(estimate-a), abs(estimate-b), abs(estimate-c))
-                prediction = (a, b, c)[distances.index(min(distances))]
-            row[x] = (row[x] + prediction) & 255
+        row = _unfilter_row(row, previous, bpp, kind, lane_mask)
         pixels.extend(row)
         previous = row
     native = bytearray(pixels)
