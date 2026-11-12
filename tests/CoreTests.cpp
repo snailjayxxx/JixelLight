@@ -18,6 +18,7 @@
 #include <QUuid>
 #include <QUrl>
 #include <exiv2/exiv2.hpp>
+#include <lcms2.h>
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
@@ -7416,6 +7417,24 @@ private slots:
         QCOMPARE(total, qulonglong(100));
     }
 
+    void proPhotoIccDecodesActualRendererTransferIncludingDarkValues() {
+        const auto bytes=ColorManagement::iccProfile(ColorManagement::OutputSpace::ProPhotoRgb);
+        auto profile=cmsOpenProfileFromMem(bytes.constData(),cmsUInt32Number(bytes.size()));QVERIFY(profile);
+        const auto cleanup=qScopeGuard([&]{cmsCloseProfile(profile);});
+        for(const auto tag:{cmsSigRedTRCTag,cmsSigGreenTRCTag,cmsSigBlueTRCTag}) {
+            const auto curve=static_cast<const cmsToneCurve *>(cmsReadTag(profile,tag));QVERIFY(curve);
+            for(float v:{.001f,.01f,.02f,.1f,.5f})QVERIFY(std::abs(cmsEvalToneCurveFloat(curve,v)-std::pow(v,1.8f))<1.e-6f);
+        }
+        const float levels[]{.0001f,.0005f,.001f,.01f,.18f,.5f};QImage source(6,1,QImage::Format_RGBA32FPx4);
+        for(int x=0;x<6;++x){auto *p=reinterpret_cast<float *>(source.bits())+4*x;p[0]=p[1]=p[2]=levels[x];p[3]=.375f;}
+        const auto rendered=ImagePipeline::processWithPlan(source,ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::ProPhotoRgb,false,0));QVERIFY(!rendered.isNull());
+        const auto curve=static_cast<const cmsToneCurve *>(cmsReadTag(profile,cmsSigRedTRCTag));
+        for(int x=0;x<6;++x){const auto pixel=reinterpret_cast<const QRgba64 *>(rendered.constBits())[x];QVERIFY(std::abs(cmsEvalToneCurveFloat(curve,float(pixel.red())/65535)-levels[x])<4.e-5f);}
+        QTemporaryDir directory;const auto path=directory.filePath("gamma1.8-prophoto.png");QString error;
+        QVERIFY2(exportRaster(source,{},path,ColorManagement::OutputSpace::ProPhotoRgb,RasterFormat::Png16,92,{},&error),qPrintable(error));
+        const QImage restored(path);QVERIFY(!restored.isNull());QCOMPARE(restored.format(),QImage::Format_RGBA64);QCOMPARE(restored.colorSpace().iccProfile(),bytes);
+        for(int x=0;x<6;++x)QCOMPARE(reinterpret_cast<const QRgba64 *>(restored.constBits())[x],reinterpret_cast<const QRgba64 *>(rendered.constBits())[x]);
+    }
     void namedOutputProfilesAreValidRgbIcc() {
         for (const QString &key : ColorManagement::keys()) {
             const auto space = ColorManagement::fromKey(key);
