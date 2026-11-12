@@ -356,6 +356,7 @@ struct ColorKernel {
     float grainWeight;
     ColorManagement::OutputSpace kernelOutput;
     std::shared_ptr<const LookLut> lut;
+    PointColor::Parameters pointColor;
     explicit ColorKernel(const ProcessingPlan &p,const QSize &sourceSize) : plan(p),
         tone(p.data[ProcessingPlan::Tone]), tonal(p.data[ProcessingPlan::Tonal]),
         color(p.data[ProcessingPlan::Color]), flags(p.data[ProcessingPlan::Flags]),
@@ -363,7 +364,7 @@ struct ColorKernel {
         vignette(p.data[ProcessingPlan::Vignette]), pixelMap(p.pixelMap(sourceSize)),
         centerX((sourceSize.width()-1)*.5f),centerY((sourceSize.height()-1)*.5f),
         grainWeight(FilmGrain::attenuation(std::max(std::abs(pixelMap.z),std::abs(pixelMap.w))*.5f*p.data[ProcessingPlan::Grain].y)),
-        kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr) {}
+        kernelOutput(ColorManagement::OutputSpace(int(lum.w))), lut(style.w>0?p.state.look.lut:nullptr),pointColor(p.pointColorParameters()) {}
 };
 inline Vec3 inputLinear(Vec3 v, const ColorKernel &kernel) {
     if (kernel.plan.encoding == ImagePipeline::InputEncoding::SRgb) {
@@ -436,7 +437,7 @@ inline Vec3 toneNeutral(Vec3 v, const ColorKernel &kernel) {
     if (flags.w > 0.0f) v = applyRawNeutralTone(v);
     return v;
 }
-inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
+inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel,bool withPointColor=true) {
     const auto &plan=kernel.plan; const auto style=kernel.style;
     v = multiply(plan.data.data()+ProcessingPlan::Working0,v);
     if (kernel.color.z != 0) v = applyPerceptualColor(v,plan);
@@ -490,6 +491,12 @@ inline Vec3 perceptualLook(Vec3 v, const ColorKernel &kernel) {
         lab.a += luminanceWeight*(a/total);
         lab.b += luminanceWeight*(b/total);
         v=oklabToLinearSrgb(lab);
+    }
+    if(withPointColor&&plan.pointColorActive()) {
+        const auto lab=linearSrgbToOklab(v);
+        const auto adjusted=PointColor::apply({lab.L,lab.a,lab.b},kernel.pointColor);
+        if(adjusted.L!=lab.L||adjusted.a!=lab.a||adjusted.b!=lab.b)
+            v=oklabToLinearSrgb({adjusted.L,adjusted.a,adjusted.b});
     }
     return v;
 }
@@ -695,6 +702,16 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    const float pointHue=finite(state.pointColorHue,0,-180,180),pointSat=finite(state.pointColorSaturation,0,-100,100)*.01f,
+        pointLuma=finite(state.pointColorLuminance,0,-100,100)*.003f;
+    if(state.pointColorEnabled&&(pointHue!=0||pointSat!=0||pointLuma!=0)) {
+        const Oklab lab{finite(state.pointColorLab[0],AdjustmentState::DefaultPointColorLab[0],-4,4),
+            finite(state.pointColorLab[1],AdjustmentState::DefaultPointColorLab[1],-4,4),
+            finite(state.pointColorLab[2],AdjustmentState::DefaultPointColorLab[2],-4,4)};
+        plan.data[PointColorAdjust]={1,pointHue,pointSat,pointLuma};
+        plan.data[PointColorCenter]={lab.L,std::hypot(lab.a,lab.b),wrapHue(std::atan2(lab.b,lab.a)*180.f/kPi),0};
+        plan.data[PointColorRange]={finite(state.pointColorHueRange,45,1,180),finite(state.pointColorChromaRange,.12,.001,1),finite(state.pointColorLightnessRange,.4,.001,1),0};
+    }
     plan.data[Dehaze]={finite(state.dehazeAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Texture]={finite(state.textureAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Clarity]={finite(state.clarityAmount,0,-100,100)*.01f,0,0,0};
@@ -1261,6 +1278,10 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("source_fp32_bounds",double(MaxLinearInputMagnitude));
         result.stages.insert("note","CPU FP32 scene input, quantized RGBA64 display output; RAW decoder not yet FP32");
     }
+    result.stages.insert("point_color",QJsonObject{{"backend","cpu-reference"},{"enabled",plan.state.pointColorEnabled},
+        {"active",plan.pointColorActive()},{"selection_oklab",QJsonArray{plan.state.pointColorLab[0],plan.state.pointColorLab[1],plan.state.pointColorLab[2]}},
+        {"order","after HSL, Sony styling, B&W and grading; before target gamut/transfer, LUT, grain and detail"},
+        {"output_boundary","PerceptualLook"},{"monitor_icc",false}});
     result.stages.insert("quantized_color",quantized);
     result.stages.insert("detail_output",StageGraph::outputFingerprint(result.image));
     const auto detail=plan.data[ProcessingPlan::LookDetail];
@@ -1274,6 +1295,52 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     return result;
 }
 
+std::optional<PointColor::Lab> ImagePipeline::samplePointColor(const QImage &source,const ProcessingPlan &requestedPlan,const QPoint &point,const CancelToken &token) {
+    if(source.isNull()||!source.rect().contains(point)||cancelled(token))return {};
+    auto plan=requestedPlan;
+    if(!plan.validSpatialSettings()||!BrushMaskDocument::validDocument(plan.state.brushMasks)
+        ||!resolveDehazeAirlight(source,plan,token))return {};
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    if(floating&&!validFloatSource(source,token))return {};
+    float brushEv=0;
+    if(BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)) {
+        const QRect pixel(point,QSize(1,1));
+        if(!preflightAdmittedBrush(source.size(),plan,pixel,1,token,nullptr))return {};
+        const auto f=plan.data[ProcessingPlan::FrameRect];BrushMaskTileRaster::FramePlan frame;
+        if(!BrushMaskTileRaster::detail::planFrameBounded(plan.state.brushMasks,source.width(),source.height(),
+            {point.x(),point.y(),1,1},&frame,token.get(),{f.x,f.y,f.z,f.w},
+            BrushMaskTileRaster::MaxCandidateIndexReferences,std::size_t(BrushRenderRequest::MaxSourcePixels))||frame.tiles.size()!=1)return {};
+        if(frame.tiles.front().candidateVisits!=0) {
+            BrushMaskTileRaster::ExposureOutput mask;
+            if(!BrushMaskTileRaster::exposureOnly(frame,0,&mask,token.get())||mask.weightedExposureEv.size()!=1)return {};
+            brushEv=mask.weightedExposureEv[0];if(!std::isfinite(brushEv)||std::abs(brushEv)>8)return {};
+        }
+    }
+    const ColorKernel kernel(plan,source.size());
+    const QRect expanded=expandedColorRegion(source.size(),plan,QRect(point,QSize(1,1)));
+    if(expanded.isEmpty())return {};
+    const QImage crop=source.copy(expanded);
+    const QImage input=plan.spatialInputActive()?prepareSpatialInput(crop,kernel,plan,source.size(),token,false)
+        :floating?crop:rgba64Source(crop,token);
+    if(input.isNull()||cancelled(token))return {};
+    const QPoint local=point-expanded.topLeft();Vec3 v;float alpha=0;
+    if(plan.spatialInputActive()||floating) {
+        const auto *q=reinterpret_cast<const float *>(input.constScanLine(local.y()))+4*local.x();alpha=q[3];
+        v=plan.spatialInputActive()?Vec3{q[0],q[1],q[2]}:inputLinear(Vec3{q[0],q[1],q[2]},kernel);
+    } else {
+        const auto q=reinterpret_cast<const QRgba64 *>(input.constScanLine(local.y()))[local.x()];
+        alpha=q.alpha()/65535.f;v=inputLinear(q,kernel);
+    }
+    if(alpha<=1.e-20f)return {};
+    v=wbExposure(v,kernel);v=applyLinearMask(v,kernel,point.x(),point.y());v=applyRadialMask(v,kernel,point.x(),point.y());
+    if(brushEv!=0)v=scale(v,std::exp2(brushEv));
+    v=applyVignette(v,kernel,point.x(),point.y());v=applyHighlightRecovery(v,kernel.tone.y);
+    v=toneNeutral(v,kernel);v=perceptualLook(v,kernel,false);
+    const auto lab=linearSrgbToOklab(v);
+    if(cancelled(token)||!std::isfinite(lab.L)||!std::isfinite(lab.a)||!std::isfinite(lab.b)
+        ||std::max({std::abs(lab.L),std::abs(lab.a),std::abs(lab.b)})>4)return {};
+    return PointColor::Lab{lab.L,lab.a,lab.b};
+}
 QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,const CancelToken &token) {
     auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
     const QRect roi=region.intersected(source.rect());if(roi.isEmpty())return {};

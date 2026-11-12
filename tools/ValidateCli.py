@@ -84,7 +84,7 @@ def main():
                 raise RuntimeError(f'Unexpected CLI result ({process.returncode}): {process.stderr}\n{process.stdout}')
             return process
         schema = json.loads(run('--schema').stdout)
-        assert len(schema['parameters']) == 24
+        assert len(schema['parameters']) == 30
         assert {c['name'] for c in schema['commands']} >= {'geometry.crop', 'geometry.rotate', 'geometry.flip', 'geometry.straighten', 'geometry.set', 'geometry.resetCorrections', 'hsl.set', 'curve.set', 'develop.reset', 'vignette.reset', 'grading.enable', 'grading.set', 'grading.balance', 'grading.reset', 'mask.linear.enable', 'mask.linear.set', 'mask.linear.reset', 'mask.radial.enable', 'mask.radial.set', 'mask.radial.invert', 'mask.radial.reset'}
         assert {c['name'] for c in schema['commands']} >= {'look.mode', 'look.code', 'look.strength', 'look.parameter', 'look.reset'}
         assert {p['name'] for p in schema['parameters']} >= {'vignetteAmount', 'vignetteMidpoint', 'vignetteFeather'}
@@ -94,6 +94,8 @@ def main():
         assert 'sharpen.reset' in {c['name'] for c in schema['commands']}
         assert {p['name'] for p in schema['parameters']} >= {'denoiseLuma', 'denoiseChroma', 'textureAmount', 'clarityAmount', 'dehazeAmount'}
         assert {'denoise.reset','clarity.reset','texture.reset','dehaze.reset'} <= {c['name'] for c in schema['commands']}
+        assert {p['name'] for p in schema['parameters']} >= {'pointColorHue','pointColorSaturation','pointColorLuminance','pointColorHueRange','pointColorChromaRange','pointColorLightnessRange'}
+        assert {'point.color.select','point.color.select.lab','point.color.enable','point.color.reset'} <= {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -387,6 +389,21 @@ def main():
             run('--commands', commands, sharpen_source, rejected, success=False)
             assert not rejected.exists()
         assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest() == sharpen_hash
+        point_selection=[{'command':'point.color.select.lab','lab':[.65,.02,.01]},
+            *[{'command':'develop.set','parameter':key,'value':value}for key,value in
+              [('pointColorHue',73),('pointColorSaturation',-39),('pointColorLuminance',19),('pointColorHueRange',180),('pointColorChromaRange',1),('pointColorLightnessRange',1)]]]
+        commands.write_text(json.dumps(exposure+point_selection))
+        point_png=root/'point-color.png';result=json.loads(run('--commands',commands,sharpen_source,point_png).stdout)
+        point=result['adjustments']['pointColor'];assert point['space']=='oklab' and point['center']==[.65,.02,.01] and point['enabled'] is True and point['hue']==73
+        assert png16_pixels(point_png)[3]!=png16_pixels(detail_plain)[3]
+        for suffix,reset_command in [('disabled',{'command':'point.color.enable','enabled':False}),('reset',{'command':'point.color.reset'})]:
+            commands.write_text(json.dumps(exposure+point_selection+[reset_command]));target=root/f'point-color-{suffix}.png'
+            result=json.loads(run('--commands',commands,sharpen_source,target).stdout);assert png16_pixels(target)==png16_pixels(detail_plain)
+            if suffix=='reset':assert 'pointColor' not in result['adjustments']
+            else:assert result['adjustments']['pointColor']['enabled'] is False
+        for index,bad in enumerate([{'command':'point.color.select','color':[True,0,0]},{'command':'point.color.select.lab','lab':[0,0,5]},{'command':'point.color.enable','enabled':1},{'command':'point.color.reset','extra':True}]):
+            commands.write_text(json.dumps(point_selection+[bad]));target=root/f'point-color-rejected-{index}.png';run('--commands',commands,sharpen_source,target,success=False);assert not target.exists()
+        assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest()==sharpen_hash
         gradient = [
             {'command': 'mask.linear.enable', 'enabled': True},
             {'command': 'mask.linear.set', 'parameter': 'exposure', 'value': -1.5},
@@ -981,7 +998,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

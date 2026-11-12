@@ -1,4 +1,5 @@
 #pragma once
+#include <QColor>
 
 #include <QObject>
 class QQuickWindow;
@@ -115,6 +116,14 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double grainSize READ grainSize WRITE setGrainSize NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenAmount READ sharpenAmount WRITE setSharpenAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenRadius READ sharpenRadius WRITE setSharpenRadius NOTIFY adjustmentsChanged)
+    Q_PROPERTY(bool pointColorEnabled READ pointColorEnabled WRITE setPointColorEnabled NOTIFY adjustmentsChanged)
+    Q_PROPERTY(QColor pointColorColor READ pointColorColor NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorHue READ pointColorHue WRITE setPointColorHue NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorSaturation READ pointColorSaturation WRITE setPointColorSaturation NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorLuminance READ pointColorLuminance WRITE setPointColorLuminance NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorHueRange READ pointColorHueRange WRITE setPointColorHueRange NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorChromaRange READ pointColorChromaRange WRITE setPointColorChromaRange NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double pointColorLightnessRange READ pointColorLightnessRange WRITE setPointColorLightnessRange NOTIFY adjustmentsChanged)
     Q_PROPERTY(double dehazeAmount READ dehazeAmount WRITE setDehazeAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double textureAmount READ textureAmount WRITE setTextureAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double clarityAmount READ clarityAmount WRITE setClarityAmount NOTIFY adjustmentsChanged)
@@ -300,6 +309,17 @@ public:
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     double grainAmount() const; double grainSize() const;
     double sharpenAmount() const; double sharpenRadius() const;
+    bool pointColorEnabled() const {return currentState().pointColorEnabled;}
+    QColor pointColorColor() const;
+    double pointColorHue() const;double pointColorSaturation() const;double pointColorLuminance() const;
+    double pointColorHueRange() const;double pointColorChromaRange() const;double pointColorLightnessRange() const;
+    void setPointColorEnabled(bool);
+    Q_INVOKABLE bool selectPointColor(const QColor &);
+    Q_INVOKABLE bool pickPointColor(double x,double y,double width,double height);
+    Q_INVOKABLE void requestPointColorPicker() {emit pointColorPickerRequested();}
+    Q_INVOKABLE void resetPointColor();
+    void setPointColorHue(double);void setPointColorSaturation(double);void setPointColorLuminance(double);
+    void setPointColorHueRange(double);void setPointColorChromaRange(double);void setPointColorLightnessRange(double);
     double dehazeAmount() const;
     double textureAmount() const;
     double clarityAmount() const;
@@ -484,6 +504,7 @@ public:
     Q_INVOKABLE void reportBugWithDialog();
 
 signals:
+    void pointColorPickerRequested();
     void xmpMergeChanged();
     void brushDrawingChanged();
     void brushCapacityWarningChanged();
@@ -632,6 +653,8 @@ private:
     std::unique_ptr<LatestJob<LoadRequest, SourceData>> m_loader, m_prefetch;
     std::unique_ptr<LatestJob<PrepareRequest, PreparedPreview>> m_prepare;
     std::unique_ptr<LatestJob<RenderRequest, RenderedFrame>> m_render;
+    struct PointColorRequest {QImage source;ProcessingPlan plan;QPoint point;quint64 photo=0,generation=0,revision=0;};
+    std::unique_ptr<LatestJob<PointColorRequest,std::optional<PointColor::Lab>>> m_pointColorJob;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
     std::unique_ptr<LatestJob<ScopePlotRequest, ScopePlotResult>> m_plotJob;
     ScopePlotResult m_scopePlot;

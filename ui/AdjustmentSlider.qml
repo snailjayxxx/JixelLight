@@ -5,6 +5,7 @@ import QtQuick.Layouts
 RowLayout {
     id: root
     property string label: "Adjustment"
+    property real labelWidth: 74
     property real from: -100
     property real to: 100
     property real value: 0
@@ -13,7 +14,7 @@ RowLayout {
     signal edited(real newValue)
     spacing: 8
 
-    Label { text: root.label; Layout.preferredWidth: 74; color: "#d7dde6"; font.pixelSize: 12 }
+    Label { text: root.label; Layout.preferredWidth: root.labelWidth; color: "#d7dde6"; font.pixelSize: 12 }
     Slider {
         objectName: root.sliderObjectName
         Layout.fillWidth: true; from: root.from; to: root.to; value: root.value

@@ -141,7 +141,7 @@ private:
     quint64 m_displayTextureId = 0;
     bool m_uploadVertices = true;
     bool m_lastCpuFallback = false;
-    bool m_outputDenoiseActive = false,m_outputClarityActive=false,m_outputTextureActive=false,m_outputDehazeActive=false;
+    bool m_outputDenoiseActive = false,m_outputClarityActive=false,m_outputTextureActive=false,m_outputDehazeActive=false,m_outputPointColorActive=false;
     ImagePipeline::FloatSourceFacts m_sourceFacts;
     QString m_outputNumericPolicy;
     // GPU-resident stage cache; downstream color/output edits do not change it.

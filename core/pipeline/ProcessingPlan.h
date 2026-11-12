@@ -26,7 +26,7 @@ struct ProcessingPlan {
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
                 GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
-                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, SlotCount=58 };
+                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, PointColorAdjust=58, PointColorCenter=59, PointColorRange=60, SlotCount=61 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -88,6 +88,19 @@ struct ProcessingPlan {
         return denoiseActive()&&std::isfinite(d.z)&&std::isfinite(d.w)&&d.z>=1&&d.w>=1
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
     }
+    bool pointColorActive() const {return data[PointColorAdjust].x!=0;}
+    PointColor::Parameters pointColorParameters() const {
+        const auto a=data[PointColorAdjust],c=data[PointColorCenter],r=data[PointColorRange];
+        return {a.x>.5f,a.y,a.z,a.w,c.x,c.y,c.z,r.x,r.y,r.z};
+    }
+    bool validPointColor() const {
+        const auto a=data[PointColorAdjust],c=data[PointColorCenter],r=data[PointColorRange];
+        if(a.x==0) {
+            for(const auto v:{a,c,r})if(v.x!=0||v.y!=0||v.z!=0||v.w!=0)return false;
+            return true;
+        }
+        return a.x==1&&c.w==0&&r.w==0&&PointColor::valid(pointColorParameters());
+    }
     bool dehazeActive() const {return data[Dehaze].x!=0;}
     bool validDehaze() const {
         const auto d=data[Dehaze],a=data[DehazeAirlight];
@@ -142,7 +155,7 @@ struct ProcessingPlan {
             density=std::min(float(size.width())/(c.z*frame.z),float(size.height())/(c.w*frame.w));
         return {c.x,std::clamp(24.f*density,0.f,24.f),0,0};
     }
-    bool validSpatialSettings() const {return validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
+    bool validSpatialSettings() const {return validPointColor()&&validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
     Float4 denoise(const QSize &size) const {
         const auto d=data[Denoise],frame=data[FrameRect];if(!denoiseActive()||!validDenoise())return {};
         float density=1;
@@ -169,4 +182,4 @@ private:
     friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 928);
+static_assert(sizeof(ProcessingPlan::data) == 976);

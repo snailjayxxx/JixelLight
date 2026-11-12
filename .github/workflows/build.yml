@@ -48,6 +48,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/point-color-owned
         build/native-brush-monitor.json
         build/xmp-controller-native/
         build/brush-pressure-input/
@@ -75,6 +76,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-point-color-*
         diagnostic-validation/
         benchmark.json
         raw-render-matrix.log
@@ -258,6 +260,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestDehazeEvidence.py' -v
           python tools/ValidateDehaze.py "$EXE" gui-dehaze-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateDehaze.py "$EXE" gui-dehaze-gpu.json gpu --expected-commit "$STAMP"
+      - name: Point Color picker, durable working selection and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestPointColorEvidence.py' -v
+          python tools/ValidatePointColor.py "$EXE" gui-point-color-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidatePointColor.py "$EXE" gui-point-color-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -702,6 +717,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/point-color-owned
         build/native-brush-monitor.json
         build/xmp-controller-native/
         build/brush-pressure-input/
@@ -727,6 +743,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-point-color-*
         diagnostic-validation/
         raw-render-matrix.log
     steps:
@@ -838,6 +855,15 @@ jobs:
           python -m unittest discover -s tests -p 'TestDehazeEvidence.py' -v
           python tools/ValidateDehaze.py "$EXE" gui-dehaze-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateDehaze.py "$EXE" gui-dehaze-gpu.json gpu --expected-commit "$STAMP"
+      - name: Point Color picker, durable working selection and exact export
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestPointColorEvidence.py' -v
+          python tools/ValidatePointColor.py "$EXE" gui-point-color-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidatePointColor.py "$EXE" gui-point-color-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |

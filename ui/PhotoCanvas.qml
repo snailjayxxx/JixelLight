@@ -80,6 +80,10 @@ Item {
     }
     Connections {
         target: root.controller
+        function onPointColorPickerRequested() {
+            if(!root.visible||!controller.previewReady||controller.cropEditing||controller.brushDrawing||controller.brushRecoveryAvailable||controller.rendering)return
+            root.maskTool="pointColor"
+        }
         function onCurrentIndexChanged() {
             root.maskTool=""
             if (root.brushEditor) { root.brushEditor.strokeSelection=({}); root.brushEditor.mode="paint"; root.brushEditor.layerId="" }
@@ -162,6 +166,17 @@ Item {
             anchors.fill: parent; z: 3
             visible: controller.cropEditing && !controller.rendering
             enabled: visible
+        }
+    }
+    MouseArea {
+        objectName: "pointColorCanvasPicker"
+        anchors.fill: picture; z: 7
+        visible: root.maskTool === "pointColor" && !controller.cropEditing && controller.previewReady
+        enabled: visible && !controller.loading && !controller.rendering
+        cursorShape: Qt.CrossCursor
+        acceptedButtons: Qt.LeftButton
+        onClicked: function(mouse) {
+            if(controller.pickPointColor(mouse.x,mouse.y,width,height)) root.maskTool=""
         }
     }
     MouseArea {
@@ -262,7 +277,7 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
         anchors.bottomMargin: 44; z: 6
         visible: root.maskTool !== ""
-        text: root.maskTool === "brush" ? (root.controller.brushRecoveryAvailable
+        text: root.maskTool === "pointColor" ? root.t("点击图像取色 · Esc 取消", "Click the photo to pick a color · Esc cancels") : root.maskTool === "brush" ? (root.controller.brushRecoveryAvailable
               ? root.t("请选择应用已完成部分或放弃。", "Apply the completed part or discard it.")
               : root.controller.brushCapacityWarning
               ? root.t("笔刷接近容量上限，请尽快松开。", "Brush capacity nearing its limit; release soon.")
