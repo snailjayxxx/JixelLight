@@ -101,6 +101,10 @@ jobs:
           version: '6.8.3'
           modules: qtshadertools qtimageformats
           cache: true
+      - name: Use CMake with escaped Ninja depfiles (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/InstallWindowsCMake.ps1
       - name: Checkout vcpkg
         uses: actions/checkout@v4
         with:
