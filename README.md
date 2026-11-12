@@ -4,7 +4,7 @@
 
 Independent dehaze now has a QRhi follow-up with resident full-frame context. Local GPU/native evidence and remaining clean/platform/package gates are recorded in [M62](docs/F4_QRHI_DEHAZE_CACHE_STAGE_M62.md). The [CPU parent](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md) separately passes clean90/90; whole fusion development remains incomplete.
 
-> **开发进度（2026-11-12）：** 胶片颗粒、独立锐化、降噪、清晰度和纹理已覆盖预览、示波器、导出及持久化。纹理 CPU 干净提交 `5662c3e` 通过完整 87/87（789 秒）及真实主界面验证，草稿 PR #22 的跨平台/76 项安装包验证正在运行。后续五阶段 QRhi 纹理本机 GPU 56 项、15 项相关回归和 CPU/Metal 主界面／缓存验证通过；一并修正了失败请求误改上一帧诊断来源与上传计数的问题，当前干净提交及跨平台验证待完成。整体 F0–F6 尚未完成，接续去雾等功能，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)和[QRhi 纹理与缓存](docs/F4_QRHI_TEXTURE_CACHE_STAGE_M60.md)。
+> **开发进度（2026-11-13）：** 非 AI 显影、局部蒙版、色彩管理、专业输出与离线命令已有可运行实现。统一命令已覆盖编辑历史、照片选择、Add/Copy/Move 导入、当前及批量导出、评分/Flag/关键词/标签/相册；目录整理提交 `5c29058` 通过本地完整 102 项测试、96 组 Qt 结果及 29 个原生场景。独立 PNG 校验加速正在完整回归；虚拟副本命令已实现，编译及原生验收待完成。整体 F0–F6 和当前版本的三平台安装包验收尚未完成，详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

@@ -154,6 +154,35 @@ struct CommandRegistry {
             {"catalog_writes",true},{"source_writes",false},{"develop_history_steps",0},
             {"offline_sessions","unsupported; catalog metadata and Develop history remain separate domains"}};
     }
+    enum class VirtualKind { Create, Rename, Remove };
+    struct VirtualVersion {VirtualKind kind=VirtualKind::Create;QString name;};
+    static bool decodeVirtualVersion(const QJsonObject &command,VirtualVersion *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid virtual version command";return false;};
+        if(!output)return fail();VirtualVersion staged;const auto name=command["command"].toString();
+        if(name=="version.create") {
+            if(!optionalFields(command,{}, {"name"}))return fail();
+        }else if(name=="version.rename") {
+            if(!fields(command,{"name"}))return fail();staged.kind=VirtualKind::Rename;
+        }else if(name=="version.remove") {
+            if(!fields(command,{}))return fail();staged.kind=VirtualKind::Remove;
+        }else return fail();
+        if(command.contains("name")) {
+            if(!command["name"].isString())return fail();staged.name=command["name"].toString().trimmed();
+        }
+        if(staged.kind==VirtualKind::Rename||!staged.name.isEmpty()) {
+            QStringList checked{staged.name};if(!CatalogTags::normalize(&checked,1)||checked.size()!=1||checked.first()!=staged.name)return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject virtualVersionSchema(const QString &name) {
+        const bool create=name=="version.create",rename=name=="version.rename";
+        return {{"name",name},{"scope","desktop"},{"fields",rename?QJsonArray{"name"}:QJsonArray{}},
+            {"optional_fields",create?QJsonArray{"name"}:QJsonArray{}},{"maximum_name_utf16_units",80},
+            {"default_name",create?"omitted or empty derives the existing Version N title":"none"},
+            {"target","current photo for creation; current virtual copy for rename/remove; originals cannot be removed"},
+            {"catalog_writes",true},{"source_writes",false},{"history","creation starts an independent baseline; existing rename/removal semantics remain separate from Develop Undo"},
+            {"offline_sessions","unsupported; session-local photo aliases do not create catalog versions"}};
+    }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
     static bool decodePhotoImport(const QJsonObject &command,ImportScope scope,PhotoImport *output,QString *error=nullptr) {
@@ -802,7 +831,8 @@ struct CommandRegistry {
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
-                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema()}},
+                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema(),
+                virtualVersionSchema("version.create"),virtualVersionSchema("version.rename"),virtualVersionSchema("version.remove")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

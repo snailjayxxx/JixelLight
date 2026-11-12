@@ -621,7 +621,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings,curationCommands; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, curationCommandsPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings,curationCommands,versionCommands; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, curationCommandsPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, versionCommandsPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
     auto state=std::make_shared<State>();state->elapsed.start();
     const auto saveScreenshot=[window,state](const QString &path) {
         QElapsedTimer grabTimer;grabTimer.start();
@@ -754,6 +754,15 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && controller->library()[controller->currentIndex()].toMap().value("versionName").toString() == "Smoke renamed"
                 && controller->createVirtualCopy("Temporary smoke version") && controller->removeCurrentVirtualCopy()
                 && controller->library().size() == originalCount+1;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto command=value.toObject()["command"].toObject();
+                if(command["command"].toString().startsWith("version."))state->versionCommands.append(command);
+            }
+            const QJsonArray expectedVersions{QJsonObject{{"command","version.create"},{"name","Smoke version"}},
+                QJsonObject{{"command","version.rename"},{"name","Smoke renamed"}},
+                QJsonObject{{"command","version.create"},{"name","Temporary smoke version"}},QJsonObject{{"command","version.remove"}}};
+            state->versionCommandsPassed=state->versionCommands==expectedVersions;
+            state->copiesPassed=state->copiesPassed&&state->versionCommandsPassed;
             const auto copyIndex = controller->currentIndex();
             controller->setExposure(-.6); controller->finishInteraction();
             controller->selectPhoto(originalIndex);
@@ -1449,6 +1458,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_catalog_passed"]=state->catalogPassed;
         report["ui_catalog_dates_passed"]=state->catalogDatesPassed;
         report["ui_virtual_copies_passed"]=state->copiesPassed;
+        report["ui_virtual_version_command_trace_passed"]=state->versionCommandsPassed;report["ui_virtual_version_commands"]=state->versionCommands;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
