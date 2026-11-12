@@ -25,6 +25,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <thread>
 #include <vector>
 
 #include "app/PhotoController.h"
@@ -69,6 +70,7 @@
 #include "diagnostics/ZipStoreWriter.h"
 #include "diagnostics/DiagnosticBundle.h"
 #include "diagnostics/DiagnosticReplay.h"
+#include "diagnostics/ActionTrace.h"
 #include "core/commands/CommandSession.h"
 #include "diagnostics/PerformanceRecorder.h"
 
@@ -6921,6 +6923,64 @@ private slots:
         QCOMPARE(QJsonDocument::fromJson(storedZipEntry(path,"manifest.json")).object()["command_replay"].toObject(),unavailable);
     }
 
+    void desktopCommandHistoryMatchesOfflineSessionAndKeepsCanonicalTrace() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        const auto source=dir.filePath("owned.png");QVERIFY(image.save(source));PhotoController controller(nullptr);
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));controller.setExposure(.25);controller.finishInteraction();
+        const QJsonArray edits{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",.75}},
+            QJsonObject{{"command","hsl.set"},{"band",2},{"component","saturation"},{"value",17}},
+            QJsonObject{{"command","geometry.rotate"},{"quarterTurns",1}}};
+        const QJsonObject batch{{"command","edit.batch"},{"commands",edits}};
+        const auto before=controller.gpuPlan(true).state.toJson();const auto historySize=controller.editHistory().size();
+        QVERIFY(controller.executeCommand(batch.toVariantMap()));const auto applied=controller.gpuPlan(true).state.toJson();
+        QCOMPARE(controller.editHistory().size(),historySize+1);QVERIFY(applied!=before);
+        QVERIFY(controller.executeCommand({{"command","history.undo"}}));QCOMPARE(controller.gpuPlan(true).state.toJson(),before);
+        QVERIFY(controller.canRedo());QVERIFY(controller.executeCommand({{"command","history.redo"}}));QCOMPARE(controller.gpuPlan(true).state.toJson(),applied);
+        const QJsonObject manifest{{"schema",1},{"engine",ProcessingPlan::EngineVersion},{"commands",QJsonArray{
+            QJsonObject{{"command","photo.import"},{"photo","a"},{"source",source}},
+            QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",.25}},batch,
+            QJsonObject{{"command","export.run"},{"destination","applied.png"}},QJsonObject{{"command","history.undo"}},
+            QJsonObject{{"command","export.run"},{"destination","undone.png"}},QJsonObject{{"command","history.redo"}},
+            QJsonObject{{"command","export.run"},{"destination","redone.png"}}}}};
+        CommandSession session;QVERIFY(CommandSession::compile(manifest,dir.path(),
+            [](const QString &,bool,QString *)->std::optional<CommandRegistry::LookContext>{return CommandRegistry::LookContext{};},&session));
+        QCOMPARE(session.exports.size(),3);QCOMPARE(session.exports[0].state.toJson(),applied);
+        QCOMPARE(session.exports[1].state.toJson(),before);QCOMPARE(session.exports[2].state.toJson(),applied);
+        int canonical=0;for(const auto &entry:ActionTrace::instance().snapshot()) {
+            const auto row=entry.toObject();if(row["file"].toString()!=controller.currentFile())continue;
+            if(row["action"].toString()=="edit_undo"){QCOMPARE(row["command"].toObject()["command"].toString(),QString("history.undo"));++canonical;}
+            if(row["action"].toString()=="edit_redo"){QCOMPARE(row["command"].toObject()["command"].toString(),QString("history.redo"));++canonical;}
+        }
+        QCOMPARE(canonical,2);
+    }
+
+    void desktopDispatcherRejectsInvalidControlsAndOffThreadMutationsAtomically() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(8,6,QImage::Format_RGB32);image.fill(Qt::gray);
+        const auto source=dir.filePath("owned.png");QVERIFY(image.save(source));PhotoController controller(nullptr);
+        QVERIFY(!controller.executeCommand({{"command","history.undo"}}));
+        QVERIFY(controller.importFile(QUrl::fromLocalFile(source)));controller.setExposure(.25);controller.finishInteraction();
+        const auto before=controller.gpuPlan(true).state.toJson();const auto history=controller.editHistory();
+        QJsonArray excessive;for(int i=0;i<10001;++i)excessive.append(QJsonObject{{"command","look.reset"}});
+        const QList<QJsonObject> invalid{
+            {{"command","history.undo"},{"extra",true}},{{"command","history.redo"},{"commands",QJsonArray{}}},
+            {{"command","edit.batch"},{"commands",QJsonArray{}}},{{"command","edit.batch"},{"commands","[]"}},
+            {{"command","edit.batch"},{"commands",excessive}},
+            {{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},QJsonObject{{"command","history.undo"}}}}},
+            {{"command","export.run"},{"destination",dir.filePath("must-not-exist.png")}},{{"command",true}}};
+        for(const auto &command:invalid){QVERIFY(!controller.executeCommand(command.toVariantMap()));QCOMPARE(controller.gpuPlan(true).state.toJson(),before);QCOMPARE(controller.editHistory(),history);}
+        // Waiting on QFuture can steal its task onto this GUI thread. A
+        // dedicated thread must actually exercise the foreign-thread guard.
+        bool foreignThread=false,accepted=true;
+        std::thread worker([&]{foreignThread=QThread::currentThread()!=controller.thread();
+            accepted=controller.executeCommand({{"command","develop.set"},{"parameter","exposure"},{"value",3}});});
+        worker.join();QVERIFY(foreignThread);QVERIFY(!accepted);
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),before);QCOMPARE(controller.editHistory(),history);
+        QVERIFY(!QFileInfo::exists(dir.filePath("must-not-exist.png")));
+        CommandRegistry::Control output;output.kind=CommandRegistry::ControlKind::Redo;
+        QVERIFY(!CommandRegistry::decodeControl({{"command","history.undo"},{"extra",1}},&output));
+        QCOMPARE(output.kind,CommandRegistry::ControlKind::Redo);
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;
@@ -7047,6 +7107,8 @@ private slots:
         QVERIFY(CommandSession::compile(QJsonDocument::fromJson(replayBytes).object(),dir.path(),replayContext,&replaySession));
         QCOMPARE(replaySession.exports.size(),1);QCOMPARE(replaySession.exports[0].source,source);QCOMPARE(replaySession.exports[0].state.toJson(),state);
         const auto stages=QJsonDocument::fromJson(storedZipEntry(path,"stage_outputs.json")).object();
+        QCOMPARE(replayInfo["photo_epoch"].toString(),QString::number(stages["photo_epoch"].toInteger()));
+        QCOMPARE(replayInfo["version_key"].toString(),source);
         QCOMPARE(stages["parameter_revision"].toInteger(),qint64(revision));
         QCOMPARE(stages["gpu_working_output"].toObject()["pixel_sha256"],output["pixel_sha256"]);
         QCOMPARE(stages["gpu_context"].toObject()["cpu_reference"].toObject()["pixel_sha256"],output["pixel_sha256"]);

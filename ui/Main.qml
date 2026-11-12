@@ -159,7 +159,7 @@ ApplicationWindow {
                 errorText = window.t("配方必须是包含 1 至 10000 条编辑命令的数组。", "Use an array of 1 to 10000 edit commands.")
                 return
             }
-            if (!photoController.executeEditCommands(commands)) {
+            if (!photoController.executeCommand({"command": "edit.batch", "commands": commands})) {
                 errorText = photoController.statusMessage
                 return
             }
@@ -273,7 +273,7 @@ ApplicationWindow {
     }
 
 
-    Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.undo() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: photoController.canUndo; onActivated: photoController.executeCommand({"command": "history.undo"}) }
     Dialog {
         id: shortcutHelpDialog
         objectName: "keyboardShortcutsDialog"
@@ -448,7 +448,7 @@ ApplicationWindow {
             function onRelinkChanged() { if (photoController.relinkPreview.status === "complete") relinkDialog.accept() }
         }
     }
-    Shortcut { sequences: [StandardKey.Redo]; enabled: photoController.canRedo; onActivated: photoController.redo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: photoController.canRedo; onActivated: photoController.executeCommand({"command": "history.redo"}) }
     Shortcut { sequence: StandardKey.Open; onActivated: photoController.openImportDialog() }
 
     DropArea {
@@ -762,8 +762,8 @@ ApplicationWindow {
                 onClicked: importActions.open()
             }
             ToolSeparator {}
-            ToolButton { objectName: "undoEditButton"; text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.undo() }
-            ToolButton { objectName: "redoEditButton"; text: window.t("重做", "Redo"); enabled: photoController.canRedo; onClicked: photoController.redo() }
+            ToolButton { objectName: "undoEditButton"; text: window.t("撤销", "Undo"); enabled: photoController.canUndo; onClicked: photoController.executeCommand({"command": "history.undo"}) }
+            ToolButton { objectName: "redoEditButton"; text: window.t("重做", "Redo"); enabled: photoController.canRedo; onClicked: photoController.executeCommand({"command": "history.redo"}) }
             ToolButton {
                 text: window.t("复制", "Copy")
                 enabled: photoController.hasImage

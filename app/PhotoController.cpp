@@ -18,6 +18,7 @@
 #include "core/cache/ScopePlotCache.h"
 #include "core/commands/CommandRegistry.h"
 #include "core/commands/EditRecipe.h"
+#include <QThread>
 #include "core/commands/AdjustmentTransfer.h"
 #include "core/raw/RawDecoder.h"
 #include "diagnostics/ActionTrace.h"
@@ -577,7 +578,7 @@ void PhotoController::undo() {
     photo.state = photo.history.undo();
     photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
     markDirty();
-    ActionTrace::instance().record("edit_undo", {{"file", currentFile()}});
+    ActionTrace::instance().record("edit_undo", {{"file", currentFile()},{"command",QJsonObject{{"command","history.undo"}}}});
     emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
     applyCurrent();
 }
@@ -587,7 +588,7 @@ void PhotoController::redo() {
     photo.state = photo.history.redo();
     photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
     markDirty();
-    ActionTrace::instance().record("edit_redo", {{"file", currentFile()}});
+    ActionTrace::instance().record("edit_redo", {{"file", currentFile()},{"command",QJsonObject{{"command","history.redo"}}}});
     emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
     applyCurrent();
 }
@@ -675,6 +676,20 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
     markDirty();
     emit adjustmentsChanged();
     applyCurrent();
+}
+
+bool PhotoController::executeCommand(const QVariantMap &command) {
+    if(QThread::currentThread()!=thread() || m_closing)return false;
+    const auto object=QJsonObject::fromVariantMap(command);
+    if(!CommandRegistry::isControlCommand(object["command"].toString()))return executeEditCommand(command);
+    CommandRegistry::Control control;QString error;
+    if(!CommandRegistry::decodeControl(object,&control,&error)) {
+        setStatus(uiText("命令未执行：", "Command rejected: ")+error);return false;
+    }
+    if(control.kind==CommandRegistry::ControlKind::EditBatch)return executeEditCommands(control.edits.toVariantList());
+    if(control.kind==CommandRegistry::ControlKind::Undo) {if(!canUndo())return false;undo();}
+    else {if(!canRedo())return false;redo();}
+    return true;
 }
 
 bool PhotoController::executeEditCommand(const QVariantMap &command) {
