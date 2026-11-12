@@ -95,6 +95,7 @@ Rectangle {
     property bool vignetteExpanded: false
     property bool grainExpanded: false
     property bool sharpenExpanded: false
+    property bool dehazeExpanded: false
     property bool textureExpanded: false
     property bool clarityExpanded: false
     property bool denoiseExpanded: false
@@ -117,6 +118,8 @@ Rectangle {
         property alias vignetteExpanded: root.vignetteExpanded
         property alias grainExpanded: root.grainExpanded
         property alias sharpenExpanded: root.sharpenExpanded
+        property alias dehazeExpanded: root.dehazeExpanded
+        property alias textureExpanded: root.textureExpanded
         property alias clarityExpanded: root.clarityExpanded
         property alias denoiseExpanded: root.denoiseExpanded
         property alias linearMaskExpanded: root.linearMaskExpanded
@@ -648,6 +651,31 @@ Rectangle {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
                         text: root.t("分别平滑明度和彩色噪点；较高强度会柔化细节。",
                             "Smooth lightness and color noise separately. Higher amounts soften fine detail.")
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    ToolButton {
+                        objectName: "dehazeToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.dehazeExpanded ? "▾ " : "▸ ") + root.t("去雾 · CPU", "DEHAZE · CPU")
+                        onClicked: root.dehazeExpanded = !root.dehazeExpanded
+                    }
+                    Button {
+                        objectName: "dehazeReset"; text: root.t("重置", "Reset")
+                        enabled: root.controller.hasImage; onClicked: root.controller.resetDehaze()
+                    }
+                }
+                ColumnLayout {
+                    objectName: "dehazeSection"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                    Layout.maximumWidth: Math.max(240, root.width - 20)
+                    spacing: 6; visible: root.dehazeExpanded; enabled: root.controller.hasImage
+                    AdjustmentSlider { Layout.fillWidth: true; sliderObjectName: "dehazeAmountSlider"; label: root.t("强度", "Amount"); from: -100; to: 100; decimals: 0; value: root.controller.dehazeAmount; onEdited: function(newValue) { root.controller.dehazeAmount = newValue } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("正值减轻雾感，负值添加柔雾；高强度可能强化噪点或改变明亮区域。",
+                            "Positive amounts reduce haze; negative amounts add a soft veil. Higher amounts can emphasize noise or alter bright areas.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }

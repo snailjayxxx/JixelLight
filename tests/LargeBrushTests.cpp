@@ -185,16 +185,21 @@ private slots:
     }
     void sony33MpRasterExportsMatchIndependentPixelsAndIcc() {
         QFETCH(bool,erased);
-        QFETCH(int,format);QFETCH(QString,space);MemorySample memory;QElapsedTimer timer;timer.start();SourceData source;if(!sony(&source))return;
+        QFETCH(int,format);QFETCH(QString,space);MemorySample memory;QElapsedTimer timer;timer.start();
+        const auto phase=[&](const char *name){qInfo().noquote()<<"BRUSH_RASTER_PHASE"<<name<<"elapsed_ms"<<timer.elapsed()<<"format"<<format<<"erase"<<erased;};
+        phase("load-begin");SourceData source;if(!sony(&source))return;phase("load-complete");
         const auto before=imageHash(source.image);const auto state=erased?withErase(painted()):painted();
         QCOMPARE(state.toJson()["brushMasks"].toObject()["schema"].toInt(),erased?2:1);const auto raster=RasterFormat(format);auto spec=sonySpec(source,ColorManagement::fromKey(space));
         auto budget=std::make_shared<BrushRenderBudget>();QString error;auto request=BrushRenderRequest::create(source.image,state,spec,{},&error,budget);QVERIFY2(request,qPrintable(error));
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto suffix=raster==RasterFormat::Png16?"png":raster==RasterFormat::Tiff16?"tif":"webp";const auto path=dir.filePath("owned-output."+QString(suffix));
-        QVERIFY2(exportRaster(*request,path,raster,100,{},&error),qPrintable(error));const auto fileBytes=QFileInfo(path).size();QVERIFY(fileBytes>0);
+        phase("export-begin");QVERIFY2(exportRaster(*request,path,raster,100,{},&error),qPrintable(error));phase("export-complete");const auto fileBytes=QFileInfo(path).size();QVERIFY(fileBytes>0);
         QImageReader reader(path);QCOMPARE(reader.size(),QSize(7028,4688));auto decoded=reader.read();QVERIFY2(!decoded.isNull(),qPrintable(reader.errorString()));
+        phase("decode-complete");
         const auto referenceFormat=raster==RasterFormat::WebP8?QImage::Format_RGB888:QImage::Format_RGBA64;
         const auto expected=legacyEncoded(source.image,planFor(state,spec),referenceFormat);QVERIFY(!expected.isNull());
+        phase("reference-complete");
         QCOMPARE(decoded.colorSpace(),ColorManagement::colorSpace(spec.output));QCOMPARE(decoded.convertToFormat(referenceFormat),expected);
+        phase("all-pixels-and-icc-complete");
         request.reset();QCOMPARE(budget->snapshot().charged,0);QCOMPARE(imageHash(source.image),before);
         report({{"erase",erased},{"document_schema",erased?2:1},{"case","sony33mp-raster"},{"format",suffix},{"space",space},{"source_pixels",32947264},
             {"decoded_pixels",32947264},{"exact_pixels",true},{"icc_exact",true},{"encoded_file_bytes",fileBytes},

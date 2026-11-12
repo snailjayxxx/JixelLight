@@ -26,7 +26,7 @@ struct CommandRegistry {
         return descriptors;
     }
     static const auto &parameters() {
-        static const std::array<Parameter,23> descriptors{{
+        static const std::array<Parameter,24> descriptors{{
             {"exposure",&AdjustmentState::exposure,-5,5},
             {"temperature",&AdjustmentState::temperature,-180,180},
             {"tint",&AdjustmentState::tint,-180,180},
@@ -48,6 +48,7 @@ struct CommandRegistry {
             {"sharpenRadius",&AdjustmentState::sharpenRadius,.5,6},
             {"denoiseLuma",&AdjustmentState::denoiseLuma,0,100},
             {"denoiseChroma",&AdjustmentState::denoiseChroma,0,100},
+            {"dehazeAmount",&AdjustmentState::dehazeAmount,-100,100},
             {"textureAmount",&AdjustmentState::textureAmount,-100,100},
             {"clarityAmount",&AdjustmentState::clarityAmount,-100,100}
         }};
@@ -281,6 +282,10 @@ struct CommandRegistry {
             if (!fields(command,{})) return fail();
             state.sharpenAmount=0; state.sharpenRadius=3; return true;
         }
+        if(name=="dehaze.reset") {
+            if(!fields(command,{}))return fail();
+            state.dehazeAmount=0;return true;
+        }
         if(name=="texture.reset") {
             if(!fields(command,{}))return fail();
             state.textureAmount=0;return true;
@@ -446,6 +451,7 @@ struct CommandRegistry {
             QJsonObject{{"name","vignette.reset"},{"fields",QJsonArray{}},{"operation","reset post-crop vignette amount/midpoint/feather; preserve other edits"}},
             QJsonObject{{"name","grain.reset"},{"fields",QJsonArray{}},{"operation","reset grain amount/size; preserve other edits"}},
             QJsonObject{{"name","sharpen.reset"},{"fields",QJsonArray{}},{"operation","reset independent sharpen amount/radius; preserve Sony Look and other edits"}},
+            QJsonObject{{"name","dehaze.reset"},{"fields",QJsonArray{}},{"operation","reset atmospheric veil; preserve other edits"}},
             QJsonObject{{"name","texture.reset"},{"fields",QJsonArray{}},{"operation","reset medium-frequency detail; preserve other edits"}},
             QJsonObject{{"name","clarity.reset"},{"fields",QJsonArray{}},{"operation","reset local midtone contrast; preserve other edits"}},
             QJsonObject{{"name","denoise.reset"},{"fields",QJsonArray{}},{"operation","reset perceptual lightness/color denoise; preserve other edits"}},

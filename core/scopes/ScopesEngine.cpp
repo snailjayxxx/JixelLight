@@ -60,9 +60,10 @@ ScopesResult ScopesEngine::analyze(const QImage &image, int bins, const CancelTo
     for (const auto &part:partials) total.add(part);
     return result(total,bins);
 }
-ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &token,
+ScopesResult ScopesEngine::analyzeFull(const QImage &source, const ProcessingPlan &requestedPlan, const CancelToken &token,
                                      const RenderedStripObserver &completedStrip) {
     if (source.isNull()) return {};
+    auto plan=requestedPlan;if(!ImagePipeline::resolveDehazeAirlight(source,plan,token))return {};
     if (!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,token)) return {};
     PerformanceSpan timing("full_resolution_scopes",{{"pixels",qint64(source.width())*source.height()}});
     // FP32 scenes must enter the *same* color kernel as the preview and

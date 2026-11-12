@@ -598,7 +598,7 @@ QImage prepareDenoiseInput(const QImage &source,const ColorKernel &kernel,const 
 }
 QImage prepareSpatialInput(const QImage &source,const ColorKernel &kernel,const ProcessingPlan &plan,
                            const QSize &frameSize,const CancelToken &token,bool parallel,
-                           QJsonObject *denoiseDiagnostics=nullptr,QJsonObject *clarityDiagnostics=nullptr,QJsonObject *textureDiagnostics=nullptr) {
+                           QJsonObject *denoiseDiagnostics=nullptr,QJsonObject *clarityDiagnostics=nullptr,QJsonObject *textureDiagnostics=nullptr,QJsonObject *dehazeDiagnostics=nullptr) {
     QImage linear;
     if(plan.denoiseActive())linear=prepareDenoiseInput(source,kernel,plan.denoise(frameSize),token,parallel,denoiseDiagnostics);
     else {
@@ -619,6 +619,16 @@ QImage prepareSpatialInput(const QImage &source,const ColorKernel &kernel,const 
         },parallel);
     }
     if(linear.isNull()||cancelled(token))return {};
+    if(plan.dehazeActive()) {
+        if(plan.data[ProcessingPlan::DehazeAirlight].w==0)return {};
+        const auto settings=plan.dehaze(frameSize),a=plan.data[ProcessingPlan::DehazeAirlight];
+        PerformanceSpan timing("spatial_dehaze_cpu",{{"pixels",qint64(source.width())*source.height()},
+            {"dark_radius",settings.y},{"refine_radius",settings.z}});
+        if(dehazeDiagnostics)(*dehazeDiagnostics)["input"]=FloatFrameFingerprint::capture(linear);
+        linear=SpatialDehaze::apply(std::move(linear),{settings.x,settings.y,settings.z,{a.x,a.y,a.z}},token,parallel);
+        if(linear.isNull()||cancelled(token))return {};
+        if(dehazeDiagnostics)(*dehazeDiagnostics)["output"]=FloatFrameFingerprint::capture(linear);
+    }
     if(plan.textureActive()) {
         const auto settings=plan.texture(frameSize);
         PerformanceSpan timing("spatial_texture_cpu",{{"pixels",qint64(source.width())*source.height()},{"small_radius",settings.y},{"large_radius",settings.z}});
@@ -685,6 +695,7 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    plan.data[Dehaze]={finite(state.dehazeAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Texture]={finite(state.textureAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Clarity]={finite(state.clarityAmount,0,-100,100)*.01f,0,0,0};
     plan.data[Denoise]={finite(state.denoiseLuma,0,0,100)*.01f,finite(state.denoiseChroma,0,0,100)*.01f,0,0};
@@ -802,7 +813,8 @@ QRect expandedColorRegion(const QSize &sourceSize,const ProcessingPlan &plan,con
     const int pad=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})
         +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z})
         +SpatialClarity::halo({plan.clarity(sourceSize).x,plan.clarity(sourceSize).y})
-        +SpatialTexture::halo({plan.texture(sourceSize).x,plan.texture(sourceSize).y,plan.texture(sourceSize).z});
+        +SpatialTexture::halo({plan.texture(sourceSize).x,plan.texture(sourceSize).y,plan.texture(sourceSize).z})
+        +SpatialDehaze::halo({plan.dehaze(sourceSize).x,plan.dehaze(sourceSize).y,plan.dehaze(sourceSize).z});
     return roi.adjusted(-pad,-pad,pad,pad).intersected(bounds);
 }
 }
@@ -1111,11 +1123,39 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     return finishColor(std::move(out),plan,sourceSize,token);
 }
 }
+SpatialDehaze::Airlight ImagePipeline::estimateDehazeAirlight(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel) {
+    PerformanceSpan timer("dehaze_full_frame_airlight");
+    if(source.isNull()||cancelled(cancel)){SpatialDehaze::Airlight a;a.valid=false;return a;}
+    const bool floating=source.format()==QImage::Format_RGBA32FPx4;
+    const QImage input=floating?source:rgba64Source(source,cancel);
+    if(input.isNull()){SpatialDehaze::Airlight a;a.valid=false;return a;}
+    const ColorKernel kernel(plan,input.size());
+    return SpatialDehaze::estimateAirlight(input.size(),[&](int x,int y) {
+        if(floating) {
+            const auto *q=reinterpret_cast<const float *>(input.constScanLine(y))+4*x;
+            const auto rgb=inputLinear({q[0],q[1],q[2]},kernel);
+            return SpatialDehaze::Pixel{rgb.x,rgb.y,rgb.z,q[3]};
+        }
+        const auto q=reinterpret_cast<const QRgba64 *>(input.constScanLine(y))[x];const auto rgb=inputLinear(q,kernel);
+        return SpatialDehaze::Pixel{rgb.x,rgb.y,rgb.z,q.alpha()/65535.f};
+    },cancel);
+}
+bool ImagePipeline::resolveDehazeAirlight(const QImage &source,ProcessingPlan &plan,const CancelToken &cancel) {
+    if(cancelled(cancel)||!plan.validDehaze())return false;
+    if(!plan.dehazeActive()||plan.data[ProcessingPlan::DehazeAirlight].w!=0)return true;
+    // A cropped/downsampled preview must carry its full corrected-frame facts.
+    const auto frame=plan.data[ProcessingPlan::FrameRect],d=plan.data[ProcessingPlan::Dehaze];
+    if(frame.x!=0||frame.y!=0||frame.z!=1||frame.w!=1
+        ||(d.z>0&&(d.z!=source.width()||d.w!=source.height())))return false;
+    const auto facts=estimateDehazeAirlight(source,plan,cancel);if(!facts.valid)return false;
+    plan.setDehazeAirlight(facts);return plan.validDehaze()&&!cancelled(cancel);
+}
 QImage ImagePipeline::preparePreviewSpatialInput(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel) {
     if(source.isNull()||cancelled(cancel)||!plan.spatialInputActive()||!plan.validSpatialSettings()
         ||!BrushMaskDocument::validDocument(plan.state.brushMasks)||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
     if(source.format()==QImage::Format_RGBA32FPx4&&!validFloatSource(source,cancel))return {};
     if(plan.denoiseActive())PerformanceRecorder::count("cpu_preview_denoise_builds");
+    if(plan.dehazeActive())PerformanceRecorder::count("cpu_preview_dehaze_builds");
     if(plan.textureActive())PerformanceRecorder::count("cpu_preview_texture_builds");
     if(plan.clarityActive())PerformanceRecorder::count("cpu_preview_clarity_builds");
     return prepareSpatialInput(source,ColorKernel(plan,source.size()),plan,source.size(),cancel,true);
@@ -1125,13 +1165,15 @@ QImage ImagePipeline::processPreviewWithSpatialInput(const QImage &source,const 
         ||!plan.spatialInputActive()||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
     return processColorFrame(source,plan,cancel,true,source.size(),{},BrushMaskTileRaster::MaxResearchFramePixels,&input);
 }
-QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token, bool parallel) {
+QImage ImagePipeline::processWithPlan(const QImage &source, const ProcessingPlan &requestedPlan, const CancelToken &token, bool parallel) {
+    auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
     return processColorFrame(source,plan,token,parallel,source.size(),{});
 }
 
-ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &plan, const CancelToken &token) {
+ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &source, const ProcessingPlan &requestedPlan, const CancelToken &token) {
+    auto plan=requestedPlan;
     DiagnosticResult result{{},{{"schema",1},{"available",false},{"backend","cpu-reference"}}};
-    if (source.isNull() || cancelled(token) || !plan.validSpatialSettings()) return result;
+    if (source.isNull() || cancelled(token) || !plan.validSpatialSettings()||!resolveDehazeAirlight(source,plan,token)) return result;
     if (!BrushMaskDocument::validDocument(plan.state.brushMasks)) {
         result.stages.insert("error","Invalid brush document");
         return result;
@@ -1147,9 +1189,9 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("error","Invalid non-finite/out-of-range FP32 scene source");
         return result;
     }
-    const ColorKernel kernel(plan,source.size());QJsonObject denoiseDiagnostics,clarityDiagnostics,textureDiagnostics;
+    const ColorKernel kernel(plan,source.size());QJsonObject denoiseDiagnostics,clarityDiagnostics,textureDiagnostics,dehazeDiagnostics;
     const bool preparedLinear=plan.spatialInputActive();
-    const QImage input=preparedLinear?prepareSpatialInput(source,kernel,plan,source.size(),token,false,&denoiseDiagnostics,&clarityDiagnostics,&textureDiagnostics)
+    const QImage input=preparedLinear?prepareSpatialInput(source,kernel,plan,source.size(),token,false,&denoiseDiagnostics,&clarityDiagnostics,&textureDiagnostics,&dehazeDiagnostics)
         :floating?source:rgba64Source(source,token);
     if (input.isNull()) return result;
     QImage out(input.size(),QImage::Format_RGBA64);
@@ -1191,6 +1233,15 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         denoiseDiagnostics["input_linear_semantics"]="denoised linear ProPhoto before texture/clarity/WB/exposure";
         result.stages.insert("spatial_denoise",denoiseDiagnostics);
     }
+    if(plan.dehazeActive()) {
+        const auto d=plan.dehaze(source.size()),a=plan.data[ProcessingPlan::DehazeAirlight];
+        dehazeDiagnostics["backend"]="cpu-reference";dehazeDiagnostics["amount"]=plan.state.dehazeAmount;
+        dehazeDiagnostics["effective_dark_radius"]=d.y;dehazeDiagnostics["effective_refine_radius"]=d.z;
+        dehazeDiagnostics["airlight"]=QJsonArray{a.x,a.y,a.z};dehazeDiagnostics["airlight_available"]=a.w==1;
+        dehazeDiagnostics["order"]="linear ProPhoto after denoise and before texture/clarity/WB/exposure";
+        dehazeDiagnostics["airlight_scope"]="whole corrected source before viewport/preview resize";
+        result.stages.insert("spatial_dehaze",dehazeDiagnostics);
+    }
     if(plan.textureActive()) {
         textureDiagnostics["backend"]="cpu-reference";textureDiagnostics["amount"]=plan.state.textureAmount;
         textureDiagnostics["effective_small_radius"]=plan.texture(source.size()).y;
@@ -1223,7 +1274,8 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
     return result;
 }
 
-QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &token) {
+QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,const CancelToken &token) {
+    auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
     const QRect roi=region.intersected(source.rect());if(roi.isEmpty())return {};
     const QRect expanded=expandedColorRegion(source.size(),plan,roi);
     if (expanded.isEmpty()) return {};
@@ -1231,8 +1283,9 @@ QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &p
     if(result.isNull())return {};
     return result.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));
 }
-QImage ImagePipeline::renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,
+QImage ImagePipeline::renderAdmittedBrush(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,
                                          const CancelToken &token,bool parallel) {
+    auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
     if(region==source.rect())return processColorFrame(source,plan,token,parallel,source.size(),{},std::size_t(BrushRenderRequest::MaxSourcePixels));
     if(region.isEmpty() || !source.rect().contains(region))return {};
     const auto expanded=expandedColorRegion(source.size(),plan,region);

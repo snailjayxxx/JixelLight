@@ -4,6 +4,7 @@
 #include "core/pipeline/AdjustmentState.h"
 #include "core/color/ColorManagement.h"
 #include "core/async/LatestJob.h"
+#include "core/pipeline/SpatialDehaze.h"
 
 struct ProcessingPlan;
 class BrushRenderRequest;
@@ -34,6 +35,9 @@ public:
     static bool preflightTiledResearchRequest(const QSize &frameSize,const ProcessingPlan &plan,
                           int stripeHeight,const CancelToken &cancel = {},QString *error = nullptr);
     static QImage processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &cancel = {});
+    static SpatialDehaze::Airlight estimateDehazeAirlight(const QImage &,const ProcessingPlan &,const CancelToken &cancel = {});
+    // Resolve once on the whole corrected frame before ROI/tile extraction.
+    static bool resolveDehazeAirlight(const QImage &,ProcessingPlan &,const CancelToken &cancel = {});
     static QImage processWithPlan(const QImage &source, const ProcessingPlan &plan,
                           const CancelToken &cancel = {}, bool parallel = true);
     // Explicit CPU reference capture only. Normal rendering never allocates

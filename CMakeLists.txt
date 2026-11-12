@@ -88,7 +88,7 @@ add_library(JixelLightCore STATIC
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/pipeline/BrushRenderRequest.cpp
-    core/pipeline/SpatialClarity.cpp core/pipeline/SpatialTexture.cpp
+    core/pipeline/SpatialClarity.cpp core/pipeline/SpatialTexture.cpp core/pipeline/SpatialDehaze.cpp
     core/pipeline/SpatialDenoise.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
@@ -122,7 +122,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/DehazeSmokeRun.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -534,3 +534,22 @@ target_link_libraries(JixelLightTextureCacheTests PRIVATE JixelLightCore Qt6::Te
 set_target_properties(JixelLightTextureCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME texture-preview-cache COMMAND JixelLightTextureCacheTests -o texture-cache-results.txt,txt -o -,txt)
 set_tests_properties(texture-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightDehazeTests tests/SpatialDehazeTests.cpp)
+target_link_libraries(JixelLightDehazeTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDehazeTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME spatial-dehaze COMMAND JixelLightDehazeTests -o dehaze-results.txt,txt -o -,txt)
+set_tests_properties(spatial-dehaze PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightDehazeWorkflowTests tests/DehazeWorkflowTests.cpp)
+target_link_libraries(JixelLightDehazeWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDehazeWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME dehaze-workflows COMMAND JixelLightDehazeWorkflowTests -o dehaze-workflow-results.txt,txt -o -,txt)
+set_tests_properties(dehaze-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_DEHAZE_EVIDENCE=${CMAKE_BINARY_DIR}/dehaze-owned")
+
+qt_add_executable(JixelLightDehazeCacheTests tests/DehazePreviewCacheTests.cpp core/cache/RenderedPreviewCache.cpp)
+target_compile_definitions(JixelLightDehazeCacheTests PRIVATE JIXELLIGHT_PREVIEW_STAGE_TEST_PROGRESS=1)
+target_link_libraries(JixelLightDehazeCacheTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightDehazeCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME dehaze-preview-cache COMMAND JixelLightDehazeCacheTests -o dehaze-cache-results.txt,txt -o -,txt)
+set_tests_properties(dehaze-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")

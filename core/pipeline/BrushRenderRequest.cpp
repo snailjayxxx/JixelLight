@@ -98,7 +98,7 @@ bool validState(const AdjustmentState &state) {
     return AdjustmentState::fromJson(json).toJson()==json
         &&GeometryState::validJson(state.geometry.toJson())
         &&AdjustmentState::validRadialMaskJson(json)&&AdjustmentState::validLinearMaskJson(json)
-        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validTextureJson(json)&&AdjustmentState::validClarityJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
+        &&AdjustmentState::validVignetteJson(json)&&AdjustmentState::validGrainJson(json)&&AdjustmentState::validSharpenJson(json)&&AdjustmentState::validDenoiseJson(json)&&AdjustmentState::validDehazeJson(json)&&AdjustmentState::validTextureJson(json)&&AdjustmentState::validClarityJson(json)&&AdjustmentState::validBlackAndWhiteJson(json)
         &&AdjustmentState::validColorGradingJson(json);
 }
 bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provided) {
@@ -117,6 +117,14 @@ bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provi
             if(b.x==0||!std::isfinite(b.z)||!std::isfinite(b.w)||b.z<1||b.w<1
                 ||b.z>BrushRenderRequest::MaxSourcePixels||b.w>BrushRenderRequest::MaxSourcePixels
                 ||b.z!=std::floor(b.z)||b.w!=std::floor(b.w))return false;
+            continue;
+        }
+        if(i==ProcessingPlan::DehazeAirlight) {
+            if(!provided.validDehaze())return false;
+            continue; // Validated source-frame facts are independent of edit intent.
+        }
+        if(i==ProcessingPlan::Dehaze) {
+            if(a.x!=b.x||a.y!=b.y||!provided.validDehaze())return false;
             continue;
         }
         if(i==ProcessingPlan::Texture) {
@@ -150,7 +158,8 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
     const int halo=LookDetail::halo({detail.x,detail.y,detail.z,detail.w},{independent.x,independent.y})
         +SpatialDenoise::halo({denoise.x,denoise.y,denoise.z})
         +SpatialClarity::halo({plan.clarity(frameSize).x,plan.clarity(frameSize).y})
-        +SpatialTexture::halo({plan.texture(frameSize).x,plan.texture(frameSize).y,plan.texture(frameSize).z});
+        +SpatialTexture::halo({plan.texture(frameSize).x,plan.texture(frameSize).y,plan.texture(frameSize).z})
+        +SpatialDehaze::halo({plan.dehaze(frameSize).x,plan.dehaze(frameSize).y,plan.dehaze(frameSize).z});
     const auto expanded=region.adjusted(-halo,-halo,halo,halo).intersected(QRect(QPoint{},frameSize));
     const qint64 expandedPixels=qint64(expanded.width())*expanded.height();
     constexpr qint64 fixed=64LL*1024*1024
@@ -287,6 +296,9 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
             const auto clarity=expectedPlan->data[ProcessingPlan::Clarity],compiledClarity=plan.data[ProcessingPlan::Clarity];
             if(clarity.x!=compiledClarity.x||clarity.y!=compiledClarity.y)return refuse("Invalid prepared clarity settings");
             plan.data[ProcessingPlan::Clarity]=clarity;
+            const auto dehaze=expectedPlan->data[ProcessingPlan::Dehaze],compiledDehaze=plan.data[ProcessingPlan::Dehaze];
+            if(dehaze.x!=compiledDehaze.x||dehaze.y!=compiledDehaze.y)return refuse("Invalid prepared dehaze settings");
+            plan.data[ProcessingPlan::Dehaze]=dehaze;plan.data[ProcessingPlan::DehazeAirlight]=expectedPlan->data[ProcessingPlan::DehazeAirlight];
             const auto texture=expectedPlan->data[ProcessingPlan::Texture],compiledTexture=plan.data[ProcessingPlan::Texture];
             if(texture.x!=compiledTexture.x||texture.y!=compiledTexture.y)return refuse("Invalid prepared texture settings");
             plan.data[ProcessingPlan::Texture]=texture;
@@ -335,7 +347,10 @@ BrushImageLease BrushRenderRequest::render(const CancelToken &cancel,QString *er
     if(!begin(Layout::Whole,cancel,error))return {};
     try {
         const auto source=prepare(cancel,error);if(source.isNull())return {};
-        auto rendered=ImagePipeline::renderAdmittedBrush(source,m_plan,m_region,cancel,m_spec.parallel);
+        auto plan=m_plan;
+        if(plan.dehazeActive()&&plan.data[ProcessingPlan::DehazeAirlight].w==0&&m_spec.sourceStage==SourceStage::Original)
+            plan.setDehazeAirlight(ImagePipeline::estimateDehazeAirlight(source,plan,cancel));
+        auto rendered=ImagePipeline::renderAdmittedBrush(source,plan,m_region,cancel,m_spec.parallel);
         if(rendered.isNull()||cancelled(cancel)){fail(error,cancelled(cancel)?"Cancelled":"Admitted brush rendering failed");return {};}
         BrushImageLease lease;
         lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(rendered.sizeInBytes());
@@ -348,11 +363,15 @@ bool BrushRenderRequest::visitStrips(const StripConsumer &consumer,const CancelT
     if(!begin(Layout::Stripes128,cancel,error))return false;
     try {
         const auto source=prepare(cancel,error);if(source.isNull())return false;
+        auto plan=m_plan;
+        if(plan.dehazeActive()&&plan.data[ProcessingPlan::DehazeAirlight].w==0&&m_spec.sourceStage==SourceStage::Original)
+            plan.setDehazeAirlight(ImagePipeline::estimateDehazeAirlight(source,plan,cancel));
+        if(!ImagePipeline::resolveDehazeAirlight(source,plan,cancel))return fail(error,"Invalid full-frame dehaze context");
         for(int y=m_region.y();y<=m_region.bottom();y+=128) {
             if(cancelled(cancel))return fail(error,"Cancelled");
             const QRect region(m_region.x(),y,m_region.width(),std::min(128,m_region.bottom()-y+1));
             BrushImageLease lease;
-            lease.m_image=ImagePipeline::renderAdmittedBrush(source,m_plan,region,cancel,m_spec.parallel);
+            lease.m_image=ImagePipeline::renderAdmittedBrush(source,plan,region,cancel,m_spec.parallel);
             if(lease.m_image.isNull())return fail(error,cancelled(cancel)?"Cancelled":"Admitted strip rendering failed");
             lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(lease.m_image.sizeInBytes());
             if(!lease.m_reservation)return fail(error,"Cannot retain admitted strip payload");

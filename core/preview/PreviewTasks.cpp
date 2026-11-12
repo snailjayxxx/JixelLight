@@ -53,6 +53,9 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
         QImage source = request.geometry.apply(request.image,cancel);
         if (source.isNull() || cancelled(cancel)) return {};
         result.referenceFrameSize=source.size();
+        const auto airlightPlan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        result.dehazeAirlight=ImagePipeline::estimateDehazeAirlight(source,airlightPlan,cancel);
+        if(!result.dehazeAirlight.valid){result.error=QStringLiteral("Invalid full-frame airlight samples");return result;}
         const QSize viewport = request.viewport.expandedTo(QSize(64, 64));
         if (request.zoom > 0 && request.fullResolution) {
             const int w = std::min(source.width(), std::max(1, int(std::ceil(viewport.width() / request.zoom))));
@@ -88,7 +91,7 @@ PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken 
         if (result.gpu.isNull()) result.error = QStringLiteral("Unable to allocate GPU source staging image");
         if (cancelled(cancel)) return {};
         if (result.error.isEmpty()) {
-            const qint64 bytes = result.normal.sizeInBytes() + result.fast.sizeInBytes() + result.gpu.sizeInBytes();
+            const qint64 bytes = result.normal.sizeInBytes() + result.fast.sizeInBytes() + result.gpu.sizeInBytes()+sizeof(SpatialDehaze::Airlight);
             QMutexLocker lock(&cache.mutex);
             if (bytes <= qint64(cache.entries.maxCost()) * 1024) {
                 cache.entries.insert(cacheKey, new PreparedPreview(result), int((bytes + 1023) / 1024));

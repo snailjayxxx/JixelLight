@@ -27,6 +27,7 @@ from ValidateTangentialGeometry import validate_tangential
 from ValidateDenoise import validate_denoise
 from ValidateClarity import validate_clarity
 from ValidateTexture import validate_texture
+from ValidateDehaze import validate_dehaze
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -310,6 +311,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_texture(executable, environment, Path(texture_temp) / mode,
                 reports / ('texture-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # Preserve all original76 modes and append the two CPU-first dehaze contexts.
+    with tempfile.TemporaryDirectory(prefix='jixellight-dehaze-package-') as dehaze_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_dehaze(executable, environment, Path(dehaze_temp) / mode,
+                reports / ('dehaze-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

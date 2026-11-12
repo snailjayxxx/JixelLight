@@ -1,5 +1,5 @@
 layout(local_size_x=16,local_size_y=16) in;
-layout(std140,binding=0) uniform Plan {vec4 p[56];};
+layout(std140,binding=0) uniform Plan {vec4 p[58];};
 layout(rgba32f,binding=1) readonly uniform image2D guideImage;
 layout(rgba32f,binding=2) writeonly uniform image2D horizontalImage;
 layout(std140,binding=3) uniform Kernel {vec4 weights[6];};
