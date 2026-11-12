@@ -9,8 +9,14 @@ QColorSpace namedSpace(ColorManagement::OutputSpace space) {
         return QColorSpace(QColorSpace::DisplayP3);
     case ColorManagement::OutputSpace::AdobeRgb:
         return QColorSpace(QColorSpace::AdobeRgb);
-    case ColorManagement::OutputSpace::ProPhotoRgb:
-        return QColorSpace(QColorSpace::ProPhotoRgb);
+    case ColorManagement::OutputSpace::ProPhotoRgb: {
+        // The established CPU/GPU output encoder is pure gamma1.8, while
+        // Qt's named ROMM/ProPhoto transfer has a linear toe. Describe the
+        // existing pixels accurately without changing their color math.
+        QColorSpace profile(QColorSpace::Primaries::ProPhotoRgb,QColorSpace::TransferFunction::Gamma,1.8f);
+        profile.setDescription(QStringLiteral("ProPhoto RGB (gamma 1.8)"));
+        return profile;
+    }
     case ColorManagement::OutputSpace::SRgb:
     default:
         return QColorSpace(QColorSpace::SRgb);
