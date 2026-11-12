@@ -224,20 +224,104 @@ private slots:
         }
         QCOMPARE(cases,64);
     }
-    void luminanceMaskAlwaysUploadsTheCompleteCpuReference() {
+    void luminanceMaskMatchesReferenceAcrossSourcesAndOutputs() {
         QImage source(47,43,QImage::Format_RGBA32FPx4);const float alpha[]{0,1.e-8f,.4f,1};
         for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {auto *q=reinterpret_cast<float *>(source.scanLine(y))+4*x;q[0]=-.04f+2.f*x/46;q[1]=.02f+1.5f*y/42;q[2]=.2f;q[3]=alpha[(x+y)%4];}
-        int cases=0;
+        int cases=0,compute=0,cpu=0;
         for(bool integer:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)for(double exposure:{-2.7,1.9})for(bool inverted:{false,true}) {
             AdjustmentState state;state.luminanceMaskEnabled=true;state.luminanceMaskExposure=exposure;state.luminanceMaskInverted=inverted;state.luminanceMaskLower=.04;state.luminanceMaskUpper=.3;state.luminanceMaskFeather=.03;
             state.denoiseLuma=71;state.denoiseChroma=83;state.dehazeAmount=53;state.textureAmount=57;state.clarityAmount=-41;state.sharpenAmount=61;state.grainAmount=19;state.pointColorEnabled=true;state.pointColorHue=39;
             const auto input=integer?ImagePipeline::rgba64Source(source):source;const auto space=ColorManagement::OutputSpace(output);const auto enc=ImagePipeline::InputEncoding(encoding);
-            const auto actual=render(input,state,true,enc,space,{0,0,1,1},true);QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,enc,space));
-            QVERIFY(!expected.isNull());for(int y=0;y<input.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(input.width())*8)==0);
-            QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));QCOMPARE(actual.diagnostic["luminance_mask"].toString(),QString("cpu-reference"));QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("luminance-mask-cpu-stage"));
-            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);++cases;
+            verifyParity(input,state,enc,space,true,"luminance mask full stack");if(QTest::currentTestFailed())return;
+            const bool fallback=output==2||(!integer&&encoding==1&&output==3);
+            QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);fallback?++cpu:++compute;
+            const auto actual=render(input,state,false,enc,space,{0,0,1,1},true);
+            QCOMPARE(actual.diagnostic["producer"].toString(),fallback?QString("cpu-reference-upload"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["luminance_mask"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),fallback?(output==3?QString("signed-linear-prophoto"):QString("existing-color-or-brush")):QString("none"));
+            if(fallback){const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,enc,space));for(int y=0;y<input.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(input.width())*8)==0);}
+            ++cases;
         }
-        QCOMPARE(cases,64);
+        QCOMPARE(cases,64);QCOMPARE(compute,44);QCOMPARE(cpu,20);
+    }
+    void luminanceMaskNarrowShouldersSignedHdrAndAlphaHoles() {
+        int cases=0;
+        for(double feather:{.001,.003,.03,.2})for(double lower:{0.,.1,1.5}) {
+            QImage source(53,47,QImage::Format_RGBA32FPx4);
+            for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+                auto *q=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+                const float target=float(lower)+(y%2?.1f:0)+float(feather)*(float(x)/52*4-2);
+                q[0]=-.3f+2.f*y/46;q[2]=.2f;
+                q[1]=(target-.2880402f*q[0]-.0000857f*q[2])/.7118741f;
+                const float alpha[]{0,1.e-9f,1.f/65535.f,.8f,1};q[3]=alpha[(x+y)%5];
+            }
+            for(int output=0;output<4;++output)for(double exposure:{-3.,3.})for(bool invert:{false,true}) {
+                AdjustmentState state;state.luminanceMaskEnabled=true;state.luminanceMaskExposure=exposure;
+                state.luminanceMaskLower=lower;state.luminanceMaskUpper=lower+.1;state.luminanceMaskFeather=feather;state.luminanceMaskInverted=invert;
+                state.exposure=.3;state.temperature=12;state.tint=-7;
+                verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"luminance narrow/signed/HDR");
+                if(QTest::currentTestFailed())return;QCOMPARE(engine->lastProcessUsedCpuFallback(),output==3);++cases;
+            }
+        }
+        QCOMPARE(cases,192);
+    }
+    void luminanceMaskEditsKeepEveryResidentSpatialStageAndSource() {
+        QImage source(83,89,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.2f+.03f*std::sin(float(x));p[1]=.3f+.04f*std::cos(float(y));p[2]=.1f;p[3]=(x+y)%3?.7f:0;}
+        AdjustmentState state;state.denoiseLuma=71;state.denoiseChroma=83;state.dehazeAmount=53;state.textureAmount=61;state.clarityAmount=37;
+        const auto counters=[&]{return std::array<quint64,15>{engine->sourceUploads(),engine->denoiseGuideDispatches(),engine->denoiseFilterDispatches(),engine->dehazeGuideDispatches(),engine->dehazeHorizontalDispatches(),engine->dehazeVerticalDispatches(),engine->dehazeFilterDispatches(),engine->textureGuideDispatches(),engine->textureSmallHorizontalDispatches(),engine->textureSmallVerticalDispatches(),engine->textureLargeHorizontalDispatches(),engine->textureFilterDispatches(),engine->clarityGuideDispatches(),engine->clarityHorizontalDispatches(),engine->clarityFilterDispatches()};};
+        const auto verify=[&]{verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"luminance resident stages");QVERIFY(!engine->lastProcessUsedCpuFallback());};
+        verify();const auto initial=counters();
+        for(int i=0;i<18;++i){state.luminanceMaskEnabled=i%5!=0;state.luminanceMaskExposure=(i%2?-1:1)*(.1+i*.15);state.luminanceMaskInverted=i%3==0;state.luminanceMaskLower=.01+i*.01;state.luminanceMaskUpper=.3+i*.02;state.luminanceMaskFeather=.001+i*.01;verify();if(QTest::currentTestFailed())return;QCOMPARE(counters(),initial);}
+        state.pointColorEnabled=true;state.pointColorHue=30;state.pointColorHueRange=1;
+        verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,true,"luminance inherited precision fallback");QVERIFY(engine->lastProcessUsedCpuFallback());QCOMPARE(counters(),initial);
+        state.pointColorEnabled=false;verify();QCOMPARE(counters(),initial);
+    }
+    void luminanceMaskRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const auto source=loaded.image.copy((loaded.image.width()-512)/2,(loaded.image.height()-512)/2,512,512);
+        for(int output=0;output<4;++output)for(bool denoise:{false,true}) {
+            AdjustmentState state;state.luminanceMaskEnabled=true;state.luminanceMaskExposure=-1.9;state.luminanceMaskLower=.08;state.luminanceMaskUpper=.35;state.luminanceMaskFeather=.03;state.luminanceMaskInverted=denoise;
+            state.dehazeAmount=65;if(denoise){state.denoiseLuma=70;state.denoiseChroma=90;}
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"real Sony luminance mask");
+            if(QTest::currentTestFailed())return;QVERIFY(!engine->lastProcessUsedCpuFallback());
+        }
+    }
+    void luminanceMaskRetainsExplicitSourceAndBrushCpuPolicies() {
+        QImage source(39,41,QImage::Format_RGBA32FPx4);
+        const float alpha[]{0,1.e-8f,1.f/65535.f,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.2f+.08f*std::sin(float(x));p[1]=.3f+.04f*std::cos(float(y));p[2]=.1f;p[3]=alpha[(x+y)%6];}
+        for(bool integer:{false,true})for(int encoding=0;encoding<2;++encoding)for(int output=0;output<4;++output)for(double exposure:{-3.,3.}) {
+            AdjustmentState state;state.luminanceMaskEnabled=true;state.luminanceMaskExposure=exposure;state.luminanceMaskLower=.1;state.luminanceMaskUpper=.3;state.luminanceMaskFeather=.001;
+            state.denoiseLuma=77;state.denoiseChroma=83;state.dehazeAmount=53;state.textureAmount=57;state.clarityAmount=-41;
+            auto input=integer?ImagePipeline::rgba64Source(source):source;
+            if(!integer)reinterpret_cast<float *>(input.scanLine(0))[3]=std::numeric_limits<float>::denorm_min();
+            if(integer){BrushMaskGeometry::Stroke paint;paint.style={.2,.4,.8};paint.dabs={{{.5,.5},.7}};state.brushMasks.layers={{"luminance-reference",true,.6,{paint}}};}
+            const auto space=ColorManagement::OutputSpace(output);const auto actual=render(input,state,true,ImagePipeline::InputEncoding(encoding),space,{0,0,1,1},true);
+            QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
+            const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),space));
+            for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
+            QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));QCOMPARE(actual.diagnostic["luminance_mask"].toString(),QString("cpu-reference"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),integer?QString("existing-color-or-brush"):QString("dehaze-near-zero-alpha"));
+            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
+        }
+    }
+    void luminanceMaskComposesExistingBrightPerceptualPolicy() {
+        QImage source(41,37,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.1f+.1f*x/40;p[1]=.15f+.1f*y/36;p[2]=.1f;p[3]=(x+y)%3?.7f:0;}
+        const bool restricted=rhi->backend()==QRhi::D3D11||rhi->backend()==QRhi::OpenGLES2;
+        for(int output=0;output<4;++output)for(double exposure:{-3.,2.})for(bool inverted:{false,true}) {
+            AdjustmentState state;state.exposure=.5;state.saturation=13;state.vibrance=12;
+            state.luminanceMaskEnabled=true;state.luminanceMaskExposure=exposure;state.luminanceMaskLower=.1;state.luminanceMaskUpper=.3;state.luminanceMaskFeather=.02;state.luminanceMaskInverted=inverted;
+            const auto space=ColorManagement::OutputSpace(output);
+            verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,"luminance bright perceptual policy");if(QTest::currentTestFailed())return;
+            const bool fallback=restricted&&exposure>0;QCOMPARE(engine->lastProcessUsedCpuFallback(),fallback);
+            const auto actual=render(source,state,false,ImagePipeline::InputEncoding::LinearProPhoto,space,{0,0,1,1},true);
+            QCOMPARE(actual.diagnostic["luminance_mask"].toString(),fallback?QString("cpu-reference"):QString("gpu-compute"));
+            if(fallback){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
+        }
     }
     void pointColorMatchesReferenceAcrossSourcesAndDensities() {
         QImage integer(137,139,QImage::Format_RGBA64),floating(137,139,QImage::Format_RGBA32FPx4);
@@ -483,8 +567,8 @@ private slots:
     void pointColorNarrowRangesHueSeamsAndNeutrals() {
         constexpr float Pi=3.14159265358979323846f;int compute=0,cpu=0;
         for(const auto center : {PointColor::Lab{.62f,.08f,359.f},PointColor::Lab{.035f,.012f,179.f},PointColor::Lab{.6f,0,0}})
-        for(int range=0;range<9;++range) {
-            const float rL=(range==0||range==3)?.001f:range==1?.003f:.4f,rC=(range==0||range==4)?.001f:range==1?.02f:.12f,rH=(range==0||range==5)?1:range==6?2:range==7?3:range==8?5:range==2?180:45;
+        for(int range=0;range<13;++range) {
+            const float rL=(range==0||range==3)?.001f:range==1?.003f:.4f,rC=(range==0||range==4)?.001f:range==1?.02f:.12f,rH=(range==0||range==5)?1:range==6?2:range==7?3:range==8?5:range==9?10:range==10?20:range==11?44.9f:range==2?180:45;
             const float angle=center.b*(Pi/180.f);QImage source(31,29,QImage::Format_RGBA32FPx4);
             for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
                 const float t=float((x*7+y*11)%101)/100.f;
@@ -499,14 +583,14 @@ private slots:
                 state.pointColorHueRange=rH;state.pointColorChromaRange=rC;state.pointColorLightnessRange=rL;
                 verifyParity(source,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),true,"Point Color narrow/seam/neutral");
                 if(QTest::currentTestFailed())return;
-                const bool precise=range==0||range==3||range==4||range==5||range==6||range==7;precise?++cpu:++compute;QCOMPARE(engine->lastProcessUsedCpuFallback(),precise);
+                const bool precise=range==0||range==3||range==4||range==5||range==6||range==7||range==8||range==9||range==10||range==11;precise?++cpu:++compute;QCOMPARE(engine->lastProcessUsedCpuFallback(),precise);
                 const auto actual=render(source,state,false,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),{0,0,1,1},true);
                 QCOMPARE(actual.diagnostic["point_color"].toString(),precise?QString("cpu-reference"):QString("gpu-compute"));
                 QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),precise?QString("point-color-narrow-range"):QString("none"));
                 if(precise){const auto expected=ImagePipeline::processWithPlan(source,ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output)));for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);}
             }
         }
-        QCOMPARE(compute,72);QCOMPARE(cpu,144);qInfo()<<"Point Color216 ranges: compute"<<compute<<"exact CPU precision"<<cpu;
+        QCOMPARE(compute,72);QCOMPARE(cpu,240);qInfo()<<"Point Color312 ranges: compute"<<compute<<"exact CPU precision"<<cpu;
     }
     void pointColorEditsKeepEveryResidentSpatialStageAndSource() {
         QImage source(83,89,QImage::Format_RGBA32FPx4);
@@ -517,7 +601,7 @@ private slots:
         verify();const auto initial=counters();
         for(int i=0;i<18;++i) {
             state.pointColorEnabled=i%5!=0;state.pointColorHue=(i%2?-1:1)*(10+i*9);state.pointColorSaturation=(i%3-1)*49;state.pointColorLuminance=(i%4-2)*19;
-            state.pointColorLab={.5+i*.01,.02-i*.001,.03};state.pointColorHueRange=1+i*9;state.pointColorChromaRange=.001+i*.01;state.pointColorLightnessRange=.001+i*.02;
+            state.pointColorLab={.5+i*.01,.02-i*.001,.03};state.pointColorHueRange=45+i*7;state.pointColorChromaRange=.001+i*.01;state.pointColorLightnessRange=.001+i*.02;
             verify();if(QTest::currentTestFailed())return;QCOMPARE(counters(),initial);
         }
         state.pointColorEnabled=true;state.pointColorChromaRange=.001;state.pointColorLightnessRange=.001;
