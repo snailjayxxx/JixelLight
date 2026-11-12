@@ -51,6 +51,7 @@ if(NOT JIXELLIGHT_GIT_COMMIT)
     set(JIXELLIGHT_GIT_COMMIT "unknown")
 endif()
 add_library(JixelLightCore STATIC
+    core/commands/CommandSession.cpp
     app/PhotoController.cpp
     app/PhotoControllerMoveImport.cpp
     app/PhotoControllerXmp.cpp
@@ -168,6 +169,10 @@ enable_testing()
 qt_add_executable(JixelLightCoreTests tests/CoreTests.cpp)
 target_link_libraries(JixelLightCoreTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME core-tests COMMAND JixelLightCoreTests -o core-results.txt,txt -o -,txt)
+qt_add_executable(JixelLightCommandSessionTests tests/CommandSessionTests.cpp)
+target_link_libraries(JixelLightCommandSessionTests PRIVATE JixelLightCore Qt6::Test)
+add_test(NAME command-session COMMAND JixelLightCommandSessionTests -o command-session-results.txt,txt -o -,txt)
+set_tests_properties(command-session PROPERTIES TIMEOUT 60)
 qt_add_executable(JixelLightProjectRelinkTests tests/ProjectRelinkTests.cpp)
 target_link_libraries(JixelLightProjectRelinkTests PRIVATE JixelLightCore Qt6::Test)
 add_test(NAME project-relink COMMAND JixelLightProjectRelinkTests -o project-relink-results.txt,txt -o -,txt)

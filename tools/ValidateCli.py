@@ -118,6 +118,86 @@ def main():
         rendered = json.loads(run('--commands', commands, '--space', 'display-p3', source, destination).stdout)
         assert rendered['adjustments']['exposure'] == 1 and rendered['backend'] == 'cpu-reference'
         assert destination.read_bytes()[24] == 16  # PNG IHDR bit depth, independent of Qt reader.
+        # Session commands freeze each export at its own edit/history position.
+        # The same checks execute against both SDK-stripped installed CLIs.
+        assert schema['session']['maximum_commands'] == 10000
+        assert not schema['session']['catalog_writes'] and not schema['session']['source_writes']
+        session_file = root / 'session.json'
+        session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
+                         {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
+                         {'command': 'mask.luminance.range', 'lower': .2, 'upper': 1.2, 'feather': .3},
+                         {'command': 'mask.luminance.set', 'parameter': 'exposure', 'value': .5},
+                         {'command': 'mask.luminance.enable', 'enabled': True}]
+        session_commands = [
+            {'command': 'photo.import', 'photo': 'a', 'source': source.name},
+            {'command': 'edit.batch', 'commands': session_edits},
+            {'command': 'export.run', 'destination': 'session-edited.png', 'space': 'display-p3'},
+            {'command': 'photo.import', 'photo': 'b', 'source': source.name},
+            {'command': 'develop.set', 'parameter': 'exposure', 'value': -.5},
+            {'command': 'export.run', 'destination': 'session-b.png'},
+            {'command': 'photo.select', 'photo': 'a'},
+            {'command': 'history.undo'},
+            {'command': 'export.run', 'destination': 'session-original.png'},
+            {'command': 'history.redo'},
+            {'command': 'export.run', 'destination': 'session-redone.png', 'space': 'display-p3'}]
+        session_manifest = dict(schema=1, engine=rendered['engine'], commands=session_commands)
+        session_file.write_text(json.dumps(session_manifest))
+        session_sha = hashlib.sha256(session_file.read_bytes()).hexdigest()
+        session_result = json.loads(run('--session', session_file).stdout)
+        assert session_result['mode'] == 'session' and session_result['completed'] == 4 and session_result['ok']
+        assert session_result['session']['photo_count'] == 2 and session_result['session']['command_count'] == 16
+        assert session_result['session']['manifest_sha256'] == session_sha
+        assert [r['photo'] for r in session_result['results']] == ['a', 'b', 'a', 'a']
+        assert session_result['results'][1]['adjustments']['exposure'] == -.5
+        assert session_result['results'][2]['adjustments']['exposure'] == 0
+        oracle_commands = root / 'session-oracle-commands.json'
+        oracle_commands.write_text(json.dumps(session_edits))
+        session_oracle = root / 'session-oracle.png'
+        run('--commands', oracle_commands, '--space', 'display-p3', source, session_oracle)
+        session_original = root / 'session-original-oracle.png'
+        run(source, session_original)
+        assert png16_pixels(root / 'session-edited.png') == png16_pixels(session_oracle)
+        assert png16_pixels(root / 'session-redone.png') == png16_pixels(session_oracle)
+        assert png16_pixels(root / 'session-original.png') == png16_pixels(session_original)
+        assert hashlib.sha256(session_file.read_bytes()).hexdigest() == session_sha
+        for extra in [('--batch', session_file), ('--catalog', root), ('--commands', oracle_commands),
+                      ('--space', 'srgb'), (source, root / 'unused.png')]:
+            run('--session', session_file, *extra, success=False)
+        late_output = root / 'session-late-invalid.png'
+        for tail in [{'command': 'history.redo'}, {'command': 'photo.select', 'photo': 'missing'},
+                     {'command': 'develop.set', 'parameter': 'unknown', 'value': 1},
+                     {'command': 'photo.import', 'photo': 'a', 'source': source.name}]:
+            invalid_session = copy.deepcopy(session_manifest)
+            invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
+            session_file.write_text(json.dumps(invalid_session))
+            run('--session', session_file, success=False)
+            assert not late_output.exists()
+        invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name},
+                                       {'command': 'export.run', 'destination': source.name}]
+        session_file.write_text(json.dumps(invalid_session))
+        run('--session', session_file, success=False)
+        assert not late_output.exists() and hashlib.sha256(source.read_bytes()).hexdigest() == original
+        invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name},
+                                       {'command': 'export.run', 'destination': late_output.name}]
+        session_file.write_text(json.dumps(invalid_session))
+        run('--session', session_file, success=False)
+        assert not late_output.exists()
+        broken_session_source = root / 'session-broken.png'
+        broken_session_source.write_bytes(b'owned unreadable image')
+        partial_output = root / 'session-partial.png'
+        never_output = root / 'session-never.png'
+        invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': partial_output.name},
+                                       {'command': 'photo.import', 'photo': 'broken', 'source': broken_session_source.name},
+                                       {'command': 'export.run', 'destination': never_output.name},
+                                       {'command': 'photo.select', 'photo': 'a'},
+                                       {'command': 'export.run', 'destination': late_output.name}]
+        session_file.write_text(json.dumps(invalid_session))
+        partial_session = json.loads(run('--session', session_file, success=False).stdout)
+        assert not partial_session['ok'] and partial_session['completed'] == 1
+        assert partial_session['failed'] == 1 and partial_session['not_attempted'] == 1
+        assert png16_pixels(partial_output) == png16_pixels(session_original)
+        assert not never_output.exists() and not late_output.exists()
+        assert broken_session_source.read_bytes() == b'owned unreadable image'
         # Parse container metadata independently from the Qt decoder. These
         # checks also run against the deployed CLI with SDK paths removed.
         tiff = root / 'result.tiff'
@@ -1031,7 +1111,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'color-range-mask-analytic-export', 'color-mask-invert-disable-reset', 'color-mask-atomic-type-rejection', 'luminance-range-mask-analytic-export', 'luminance-mask-invert-disable-reset', 'luminance-mask-atomic-range-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['session-ordered-exports', 'session-per-photo-undo-redo', 'session-batch-mask-png16-ICC-oracle', 'session-late-failure-atomicity', 'session-mode-and-no-overwrite', 'schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'color-range-mask-analytic-export', 'color-mask-invert-disable-reset', 'color-mask-atomic-type-rejection', 'luminance-range-mask-analytic-export', 'luminance-mask-invert-disable-reset', 'luminance-mask-atomic-range-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

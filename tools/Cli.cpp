@@ -1,4 +1,5 @@
 #include "core/commands/CommandRegistry.h"
+#include "core/commands/CommandSession.h"
 #include "core/cache/SourceCache.h"
 #include "core/export/JpegExporter.h"
 #include "core/export/PngExporter.h"
@@ -12,6 +13,7 @@
 #include "core/project/ProjectDatabase.h"
 #include "core/library/CatalogSelection.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
@@ -32,13 +34,16 @@ struct ExportJob {
     QJsonArray commands;
 };
 
-bool readJson(const QString &path, qint64 limit, QJsonDocument *document, QString *error) {
+bool readJson(const QString &path, qint64 limit, QJsonDocument *document, QString *error,QByteArray *snapshot=nullptr) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) { *error=file.errorString(); return false; }
     if (file.size()>limit) { *error="JSON file exceeds size limit"; return false; }
+    const auto bytes=file.read(limit+1);
+    if(bytes.size()>limit||!file.atEnd()||file.error()!=QFileDevice::NoError){*error="Cannot read bounded JSON snapshot";return false;}
     QJsonParseError parseError;
-    *document=QJsonDocument::fromJson(file.readAll(),&parseError);
+    *document=QJsonDocument::fromJson(bytes,&parseError);
     if (parseError.error!=QJsonParseError::NoError) { *error=parseError.errorString(); return false; }
+    if(snapshot)*snapshot=bytes;
     return true;
 }
 
@@ -94,6 +99,27 @@ bool readCatalogVersions(const QString &path,const QStringList &keys,QVector<Pro
         photos->clear(); photos->reserve(selection.indices.size());
         for (const auto index : selection.indices) photos->push_back(std::move(all[index]));
     }
+    return true;
+}
+
+bool readSession(const QString &path,QVector<ExportJob> *jobs,CommandSession *session,QString *manifestSha,QString *error) {
+    QJsonDocument document;QByteArray bytes;if(!readJson(path,4*1024*1024,&document,error,&bytes))return false;
+    if(!document.isObject()){*error="Session must be an object";return false;}
+    QHash<QString,QVariantMap> metadata;
+    const auto sourceContext=[&](const QString &source,bool needsMetadata,QString *why)->std::optional<CommandRegistry::LookContext>{
+        const QFileInfo file(source);
+        if(!file.isFile()||!file.isReadable()){*why="Source is not a readable file: "+source;return {};}
+        CommandRegistry::LookContext context;context.rawSource=RawDecoder::isRawFile(source);
+        if(needsMetadata){
+            const auto key=file.canonicalFilePath();
+            if(!metadata.contains(key))metadata.insert(key,MetadataReader::read(source));
+            context.metadata=metadata.value(key);
+        }
+        return context;
+    };
+    if(!CommandSession::compile(document.object(),QFileInfo(path).absolutePath(),sourceContext,session,error))return false;
+    *manifestSha=QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex());
+    for(const auto &snapshot:session->exports)jobs->push_back({snapshot.source,snapshot.destination,snapshot.space,snapshot.state});
     return true;
 }
 
@@ -254,6 +280,7 @@ int main(int argc, char **argv) {
     parser.addOption({"schema","Print supported command schema."});
     parser.addOption({"commands","JSON array of shared Develop commands.","file"});
     parser.addOption({"batch","Execute a validated JSON export plan; relative paths use its directory. Stop on runtime failure, retaining completed outputs.","file"});
+    parser.addOption({"session","Execute transient photo/import/select/edit/history/export commands after whole-plan validation. No catalog writes.","file"});
     parser.addOption({"catalog","Export all saved catalog versions from a read-only snapshot.","project.jlp"});
     parser.addOption({"list-catalog","List saved catalog version keys and annotations without reading image files. Requires --catalog."});
     parser.addOption({"catalog-key","Select an exact saved catalog key; repeat for multiple versions. Saved catalog order is retained.","key"});
@@ -268,6 +295,7 @@ int main(int argc, char **argv) {
     auto fail=[](const QString &error) { QTextStream(stderr) << error << '\n'; return 2; };
     if (parser.isSet("schema")) {
         auto schema=CommandRegistry::schema();
+        schema["session"]=CommandSession::schema();
         schema["batch"]=QJsonObject{{"schema",1},{"engine",ProcessingPlan::EngineVersion},
             {"required_fields",QJsonArray{"schema","engine","jobs"}},
             {"job_required_fields",QJsonArray{"source","destination","commands"}},
@@ -289,13 +317,18 @@ int main(int argc, char **argv) {
     }
     if (!ColorManagement::keys().contains(parser.value("space"))) return fail("Unknown output color space");
     const auto paths=parser.positionalArguments();
-    const bool batch=parser.isSet("batch"), catalog=parser.isSet("catalog"), multi=batch||catalog;
-    QVector<ExportJob> jobs; QString error;
+    const bool batch=parser.isSet("batch"), catalog=parser.isSet("catalog"), sessionMode=parser.isSet("session"), multi=batch||catalog||sessionMode;
+    QVector<ExportJob> jobs; QString error,sessionSha;CommandSession session;
+    if(sessionMode&&(batch||catalog||!paths.isEmpty()||parser.isSet("commands")||parser.isSet("space")||parser.isSet("output-dir")
+        ||parser.isSet("format")||parser.isSet("name-template")||parser.isSet("sequence-start")||parser.isSet("list-catalog")||parser.isSet("catalog-key")))
+        return fail("--session cannot be combined with positional paths, other modes or export settings");
     if (batch && catalog) return fail("Choose either --batch or --catalog");
     if (!catalog && (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")
         || parser.isSet("list-catalog") || parser.isSet("catalog-key")))
         return fail("--output-dir, --format, --name-template, --sequence-start, --list-catalog and --catalog-key require --catalog");
-    if (catalog) {
+    if(sessionMode){
+        if(!readSession(parser.value("session"),&jobs,&session,&sessionSha,&error))return fail(error);
+    } else if (catalog) {
         if (!paths.isEmpty()) return fail("Catalog cannot be combined with positional paths");
         if (parser.isSet("list-catalog")) {
             if (parser.isSet("output-dir") || parser.isSet("format") || parser.isSet("name-template") || parser.isSet("sequence-start")
@@ -320,7 +353,7 @@ int main(int argc, char **argv) {
         if (!paths.isEmpty() || parser.isSet("commands")) return fail("Batch cannot be combined with positional paths or --commands");
         if (!readBatch(parser.value("batch"),parser.value("space"),&jobs,&error)) return fail(error);
     } else {
-        if (paths.size()!=2) return fail("Expected source and destination, --batch or --catalog");
+        if (paths.size()!=2) return fail("Expected source and destination, --batch, --session or --catalog");
         ExportJob job{paths[0],paths[1],parser.value("space"),{}};
         if (RawDecoder::isRawFile(job.source)) job.state.look.mode="as-shot";
         if (parser.isSet("commands")) {
@@ -346,9 +379,13 @@ int main(int argc, char **argv) {
         ++completed;
     }
     const bool ok=completed==jobs.size();
-    QTextStream(stdout)<<QJsonDocument(QJsonObject{{"schema",1},{"mode",catalog?"catalog":"batch"},{"ok",ok},
+    QJsonObject report{{"schema",1},{"mode",sessionMode?"session":catalog?"catalog":"batch"},{"ok",ok},
         {"backend","cpu-reference"},{"source_commit",JIXELLIGHT_GIT_COMMIT},{"engine",ProcessingPlan::EngineVersion},
         {"job_count",qint64(jobs.size())},{"completed",completed},{"failed",ok?0:1},
-        {"not_attempted",qint64(jobs.size()-results.size())},{"results",results}}).toJson();
+        {"not_attempted",qint64(jobs.size()-results.size())},{"results",results}};
+    if(sessionMode){report["session"]=QJsonObject{{"photo_count",session.photoCount},{"command_count",session.commandCount},
+        {"charged_state_bytes",session.chargedStateBytes},{"manifest_sha256",sessionSha},{"catalog_writes",false}};
+        for(qsizetype index=0;index<results.size();++index){auto result=results[index].toObject();result["photo"]=session.exports[index].photo;results[index]=result;}report["results"]=results;}
+    QTextStream(stdout)<<QJsonDocument(report).toJson();
     return ok?0:fail(error);
 }
