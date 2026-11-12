@@ -88,7 +88,7 @@ add_library(JixelLightCore STATIC
     core/look/LookCalibration.cpp
     core/pipeline/ImagePipeline.cpp
     core/pipeline/BrushRenderRequest.cpp
-    core/pipeline/SpatialClarity.cpp core/pipeline/SpatialTexture.cpp core/pipeline/SpatialDehaze.cpp
+    core/pipeline/SpatialClarity.cpp core/pipeline/SpatialTexture.cpp core/pipeline/SpatialDehaze.cpp core/pipeline/PointColor.cpp
     core/pipeline/SpatialDenoise.cpp
     core/pipeline/ColorStageDiagnostics.cpp
     core/pipeline/GeometryState.cpp
@@ -122,7 +122,7 @@ endif()
 if(APPLE)
     target_link_libraries(JixelLightCore PRIVATE Qt6::GuiPrivate)
 endif()
-qt_add_executable(JixelLight app/main.cpp app/DehazeSmokeRun.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
+qt_add_executable(JixelLight app/main.cpp app/PointColorSmokeRun.cpp app/DehazeSmokeRun.cpp app/TextureSmokeRun.cpp app/ClaritySmokeRun.cpp app/DenoiseSmokeRun.cpp app/TangentialGeometrySmokeRun.cpp app/RawPressureEventSmokeRun.cpp tests/brush_tile_oracle/BrushTileOriginalPipeline.cpp app/ProjectMenuLayoutSmokeRun.cpp app/XmpMergeSmokeRun.cpp app/NativeBrushMonitorSmokeRun.cpp app/NativeBrushSonySmokeRun.cpp app/NativeBrushSmokeRun.cpp app/NativeBrushDeliverySmokeRun.cpp app/EditRecipeSmokeRun.cpp app/EditRecipeClipboardSmokeRun.cpp app/RecipeClipboardReader.cpp app/RecipeClipboardReader.h app/ShortcutHelpSmokeRun.cpp app/BrushTabletInput.cpp app/BrushTabletInput.h app/BrushPressureSmokeRun.cpp app/BrushPressureEdgesSmokeRun.cpp app/BrushRecoverySmokeRun.cpp app/BrushStabilizationSmokeRun.cpp app/SonyBrushPressureSmokeRun.cpp app/SmokeRun.cpp app/BrushSmokeRun.cpp app/BrushEraseSmokeRun.cpp diagnostics/CrashReporter.cpp)
 target_link_libraries(JixelLight PRIVATE JixelLightCore)
 target_link_libraries(JixelLight PRIVATE Qt6::GuiPrivate)
 if(APPLE)
@@ -554,3 +554,15 @@ target_link_libraries(JixelLightDehazeCacheTests PRIVATE JixelLightCore Qt6::Tes
 set_target_properties(JixelLightDehazeCacheTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME dehaze-preview-cache COMMAND JixelLightDehazeCacheTests -o dehaze-cache-results.txt,txt -o -,txt)
 set_tests_properties(dehaze-preview-cache PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightPointColorTests tests/PointColorTests.cpp)
+target_link_libraries(JixelLightPointColorTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightPointColorTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME point-color COMMAND JixelLightPointColorTests -o point-color-results.txt,txt -o -,txt)
+set_tests_properties(point-color PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
+
+qt_add_executable(JixelLightPointColorWorkflowTests tests/PointColorWorkflowTests.cpp)
+target_link_libraries(JixelLightPointColorWorkflowTests PRIVATE JixelLightCore Qt6::Test)
+set_target_properties(JixelLightPointColorWorkflowTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME point-color-workflows COMMAND JixelLightPointColorWorkflowTests -o point-color-workflow-results.txt,txt -o -,txt)
+set_tests_properties(point-color-workflows PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_POINT_COLOR_EVIDENCE=${CMAKE_BINARY_DIR}/point-color-owned")

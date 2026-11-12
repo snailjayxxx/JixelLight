@@ -596,6 +596,12 @@ GETTER(grainAmount)
 GETTER(grainSize)
 GETTER(sharpenAmount)
 GETTER(sharpenRadius)
+GETTER(pointColorHue)
+GETTER(pointColorSaturation)
+GETTER(pointColorLuminance)
+GETTER(pointColorHueRange)
+GETTER(pointColorChromaRange)
+GETTER(pointColorLightnessRange)
 GETTER(dehazeAmount)
 GETTER(textureAmount)
 GETTER(clarityAmount)
@@ -634,7 +640,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "point_color_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -693,6 +699,7 @@ void PhotoController::setAdjustment(const char *name, double value, double Adjus
     const QString action=parameter.startsWith("vignette") ? QStringLiteral("vignette_adjustment")
         : parameter.startsWith("grain") ? QStringLiteral("grain_adjustment")
         : parameter.startsWith("sharpen") ? QStringLiteral("sharpen_adjustment")
+        : parameter.startsWith("pointColor") ? QStringLiteral("point_color_adjustment")
         : parameter.startsWith("dehaze") ? QStringLiteral("dehaze_adjustment")
         : parameter.startsWith("texture") ? QStringLiteral("texture_adjustment")
         : parameter.startsWith("clarity") ? QStringLiteral("clarity_adjustment")
@@ -734,6 +741,42 @@ void PhotoController::resetSharpen() {
     auto *state=mutableCurrentState();if(!state||(state->sharpenAmount==0&&state->sharpenRadius==3))return;
     m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","sharpen.reset"}});persistAndApply("sharpen_reset");
 }
+QColor PhotoController::pointColorColor() const {
+    const auto lab=currentState().pointColorLab;
+    const auto rgb=PointColor::toEncodedSrgb({float(lab[0]),float(lab[1]),float(lab[2])});
+    return QColor::fromRgbF(rgb[0],rgb[1],rgb[2]);
+}
+void PhotoController::setPointColorEnabled(bool enabled) {
+    auto *state=mutableCurrentState();if(!state||state->pointColorEnabled==enabled)return;
+    m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","point.color.enable"},{"enabled",enabled}});
+    persistAndApply("point_color_enable",{{"enabled",enabled}});
+}
+bool PhotoController::selectPointColor(const QColor &color) {
+    auto *state=mutableCurrentState();if(!state||!color.isValid())return false;
+    const QJsonArray rgb{color.redF(),color.greenF(),color.blueF()};auto changed=*state;
+    if(!CommandRegistry::execute(changed,{{"command","point.color.select"},{"color",rgb}}))return false;
+    if(changed.toJson()==state->toJson())return true;
+    m_photos[m_currentIndex].history.finish();*state=changed;persistAndApply("point_color_select");return true;
+}
+bool PhotoController::pickPointColor(double x,double y,double width,double height) {
+    if(!m_pointColorJob||!hasImage()||!previewReady()||m_preparing||m_cropEditing||m_closing||rendering()
+        ||brushDrawing()||brushRecoveryAvailable()||!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(width)||!std::isfinite(height)
+        ||width<=0||height<=0||x<0||y<0||x>width||y>height)return false;
+    const QPoint point(std::min(m_previewSource.width()-1,int(x/width*m_previewSource.width())),
+        std::min(m_previewSource.height()-1,int(y/height*m_previewSource.height())));
+    m_pointColorJob->submit({m_previewSource,gpuPlan(),point,m_photoEpoch,m_prepareGeneration,m_requestedRevision});
+    return true;
+}
+void PhotoController::resetPointColor() {
+    auto *state=mutableCurrentState();if(!state||!state->toJson().contains("pointColor"))return;
+    m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","point.color.reset"}});persistAndApply("point_color_reset");
+}
+void PhotoController::setPointColorHue(double value){setAdjustment("pointColorHue",value,&AdjustmentState::pointColorHue);}
+void PhotoController::setPointColorSaturation(double value){setAdjustment("pointColorSaturation",value,&AdjustmentState::pointColorSaturation);}
+void PhotoController::setPointColorLuminance(double value){setAdjustment("pointColorLuminance",value,&AdjustmentState::pointColorLuminance);}
+void PhotoController::setPointColorHueRange(double value){setAdjustment("pointColorHueRange",value,&AdjustmentState::pointColorHueRange);}
+void PhotoController::setPointColorChromaRange(double value){setAdjustment("pointColorChromaRange",value,&AdjustmentState::pointColorChromaRange);}
+void PhotoController::setPointColorLightnessRange(double value){setAdjustment("pointColorLightnessRange",value,&AdjustmentState::pointColorLightnessRange);}
 void PhotoController::setDehazeAmount(double value){setAdjustment("dehazeAmount",value,&AdjustmentState::dehazeAmount);}
 void PhotoController::resetDehaze() {
     auto *state=mutableCurrentState();if(!state||state->dehazeAmount==0)return;
@@ -1778,13 +1821,25 @@ PhotoController::~PhotoController() {
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
-    m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
+    m_pointColorJob.reset(); m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
     m_exportQueue.reset();
     flushEdits();
 }
 
 void PhotoController::initializeJobs() {
     initializeBrushPreview();
+    m_pointColorJob=std::make_unique<LatestJob<PointColorRequest,std::optional<PointColor::Lab>>>(
+        [](const PointColorRequest &request,const CancelToken &cancel) {
+            return ImagePipeline::samplePointColor(request.source,request.plan,request.point,cancel);
+        },[this](const PointColorRequest &request,std::optional<PointColor::Lab> result) {
+            if(m_closing||m_preparing||request.photo!=m_photoEpoch||request.generation!=m_prepareGeneration
+                ||request.revision!=m_requestedRevision)return;
+            if(!result){setStatus(uiText("该位置无法取色，请选择可见图像区域。","Cannot sample here. Choose a visible image area."));return;}
+            auto *state=mutableCurrentState();if(!state)return;auto candidate=*state;
+            if(!CommandRegistry::execute(candidate,{{"command","point.color.select.lab"},{"lab",QJsonArray{result->L,result->a,result->b}}}))return;
+            if(candidate.toJson()==state->toJson())return;
+            m_photos[m_currentIndex].history.finish();*state=std::move(candidate);persistAndApply("point_color_select");
+        });
     m_importNameDatesJob=std::make_unique<LatestJob<ImportNameDateRequest,QHash<QString,QString>>>(
         [](const ImportNameDateRequest &request,const CancelToken &cancel) {
             QHash<QString,QString> result;

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtCore
 
@@ -103,6 +104,7 @@ Rectangle {
     property bool radialMaskExpanded: false
     property bool blackWhiteExpanded: false
     property bool colorGradingExpanded: false
+    property bool pointColorExpanded: false
     color: "#15191f"
     border.color: "#292f37"
 
@@ -126,6 +128,14 @@ Rectangle {
         property alias radialMaskExpanded: root.radialMaskExpanded
         property alias blackWhiteExpanded: root.blackWhiteExpanded
         property alias colorGradingExpanded: root.colorGradingExpanded
+        property alias pointColorExpanded: root.pointColorExpanded
+    }
+    ColorDialog {
+        id: pointColorDialog; objectName: "pointColorDialog"
+        title: root.t("选择点颜色", "Choose Point Color")
+        selectedColor: root.controller.pointColorColor
+        options: ColorDialog.DontUseNativeDialog
+        onAccepted: root.controller.selectPointColor(selectedColor)
     }
     function t(zh, en) { return controller.language === "zh_CN" ? zh : en }
     function meta(key) {
@@ -394,6 +404,41 @@ Rectangle {
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("色相", "Hue"); from: -180; to: 180; value: root.controller.hue; onEdited: root.controller.hue = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("饱和度", "Saturation"); value: root.controller.saturation; onEdited: root.controller.saturation = newValue }
                 AdjustmentSlider { Layout.fillWidth: true; label: root.t("自然饱和度", "Vibrance"); value: root.controller.vibrance; onEdited: root.controller.vibrance = newValue }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                    ToolButton {
+                        objectName: "pointColorToggle"; Layout.fillWidth: true; Layout.minimumWidth: 0; font.bold: true
+                        text: (root.pointColorExpanded ? "▾ " : "▸ ") + root.t("点颜色（CPU）", "POINT COLOR (CPU)")
+                        onClicked: root.pointColorExpanded = !root.pointColorExpanded
+                    }
+                    Button { objectName: "pointColorReset"; text: root.t("重置", "Reset"); enabled: root.controller.hasImage; onClicked: root.controller.resetPointColor() }
+                }
+                ColumnLayout {
+                    objectName: "pointColorSection"; Layout.fillWidth: true; spacing: 6; visible: root.pointColorExpanded
+                    CheckBox {
+                        objectName: "pointColorEnable"; text: root.t("启用点颜色", "Enable Point Color")
+                        enabled: root.controller.hasImage; checked: root.controller.pointColorEnabled
+                        onToggled: root.controller.pointColorEnabled = checked
+                    }
+                    Flow {
+                        Layout.fillWidth: true; spacing: 5
+                        Rectangle { objectName: "pointColorSwatch"; width: 28; height: 28; radius: 4; color: root.controller.pointColorColor; border.color: "#8795a5" }
+                        Button { objectName: "pointColorChoose"; text: root.t("选择颜色", "Choose color"); enabled: root.controller.hasImage; onClicked: pointColorDialog.open() }
+                        Button { objectName: "pointColorPick"; text: root.t("吸管取色", "Pick from photo"); enabled: root.controller.previewReady && !root.controller.loading && !root.controller.rendering && !root.controller.brushDrawing && !root.controller.brushRecoveryAvailable; onClicked: root.controller.requestPointColorPicker() }
+                    }
+                    AdjustmentSlider { objectName: "pointColorHueControl"; labelWidth: 100; sliderObjectName: "pointColorHueSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("色相", "Hue"); from: -180; to: 180; decimals: 1; value: root.controller.pointColorHue * 1; onEdited: function(newValue) { root.controller.pointColorHue = newValue / 1 } }
+                    AdjustmentSlider { objectName: "pointColorSaturationControl"; labelWidth: 100; sliderObjectName: "pointColorSaturationSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("饱和度", "Saturation"); from: -100; to: 100; decimals: 1; value: root.controller.pointColorSaturation * 1; onEdited: function(newValue) { root.controller.pointColorSaturation = newValue / 1 } }
+                    AdjustmentSlider { objectName: "pointColorLuminanceControl"; labelWidth: 100; sliderObjectName: "pointColorLuminanceSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("明度", "Lightness"); from: -100; to: 100; decimals: 1; value: root.controller.pointColorLuminance * 1; onEdited: function(newValue) { root.controller.pointColorLuminance = newValue / 1 } }
+                    AdjustmentSlider { objectName: "pointColorHueRangeControl"; labelWidth: 100; sliderObjectName: "pointColorHueRangeSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("色相范围", "Hue range"); from: 1; to: 180; decimals: 1; value: root.controller.pointColorHueRange * 1; onEdited: function(newValue) { root.controller.pointColorHueRange = newValue / 1 } }
+                    AdjustmentSlider { objectName: "pointColorChromaRangeControl"; labelWidth: 100; sliderObjectName: "pointColorChromaRangeSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("彩度范围", "Chroma range"); from: 0.1; to: 100; decimals: 1; value: root.controller.pointColorChromaRange * 100; onEdited: function(newValue) { root.controller.pointColorChromaRange = newValue / 100 } }
+                    AdjustmentSlider { objectName: "pointColorLightnessRangeControl"; labelWidth: 100; sliderObjectName: "pointColorLightnessRangeSlider"; Layout.fillWidth: true; enabled: root.controller.hasImage && root.controller.pointColorEnabled; label: root.t("明度范围", "Lightness range"); from: 0.1; to: 100; decimals: 1; value: root.controller.pointColorLightnessRange * 100; onEdited: function(newValue) { root.controller.pointColorLightnessRange = newValue / 100 } }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 10; color: "#738293"
+                        text: root.t("当前使用 CPU 处理。吸管在点颜色调整前取样；色相、彩度和明度范围共同确定选区。切换显示器或导出色域不改变选区。",
+                            "CPU processing. The picker samples before Point Color. Hue, chroma and lightness ranges define the selection together. Display and export profiles preserve the selection.")
+                    }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {

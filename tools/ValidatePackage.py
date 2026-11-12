@@ -28,6 +28,7 @@ from ValidateDenoise import validate_denoise
 from ValidateClarity import validate_clarity
 from ValidateTexture import validate_texture
 from ValidateDehaze import validate_dehaze
+from ValidatePointColor import validate_pointColor
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -317,6 +318,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_dehaze(executable, environment, Path(dehaze_temp) / mode,
                 reports / ('dehaze-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # The original 78 modes remain mandatory before working Point Color QA.
+    with tempfile.TemporaryDirectory(prefix='jixellight-point-color-package-') as point_color_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_pointColor(executable, environment, Path(point_color_temp) / mode,
+                reports / ('point-color-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

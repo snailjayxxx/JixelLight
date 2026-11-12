@@ -39,6 +39,11 @@ struct AdjustmentState {
     double grainSize = 1.0;   // .5..4, relative to the post-crop image frame.
     double sharpenAmount = 0.0; // 0..100, independent encoded-luma unsharp mask.
     double sharpenRadius = 3.0; // .5..6 source pixels, after geometry/crop.
+    static constexpr std::array<double,3> DefaultPointColorLab{.627955f,.224863f,.125846f};
+    bool pointColorEnabled=false;
+    std::array<double,3> pointColorLab=DefaultPointColorLab; // Working Oklab; independent of output/monitor ICC.
+    double pointColorHue=0,pointColorSaturation=0,pointColorLuminance=0;
+    double pointColorHueRange=45,pointColorChromaRange=.12,pointColorLightnessRange=.4;
     double dehazeAmount = 0.0; // -100..100; atmospheric veil before texture/clarity.
     double textureAmount = 0.0; // -100..100, pre-tone medium-frequency detail.
     double clarityAmount = 0.0; // -100..100, pre-tone local midtone contrast.
@@ -146,6 +151,12 @@ struct AdjustmentState {
             result["grain"]=QJsonObject{{"schema",1},{"amount",grainAmount},{"size",grainSize}};
         if (sharpenAmount!=0 || sharpenRadius!=3)
             result["sharpen"]=QJsonObject{{"schema",1},{"amount",sharpenAmount},{"radius",sharpenRadius}};
+        if(pointColorEnabled||pointColorLab!=DefaultPointColorLab
+            ||pointColorHue!=0||pointColorSaturation!=0||pointColorLuminance!=0
+            ||pointColorHueRange!=45||pointColorChromaRange!=.12||pointColorLightnessRange!=.4)
+            result["pointColor"]=QJsonObject{{"schema",1},{"space","oklab"},{"enabled",pointColorEnabled},{"center",toJsonArray(pointColorLab)},
+                {"hue",pointColorHue},{"saturation",pointColorSaturation},{"luminance",pointColorLuminance},
+                {"hueRange",pointColorHueRange},{"chromaRange",pointColorChromaRange},{"lightnessRange",pointColorLightnessRange}};
         if (dehazeAmount!=0)
             result["dehaze"]=QJsonObject{{"schema",1},{"amount",dehazeAmount}};
         if (textureAmount!=0)
@@ -233,6 +244,21 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validPointColorJson(const QJsonObject &object) {
+        if(!object.contains("pointColor"))return true;
+        if(!object["pointColor"].isObject())return false;
+        const auto p=object["pointColor"].toObject();
+        if(p.size()!=10||!p["schema"].isDouble()||p["schema"].toDouble()!=1||!p["enabled"].isBool()
+            ||p["space"]!=QStringLiteral("oklab")||!p["center"].isArray()||p["center"].toArray().size()!=3)return false;
+        const auto color=p["center"].toArray();
+        for(const auto v:color)if(!v.isDouble()||!std::isfinite(v.toDouble())||v.toDouble()<-4||v.toDouble()>4)return false;
+        const auto number=[&](const char *key,double lo,double hi){const auto v=p[key];return v.isDouble()&&std::isfinite(v.toDouble())&&v.toDouble()>=lo&&v.toDouble()<=hi;};
+        if(!number("hue",-180,180)||!number("saturation",-100,100)||!number("luminance",-100,100)
+            ||!number("hueRange",1,180)||!number("chromaRange",.001,1)||!number("lightnessRange",.001,1))return false;
+        return p["enabled"].toBool()||color!=toJsonArray(DefaultPointColorLab)||p["hue"].toDouble()!=0
+            ||p["saturation"].toDouble()!=0||p["luminance"].toDouble()!=0||p["hueRange"].toDouble()!=45
+            ||p["chromaRange"].toDouble()!=.12||p["lightnessRange"].toDouble()!=.4;
+    }
     static bool validDehazeJson(const QJsonObject &object) {
         if(!object.contains("dehaze"))return true;
         if(!object["dehaze"].isObject())return false;
@@ -378,6 +404,12 @@ struct AdjustmentState {
         if (o.contains("sharpen") && validSharpenJson(o)) {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
+        }
+        if(o.contains("pointColor")&&validPointColorJson(o)) {
+            const auto p=o["pointColor"].toObject();s.pointColorEnabled=p["enabled"].toBool();
+            for(int i=0;i<3;++i)s.pointColorLab[i]=p["center"].toArray()[i].toDouble();
+            s.pointColorHue=p["hue"].toDouble();s.pointColorSaturation=p["saturation"].toDouble();s.pointColorLuminance=p["luminance"].toDouble();
+            s.pointColorHueRange=p["hueRange"].toDouble();s.pointColorChromaRange=p["chromaRange"].toDouble();s.pointColorLightnessRange=p["lightnessRange"].toDouble();
         }
         if(o.contains("dehaze")&&validDehazeJson(o))s.dehazeAmount=o["dehaze"].toObject()["amount"].toDouble();
         if(o.contains("texture")&&validTextureJson(o))s.textureAmount=o["texture"].toObject()["amount"].toDouble();

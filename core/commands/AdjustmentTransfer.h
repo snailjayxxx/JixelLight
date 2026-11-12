@@ -20,6 +20,7 @@ inline bool validGroups(const QStringList &groups) {
 }
 inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QStringList &groups) {
     if (!validGroups(groups)
+        || (groups.contains("color") && !AdjustmentState::validPointColorJson(source.toJson()))
         || (groups.contains("effects") && !AdjustmentState::validGrainJson(source.toJson()))
         || (groups.contains("detail") && !AdjustmentState::validSharpenJson(source.toJson()))
         || (groups.contains("detail") && !AdjustmentState::validDenoiseJson(source.toJson()))
@@ -38,6 +39,9 @@ inline bool apply(AdjustmentState &target,const AdjustmentState &source,const QS
             target.contrast=source.contrast; target.highlights=source.highlights; target.shadows=source.shadows;
             target.whites=source.whites; target.blacks=source.blacks; target.highlightRecovery=source.highlightRecovery;
         } else if (group=="color") {
+            target.pointColorEnabled=source.pointColorEnabled;target.pointColorLab=source.pointColorLab;
+            target.pointColorHue=source.pointColorHue;target.pointColorSaturation=source.pointColorSaturation;target.pointColorLuminance=source.pointColorLuminance;
+            target.pointColorHueRange=source.pointColorHueRange;target.pointColorChromaRange=source.pointColorChromaRange;target.pointColorLightnessRange=source.pointColorLightnessRange;
             target.hue=source.hue; target.saturation=source.saturation; target.vibrance=source.vibrance;
             target.blackWhite=source.blackWhite; target.bwMix=source.bwMix;
             target.gradingEnabled=source.gradingEnabled; target.gradingHue=source.gradingHue;

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/AdjustmentState.h"
+#include "core/pipeline/PointColor.h"
 #include "core/look/LookProfiles.h"
 #include <QJsonArray>
 #include <QStringList>
@@ -26,7 +27,7 @@ struct CommandRegistry {
         return descriptors;
     }
     static const auto &parameters() {
-        static const std::array<Parameter,24> descriptors{{
+        static const std::array<Parameter,30> descriptors{{
             {"exposure",&AdjustmentState::exposure,-5,5},
             {"temperature",&AdjustmentState::temperature,-180,180},
             {"tint",&AdjustmentState::tint,-180,180},
@@ -48,6 +49,12 @@ struct CommandRegistry {
             {"sharpenRadius",&AdjustmentState::sharpenRadius,.5,6},
             {"denoiseLuma",&AdjustmentState::denoiseLuma,0,100},
             {"denoiseChroma",&AdjustmentState::denoiseChroma,0,100},
+            {"pointColorHue",&AdjustmentState::pointColorHue,-180,180},
+            {"pointColorSaturation",&AdjustmentState::pointColorSaturation,-100,100},
+            {"pointColorLuminance",&AdjustmentState::pointColorLuminance,-100,100},
+            {"pointColorHueRange",&AdjustmentState::pointColorHueRange,1,180},
+            {"pointColorChromaRange",&AdjustmentState::pointColorChromaRange,.001,1},
+            {"pointColorLightnessRange",&AdjustmentState::pointColorLightnessRange,.001,1},
             {"dehazeAmount",&AdjustmentState::dehazeAmount,-100,100},
             {"textureAmount",&AdjustmentState::textureAmount,-100,100},
             {"clarityAmount",&AdjustmentState::clarityAmount,-100,100}
@@ -282,6 +289,29 @@ struct CommandRegistry {
             if (!fields(command,{})) return fail();
             state.sharpenAmount=0; state.sharpenRadius=3; return true;
         }
+        if(name=="point.color.enable") {
+            if(!fields(command,{"enabled"})||!command["enabled"].isBool())return fail();
+            state.pointColorEnabled=command["enabled"].toBool();return true;
+        }
+        if(name=="point.color.select") {
+            if(!fields(command,{"color"})||!command["color"].isArray()||command["color"].toArray().size()!=3)return fail();
+            const auto color=command["color"].toArray();std::array<double,3> selected{};
+            for(int i=0;i<3;++i){if(!color[i].isDouble()||!std::isfinite(color[i].toDouble())||color[i].toDouble()<0||color[i].toDouble()>1)return fail();selected[i]=color[i].toDouble();}
+            const auto lab=PointColor::fromEncodedSrgb({float(selected[0]),float(selected[1]),float(selected[2])});
+            state.pointColorLab={lab.L,lab.a,lab.b};state.pointColorEnabled=true;return true;
+        }
+        if(name=="point.color.select.lab") {
+            if(!fields(command,{"lab"})||!command["lab"].isArray()||command["lab"].toArray().size()!=3)return fail();
+            const auto lab=command["lab"].toArray();std::array<double,3> selected{};
+            for(int i=0;i<3;++i){if(!lab[i].isDouble()||!std::isfinite(lab[i].toDouble())||std::abs(lab[i].toDouble())>4)return fail();selected[i]=lab[i].toDouble();}
+            state.pointColorLab=selected;state.pointColorEnabled=true;return true;
+        }
+        if(name=="point.color.reset") {
+            if(!fields(command,{}))return fail();
+            state.pointColorEnabled=false;state.pointColorLab=AdjustmentState::DefaultPointColorLab;
+            state.pointColorHue=0;state.pointColorSaturation=0;state.pointColorLuminance=0;
+            state.pointColorHueRange=45;state.pointColorChromaRange=.12;state.pointColorLightnessRange=.4;return true;
+        }
         if(name=="dehaze.reset") {
             if(!fields(command,{}))return fail();
             state.dehazeAmount=0;return true;
@@ -451,6 +481,10 @@ struct CommandRegistry {
             QJsonObject{{"name","vignette.reset"},{"fields",QJsonArray{}},{"operation","reset post-crop vignette amount/midpoint/feather; preserve other edits"}},
             QJsonObject{{"name","grain.reset"},{"fields",QJsonArray{}},{"operation","reset grain amount/size; preserve other edits"}},
             QJsonObject{{"name","sharpen.reset"},{"fields",QJsonArray{}},{"operation","reset independent sharpen amount/radius; preserve Sony Look and other edits"}},
+            QJsonObject{{"name","point.color.enable"},{"fields",QJsonArray{"enabled"}},{"operation","enable/disable the stored Point Color selection"}},
+            QJsonObject{{"name","point.color.select"},{"fields",QJsonArray{"color"}},{"operation","select encoded sRGB RGB values and enable Point Color; preserve amounts/ranges"}},
+            QJsonObject{{"name","point.color.select.lab"},{"fields",QJsonArray{"lab"}},{"operation","select working Oklab before Point Color, independent of output and monitor ICC"}},
+            QJsonObject{{"name","point.color.reset"},{"fields",QJsonArray{}},{"operation","reset Point Color selection, amounts and ranges; preserve other edits"}},
             QJsonObject{{"name","dehaze.reset"},{"fields",QJsonArray{}},{"operation","reset atmospheric veil; preserve other edits"}},
             QJsonObject{{"name","texture.reset"},{"fields",QJsonArray{}},{"operation","reset medium-frequency detail; preserve other edits"}},
             QJsonObject{{"name","clarity.reset"},{"fields",QJsonArray{}},{"operation","reset local midtone contrast; preserve other edits"}},
