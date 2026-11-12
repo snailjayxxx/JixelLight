@@ -139,6 +139,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         metadata->sensorAudit=report;
     }
     const auto decodeSizes=raw.imgdata.sizes;
+    const bool xtransCfa=raw.imgdata.idata.filters==9;
     auto &params = raw.imgdata.params;
     params.use_camera_wb = 1;
     params.use_auto_wb = 0;
@@ -155,7 +156,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.highlight = 1;
     params.output_color = 4;      // ProPhoto RGB primaries (D50), kept linear with gamm below.
     params.output_bps = 16;
-    params.user_qual = 3;         // AHD demosaic reference path.
+    params.user_qual = 3;         // AHD for Bayer; LibRaw selects its X-Trans path for a6x6 CFA.
     params.gamm[0] = 1.0;
     params.gamm[1] = 1.0;
 
@@ -237,7 +238,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
         metadata->height = image.height();
         metadata->bitsPerChannel = processed->bits;
         metadata->workingSpace = QStringLiteral("Linear ProPhoto RGB");
-        metadata->demosaic = QStringLiteral("AHD");
+        metadata->demosaic = xtransCfa ? QStringLiteral("X-Trans (LibRaw quality 3)") : QStringLiteral("AHD");
         metadata->cameraMatrixEnabled = true;
         metadata->cameraWhiteBalanceEnabled = true;
         metadata->highlightBlendEnabled = false;

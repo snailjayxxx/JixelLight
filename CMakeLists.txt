@@ -333,6 +333,9 @@ qt_add_executable(JixelLightSonyValidation tools/SonyValidation.cpp)
 target_link_libraries(JixelLightSonyValidation PRIVATE JixelLightCore)
 set_target_properties(JixelLightSonyValidation PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 qt_add_executable(JixelLightRawRenderMatrix tools/RawRenderMatrix.cpp)
+qt_add_executable(JixelLightCrossRawProbe tools/CrossRawProbe.cpp)
+target_link_libraries(JixelLightCrossRawProbe PRIVATE JixelLightGpu)
+set_target_properties(JixelLightCrossRawProbe PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 target_link_libraries(JixelLightRawRenderMatrix PRIVATE JixelLightGpu)
 set_target_properties(JixelLightRawRenderMatrix PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 
@@ -368,6 +371,11 @@ qt_add_executable(JixelLightCli tools/Cli.cpp)
 target_link_libraries(JixelLightCli PRIVATE JixelLightCore)
 set_target_properties(JixelLightCli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME cli-schema COMMAND JixelLightCli --schema)
+add_test(NAME cross-raw-conformance COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/ValidateCrossRaw.py $<TARGET_FILE:JixelLightCrossRawProbe>
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cross-raw.json @env
+    ${CMAKE_CURRENT_BINARY_DIR}/cross-raw-conformance.json --expected-commit ${JIXELLIGHT_GIT_COMMIT})
+set_tests_properties(cross-raw-conformance PROPERTIES TIMEOUT 180 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4")
 add_test(NAME cli-export-safety COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/ValidateCli.py $<TARGET_FILE:JixelLightCli>)
 set_tests_properties(cli-schema cli-export-safety PROPERTIES TIMEOUT 120)

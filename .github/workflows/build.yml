@@ -12,6 +12,7 @@ concurrency:
 env:
   PYTHONIOENCODING: utf-8
   JIXELLIGHT_SONY_FIXTURES: ${{ github.workspace }}/.sony-fixtures
+  JIXELLIGHT_CROSS_RAW_FIXTURES: ${{ github.workspace }}/.cross-raw-fixtures
   JIXELLIGHT_REQUIRE_SONY_REAL: '1'
   JIXELLIGHT_TEST_SONY_PROFILE: ${{ github.workspace }}/build/sony-real-reports/dataset/empirical.jlook.json
 jobs:
@@ -63,6 +64,7 @@ jobs:
         build/sensor-evidence.json
         build/float-raw-readiness.json
         build/offline-raw-probe.json
+        build/cross-raw-conformance*
         build/Testing/Temporary/LastTest.log
         gpu-validation.txt
         display-color-gpu-validation.txt
@@ -154,6 +156,14 @@ jobs:
       - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
         shell: bash
         run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
+      - name: Cache pinned CC0 CR3 NEF and RAF fixtures
+        uses: actions/cache@v4
+        with:
+          path: .cross-raw-fixtures
+          key: cross-raw-${{ runner.os }}-${{ hashFiles('tests/fixtures/cross-raw.json') }}
+      - name: Fetch checksum-pinned CC0 cross-format RAW fixtures
+        shell: bash
+        run: python tools/FetchCrossRawFixtures.py tests/fixtures/cross-raw.json "$JIXELLIGHT_CROSS_RAW_FIXTURES"
       - name: Real Sony and complete GPU precision preflight
         shell: bash
         env:
@@ -593,7 +603,7 @@ jobs:
           import sys
           sys.stdout.reconfigure(encoding='utf-8', errors='replace')
           paths = sorted(Path('build').glob('*-results.txt'))
-          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json'),Path('build/offline-raw-probe.json')]
+          paths += [Path('gpu-validation.txt'),Path('display-color-gpu-validation.txt'),Path('gui-gpu.json'),Path('benchmark.json'),Path('raw-render-matrix.log'),Path('build/raw-render-matrix/raw-render-matrix.json'),Path('build/sensor-evidence.json'),Path('build/float-raw-readiness.json'),Path('build/offline-raw-probe.json'),Path('build/cross-raw-conformance.json')]
           for path in paths:
               if path.is_file():
                   print('\n=== ' + str(path) + ' ===', flush=True)
@@ -801,6 +811,7 @@ jobs:
         build/sensor-evidence.json
         build/float-raw-readiness.json
         build/offline-raw-probe.json
+        build/cross-raw-conformance*
         build/Testing/Temporary/LastTest.log
         gui-*.json
         gui-*.png
@@ -852,6 +863,14 @@ jobs:
       - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
         shell: bash
         run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
+      - name: Cache pinned CC0 CR3 NEF and RAF fixtures
+        uses: actions/cache@v4
+        with:
+          path: .cross-raw-fixtures
+          key: cross-raw-${{ runner.os }}-${{ hashFiles('tests/fixtures/cross-raw.json') }}
+      - name: Fetch checksum-pinned CC0 cross-format RAW fixtures
+        shell: bash
+        run: python tools/FetchCrossRawFixtures.py tests/fixtures/cross-raw.json "$JIXELLIGHT_CROSS_RAW_FIXTURES"
       - name: Real Sony and complete GPU precision preflight
         env:
           QT_QPA_PLATFORM: offscreen

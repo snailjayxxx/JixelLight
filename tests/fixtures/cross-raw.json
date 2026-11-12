@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "purpose": "cross-format-raw-readonly-validation",
+  "repository": "https://raw.pixls.us/json/getrepository.php?set=all",
+  "repository_snapshot_sha256": "7f5832461c703641e377ed53f37597049efbe40e535b9eea1f4cf3a00255b169",
+  "items": [
+    {
+      "id": "4660",
+      "file": "canon-r6-craw.CR3",
+      "make": "Canon",
+      "model": "EOS R6",
+      "mode": "3:2",
+      "remark": "CRAW",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "source": "https://raw.pixls.us/getfile.php/4660/nice/Canon%20-%20EOS%20R6%20-%203:2.CR3",
+      "sha256": "4775df76433b1e5844bc7a42b95d93efc8438c0a4cd9681e120e23fe3e3007e8",
+      "bytes": 11205206,
+      "cfa": "bayer_like_filters"
+    },
+    {
+      "id": "1734",
+      "file": "nikon-d3300.NEF",
+      "make": "Nikon",
+      "model": "D3300",
+      "mode": "12bit 12bit compressed (Lossy (type 2)) (3:2)",
+      "remark": "",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "source": "https://raw.pixls.us/getfile.php/1734/nice/Nikon%20-%20D3300%20-%2012bit%2012bit%20compressed%20%28Lossy%20%28type%202%29%29%20%283:2%29.NEF",
+      "sha256": "97dfc95aecc00383d6da6197cb759bacb1e43c86071b4ca2d94748e498620f2f",
+      "bytes": 18927766,
+      "cfa": "bayer_like_filters"
+    },
+    {
+      "id": "1192",
+      "file": "fuji-xt10.RAF",
+      "make": "Fujifilm",
+      "model": "X-T10",
+      "mode": "14bit 14bit uncompressed (3:2)",
+      "remark": "Taken in Cork, Ireland.",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "source": "https://raw.pixls.us/getfile.php/1192/nice/Fujifilm%20-%20X-T10%20-%2014bit%2014bit%20uncompressed%20%283:2%29.RAF",
+      "sha256": "4c09401975cc6f95b1284693aac39fef85498f70b55e35bf458a133c6e61885d",
+      "bytes": 33801216,
+      "cfa": "xtrans_6x6"
+    }
+  ]
+}
