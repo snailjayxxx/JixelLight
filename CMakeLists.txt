@@ -168,8 +168,18 @@ elseif(APPLE)
 endif()
 install(TARGETS JixelLight BUNDLE DESTINATION . RUNTIME DESTINATION .)
 enable_testing()
+# QA-only byte-filter utility. Keep it independent of Qt and every rendering
+# kernel; the Python validators still check each PNG chunk/CRC/row/ICC/pixel.
+add_library(JixelLightPngRows SHARED tests/png_rows/PngRows.cpp)
+set_target_properties(JixelLightPngRows PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+target_compile_definitions(JixelLightPngRows PRIVATE JIXELLIGHT_PNG_ROWS_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
 qt_add_executable(JixelLightCoreTests tests/CoreTests.cpp)
 target_link_libraries(JixelLightCoreTests PRIVATE JixelLightCore Qt6::Test)
+# A build dependency avoids changing the direct QtTest link requirements used
+# by matching targets' PCH reuse. Tests load the actual utility via QLibrary.
+add_dependencies(JixelLightCoreTests JixelLightPngRows)
 add_test(NAME core-tests COMMAND JixelLightCoreTests -o core-results.txt,txt -o -,txt)
 qt_add_executable(JixelLightCommandSessionTests tests/CommandSessionTests.cpp)
 target_link_libraries(JixelLightCommandSessionTests PRIVATE JixelLightCore Qt6::Test)

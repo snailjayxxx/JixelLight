@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import zlib
+from NativePngRows import unfilter as native_unfilter, metadata as native_row_metadata
 
 FALSE_SCOPE = ('physical_tablet_verified', 'physical_OS_activation_verified',
                'arbitrary_or_unbounded_raw_jitter_accepted', 'normal_Root_or_CI_accepted',
@@ -106,6 +107,8 @@ def _unfilter_row(row, previous, bpp, kind, lane_mask):
     # PNG filter arithmetic is byte-wise, including16-bit samples. The widened
     # integer lanes keep carries separate; every addition is reduced modulo256.
     if kind == 0:
+        return row
+    if native_unfilter(row, previous, bpp, kind):
         return row
     if kind in (1, 2):
         packed = int.from_bytes(row.decode('latin1').encode('utf-16le'), 'little')
@@ -211,6 +214,9 @@ def png(path):
               'bounded_zlib_complete': True, 'no_trailing_bytes': True,
               'chunks': chunks, 'decoded_native_pixel_sha256': sha(native),
               'ICC_bytes': len(icc) if icc else 0, 'ICC_sha256': sha(icc) if icc else None}
+    decoder = native_row_metadata()
+    if decoder and sum(filters[1:]):
+        result['row_decoder'] = {**decoder, 'native_rows': sum(filters[1:])}
     return result, bytes(pixels)
 
 def validate_raw_qpa(binary, environment, home, report, mode, *, expected_commit=None):
