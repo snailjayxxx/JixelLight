@@ -2,6 +2,7 @@
 #include "app/SmokeRun.h"
 #include "core/import/MoveImport.h"
 #include "core/scopes/ScopesEngine.h"
+#include "diagnostics/ActionTrace.h"
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QGuiApplication>
@@ -56,7 +57,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         QStringList sources,before;QList<QByteArray> originalHashes;QList<MoveImportBatch> batches;
         QImage fixture,reference;ScopesResult scopes;QByteArray baselineHash;qint64 sourceKey=0,reopenedSourceKey=0;quint64 revision=0,reopenedRevision=0;
         QElapsedTimer reopenStableClock;int reopenSettledMs=0,scopeWaits=0;QJsonArray reopenSignature,events,scopeWaitStates;QString initialScopeStatus;
-        QSize logical,physical;double dpr=0;QJsonObject initial,admission,diagnostic,exportResult,review;
+        QSize logical,physical;double dpr=0;QJsonObject initial,admission,diagnostic,exportResult,review,sharedCommand;
         QJsonArray history,signature,pointers,captures,records,phases;
     };
     auto s=std::make_shared<State>();s->clock.start();s->owned=std::make_unique<QTemporaryDir>(QDir::tempPath()+"/JixelLight-owned-move-XXXXXX");
@@ -87,7 +88,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;s->timer->stop();
         const bool passed=error.isEmpty()&&s->phase==12&&s->exportPassed&&s->reopened&&s->records.size()==3&&s->pointers.size()==2&&s->captures.size()==4
-            &&original(false)&&c->library().size()==4&&s->clock.elapsed()<60000&&qApp->property("jixellightSmokeSettingsIsolated").toBool()
+            &&original(false)&&!s->sharedCommand.isEmpty()&&c->library().size()==4&&s->clock.elapsed()<60000&&qApp->property("jixellightSmokeSettingsIsolated").toBool()
             &&c->moveImportDiagnostics()["retirement_backend"].toString()=="system-trash"&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         QJsonObject r{{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"actual_Main_App_PhotoCanvas",true},{"controller_on_actual_GUI_thread",c->thread()==QThread::currentThread()},{"language",language},{"actual_qpa",QGuiApplication::platformName()},
@@ -103,7 +104,8 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
             {"scope",QJsonObject{{"status",s->initialScopeStatus},{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"four_histograms_exact",true},{"shadow_clip_percent",s->scopes.shadowClipPercent},{"highlight_clip_percent",s->scopes.highlightClipPercent},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
             {"project_path",s->project},{"durable_identities_verified",s->records.size()==3},{"project_reopened",s->reopened},{"export",s->exportResult},{"diagnostic",s->diagnostic},
-            {"move",QJsonObject::fromVariantMap(c->moveImportDiagnostics())},{"physical_device_verified",false},{"native_float_RAW_decoder",false},{"product_development_complete",false}};
+            {"move",QJsonObject::fromVariantMap(c->moveImportDiagnostics())},{"shared_import_command",s->sharedCommand},
+            {"physical_device_verified",false},{"native_float_RAW_decoder",false},{"product_development_complete",false}};
         const bool saved=writeObject(evidence,r);
         // Restore only these verified, generated fixture files before their
         // process-owned temporary directory is cleaned. Never replace a path.
@@ -165,6 +167,12 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
             dialog->setProperty("customNames",false);dialog->setProperty("destination",QUrl::fromLocalFile(s->destination));if(!dialog->property("moveMode").toBool()){finish("Actual dialog is not move mode");return;}s->phase=2;return;}
         if(s->phase==2){if(click("copyImportApply"))s->phase=3;return;}
         if(s->phase==3){if(c->copyImportBusy())return;const auto facts=c->moveImportDiagnostics();if(facts["phase"].toString()!="done"){finish("Actual system-trash move failed: "+facts["error"].toString());return;}
+            const QJsonObject expected{{"command","photo.move"},{"sources",QJsonArray{s->sources[0],s->sources[1]}},
+                {"folder",s->destination},{"pattern",""},{"sequenceStart",1}};
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();if(row["action"].toString()=="move_import_started"&&row["command"].toObject()==expected)s->sharedCommand=expected;
+            }
+            if(s->sharedCommand.isEmpty()){finish("Reviewed move did not record the shared import command");return;}
             if(!original(true)||!record(c->moveImportJournal(),{0,1})||!capture("moved")){finish("Move copies, durable identities or unselected original differ");return;}
             const auto recovery=prepareMoveImport({s->sources[2]},s->destination,s->project);if(!recovery.error.isEmpty()||recovery.files.size()!=1||!QFileInfo::exists(s->sources[2])){finish("Cannot prepare owned interrupted-copy recovery fixture");return;}
             s->recoveryJournal=recovery.journal;if(!QFile::copy(recovery.journal,evidence+".reviewed-move.json")){finish("Cannot retain original reviewed move record");return;}s->phase=4;return;}
