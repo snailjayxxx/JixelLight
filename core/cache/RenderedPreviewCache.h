@@ -29,6 +29,7 @@ private:
     std::shared_ptr<BrushRenderBudget> m_brushBudget;
     qint64 m_hits = 0, m_misses = 0, m_bypasses = 0, m_evictions = 0, m_cancelled = 0;
     qint64 m_denoiseHits=0,m_denoiseMisses=0,m_denoiseBypasses=0;
+    qint64 m_dehazeHits=0,m_dehazeMisses=0,m_dehazeBypasses=0;
     qint64 m_textureHits=0,m_textureMisses=0,m_textureBypasses=0;
     qint64 m_clarityHits=0,m_clarityMisses=0,m_clarityBypasses=0;
 };

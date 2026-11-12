@@ -308,6 +308,29 @@ private slots:
         QCOMPARE(frozen["spatial_texture"].toString(),QString("cpu-reference"));
         QCOMPARE(frozen["numeric_source_policy"].toString(),QString("texture-near-zero-alpha"));
     }
+    void dehazeUsesExplicitCompleteCpuReferencePolicy() {
+        QImage source(39,41,QImage::Format_RGBA32FPx4);
+        const float alpha[]{0,1.e-8f,1.f/65535.f,.01f,.5f,1.f};
+        for(int y=0;y<source.height();++y)for(int x=0;x<source.width();++x) {
+            auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;
+            p[0]=.2f+.08f*std::sin(float(x));p[1]=.3f+.04f*std::cos(float(y));p[2]=.1f;p[3]=alpha[(x+y)%6];
+        }
+        for(bool integer:{false,true})for(int encoding=0;encoding<2;++encoding)
+        for(int output=0;output<4;++output)for(double amount:{-100.,73.})for(bool denoise:{false,true}) {
+            AdjustmentState state;state.dehazeAmount=amount;if(denoise){state.denoiseLuma=77;state.denoiseChroma=83;}
+            state.sharpenAmount=61;state.grainAmount=19;state.textureAmount=57;state.clarityAmount=-41;
+            const auto input=integer?ImagePipeline::rgba64Source(source):source;
+            const auto space=ColorManagement::OutputSpace(output);const auto actual=render(input,state,true,ImagePipeline::InputEncoding(encoding),space,{0,0,1,1},true);
+            QVERIFY(!actual.image.isNull());QVERIFY(engine->lastProcessUsedCpuFallback());
+            const auto expected=ImagePipeline::processWithPlan(input,ProcessingPlan::compile(state,ImagePipeline::InputEncoding(encoding),space));
+            for(int y=0;y<source.height();++y)QVERIFY(std::memcmp(actual.image.constScanLine(y),expected.constScanLine(y),size_t(source.width())*8)==0);
+            QCOMPARE(actual.diagnostic["producer"].toString(),QString("cpu-reference-upload"));
+            QCOMPARE(actual.diagnostic["spatial_dehaze"].toString(),QString("cpu-reference"));
+            QCOMPARE(actual.diagnostic["numeric_source_policy"].toString(),QString("dehaze-cpu-stage"));
+            const auto counts=ScopesEngine::analyze(expected);QCOMPARE(actual.histogram.red,counts.red);QCOMPARE(actual.histogram.green,counts.green);QCOMPARE(actual.histogram.blue,counts.blue);QCOMPARE(actual.histogram.luma,counts.luma);
+        }
+    }
+
     void textureUsesExplicitCompleteCpuReferencePolicy() {
         QImage source(39,41,QImage::Format_RGBA32FPx4);
         const float alpha[]{0,std::numeric_limits<float>::denorm_min(),1.e-19f,.01f,.5f,1.f};
@@ -530,7 +553,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,prophotoPolicyOk=false;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,dehazeRefused=true,prophotoPolicyOk=false;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -575,9 +598,15 @@ private slots:
                     const auto textureFrame=N::FrameAdmission::prepare(result.source,caps,texture,{"grain-catalog","grain-input","grain-version",1},6,&why);
                     result.textureRefused=result.textureRefused&&!textureFrame&&why==N::FrameFailure::CPUPolicy;
                 }
+                for(double amount:{-100.,73.}) {
+                    auto dehazeState=state;dehazeState.dehazeAmount=amount;
+                    const auto dehaze=ProcessingPlan::compile(dehazeState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
+                    const auto dehazeFrame=N::FrameAdmission::prepare(result.source,caps,dehaze,{"grain-catalog","grain-input","grain-version",1},6,&why);
+                    result.dehazeRefused=result.dehazeRefused&&!dehazeFrame&&why==N::FrameFailure::CPUPolicy;
+                }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.prophotoPolicyOk);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.dehazeRefused);QVERIFY(prepared.prophotoPolicyOk);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));

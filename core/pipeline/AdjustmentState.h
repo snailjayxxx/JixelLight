@@ -39,6 +39,7 @@ struct AdjustmentState {
     double grainSize = 1.0;   // .5..4, relative to the post-crop image frame.
     double sharpenAmount = 0.0; // 0..100, independent encoded-luma unsharp mask.
     double sharpenRadius = 3.0; // .5..6 source pixels, after geometry/crop.
+    double dehazeAmount = 0.0; // -100..100; atmospheric veil before texture/clarity.
     double textureAmount = 0.0; // -100..100, pre-tone medium-frequency detail.
     double clarityAmount = 0.0; // -100..100, pre-tone local midtone contrast.
     double denoiseLuma = 0.0; // 0..100, perceptual lightness noise reduction.
@@ -145,6 +146,8 @@ struct AdjustmentState {
             result["grain"]=QJsonObject{{"schema",1},{"amount",grainAmount},{"size",grainSize}};
         if (sharpenAmount!=0 || sharpenRadius!=3)
             result["sharpen"]=QJsonObject{{"schema",1},{"amount",sharpenAmount},{"radius",sharpenRadius}};
+        if (dehazeAmount!=0)
+            result["dehaze"]=QJsonObject{{"schema",1},{"amount",dehazeAmount}};
         if (textureAmount!=0)
             result["texture"]=QJsonObject{{"schema",1},{"amount",textureAmount}};
         if (clarityAmount!=0)
@@ -230,6 +233,14 @@ struct AdjustmentState {
             && (v["amount"].toDouble()!=0 || v["midpoint"].toDouble()!=.5 || v["feather"].toDouble()!=1);
     }
 
+    static bool validDehazeJson(const QJsonObject &object) {
+        if(!object.contains("dehaze"))return true;
+        if(!object["dehaze"].isObject())return false;
+        const auto c=object["dehaze"].toObject();
+        return c.size()==2&&c["schema"].isDouble()&&c["schema"].toDouble()==1
+            &&c["amount"].isDouble()&&std::isfinite(c["amount"].toDouble())
+            &&c["amount"].toDouble()>=-100&&c["amount"].toDouble()<=100&&c["amount"].toDouble()!=0;
+    }
     static bool validTextureJson(const QJsonObject &object) {
         if(!object.contains("texture"))return true;
         if(!object["texture"].isObject())return false;
@@ -368,6 +379,7 @@ struct AdjustmentState {
             const auto d=o["sharpen"].toObject();
             s.sharpenAmount=d["amount"].toDouble(); s.sharpenRadius=d["radius"].toDouble();
         }
+        if(o.contains("dehaze")&&validDehazeJson(o))s.dehazeAmount=o["dehaze"].toObject()["amount"].toDouble();
         if(o.contains("texture")&&validTextureJson(o))s.textureAmount=o["texture"].toObject()["amount"].toDouble();
         if(o.contains("clarity")&&validClarityJson(o))s.clarityAmount=o["clarity"].toObject()["amount"].toDouble();
         if(o.contains("denoise")&&validDenoiseJson(o)) {

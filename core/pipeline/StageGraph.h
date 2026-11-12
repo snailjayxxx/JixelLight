@@ -83,17 +83,18 @@ struct StageGraph {
         return QStringLiteral("denoise:")+digest(bytes);
     }
     static QString spatialPreviewKey(const QImage &source,const ProcessingPlan &plan) {
-        if(!plan.clarityActive()&&!plan.textureActive())return denoisePreviewKey(source,plan);
+        if(!plan.dehazeActive()&&!plan.clarityActive()&&!plan.textureActive())return denoisePreviewKey(source,plan);
         if(source.isNull()||!plan.validSpatialSettings()||!BrushMaskDocument::validDocument(plan.state.brushMasks)
             ||BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return {};
         QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);stream.setVersion(QDataStream::Qt_6_8);
-        stream<<(plan.textureActive()?QStringLiteral("cpu-texture-preview-v1"):QStringLiteral("cpu-clarity-preview-v1"))<<QString::fromLatin1(ProcessingPlan::EngineVersion)
+        stream<<(plan.dehazeActive()?QStringLiteral("cpu-dehaze-preview-v1"):plan.textureActive()?QStringLiteral("cpu-texture-preview-v1"):QStringLiteral("cpu-clarity-preview-v1"))<<QString::fromLatin1(ProcessingPlan::EngineVersion)
               <<source.cacheKey()<<source.size()<<int(source.format())<<int(plan.encoding);
         for(int i=ProcessingPlan::Input0;i<=ProcessingPlan::Input2;++i) {
             const auto row=plan.data[i];stream<<row.x<<row.y<<row.z<<row.w;
         }
         const auto denoise=plan.denoise(source.size()),clarity=plan.clarity(source.size());
         stream<<denoise.x<<denoise.y<<denoise.z<<clarity.x<<clarity.y;
+        if(plan.dehazeActive()){const auto d=plan.dehaze(source.size()),a=plan.data[ProcessingPlan::DehazeAirlight];stream<<d.x<<d.y<<d.z<<a.x<<a.y<<a.z<<a.w;}
         if(plan.textureActive()){const auto texture=plan.texture(source.size());stream<<texture.x<<texture.y<<texture.z;}
         return QStringLiteral("spatial:")+digest(bytes);
     }
@@ -175,23 +176,29 @@ struct StageGraph {
                     {"coordinates","normalized post-geometry, committed crop and orientation; viewport preserves full-image position"},
                     {"operation","RGB * exp2(amount * smoothstep); alpha unchanged"},
                     {"lens_profile",false},{"monitor_icc",false}}},
+                {"spatial_dehaze",QJsonObject{{"schema",1},{"amount",state.dehazeAmount},{"active",state.dehazeAmount!=0},
+                    {"backend","CPU reference; complete CPU upload for GPU display"},
+                    {"order","linear ProPhoto -> denoise -> dehaze -> texture -> clarity -> WB/exposure"},
+                    {"airlight_scope","whole corrected frame before viewport/resize; at most4096 alpha-aware cells"},
+                    {"temporary_cpu_bytes_per_expanded_pixel",32},{"alpha","unchanged; hidden RGB isolated"},
+                    {"monitor_icc",false},{"native_float_raw",false}}},
                 {"spatial_texture",QJsonObject{{"schema",1},{"amount",state.textureAmount},{"active",state.textureAmount!=0},
                     {"backend","CPU reference / five-pass QRhi compute; explicit numeric/brush CPU policies"},
                     {"operation","Oklab lightness associated-alpha Gaussian2/6 source-pixel band; signed midtone correction"},
-                    {"order","decoded linear ProPhoto -> denoise -> texture -> clarity -> WB/exposure"},
+                    {"order","decoded linear ProPhoto -> denoise -> dehaze -> texture -> clarity -> WB/exposure"},
                     {"extra_cpu_bytes_per_expanded_pixel",36},{"extra_gpu_bytes_per_preview_pixel",64},{"gpu_kernel_bytes",96},{"alpha","unchanged; hidden RGB cannot affect visible samples"},
                     {"monitor_icc",false},{"native_float_raw",false}}},
                 {"spatial_clarity",QJsonObject{{"schema",1},{"amount",state.clarityAmount},{"active",state.clarityAmount!=0},
                     {"backend","CPU reference / three-pass QRhi compute; explicit numeric/brush CPU policies"},
                     {"method","alpha-associated Gaussian Oklab lightness contrast with midtone weighting; chroma retained"},
-                    {"order","decoded linear ProPhoto -> denoise -> texture -> clarity -> WB/exposure"},
+                    {"order","decoded linear ProPhoto -> denoise -> dehaze -> texture -> clarity -> WB/exposure"},
                     {"radius_source_pixels",24},{"preview_radius","scaled by prepared/full geometry density"},
                     {"temporary_cpu_bytes_per_expanded_pixel",32},{"extra_gpu_bytes_per_preview_pixel",48},{"cpu_preview_stage_cache","completed pre-tone stages share render_cache budget"},
                     {"alpha","unchanged"},{"monitor_icc",false}}},
                 {"spatial_denoise",QJsonObject{{"schema",1},{"lightness",state.denoiseLuma},{"chroma",state.denoiseChroma},
                     {"active",state.denoiseLuma!=0||state.denoiseChroma!=0},{"backend","CPU reference / two-pass QRhi compute; existing brush/numeric policies use CPU upload"},
                     {"method","joint Oklab/spatial bilateral guide; alpha-weighted neighbor differences"},
-                    {"order","decoded linear ProPhoto -> spatial denoise -> optional texture/clarity -> WB/exposure"},
+                    {"order","decoded linear ProPhoto -> spatial denoise -> optional dehaze/texture/clarity -> WB/exposure"},
                     {"radius_source_pixels",2},{"preview_radius","scaled by prepared/full geometry density"},
                     {"temporary_cpu_bytes_per_expanded_pixel",32},{"extra_gpu_bytes_per_preview_pixel",32},{"cpu_preview_stage_cache","non-brush completed stages share render_cache budget; exports/scopes/diagnostics bypass"},{"alpha","unchanged"},{"native_brush_policy","CPUPolicy fallback"},
                     {"monitor_icc",false}}},

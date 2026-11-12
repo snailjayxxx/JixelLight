@@ -596,6 +596,7 @@ GETTER(grainAmount)
 GETTER(grainSize)
 GETTER(sharpenAmount)
 GETTER(sharpenRadius)
+GETTER(dehazeAmount)
 GETTER(textureAmount)
 GETTER(clarityAmount)
 GETTER(denoiseLuma)
@@ -633,7 +634,7 @@ QVariantList PhotoController::blueCurve() const { return toVariantList(currentSt
 void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
     if (!hasImage()) return;
     QString mergeKey;
-    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
+    if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
         keyDetails.remove("value");
         if (action=="color_grading_wheel") { keyDetails.remove("hue"); keyDetails.remove("saturation"); }
@@ -692,6 +693,7 @@ void PhotoController::setAdjustment(const char *name, double value, double Adjus
     const QString action=parameter.startsWith("vignette") ? QStringLiteral("vignette_adjustment")
         : parameter.startsWith("grain") ? QStringLiteral("grain_adjustment")
         : parameter.startsWith("sharpen") ? QStringLiteral("sharpen_adjustment")
+        : parameter.startsWith("dehaze") ? QStringLiteral("dehaze_adjustment")
         : parameter.startsWith("texture") ? QStringLiteral("texture_adjustment")
         : parameter.startsWith("clarity") ? QStringLiteral("clarity_adjustment")
         : parameter.startsWith("denoise") ? QStringLiteral("denoise_adjustment") : QStringLiteral("adjustment");
@@ -731,6 +733,11 @@ void PhotoController::setSharpenRadius(double v) {setAdjustment("sharpenRadius",
 void PhotoController::resetSharpen() {
     auto *state=mutableCurrentState();if(!state||(state->sharpenAmount==0&&state->sharpenRadius==3))return;
     m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","sharpen.reset"}});persistAndApply("sharpen_reset");
+}
+void PhotoController::setDehazeAmount(double value){setAdjustment("dehazeAmount",value,&AdjustmentState::dehazeAmount);}
+void PhotoController::resetDehaze() {
+    auto *state=mutableCurrentState();if(!state||state->dehazeAmount==0)return;
+    m_photos[m_currentIndex].history.finish();CommandRegistry::execute(*state,{{"command","dehaze.reset"}});persistAndApply("dehaze_reset");
 }
 void PhotoController::setTextureAmount(double value){setAdjustment("textureAmount",value,&AdjustmentState::textureAmount);}
 void PhotoController::resetTexture() {
@@ -1895,6 +1902,7 @@ void PhotoController::initializeJobs() {
             m_previewSource = result.normal; m_fastSource = result.fast; m_gpuSource = result.gpu;
             m_previewFrameRect=result.frameRect;
             m_previewReferenceFrameSize=result.referenceFrameSize;
+            m_previewDehazeAirlight=result.dehazeAirlight;
             m_displayPixels = result.displayPixels; m_viewportOnly = result.viewportOnly;
             emit previewGeometryChanged(); emit activityChanged();
             ++m_requestedRevision;

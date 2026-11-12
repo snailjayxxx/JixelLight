@@ -115,6 +115,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(double grainSize READ grainSize WRITE setGrainSize NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenAmount READ sharpenAmount WRITE setSharpenAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double sharpenRadius READ sharpenRadius WRITE setSharpenRadius NOTIFY adjustmentsChanged)
+    Q_PROPERTY(double dehazeAmount READ dehazeAmount WRITE setDehazeAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double textureAmount READ textureAmount WRITE setTextureAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double clarityAmount READ clarityAmount WRITE setClarityAmount NOTIFY adjustmentsChanged)
     Q_PROPERTY(double denoiseLuma READ denoiseLuma WRITE setDenoiseLuma NOTIFY adjustmentsChanged)
@@ -242,7 +243,7 @@ public:
     ProcessingPlan gpuPlan(bool fullFrame=false) const {
         auto plan=ProcessingPlan::compile(currentState(), ImagePipeline::InputEncoding::LinearProPhoto,
                                        ColorManagement::OutputSpace::SRgb, currentIsRaw(), rawBaseExposureStops());
-        if (!fullFrame) {plan.setFrameRect(m_previewFrameRect);plan.setReferenceFrameSize(m_previewReferenceFrameSize);}
+        if (!fullFrame) {plan.setFrameRect(m_previewFrameRect);plan.setReferenceFrameSize(m_previewReferenceFrameSize);plan.setDehazeAirlight(m_previewDehazeAirlight);}
         return plan;
     }
     void gpuPresented(quint64 revision, const QString &backend);
@@ -299,6 +300,7 @@ public:
     double vignetteAmount() const; double vignetteMidpoint() const; double vignetteFeather() const;
     double grainAmount() const; double grainSize() const;
     double sharpenAmount() const; double sharpenRadius() const;
+    double dehazeAmount() const;
     double textureAmount() const;
     double clarityAmount() const;
     double denoiseLuma() const; double denoiseChroma() const;
@@ -457,6 +459,8 @@ public:
     Q_INVOKABLE void resetVignette();
     Q_INVOKABLE void resetGrain();
     Q_INVOKABLE void resetSharpen();
+    Q_INVOKABLE void resetDehaze();
+    void setDehazeAmount(double value);
     Q_INVOKABLE void resetTexture();
     void setTextureAmount(double value);
     Q_INVOKABLE void resetClarity();
@@ -610,6 +614,7 @@ private:
     QSizeF m_displayPixels;
     QRectF m_previewFrameRect{0,0,1,1};
     QSize m_previewReferenceFrameSize;
+    SpatialDehaze::Airlight m_previewDehazeAirlight;
     double m_devicePixelRatio = 1, m_zoom = 0, m_centerX = .5, m_centerY = .5, m_exportProgress = 0;
     QTimer m_saveTimer, m_saveMaxTimer, m_refineTimer, m_exactTimer, m_prefetchTimer, m_catalogDateTimer;
     QHash<QString, AdjustmentState> m_dirtyEdits;

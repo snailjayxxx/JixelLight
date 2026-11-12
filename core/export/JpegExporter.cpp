@@ -105,7 +105,8 @@ bool exportJpegTiled(const QImage &source,const AdjustmentState &state,const QSt
                                            {"raw",rawSource},{"raw_base_ev",rawBaseExposureStops}});
     const QImage transformed = state.geometry.apply(source,token);
     if (transformed.isNull() || cancelled(token)) { if (error) *error="Cancelled or invalid geometry"; return false; }
-    const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
+    auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,rawSource,rawBaseExposureStops);
+    if(!ImagePipeline::resolveDehazeAirlight(transformed,plan,token)){if(error)*error="Invalid full-frame dehaze context";return false;}
     if (!ImagePipeline::preflightTiledResearchRequest(transformed.size(),plan,128,token,error)) return false;
     // Explicit scene-linear floats must reach the color kernel before any
     // integer conversion: exposure can recover HDR or signed source channels.
