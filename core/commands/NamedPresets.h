@@ -99,11 +99,13 @@ private:
             return fail(error,"Cannot save an unsupported preset snapshot");
         return true;
     }
+public:
     static bool validName(const QString &name) {
         if (name.isEmpty() || name.size() > 80 || name != name.trimmed()) return false;
         for (const auto c : name) if (c.category() == QChar::Other_Control) return false;
         return true;
     }
+private:
     static bool fail(QString *error, const QString &text) { if (error) *error = text; return false; }
     bool write(const QJsonObject &next, QString *error) {
         if (!m_writable) return fail(error, "Preset file is unreadable; existing data is protected");

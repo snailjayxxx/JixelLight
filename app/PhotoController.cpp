@@ -246,6 +246,25 @@ QStringList PhotoController::currentKeywords() const { return hasImage() ? m_pho
 QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
 QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
 bool PhotoController::createVirtualCopy(const QString &name) {
+    return executeVirtualVersion({{"command","version.create"},{"name",name}});
+}
+bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+    return executeVirtualVersion({{"command","version.rename"},{"name",name}});
+}
+bool PhotoController::removeCurrentVirtualCopy() {
+    return executeVirtualVersion({{"command","version.remove"}});
+}
+bool PhotoController::executeVirtualVersion(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::VirtualVersion request;if(!CommandRegistry::decodeVirtualVersion(command,&request))return false;
+    switch(request.kind) {
+        case CommandRegistry::VirtualKind::Create:return createVirtualCopyImpl(request.name);
+        case CommandRegistry::VirtualKind::Rename:return renameCurrentVirtualCopyImpl(request.name);
+        case CommandRegistry::VirtualKind::Remove:return removeCurrentVirtualCopyImpl();
+    }
+    return false;
+}
+bool PhotoController::createVirtualCopyImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || !flushEdits()) return false;
     auto copy = m_photos[m_currentIndex];
@@ -262,11 +281,12 @@ bool PhotoController::createVirtualCopy(const QString &name) {
         setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
     }
     m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
-    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title}});
+    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title},
+        {"command",QJsonObject{{"command","version.create"},{"name",title}}}});
     setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
 }
 
-bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+bool PhotoController::renameCurrentVirtualCopyImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const auto title = name.trimmed(); QStringList checked{title};
@@ -277,10 +297,11 @@ bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
     }
     photo.versionName = title; photo.name = QFileInfo(photo.path).fileName() + " · " + title;
     emit libraryChanged();
-    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title}});
+    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title},
+        {"command",QJsonObject{{"command","version.rename"},{"name",title}}}});
     return true;
 }
-bool PhotoController::removeCurrentVirtualCopy() {
+bool PhotoController::removeCurrentVirtualCopyImpl() {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const int removed = m_currentIndex; const auto photo = m_photos[removed];
@@ -298,7 +319,7 @@ bool PhotoController::removeCurrentVirtualCopy() {
     m_currentIndex = -2;
     selectPhoto(std::min(removed,int(m_photos.size())-1));
     if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged(); }
-    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path}});
+    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path},{"command",QJsonObject{{"command","version.remove"}}}});
     setStatus(uiText("已删除虚拟副本：", "Virtual copy deleted: ") + photo.versionName);
     return true;
 }
@@ -378,6 +399,46 @@ QStringList PhotoController::presetNames() const {
     return presets.load(&error) ? presets.names() : QStringList{};
 }
 bool PhotoController::saveNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.save"},{"name",name.trimmed()}});
+}
+bool PhotoController::applyNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.apply"},{"name",name}});
+}
+bool PhotoController::removeNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.remove"},{"name",name}});
+}
+bool PhotoController::renameNamedPreset(const QString &name,const QString &replacement) {
+    return executePresetCommand({{"command","preset.rename"},{"name",name},{"replacement",replacement.trimmed()}});
+}
+bool PhotoController::replaceNamedPreset(const QString &name) {
+    return executePresetCommand({{"command","preset.replace"},{"name",name}});
+}
+bool PhotoController::exportNamedPreset(const QString &name,const QUrl &destination) {
+    return destination.isLocalFile()&&executePresetCommand({{"command","preset.export"},{"name",name},{"destination",destination.toLocalFile()}});
+}
+bool PhotoController::importNamedPreset(const QUrl &source,const QString &replacementName) {
+    return source.isLocalFile()&&executePresetCommand({{"command","preset.import"},{"source",source.toLocalFile()},{"name",replacementName.trimmed()}});
+}
+bool PhotoController::executePresetCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Preset request;if(!CommandRegistry::decodePreset(command,&request))return false;
+    bool accepted=false;
+    switch(request.kind) {
+        case CommandRegistry::PresetKind::Save:accepted=saveNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Apply:accepted=applyNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Remove:accepted=removeNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Rename:accepted=renameNamedPresetImpl(request.name,request.replacement);break;
+        case CommandRegistry::PresetKind::Replace:accepted=replaceNamedPresetImpl(request.name);break;
+        case CommandRegistry::PresetKind::Export:accepted=exportNamedPresetImpl(request.name,QUrl::fromLocalFile(request.path));break;
+        case CommandRegistry::PresetKind::Import:accepted=importNamedPresetImpl(QUrl::fromLocalFile(request.path),request.name);break;
+    }
+    if(accepted) {
+        auto canonical=command;if(request.kind==CommandRegistry::PresetKind::Import&&request.name.isEmpty())canonical.remove("name");
+        ActionTrace::instance().record("preset_command",{{"command",canonical},{"photo_key",hasImage()?m_photos[m_currentIndex].storageKey():QString()}});
+    }
+    return accepted;
+}
+bool PhotoController::saveNamedPresetImpl(const QString &name) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.save(name.trimmed(), m_photos[m_currentIndex].state, &error)) {
@@ -386,7 +447,7 @@ bool PhotoController::saveNamedPreset(const QString &name) {
     emit presetsChanged();
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
-bool PhotoController::applyNamedPreset(const QString &name) {
+bool PhotoController::applyNamedPresetImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
@@ -399,21 +460,21 @@ bool PhotoController::applyNamedPreset(const QString &name) {
     persistAndApply(QStringLiteral("named_preset"));
     setStatus(uiText("已应用预设：", "Preset applied: ") + name); return true;
 }
-bool PhotoController::removeNamedPreset(const QString &name) {
+bool PhotoController::removeNamedPresetImpl(const QString &name) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.remove(name, &error)) {
         setStatus(uiText("预设删除失败：", "Preset removal failed: ") + error); return false;
     }
     emit presetsChanged(); return true;
 }
-bool PhotoController::renameNamedPreset(const QString &name, const QString &replacement) {
+bool PhotoController::renameNamedPresetImpl(const QString &name, const QString &replacement) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.rename(name,replacement.trimmed(),&error)) {
         setStatus(uiText("预设重命名失败：", "Preset rename failed: ")+error); return false;
     }
     emit presetsChanged(); return true;
 }
-bool PhotoController::replaceNamedPreset(const QString &name) {
+bool PhotoController::replaceNamedPresetImpl(const QString &name) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.replace(name,m_photos[m_currentIndex].state,&error)) {
@@ -421,7 +482,7 @@ bool PhotoController::replaceNamedPreset(const QString &name) {
     }
     emit presetsChanged(); setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
 }
-bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destination) {
+bool PhotoController::exportNamedPresetImpl(const QString &name, const QUrl &destination) {
     if (!destination.isLocalFile() || isProtectedPhoto(destination.toLocalFile())) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.exportFile(name,destination.toLocalFile(),&error)) {
@@ -429,7 +490,7 @@ bool PhotoController::exportNamedPreset(const QString &name, const QUrl &destina
     }
     setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
 }
-bool PhotoController::importNamedPreset(const QUrl &source, const QString &replacementName) {
+bool PhotoController::importNamedPresetImpl(const QUrl &source, const QString &replacementName) {
     if (!source.isLocalFile()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.importFile(source.toLocalFile(),replacementName.trimmed(),&error)) {
@@ -685,6 +746,9 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(QStringList{"edit.copy","edit.paste","edit.sync"}.contains(object["command"].toString()))return executeAdjustmentTransfer(object)>=0;
+    if(object["command"].toString().startsWith("preset."))return executePresetCommand(object);
+    if(QStringList{"version.create","version.rename","version.remove"}.contains(object["command"].toString()))return executeVirtualVersion(object);
     if(object["command"].toString()=="catalog.curate")return executeCurationCommand(object);
     if(object["command"].toString()=="photo.copy"||object["command"].toString()=="photo.move")return executePhotoTransfer(object);
     if(object["command"].toString()=="export.batch")return executeBatchExport(object);
@@ -1532,12 +1596,31 @@ void PhotoController::resetAdjustments() {
 }
 
 void PhotoController::copyAdjustments() {
+    executeAdjustmentTransfer({{"command","edit.copy"}});
+}
+bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+    return executeAdjustmentTransfer({{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}})>=0;
+}
+int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+    return executeAdjustmentTransfer({{"command","edit.sync"},{"groups",QJsonArray::fromStringList(groups)},{"target",selectedOnly?"selection":"all"}});
+}
+int PhotoController::executeAdjustmentTransfer(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return -1;
+    CommandRegistry::Transfer request;if(!CommandRegistry::decodeAdjustmentTransfer(command,&request))return -1;
+    switch(request.kind) {
+        case CommandRegistry::TransferKind::Copy:if(!hasImage())return -1;copyAdjustmentsImpl();return 0;
+        case CommandRegistry::TransferKind::Paste:return pasteAdjustmentGroupsImpl(request.groups)?0:-1;
+        case CommandRegistry::TransferKind::Sync:return syncAdjustmentGroupsImpl(request.groups,request.selectedOnly);
+    }
+    return -1;
+}
+void PhotoController::copyAdjustmentsImpl() {
     if (!hasImage()) return;
     m_clipboard = m_photos[m_currentIndex].state;
     m_clipboardName = m_photos[m_currentIndex].name;
     m_hasClipboard = true;
     emit adjustmentClipboardChanged();
-    ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()}});
+    ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()},{"photo_key",m_photos[m_currentIndex].storageKey()},{"command",QJsonObject{{"command","edit.copy"}}}});
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
 }
 
@@ -1545,13 +1628,14 @@ void PhotoController::pasteAdjustments() {
     pasteAdjustmentGroups(AdjustmentTransfer::allGroups());
 }
 
-bool PhotoController::pasteAdjustmentGroups(const QStringList &groups) {
+bool PhotoController::pasteAdjustmentGroupsImpl(const QStringList &groups) {
     if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
     auto *state=mutableCurrentState();
     AdjustmentTransfer::apply(*state,m_clipboard,groups);
     m_photos[m_currentIndex].history.finish();
-    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName}});
+    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName},
+        {"command",QJsonObject{{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}}}});
     setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
     return true;
 }
@@ -1560,7 +1644,7 @@ void PhotoController::syncAdjustmentsToAll() {
     syncAdjustmentGroups(AdjustmentTransfer::allGroups(),false);
 }
 
-int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selectedOnly) {
+int PhotoController::syncAdjustmentGroupsImpl(const QStringList &groups,bool selectedOnly) {
     if (xmpMergeBusy()) return -1;
     if (!currentSourceAvailable() || !AdjustmentTransfer::validGroups(groups)) return -1;
     for(int i=0;i<m_photos.size();++i)
@@ -1580,7 +1664,8 @@ int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selecte
         changedKeys.append(photo.storageKey());
     }
     ActionTrace::instance().record("sync_adjustments",QVariantMap{{"source_key",sourceKey},{"groups",groups},
-        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()}});
+        {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()},
+        {"command",QJsonObject{{"command","edit.sync"},{"groups",QJsonArray::fromStringList(groups)},{"target",selectedOnly?"selection":"all"}}}});
     if (!changedKeys.isEmpty()) emit libraryChanged();
     setStatus(uiText("同步完成：更新 %1 / %2 个目标版本", "Sync complete: updated %1 / %2 target version(s)").arg(changedKeys.size()).arg(targets));
     // A failed write remains pending via the existing per-photo retry path.

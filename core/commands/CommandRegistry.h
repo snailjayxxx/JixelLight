@@ -4,6 +4,8 @@
 #include "core/look/LookProfiles.h"
 #include "core/color/ColorManagement.h"
 #include "core/library/CatalogTags.h"
+#include "core/commands/NamedPresets.h"
+#include "core/commands/AdjustmentTransfer.h"
 #include <QJsonArray>
 #include <QStringList>
 #include <QRegularExpression>
@@ -153,6 +155,121 @@ struct CommandRegistry {
             {"albums","trimmed nonempty name, at most80 UTF16 units; at most32 albums per target"},
             {"catalog_writes",true},{"source_writes",false},{"develop_history_steps",0},
             {"offline_sessions","unsupported; catalog metadata and Develop history remain separate domains"}};
+    }
+    enum class VirtualKind { Create, Rename, Remove };
+    struct VirtualVersion {VirtualKind kind=VirtualKind::Create;QString name;};
+    static bool decodeVirtualVersion(const QJsonObject &command,VirtualVersion *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid virtual version command";return false;};
+        if(!output)return fail();VirtualVersion staged;const auto name=command["command"].toString();
+        if(name=="version.create") {
+            if(!optionalFields(command,{}, {"name"}))return fail();
+        }else if(name=="version.rename") {
+            if(!fields(command,{"name"}))return fail();staged.kind=VirtualKind::Rename;
+        }else if(name=="version.remove") {
+            if(!fields(command,{}))return fail();staged.kind=VirtualKind::Remove;
+        }else return fail();
+        if(command.contains("name")) {
+            if(!command["name"].isString())return fail();staged.name=command["name"].toString().trimmed();
+        }
+        if(staged.kind==VirtualKind::Rename||!staged.name.isEmpty()) {
+            QStringList checked{staged.name};if(!CatalogTags::normalize(&checked,1)||checked.size()!=1||checked.first()!=staged.name)return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject virtualVersionSchema(const QString &name) {
+        const bool create=name=="version.create",rename=name=="version.rename";
+        return {{"name",name},{"scope","desktop"},{"fields",rename?QJsonArray{"name"}:QJsonArray{}},
+            {"optional_fields",create?QJsonArray{"name"}:QJsonArray{}},{"maximum_name_utf16_units",80},
+            {"default_name",create?"omitted or empty derives the existing Version N title":"none"},
+            {"target","current photo for creation; current virtual copy for rename/remove; originals cannot be removed"},
+            {"catalog_writes",true},{"source_writes",false},{"history","creation starts an independent baseline; existing rename/removal semantics remain separate from Develop Undo"},
+            {"offline_sessions","unsupported; session-local photo aliases do not create catalog versions"}};
+    }
+    enum class PresetKind { Save, Apply, Remove, Rename, Replace, Export, Import };
+    struct Preset {PresetKind kind=PresetKind::Save;QString name,replacement,path;};
+    static bool decodePreset(const QJsonObject &command,Preset *output,QString *error=nullptr) {
+        if(error)error->clear();
+        const auto fail=[&]{if(error)*error="Invalid named preset command";return false;};
+        if(!output)return fail();
+        Preset staged;const auto action=command["command"].toString();
+        if(action=="preset.import") {
+            if(!optionalFields(command,{"source"},{"name"}))return fail();
+            staged.kind=PresetKind::Import;
+        }else {
+            QStringList required{"name"};
+            if(action=="preset.save")staged.kind=PresetKind::Save;
+            else if(action=="preset.apply")staged.kind=PresetKind::Apply;
+            else if(action=="preset.remove")staged.kind=PresetKind::Remove;
+            else if(action=="preset.replace")staged.kind=PresetKind::Replace;
+            else if(action=="preset.rename"){staged.kind=PresetKind::Rename;required.append("replacement");}
+            else if(action=="preset.export"){staged.kind=PresetKind::Export;required.append("destination");}
+            else return fail();
+            if(!fields(command,required))return fail();
+        }
+        if(command.contains("name")) {
+            if(!command["name"].isString())return fail();
+            staged.name=command["name"].toString();
+            if(!(staged.kind==PresetKind::Import&&staged.name.isEmpty())&&!NamedPresets::validName(staged.name))return fail();
+        }
+        if(staged.kind==PresetKind::Rename) {
+            if(!command["replacement"].isString())return fail();
+            staged.replacement=command["replacement"].toString();
+            if(!NamedPresets::validName(staged.replacement))return fail();
+        }
+        if(staged.kind==PresetKind::Import||staged.kind==PresetKind::Export) {
+            const auto field=staged.kind==PresetKind::Import?"source":"destination";
+            if(!command[field].isString())return fail();staged.path=command[field].toString();
+            if(staged.path.isEmpty()||staged.path.size()>32768||staged.path.contains(QChar(u'\0')))return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject presetSchema(const QString &name) {
+        QStringList required;const bool importing=name=="preset.import",exporting=name=="preset.export";
+        if(importing)required={"source"};else required={"name"};
+        if(name=="preset.rename")required.append("replacement");
+        if(exporting)required.append("destination");
+        return {{"name",name},{"scope","desktop"},{"fields",QJsonArray::fromStringList(required)},
+            {"optional_fields",importing?QJsonArray{"name"}:QJsonArray{}},{"maximum_name_utf16_units",80},
+            {"name_policy","exact trimmed nonempty stored name; import omitted/empty name uses the portable file's stored name"},
+            {"store","existing user-local named preset file; bounded100 presets and64MiB"},
+            {"source_writes",false},{"geometry","presets retain destination geometry and catalog curation"},
+            {"history","apply retains one existing Develop step; management does not edit Develop history"},
+            {"offline_sessions","unsupported; local preset store is separate from session-local photo aliases"}};
+    }
+    enum class TransferKind { Copy, Paste, Sync };
+    struct Transfer {TransferKind kind=TransferKind::Copy;QStringList groups;bool selectedOnly=false;};
+    static bool decodeAdjustmentTransfer(const QJsonObject &command,Transfer *output,QString *error=nullptr) {
+        if(error)error->clear();
+        const auto fail=[&]{if(error)*error="Invalid adjustment transfer command";return false;};
+        if(!output)return fail();Transfer staged;const auto action=command["command"].toString();
+        if(action=="edit.copy") {
+            if(!fields(command,{}))return fail();
+        }else {
+            if(action=="edit.paste") {
+                if(!optionalFields(command,{}, {"groups"}))return fail();staged.kind=TransferKind::Paste;
+            }else if(action=="edit.sync") {
+                if(!optionalFields(command,{"target"},{"groups"})||!command["target"].isString())return fail();
+                const auto target=command["target"].toString();if(target!="selection"&&target!="all")return fail();
+                staged.kind=TransferKind::Sync;staged.selectedOnly=target=="selection";
+            }else return fail();
+            if(command.contains("groups")) {
+                if(!command["groups"].isArray())return fail();const auto groups=command["groups"].toArray();
+                if(groups.isEmpty()||groups.size()>AdjustmentTransfer::allGroups().size())return fail();
+                for(const auto &group:groups){if(!group.isString())return fail();staged.groups.append(group.toString());}
+            }else staged.groups=AdjustmentTransfer::allGroups();
+            if(!AdjustmentTransfer::validGroups(staged.groups))return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject adjustmentTransferSchema(const QString &name) {
+        const bool copying=name=="edit.copy",syncing=name=="edit.sync";
+        return {{"name",name},{"scope","desktop"},{"fields",syncing?QJsonArray{"target"}:QJsonArray{}},
+            {"optional_fields",copying?QJsonArray{}:QJsonArray{"groups"}},{"groups",QJsonArray::fromStringList(AdjustmentTransfer::allGroups())},
+            {"group_policy","omitted means all; explicit nonempty unique exact groups required"},
+            {"target","sync requires all or selection; current source excluded; empty selection stays empty"},
+            {"clipboard","copy freezes stored intent in this controller; paste consumes its existing frozen clipboard"},
+            {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
+            {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
@@ -802,7 +919,11 @@ struct CommandRegistry {
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
-                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema()}},
+                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema(),
+                virtualVersionSchema("version.create"),virtualVersionSchema("version.rename"),virtualVersionSchema("version.remove"),
+                presetSchema("preset.save"),presetSchema("preset.apply"),presetSchema("preset.remove"),presetSchema("preset.rename"),
+                presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import"),
+                adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

@@ -162,6 +162,41 @@ private slots:
         QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"catalog.curate"),CommandRegistry::curationSchema());
         QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"catalog.curate").isEmpty());
     }
+    void desktopVirtualVersionNamesAreStrictAndSessionsCannotMutateCatalogVersions(){
+        CommandRegistry::VirtualVersion request;QVERIFY(CommandRegistry::decodeVirtualVersion({{"command","version.create"}},&request));QVERIFY(request.name.isEmpty());
+        QVERIFY(CommandRegistry::decodeVirtualVersion({{"command","version.rename"},{"name"," Copy "}},&request));QCOMPARE(request.name,QString("Copy"));
+        for(const auto &bad:QList<QJsonObject>{{{"command","version.create"},{"name",true}},{{"command","version.rename"},{"name"," "}},{{"command","version.remove"},{"name","Copy"}}}) {
+            request.name="sentinel";QVERIFY(!CommandRegistry::decodeVirtualVersion(bad,&request));QCOMPARE(request.name,QString("sentinel"));
+        }
+        for(const auto &name:QStringList{"version.create","version.rename","version.remove"}) {
+            QJsonObject command{{"command",name}};if(name=="version.rename")command["name"]="Copy";CommandSession result;result.photoCount=81;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,81);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::virtualVersionSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
+    void namedPresetCommandsValidateNamesWithoutOfflineStoreSideEffects(){
+        CommandRegistry::Preset request;QVERIFY(CommandRegistry::decodePreset({{"command","preset.import"},{"source","preset.json"}},&request));QVERIFY(request.name.isEmpty());
+        for(const auto &bad:QList<QJsonObject>{{{"command","preset.apply"},{"name"," A "}},{{"command","preset.rename"},{"name","A"},{"replacement",false}},{{"command","preset.export"},{"name","A"},{"destination",""}}}) {
+            request.name="sentinel";QVERIFY(!CommandRegistry::decodePreset(bad,&request));QCOMPARE(request.name,QString("sentinel"));
+        }
+        for(const auto &name:QStringList{"preset.save","preset.apply","preset.remove","preset.rename","preset.replace","preset.export","preset.import"}) {
+            QJsonObject command{{"command",name},{"name","A"}};if(name=="preset.rename")command["replacement"]="B";if(name=="preset.export")command["destination"]="preset.json";if(name=="preset.import")command["source"]="preset.json";
+            QVERIFY(CommandRegistry::decodePreset(command,&request));CommandSession result;result.photoCount=82;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,82);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::presetSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
+    void controllerClipboardAndSelectionTransfersCannotEnterOfflineSessions(){
+        CommandRegistry::Transfer request;QVERIFY(CommandRegistry::decodeAdjustmentTransfer({{"command","edit.paste"}},&request));QCOMPARE(request.groups,AdjustmentTransfer::allGroups());
+        for(const auto &bad:QList<QJsonObject>{{{"command","edit.copy"},{"groups",QJsonArray{}}},{{"command","edit.paste"},{"groups",QJsonArray{"exposure","exposure"}}},{{"command","edit.sync"},{"target","current"}}}) {
+            request.groups={"sentinel"};QVERIFY(!CommandRegistry::decodeAdjustmentTransfer(bad,&request));QCOMPARE(request.groups,QStringList{"sentinel"});
+        }
+        for(const auto &name:QStringList{"edit.copy","edit.paste","edit.sync"}) {
+            QJsonObject command{{"command",name}};if(name=="edit.sync")command["target"]="all";QVERIFY(CommandRegistry::decodeAdjustmentTransfer(command,&request));
+            CommandSession result;result.photoCount=83;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,83);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::adjustmentTransferSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

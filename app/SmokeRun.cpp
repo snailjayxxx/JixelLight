@@ -621,7 +621,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings,curationCommands; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, curationCommandsPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings,curationCommands,versionCommands,presetCommands; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, presetCommandsPassed=false, restoredDevelop=false, curationPassed=false, curationCommandsPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, versionCommandsPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
     auto state=std::make_shared<State>();state->elapsed.start();
     const auto saveScreenshot=[window,state](const QString &path) {
         QElapsedTimer grabTimer;grabTimer.start();
@@ -754,6 +754,15 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && controller->library()[controller->currentIndex()].toMap().value("versionName").toString() == "Smoke renamed"
                 && controller->createVirtualCopy("Temporary smoke version") && controller->removeCurrentVirtualCopy()
                 && controller->library().size() == originalCount+1;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto command=value.toObject()["command"].toObject();
+                if(command["command"].toString().startsWith("version."))state->versionCommands.append(command);
+            }
+            const QJsonArray expectedVersions{QJsonObject{{"command","version.create"},{"name","Smoke version"}},
+                QJsonObject{{"command","version.rename"},{"name","Smoke renamed"}},
+                QJsonObject{{"command","version.create"},{"name","Temporary smoke version"}},QJsonObject{{"command","version.remove"}}};
+            state->versionCommandsPassed=state->versionCommands==expectedVersions;
+            state->copiesPassed=state->copiesPassed&&state->versionCommandsPassed;
             const auto copyIndex = controller->currentIndex();
             controller->setExposure(-.6); controller->finishInteraction();
             controller->selectPhoto(originalIndex);
@@ -849,6 +858,23 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->presetActionsPresent=menu && menu->property("visible").toBool();
             if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath + ".presets.png");
             if (menu) QMetaObject::invokeMethod(menu,"close",Qt::DirectConnection);
+            QTemporaryDir presetDirectory;
+            const auto originalState=controller->gpuPlan(true).state.toJson();const auto originalHistory=controller->editHistory();const auto originalNames=controller->presetNames();
+            const auto name="Smoke-"+QUuid::createUuid().toString(QUuid::WithoutBraces),renamed=name+"-R",imported=name+"-I";
+            const auto portable=QUrl::fromLocalFile(presetDirectory.filePath("preset.jixelpreset.json"));
+            state->presetCommandsPassed=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool()&&presetDirectory.isValid()
+                &&controller->saveNamedPreset(name)&&controller->renameNamedPreset(name,renamed)&&controller->replaceNamedPreset(renamed)
+                &&controller->exportNamedPreset(renamed,portable)&&controller->removeNamedPreset(renamed)
+                &&controller->importNamedPreset(portable,imported)&&controller->applyNamedPreset(imported)&&controller->removeNamedPreset(imported)
+                &&controller->gpuPlan(true).state.toJson()==originalState&&controller->editHistory()==originalHistory&&controller->presetNames()==originalNames;
+            QSet<QString> presetNames;
+            for(const auto &entry:ActionTrace::instance().snapshot()) {
+                const auto row=entry.toObject(),command=row["command"].toObject();
+                if(row["action"].toString()!="preset_command"||!QStringList{name,renamed,imported}.contains(command["name"].toString()))continue;
+                presetNames.insert(command["command"].toString());state->presetCommands.append(command);
+            }
+            state->presetCommandsPassed=state->presetCommandsPassed&&presetNames==QSet<QString>{"preset.save","preset.rename","preset.replace","preset.export","preset.remove","preset.import","preset.apply"}&&state->presetCommands.size()==8;
+            state->presetActionsPresent=state->presetActionsPresent&&state->presetCommandsPassed;
             state->phase=22;
         } else if(state->phase==22 && ready) {
             const double originalExposure = controller->exposure();
@@ -1062,6 +1088,10 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 const auto row=value.toObject();if(row["action"].toString()=="copy_import_started"&&row["command"].toObject()==copyCommand)commandTraced=true;
             }
             copyTrace->insert("canonical_command_traced",commandTraced);
+            const auto beforeTransfer=controller->gpuPlan(true).state.toJson();const auto beforeTransferHistory=controller->editHistory();
+            controller->copyAdjustments();
+            transferTrace->insert("clipboard_noop",controller->hasAdjustmentClipboard()&&controller->pasteAdjustmentGroups({"exposure"})
+                &&controller->gpuPlan(true).state.toJson()==beforeTransfer&&controller->editHistory()==beforeTransferHistory);
             transferTrace->insert("source_index",controller->currentIndex());
             transferTrace->insert("source_exposure",controller->exposure());
             controller->setPhotoSelection({controller->currentIndex(),controller->library().size()-1});
@@ -1087,6 +1117,13 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         } else if (state->phase==49 && ready) {
             auto *dialog=window->findChild<QObject *>(QStringLiteral("adjustmentTransferDialog"));
             transferTrace->insert("closed",dialog && !dialog->property("visible").toBool());
+            const QJsonArray expectedTransfer{QJsonObject{{"command","edit.copy"}},QJsonObject{{"command","edit.paste"},{"groups",QJsonArray{"exposure"}}},
+                QJsonObject{{"command","edit.sync"},{"groups",QJsonArray{"exposure"}},{"target","selection"}}};
+            QJsonArray tracedTransfers;for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto command=value.toObject()["command"].toObject();if(expectedTransfer.contains(command))tracedTransfers.append(command);
+            }
+            bool transferCommands=true;for(const auto &command:expectedTransfer)transferCommands=transferCommands&&tracedTransfers.contains(command);
+            transferTrace->insert("canonical_commands",transferCommands);transferTrace->insert("commands",tracedTransfers);
             controller->selectPhoto(controller->library().size()-1);
             const auto expected=transferTrace->value("source_exposure").toDouble();
             const bool changed=controller->exposure()==expected && controller->saturation()==0 && controller->canUndo();
@@ -1412,7 +1449,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool()
             && copyTrace->value("canonical_command_traced").toBool();
         bool transferOk=true;
-        for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
+        for (const auto &key : {"clipboard_noop","canonical_commands","opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
             transferOk=transferOk && transferTrace->value(key).toBool();
         bool correctionOk=true;
         for (const auto *key : {"toggle_revealed","opened","controls_found","perspective_revealed","perspective_clicked","perspective_changed","ca_revealed","ca_clicked","ca_changed","other_values_set","full_scopes","undo_restored"})
@@ -1443,12 +1480,14 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_preset_actions_found"]=state->presetActionsPresent;
+        report["ui_named_preset_command_trace_passed"]=state->presetCommandsPassed;report["ui_named_preset_commands"]=state->presetCommands;
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
         report["ui_curation_command_trace_passed"]=state->curationCommandsPassed;report["ui_curation_commands"]=state->curationCommands;
         report["ui_catalog_passed"]=state->catalogPassed;
         report["ui_catalog_dates_passed"]=state->catalogDatesPassed;
         report["ui_virtual_copies_passed"]=state->copiesPassed;
+        report["ui_virtual_version_command_trace_passed"]=state->versionCommandsPassed;report["ui_virtual_version_commands"]=state->versionCommands;
         report["ui_history_passed"]=state->historyPassed;
         report["ui_geometry_passed"]=state->geometryPassed;
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
