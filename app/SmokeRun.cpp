@@ -5,6 +5,7 @@
 #include "diagnostics/LoggingEngine.h"
 #include "diagnostics/ActionTrace.h"
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QTimer>
@@ -1442,6 +1443,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_selected_export_trace"]=*exportSelectionTrace;
         report["ui_photo_selection_passed"]=photoSelectionOk;
         report["ui_photo_selection_trace"]=*photoSelectionTrace;
+        report["qpa_platform"]=QGuiApplication::platformName();
+        report["device_pixel_ratio"]=window->devicePixelRatio();
         report["smoke_phase_milestones"]=*phaseMilestones;
         report["smoke_deadline_ms"]=SmokePhasePolicy::DeadlineMs;
         report["smoke_final_image_ready"]=ready;
