@@ -89,6 +89,39 @@ struct CommandRegistry {
             {"overwrite",false},{"source_writes",false},{"completion","true means accepted; observe exportFinished"},
             {"offline_sessions","use repeated export.run commands; export.batch is not a session command"}};
     }
+    struct PhotoTransfer {QStringList sources;QString folder,pattern;int sequenceStart=1;bool move=false;};
+    static bool decodePhotoTransfer(const QJsonObject &command,PhotoTransfer *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid copy/move import command";return false;};
+        const auto name=command["command"].toString();
+        if(!output||(name!="photo.copy"&&name!="photo.move")
+            ||!optionalFields(command,{"sources","folder"},{"pattern","sequenceStart"})||!command["sources"].isArray())return fail();
+        const auto validPath=[](const QJsonValue &value){return value.isString()&&!value.toString().isEmpty()
+            &&value.toString().size()<=32768&&!value.toString().contains(QChar(u'\0'));};
+        if(!validPath(command["folder"]))return fail();const auto sources=command["sources"].toArray();
+        if(sources.isEmpty()||sources.size()>1000)return fail();
+        PhotoTransfer staged;staged.folder=command["folder"].toString();staged.move=name=="photo.move";QSet<QString> seen;
+        for(const auto &value:sources) {
+            if(!validPath(value)||seen.contains(value.toString()))return fail();seen.insert(value.toString());staged.sources.append(value.toString());
+        }
+        if(command.contains("pattern")) {
+            if(!command["pattern"].isString())return fail();staged.pattern=command["pattern"].toString();
+            if(staged.pattern.size()>160||staged.pattern.contains(QChar(u'\0')))return fail();
+        }
+        if(command.contains("sequenceStart")) {
+            if(!integer(command,"sequenceStart",1,999999999))return fail();staged.sequenceStart=command["sequenceStart"].toInt();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject photoTransferSchema(bool move) {
+        return {{"name",move?"photo.move":"photo.copy"},{"scope","desktop"},{"fields",QJsonArray{"sources","folder"}},
+            {"optional_fields",QJsonArray{"pattern","sequenceStart"}},{"minimum_sources",1},{"maximum_sources",1000},
+            {"maximum_path_utf16_units",32768},{"maximum_pattern_utf16_units",160},{"default_sequenceStart",1},{"sequenceStart",QJsonArray{1,999999999}},
+            {"path_kind","native local paths; full copy/name/source/destination preflight remains required"},{"overwrite",false},
+            {"source_bytes_written",false},{"source_paths_may_change",move},
+            {"source_retirement",move?"explicit move: system trash only after verified copy and durable catalog identity; reviewed journal recovery remains separate":"none; sources remain in place"},
+            {"requires_saved_project",move},{"completion","true means accepted; observe existing import progress/completion signals"},
+            {"offline_sessions","unsupported; photo.import retains Add-only behavior"}};
+    }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
     static bool decodePhotoImport(const QJsonObject &command,ImportScope scope,PhotoImport *output,QString *error=nullptr) {
@@ -737,7 +770,7 @@ struct CommandRegistry {
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
-                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema()}},
+                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

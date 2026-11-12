@@ -135,6 +135,11 @@ def main():
         batch_form = next(c for c in schema['workflow_commands'] if c['name'] == 'export.batch')
         assert batch_form['scope'] == 'desktop' and batch_form['fields'] == ['folder'] and batch_form['overwrite'] is False
         assert all(c['name'] != 'export.batch' for c in schema['session']['commands'])
+        for name in ('photo.copy', 'photo.move'):
+            transfer_form = next(c for c in schema['workflow_commands'] if c['name'] == name)
+            assert transfer_form['scope'] == 'desktop' and transfer_form['fields'] == ['sources', 'folder']
+            assert transfer_form['source_bytes_written'] is False and transfer_form['source_paths_may_change'] is (name == 'photo.move')
+            assert all(c['name'] != name for c in schema['session']['commands'])
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -186,7 +191,9 @@ def main():
                      {'command': 'photo.import', 'source': source.name},
                      {'command': 'export.run', 'destination': late_output.name, 'quality': 92},
                      {'command': 'export.run', 'destination': late_output.name, 'overwrite': True},
-                     {'command': 'export.batch', 'folder': str(root)}]:
+                     {'command': 'export.batch', 'folder': str(root)},
+                     {'command': 'photo.copy', 'sources': [str(source)], 'folder': str(root)},
+                     {'command': 'photo.move', 'sources': [str(source)], 'folder': str(root)}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))

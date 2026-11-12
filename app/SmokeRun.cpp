@@ -1047,6 +1047,12 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             QFile source(importFixture->filePath("dated-test.jpg")),destination(importFixture->filePath("copies/20250102_030405_0007_dated-test.jpg"));
             copyTrace->insert("content_equal",source.open(QIODevice::ReadOnly) && destination.open(QIODevice::ReadOnly) && source.readAll()==destination.readAll());
             copyTrace->insert("catalog_added",controller->library().size()==copyTrace->value("before").toInt()+1);
+            const QJsonObject copyCommand{{"command","photo.copy"},{"sources",QJsonArray{importFixture->filePath("dated-test.jpg")}},
+                {"folder",importFixture->filePath("copies")},{"pattern","{capture_date}_{capture_time}_{seq:4}_{name}"},{"sequenceStart",7}};
+            bool commandTraced=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();if(row["action"].toString()=="copy_import_started"&&row["command"].toObject()==copyCommand)commandTraced=true;
+            }
+            copyTrace->insert("canonical_command_traced",commandTraced);
             transferTrace->insert("source_index",controller->currentIndex());
             transferTrace->insert("source_exposure",controller->exposure());
             controller->setPhotoSelection({controller->currentIndex(),controller->library().size()-1});
@@ -1394,7 +1400,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             && copyTrace->value("prepared").toBool() && copyTrace->value("dialog_visible").toBool() && copyTrace->value("custom_clicked").toBool()
             && copyTrace->value("dialog_centered").toBool() && copyTrace->value("preview_valid").toBool()
             && copyTrace->value("dated_prepared").toBool() && copyTrace->value("capture_preview").toBool() && copyTrace->value("missing_capture_blocked").toBool()
-            && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool();
+            && copyTrace->value("content_equal").toBool() && copyTrace->value("catalog_added").toBool()
+            && copyTrace->value("canonical_command_traced").toBool();
         bool transferOk=true;
         for (const auto &key : {"opened","visible","default_geometry_excluded","none_clicked","exposure_clicked","applied","closed","isolated_undo","final_scopes"})
             transferOk=transferOk && transferTrace->value(key).toBool();

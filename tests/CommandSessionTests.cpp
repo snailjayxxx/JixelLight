@@ -141,6 +141,19 @@ private slots:
         QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"export.batch"),CommandRegistry::batchExportSchema());
         QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"export.batch").isEmpty());
     }
+    void desktopTransferImportsRejectMalformedInputAndCannotRetireSessionSources(){
+        CommandRegistry::PhotoTransfer request;
+        for(const auto &name:QStringList{"photo.copy","photo.move"}) {
+            const QJsonObject command{{"command",name},{"sources",QJsonArray{"a.png","b.png"}},{"folder","out"}};
+            QVERIFY(CommandRegistry::decodePhotoTransfer(command,&request));QCOMPARE(request.move,name=="photo.move");QCOMPARE(request.sources,QStringList({"a.png","b.png"}));QCOMPARE(request.sequenceStart,1);
+            for(const auto &sources:QList<QJsonValue>{QJsonArray{},QJsonArray{"a","a"},QJsonArray{true},QString("a.png")}) {
+                auto bad=command;bad["sources"]=sources;request.folder="sentinel";QVERIFY(!CommandRegistry::decodePhotoTransfer(bad,&request));QCOMPARE(request.folder,QString("sentinel"));
+            }
+            CommandSession result;result.photoCount=73;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,73);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::photoTransferSchema(name=="photo.move"));
+            QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));
