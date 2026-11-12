@@ -58,6 +58,7 @@ jobs:
         build/qsb-depfile-test/
         build/tests.xml
         build/sony-real-reports/
+        build/gpu-preflight-reports/
         build/raw-render-matrix/
         build/sensor-evidence.json
         build/float-raw-readiness.json
@@ -151,9 +152,19 @@ jobs:
       - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
         shell: bash
         run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
+      - name: Real Sony and complete GPU precision preflight
+        shell: bash
+        env:
+          JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
+          JIXELLIGHT_REQUIRE_GPU: '1'
+        run: |
+          python -m unittest discover -s tests -p 'TestGpuPreflight.py' -v
+          STAMP=$(git rev-parse HEAD)
+          python tools/RunGpuPreflight.py --build build --config Release --report build/gpu-preflight-reports --source-commit "$STAMP"
       - name: Test including real RAW decode and compute parity
         env:
           JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/JixelLight-test.DNG
+          JIXELLIGHT_REQUIRE_GPU: '1'
         run: ctest --test-dir build -C Release --output-on-failure --output-junit tests.xml
       - name: Native committed preview delivery monitor and exact Sony export
         shell: bash
@@ -757,6 +768,7 @@ jobs:
         build/qsb-depfile-test/
         build/tests.xml
         build/sony-real-reports/
+        build/gpu-preflight-reports/
         build/raw-render-matrix/
         build/sensor-evidence.json
         build/float-raw-readiness.json
@@ -810,6 +822,16 @@ jobs:
       - name: Fetch checksum-pinned real Sony ARW and matching JPEG fixtures
         shell: bash
         run: python tools/FetchSonyFixtures.py tests/fixtures/sony-real-manifest.json "$JIXELLIGHT_SONY_FIXTURES"
+      - name: Real Sony and complete GPU precision preflight
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          JIXELLIGHT_REQUIRE_GPU: '1'
+          JIXELLIGHT_TEST_RAW: ${{ runner.temp }}/test.DNG
+        run: |
+          python -m unittest discover -s tests -p 'TestGpuPreflight.py' -v
+          STAMP=$(git rev-parse HEAD)
+          xvfb-run -a python tools/RunGpuPreflight.py --build build --report build/gpu-preflight-reports --source-commit "$STAMP"
       - name: Tests (GPU must not be skipped)
         env:
           QT_QPA_PLATFORM: offscreen

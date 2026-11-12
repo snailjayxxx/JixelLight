@@ -1,0 +1,13 @@
+# F0 M73 — earlier GPU parity failures with preserved originals
+
+The build workflow now runs the existing `sony-real-files` dependency and complete `gpu-correctness` suite immediately after compiling and fetching fixtures. This exercises WARP, Metal and OpenGL before the long sequence of full-resolution brush/export checks. An early numeric failure stops the ordinary job. A successful preflight is followed by the original complete CTest run, native App checks, package contexts and artifact-delivery audit. No tests are removed or substituted, and job/operation/parity limits stay unchanged.
+
+`RunGpuPreflight.py` forces required GPU and real-Sony validation. It requires two successful, non-skipped JUnit cases, a complete Qt result without failures/skips/blacklists, the successful real-Sony summary and a nonempty fitted profile. A zero CTest exit with missing or skipped evidence fails. Desktop full CTest also explicitly requires GPU availability.
+
+Before the full run can overwrite its usual paths, the helper saves byte-verified copies of the original GPU result and Sony JSON/CSV/text/log reports under a fresh `gpu-preflight-reports` directory. Original CTest output/JUnit, start/final records, hashes, native exit and checkout identity are retained. Existing report/GPU/Sony output paths are refused without modification. Review photographs are excluded from the snapshot. Both primary and transport-retry artifact uploads include this directory; retries still only transport artifacts.
+
+Six behavioral tests cover failure propagation, zero-exit incomplete/skipped evidence, original preservation across later full-run overwrites, fresh-path refusals and launch errors. A real CMake/CTest fixture with spaces checks JUnit compatibility and configuration handling. These synthetic fixtures validate the wrapper, not product GPU correctness. All 223 Python methods pass; Ruby YAML parsing verifies both preflight positions before the unchanged full gates and both artifact path lists.
+
+Only workflow, helper, evidence tests and documentation change. Product C++/QML/shaders, source/decoder/export/color math, packed state, CPU/GPU40/65535, exact alpha,1024-bin scopes,3GiB admission,45/60/120-second operation caps and Linux/Windows/macOS60/120/180-minute job caps remain unchanged.
+
+At source freeze, product parent b5f830c has scoped GPU82/workflow18/native checks passed and its frozen clean95 run in progress. This QA stage does not claim a new local full/native acceptance; fresh three-platform CI, the early actual product preflight and the normal full95/native/84-context package gates remain required. Older Windows failures stay retained and unaccepted. No merge or release is performed.
