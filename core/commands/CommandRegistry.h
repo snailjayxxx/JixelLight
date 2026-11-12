@@ -2,6 +2,7 @@
 #include "core/pipeline/AdjustmentState.h"
 #include "core/pipeline/PointColor.h"
 #include "core/look/LookProfiles.h"
+#include "core/color/ColorManagement.h"
 #include <QJsonArray>
 #include <QStringList>
 #include <QRegularExpression>
@@ -13,6 +14,36 @@ struct CommandRegistry {
     // Constructed by GUI/CLI from the actual source; never accepted in command
     // JSON. A single batch uses one immutable source metadata snapshot.
     struct LookContext { bool rawSource=false; QVariantMap metadata; };
+    enum class ExportScope { Desktop, Session };
+    struct CurrentExport {QString destination,space="srgb";int quality=92;};
+    static bool decodeCurrentExport(const QJsonObject &command,ExportScope scope,CurrentExport *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid export command";return false;};
+        if(!output||command["command"].toString()!="export.run"
+            ||!optionalFields(command,{"destination"},scope==ExportScope::Desktop?QStringList{"space","quality"}:QStringList{"space"})
+            ||!command["destination"].isString())return fail();
+        CurrentExport staged;staged.destination=command["destination"].toString();
+        if(staged.destination.isEmpty()||staged.destination.size()>32768||staged.destination.contains(QChar(u'\0')))return fail();
+        if(scope==ExportScope::Session)for(const auto ch:staged.destination)if(ch.unicode()<32||ch.unicode()==127)return fail();
+        if(command.contains("space")) {
+            if(!command["space"].isString())return fail();staged.space=command["space"].toString();
+        }
+        if(!ColorManagement::keys().contains(staged.space))return fail();
+        if(command.contains("quality")) {
+            if(!integer(command,"quality",1,100))return fail();staged.quality=command["quality"].toInt();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject currentExportSchema(ExportScope scope) {
+        const bool desktop=scope==ExportScope::Desktop;
+        QJsonObject result{{"name","export.run"},{"scope",desktop?"desktop":"offline-session"},{"fields",QJsonArray{"destination"}},
+            {"optional_fields",desktop?QJsonArray{"space","quality"}:QJsonArray{"space"}},{"default_space","srgb"},
+            {"spaces",QJsonArray::fromStringList(ColorManagement::keys())},{"default_quality",92},
+            {"maximum_destination_utf16_units",32768},{"source_writes",false},{"overwrite","never overwrite through the command entry point"},
+            {"operation",desktop?"freeze current photo/state and queue a new-file export; true means accepted, observe exportFinished for completion":"freeze current state; execute exports after complete session validation"},
+            {"desktop_reviewed_save","existing exportCurrent adapter retains its explicitly reviewed replacement behavior"}};
+        if(desktop)result["quality"]=QJsonArray{1,100};else result["fixed_quality"]=92;
+        return result;
+    }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
     static bool decodePhotoImport(const QJsonObject &command,ImportScope scope,PhotoImport *output,QString *error=nullptr) {
@@ -142,6 +173,13 @@ struct CommandRegistry {
     static bool fields(const QJsonObject &command, const QStringList &names) {
         if (command.size() != names.size()+1 || !command.value("command").isString()) return false;
         for (const auto &name : names) if (!command.contains(name)) return false;
+        return true;
+    }
+    static bool optionalFields(const QJsonObject &command,const QStringList &required,const QStringList &optional) {
+        if(!command["command"].isString())return false;
+        for(const auto &key:required)if(!command.contains(key))return false;
+        for(auto it=command.begin();it!=command.end();++it)
+            if(it.key()!="command"&&!required.contains(it.key())&&!optional.contains(it.key()))return false;
         return true;
     }
     static bool number(const QJsonObject &command, const char *key) {
@@ -652,7 +690,9 @@ struct CommandRegistry {
         };
         return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"control_commands",controlSchema()},
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
-                {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}}}},
+                {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
+                QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
+                    {"session",currentExportSchema(ExportScope::Session)}}}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

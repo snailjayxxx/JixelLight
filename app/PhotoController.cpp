@@ -681,6 +681,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="export.run")return executeCurrentExport(object,true);
     if(object["command"].toString()=="photo.import")return executePhotoImport(object,true);
     if(object["command"].toString()=="photo.select") {
         QString key;
@@ -1583,12 +1584,20 @@ int PhotoController::syncAdjustmentGroups(const QStringList &groups,bool selecte
 }
 
 bool PhotoController::exportCurrent(const QUrl &destination, const QString &colorSpaceKey, int quality) {
+    return executeCurrentExport({{"command","export.run"},
+        {"destination",destination.isLocalFile()?destination.toLocalFile():destination.toString()},
+        {"space",ColorManagement::key(ColorManagement::fromKey(colorSpaceKey))},{"quality",std::clamp(quality,1,100)}},false);
+}
+
+bool PhotoController::executeCurrentExport(const QJsonObject &command,bool newFileOnly) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::CurrentExport request;
+    if(!CommandRegistry::decodeCurrentExport(command,CommandRegistry::ExportScope::Desktop,&request))return false;
     if (!currentSourceAvailable() || !sourceReadable(m_photos[m_currentIndex]) || exportBusy() || m_relinkBusy) return false;
-    QString path = destination.isLocalFile() ? destination.toLocalFile() : destination.toString();
-    if (path.isEmpty()) return false;
+    QString path = request.destination;
     if (!QStringList{"jpg","jpeg","png","tif","tiff","webp"}.contains(QFileInfo(path).suffix().toLower())) path += ".jpg";
     if (isProtectedPhoto(path)) { setStatus(uiText("不能覆盖原图或参考图。", "Cannot overwrite an original or reference photograph.")); return false; }
-    const auto target = ColorManagement::fromKey(colorSpaceKey);
+    const auto target = ColorManagement::fromKey(request.space);
     // Protect every imported original, not merely the current photograph.
     // canonicalFilePath also detects a symlink/alternate spelling of a source.
     const QFileInfo destinationInfo(path);
@@ -1601,14 +1610,19 @@ bool PhotoController::exportCurrent(const QUrl &destination, const QString &colo
             return false;
         }
     }
+    if(newFileOnly&&(destinationInfo.exists()||destinationInfo.isSymLink())) {
+        setStatus(uiText("导出目标已存在。请选择新的文件名。", "Export destination already exists. Choose a new filename."));return false;
+    }
     flushEdits();
-    quality = std::clamp(quality, 1, 100);
-    const bool queued = m_exportQueue->start({{currentFile(), path, m_fullSource, currentState(), target, quality}});
+    const int quality=request.quality;
+    const bool queued = m_exportQueue->start({{currentFile(), path, m_fullSource, currentState(), target, quality,newFileOnly}});
     if (queued) {
         m_exportProgress = 0;
         QSettings().setValue("export/colorSpace", ColorManagement::key(target));
         QSettings().setValue("export/jpegQuality", quality);
-        ActionTrace::instance().record("export_queued", {{"file", currentFile()}, {"destination", path}, {"quality", quality}, {"output_space", ColorManagement::key(target)}});
+        ActionTrace::instance().record("export_queued", {{"file", currentFile()}, {"destination", path}, {"quality", quality},
+            {"output_space",ColorManagement::key(target)},{"new_file_only",newFileOnly},
+            {"command",QJsonObject{{"command","export.run"},{"destination",path},{"space",request.space},{"quality",quality}}}});
         setStatus(uiText(QStringLiteral("导出已开始，可继续编辑。"), QStringLiteral("Export started; editing remains available.")));
         emit exportChanged();
     }

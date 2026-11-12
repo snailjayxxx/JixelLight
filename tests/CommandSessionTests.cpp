@@ -111,6 +111,23 @@ private slots:
         const auto imports=describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"photo.import");
         QCOMPARE(imports["desktop"].toObject(),CommandRegistry::photoImportSchema(Scope::Desktop));QCOMPARE(imports["session"].toObject(),CommandRegistry::photoImportSchema(Scope::Session));
     }
+    void exportValidationSharesDefaultsAndScopeWhileRejectingOverrideInjectionAtomically(){
+        using Scope=CommandRegistry::ExportScope;CommandRegistry::CurrentExport request;
+        QVERIFY(CommandRegistry::decodeCurrentExport(save(),Scope::Session,&request));QCOMPARE(request.space,QString("srgb"));QCOMPARE(request.quality,92);
+        const auto quality=QJsonObject{{"command","export.run"},{"destination","output.png"},{"space","display-p3"},{"quality",100}};
+        QVERIFY(CommandRegistry::decodeCurrentExport(quality,Scope::Desktop,&request));QCOMPARE(request.quality,100);QVERIFY(!CommandRegistry::decodeCurrentExport(quality,Scope::Session,&request));
+        CommandSession output;output.photoCount=71;
+        for(const auto &bad:QList<QJsonObject>{quality,QJsonObject{{"command","export.run"},{"destination",true}},
+            QJsonObject{{"command","export.run"},{"destination",""}},QJsonObject{{"command","export.run"},{"destination","bad\nname.png"}},
+            QJsonObject{{"command","export.run"},{"destination","output.png"},{"space","unknown"}},QJsonObject{{"command","export.run"},{"destination","output.png"},{"overwrite",true}}}) {
+            request={"sentinel","sentinel",7};QVERIFY(!CommandRegistry::decodeCurrentExport(bad,Scope::Session,&request));QCOMPARE(request.destination,QString("sentinel"));QCOMPARE(request.quality,7);
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),bad}),base(),source(),&output));QCOMPARE(output.photoCount,71);QVERIFY(output.exports.isEmpty());
+        }
+        auto native=save("native\nname.png");QVERIFY(CommandRegistry::decodeCurrentExport(native,Scope::Desktop,&request));
+        const auto forms=describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"export.run");
+        QCOMPARE(forms["desktop"].toObject(),CommandRegistry::currentExportSchema(Scope::Desktop));QCOMPARE(forms["session"].toObject(),CommandRegistry::currentExportSchema(Scope::Session));
+        QCOMPARE(describedCommand(CommandSession::schema()["commands"].toArray(),"export.run"),CommandRegistry::currentExportSchema(Scope::Session));
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));
