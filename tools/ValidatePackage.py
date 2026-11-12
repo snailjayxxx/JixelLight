@@ -31,6 +31,7 @@ from ValidateDehaze import validate_dehaze
 from ValidatePointColor import validate_pointColor
 from ValidateLuminanceMask import validate_luminance_mask
 from ValidateColorMask import validate_color_mask
+from ValidateSoftProof import validate_soft_proof
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -338,6 +339,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_color_mask(executable, environment, Path(color_mask_temp) / mode,
                 reports / ('color-mask-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # All84 original contexts remain, followed by presentation-only soft proof.
+    with tempfile.TemporaryDirectory(prefix='jixellight-soft-proof-package-') as proof_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_soft_proof(executable, environment, Path(proof_temp) / mode,
+                reports / ('soft-proof-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

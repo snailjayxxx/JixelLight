@@ -80,8 +80,8 @@ QSize outputSize(const QSize &source,const GeometryState &geometry) {
     const int bottom=std::clamp(int(std::ceil(crop.bottom()*size.height())),top+1,size.height());
     size={right-left,bottom-top};if(geometry.quarterTurns%2)size.transpose();return size;
 }
-bool validState(const AdjustmentState &state) {
-    if(!BrushMaskDocument::validDocument(state.brushMasks)||!BrushMaskTileRaster::anyEnabled(state.brushMasks)
+bool validState(const AdjustmentState &state,bool requireBrush=true) {
+    if(!BrushMaskDocument::validDocument(state.brushMasks)||(requireBrush&&!BrushMaskTileRaster::anyEnabled(state.brushMasks))
         ||!state.look.error.isEmpty()||!LookProfiles::engineCompatible(state.look)
         ||!std::isfinite(state.look.strength)||state.look.strength<0||state.look.strength>1
         ||state.look.parameters.size()>SonyLookMetadata::parameterNames().size())return false;
@@ -188,7 +188,9 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
 QImage BrushImageLease::sharedImage() const {
     try{return retainPixels(m_image,m_reservation);}catch(...){return {};}
 }
-bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *error) {
+bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *error){return validPreparedPlanImpl(plan,error,true);}
+bool BrushRenderRequest::validPreparedImagePlan(const ProcessingPlan &plan,QString *error){return validPreparedPlanImpl(plan,error,false);}
+bool BrushRenderRequest::validPreparedPlanImpl(const ProcessingPlan &plan,QString *error,bool requireBrush) {
     if(error)error->clear();
     if(!plan.m_brushIntent)return fail(error,"Prepared brush plan has no original intent");
     try {
@@ -196,13 +198,29 @@ bool BrushRenderRequest::validPreparedPlan(const ProcessingPlan &plan,QString *e
             ||int(plan.output)<0||int(plan.output)>int(ColorManagement::OutputSpace::ProPhotoRgb)
             ||!std::isfinite(plan.baseExposureStops)||plan.baseExposureStops<-8||plan.baseExposureStops>8)
             return fail(error,"Invalid prepared brush specification");
-        if(!validState(*plan.m_brushIntent))return fail(error,"Invalid original brush intent");
+        if(!validState(*plan.m_brushIntent,requireBrush))return fail(error,"Invalid original prepared intent");
         const auto frame=plan.data[ProcessingPlan::FrameRect];
         if(!BrushMaskTileRaster::validNormalizedFrame({frame.x,frame.y,frame.z,frame.w}))return fail(error,"Invalid prepared viewport");
         auto expected=ProcessingPlan::compile(*plan.m_brushIntent,plan.encoding,plan.output,plan.rawSource,plan.baseExposureStops);
         expected.setFrameRect({frame.x,frame.y,frame.z,frame.w});
         return samePreparedPlan(expected,plan)||fail(error,"Prepared brush plan differs from its original intent");
     }catch(...){return fail(error,"Cannot validate prepared brush intent");}
+}
+std::shared_ptr<const void> BrushRenderRequest::reservePreparedImage(const QImage &source,const ProcessingPlan &plan,
+    const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,qint64 *reserved,BrushAdmissionFailure *failure) {
+    if(error)error->clear();if(reserved)*reserved=0;if(failure)*failure=BrushAdmissionFailure::Invalid;
+    if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
+    if(!validPreparedImagePlan(plan,error))return {};
+    if(source.isNull()||(source.format()!=QImage::Format_RGBA64&&source.format()!=QImage::Format_RGBA32FPx4)
+        ||!BrushMaskGeometry::validFrame(source.width(),source.height())||qint64(source.width())*source.height()>MaxSourcePixels
+        ||source.sizeInBytes()<=0||source.sizeInBytes()>MaxSourcePixels*16){fail(error,"Invalid prepared image source");return {};}
+    if(source.format()==QImage::Format_RGBA32FPx4&&!ImagePipeline::validFloatSource(source,cancel)){fail(error,"Invalid prepared FP32 source");return {};}
+    for(const auto &v:plan.data)for(const auto x:{v.x,v.y,v.z,v.w})if(!std::isfinite(x)){fail(error,"Non-finite prepared image plan");return {};}
+    const auto bytes=estimateBytes(source,QRect(QPoint{},source.size()),source.size(),plan,Layout::Whole);
+    if(bytes<=0){fail(error,"Invalid prepared image memory estimate");return {};}
+    if(!budget)budget=BrushRenderBudget::sharedDefault();auto charge=budget->reserve(bytes);
+    if(!charge){if(failure)*failure=BrushAdmissionFailure::BudgetUnavailable;fail(error,"Prepared image memory is busy");return {};}
+    if(reserved)*reserved=bytes;if(failure)*failure=BrushAdmissionFailure::None;return charge;
 }
 QSize BrushRenderRequest::geometrySize(const QSize &source,const GeometryState &geometry) {
     if(!BrushMaskGeometry::validFrame(source.width(),source.height()))return {};

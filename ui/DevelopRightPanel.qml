@@ -376,6 +376,8 @@ Rectangle {
                     visible: root.sonyExpanded
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
+                SoftProofPanel { controller: root.controller; language: root.controller.language; Layout.fillWidth: true }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#29333e" }
                 RowLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
                     ToolButton {

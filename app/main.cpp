@@ -43,6 +43,8 @@ int main(int argc, char *argv[]) {
     QQuickStyle::setStyle("Fusion");
     QCommandLineParser arguments;arguments.setApplicationDescription("JixelLight RAW editor");
     arguments.addHelpOption();arguments.addVersionOption();
+    arguments.addOption({"soft-proof-smoke-report", "Validate presentation-only soft proof through the actual App", "file"});
+    arguments.addOption({"soft-proof-language", "Language for owned soft-proof validation", "language", "en_US"});
     arguments.addOption({"color-mask-smoke-report", "Validate color-range mask picker, durable state and exact export", "file"});
     arguments.addOption({"color-mask-language", "Language for owned color-mask validation", "language", "en_US"});
     arguments.addOption({"luminance-mask-smoke-report", "Validate actual luminance-mask controls, durable state and exact export", "file"});
@@ -99,13 +101,21 @@ int main(int argc, char *argv[]) {
     arguments.addOption({"transparent-one-pixel-brush-stabilization-smoke-report", "Validate explicit one pixel input on transparent owned pixels", "file"});
     arguments.addOption({"sony-one-pixel-brush-pressure-canvas-smoke-report", "Validate explicit one pixel pen input on pinned Sony RAW and exact export", "file"});
     arguments.process(app);
-    const int smokeModes=int(arguments.isSet("color-mask-smoke-report"))+int(arguments.isSet("luminance-mask-smoke-report"))+int(arguments.isSet("point-color-smoke-report"))+int(arguments.isSet("dehaze-smoke-report"))+int(arguments.isSet("texture-smoke-report"))+int(arguments.isSet("clarity-smoke-report"))+int(arguments.isSet("denoise-smoke-report"))+int(arguments.isSet("tangential-geometry-smoke-report"))+int(arguments.isSet("brush-raw-qpa-smoke-report"))+int(arguments.isSet("project-menu-layout-smoke-report"))+int(arguments.isSet("xmp-merge-smoke-report"))+int(arguments.isSet("native-brush-monitor-smoke-report"))+int(arguments.isSet("native-brush-sony-smoke-report"))+int(arguments.isSet("native-brush-delivery-smoke-report"))+int(arguments.isSet("native-brush-route-smoke-report"))+int(arguments.isSet("one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
+    const int smokeModes=int(arguments.isSet("soft-proof-smoke-report"))+int(arguments.isSet("color-mask-smoke-report"))+int(arguments.isSet("luminance-mask-smoke-report"))+int(arguments.isSet("point-color-smoke-report"))+int(arguments.isSet("dehaze-smoke-report"))+int(arguments.isSet("texture-smoke-report"))+int(arguments.isSet("clarity-smoke-report"))+int(arguments.isSet("denoise-smoke-report"))+int(arguments.isSet("tangential-geometry-smoke-report"))+int(arguments.isSet("brush-raw-qpa-smoke-report"))+int(arguments.isSet("project-menu-layout-smoke-report"))+int(arguments.isSet("xmp-merge-smoke-report"))+int(arguments.isSet("native-brush-monitor-smoke-report"))+int(arguments.isSet("native-brush-sony-smoke-report"))+int(arguments.isSet("native-brush-delivery-smoke-report"))+int(arguments.isSet("native-brush-route-smoke-report"))+int(arguments.isSet("one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-one-pixel-brush-stabilization-smoke-report"))+int(arguments.isSet("sony-one-pixel-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-stabilized-pressure-canvas-smoke-report"))+int(arguments.isSet("brush-pressure-edges-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-edges-smoke-report"))+int(arguments.isSet("edit-recipe-clipboard-smoke-report"))+int(arguments.isSet("edit-recipe-smoke-report"))+int(arguments.isSet("shortcut-help-smoke-report"))+int(arguments.isSet("brush-pressure-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("sony-brush-pressure-canvas-smoke-report"))+int(arguments.isSet("smoke-report"))+int(arguments.isSet("diagnostic-smoke-report"))
         +int(arguments.isSet("mask-canvas-smoke-report"))+int(arguments.isSet("relink-smoke-report"))+int(arguments.isSet("brush-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-canvas-smoke-report"))+int(arguments.isSet("brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("sony-brush-erase-canvas-smoke-report"))+int(arguments.isSet("transparent-brush-erase-canvas-smoke-report"))
         +int(arguments.isSet("brush-recovery-smoke-report"))+int(arguments.isSet("transparent-brush-recovery-smoke-report"))
         +int(arguments.isSet("brush-stabilization-smoke-report"))+int(arguments.isSet("transparent-brush-stabilization-smoke-report"));
     if(smokeModes>1)return 2;
+    if(arguments.isSet("soft-proof-language")&&!arguments.isSet("soft-proof-smoke-report"))return 2;
+    if(arguments.isSet("soft-proof-smoke-report")) {
+        for(const auto &option:arguments.optionNames())if(option!="soft-proof-smoke-report"&&option!="soft-proof-language")return 2;
+        const QFileInfo output(arguments.value("soft-proof-smoke-report"));
+        if(!arguments.positionalArguments().isEmpty()||!QStringList{"en_US","zh_CN"}.contains(arguments.value("soft-proof-language"))
+            ||output.suffix().compare("json",Qt::CaseInsensitive)!=0||output.exists()||output.isSymLink()||!QFileInfo(output.absolutePath()).isDir()
+            ||!QDir(output.absolutePath()).entryList({output.fileName()+".*"},QDir::Files|QDir::Hidden|QDir::System).isEmpty())return 2;
+    }
     if(arguments.isSet("color-mask-language")&&!arguments.isSet("color-mask-smoke-report"))return 2;
     if(arguments.isSet("color-mask-smoke-report")) {
         for(const auto &option:arguments.optionNames())if(option!="color-mask-smoke-report"&&option!="color-mask-language")return 2;
@@ -278,6 +288,7 @@ int main(int argc, char *argv[]) {
         QTimer::singleShot(0,&app,refreshDisplayColor);
     }
 
+    if(arguments.isSet("soft-proof-smoke-report")){if(!window)return 2;startSoftProofSmokeRun(&controller,provider,window,arguments.value("soft-proof-smoke-report"),arguments.value("soft-proof-language"));return app.exec();}
     if(arguments.isSet("color-mask-smoke-report")){if(!window)return 2;startColorMaskSmokeRun(&controller,window,arguments.value("color-mask-smoke-report"),arguments.value("color-mask-language"));return app.exec();}
     if(arguments.isSet("luminance-mask-smoke-report")){if(!window)return 2;startLuminanceMaskSmokeRun(&controller,window,arguments.value("luminance-mask-smoke-report"),arguments.value("luminance-mask-language"));return app.exec();}
     if(arguments.isSet("point-color-smoke-report")){if(!window)return 2;startPointColorSmokeRun(&controller,window,arguments.value("point-color-smoke-report"),arguments.value("point-color-language"));return app.exec();}

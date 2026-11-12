@@ -63,6 +63,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *paren
     m_statusMessage = uiText(QStringLiteral("就绪"), QStringLiteral("Ready"));
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
     initializeJobs();
+    initializeSoftProof();
     m_nativeBrush=std::make_unique<NativeBrushController>(this);
     initializeRelinkJobs();
     initializeXmpMerge();
@@ -1709,6 +1710,7 @@ PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
         {"parameter_revision", qint64(snapshot.revision)}, {"statistics_revision", qint64(m_scopesRevision)},
         {"is_current", m_scopesRevision == snapshot.revision}, {"viewport_preparing", m_preparing}};
     auto &values = snapshot.performanceValues;
+    values["soft_proof"] = QJsonObject::fromVariantMap(softProofDiagnostics());
     values["stage_dependencies"] = StageGraph::describe(m_loadedKey, snapshot.prepare, snapshot.state, currentIsRaw(), rawBaseExposureStops());
     if (m_renderCache) values["render_cache"] = m_renderCache->snapshot();
     if (m_fullScopesCache) values["full_scopes_cache"] = m_fullScopesCache->snapshot();
@@ -1869,6 +1871,7 @@ void PhotoController::setStatus(const QString &message) {
 PhotoController::~PhotoController() {
     m_closing = true;
     shutdownXmpMerge();
+    m_softProofDelay.stop();m_softProofDeadline.stop();m_softProofJob.reset();m_softProofRenderer.reset();
     m_nativeBrush.reset();
     // The QML engine owns the image provider and may already have destroyed it.
     // Join transient workers without dereferencing that external provider here.

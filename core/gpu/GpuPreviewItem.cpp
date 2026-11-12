@@ -45,6 +45,7 @@ public:
         const bool changed=controller!=m_controller||next.target!=m_native.target||next.context!=m_native.context||next.qtSourceKey!=m_native.qtSourceKey;
         if(changed){m_owner->retire();resetHandles();m_fboValid=false;m_notified=0;}
         m_controller=controller;m_native=next;m_source={};
+        if(m_covered!=view->presentationCovered()){m_covered=view->presentationCovered();m_redraw=true;}
         m_diagnosticRequest=controller?controller->diagnosticRequestId():0;
         m_diagnosticRevision=controller?controller->diagnosticRevision():0;
         m_diagnosticSourceKey=controller?controller->diagnosticSourceKey():0;
@@ -117,7 +118,7 @@ private:
         if(!m_current||!domain.publishable(m_current)){if(!m_fboValid)clear(cb);return;}
         const bool resized=m_targetSize!=renderTarget()->pixelSize();
         if(m_redraw||resized){
-            if(!domain.present(m_current,cb,[&](QRhiTexture*texture){return m_owner->engine->drawExternalWorkingTexture(cb,renderTarget(),texture);})){nativeFailure(QStringLiteral("Native monitor presentation failed"));return;}
+            if(!domain.present(m_current,cb,[&](QRhiTexture*texture){if(m_covered){cb->beginPass(renderTarget(),Qt::transparent,{1.0f,0});cb->endPass();return true;}return m_owner->engine->drawExternalWorkingTexture(cb,renderTarget(),texture);})){nativeFailure(QStringLiteral("Native monitor presentation failed"));return;}
             m_redraw=false;m_targetSize=renderTarget()->pixelSize();m_fboValid=true;
         }
         if(m_histogram!=m_current&&domain.histogram(m_current,cb))m_histogram=m_current;
@@ -166,7 +167,9 @@ private:
         const bool processed=BrushMaskTileRaster::anyEnabled(m_plan.state.brushMasks)
             ?m_owner->engine->processAdmittedBrush(cb,m_source,m_plan,m_revision,histogram,false,&failure,controller?controller->brushRenderBudget():nullptr)
             :m_owner->engine->process(cb,m_source,m_plan,m_revision,histogram);
-        if(!processed||!m_owner->engine->drawForSceneGraph(cb,renderTarget())){
+        bool drawn=processed;
+        if(processed){if(m_covered){cb->beginPass(renderTarget(),Qt::transparent,{1.0f,0});cb->endPass();}else drawn=m_owner->engine->drawForSceneGraph(cb,renderTarget());}
+        if(!drawn){
             if(failure.isEmpty())failure=m_owner->engine->error();diagnosticUnavailable(failure);m_failed=true;
             if(controller)QMetaObject::invokeMethod(controller,[controller,error=failure]{if(controller)controller->gpuFailed(error);},Qt::QueuedConnection);return;
         }
@@ -199,7 +202,7 @@ private:
     quint64 m_diagnosticRequest=0,m_diagnosticRevision=0,m_handledDiagnosticRequest=0;
     qint64 m_diagnosticSourceKey=0;
     QString m_monitorKey;QSize m_targetSize;
-    bool m_failed=false,m_fboValid=false,m_redraw=true;
+    bool m_failed=false,m_fboValid=false,m_redraw=true,m_covered=false;
 };
 }
 GpuPreviewItem::GpuPreviewItem(QQuickItem *parent):QQuickRhiItem(parent) {
@@ -223,6 +226,7 @@ GpuPreviewItem::GpuPreviewItem(QQuickItem *parent):QQuickRhiItem(parent) {
         QTimer::singleShot(0,this,&GpuPreviewItem::refreshDisplayColorManagement);
     });
 }
+void GpuPreviewItem::setPresentationCovered(bool value){if(value==m_presentationCovered)return;m_presentationCovered=value;emit presentationCoveredChanged();update();}
 GpuPreviewItem::~GpuPreviewItem(){retireNativeResources();}
 void GpuPreviewItem::bindNativeRetirement(NativeBrush::DomainRetirement token,std::function<void()> reclaim){m_nativeRetirement=std::move(token);m_nativeReclaim=std::move(reclaim);}
 void GpuPreviewItem::retireNativeResources(){

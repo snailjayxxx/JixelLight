@@ -12,6 +12,7 @@ Item {
         (processedImage.status === Image.Ready && String(processedImage.source) === String(controller.previewUrl)))
     readonly property bool brushLiveDisplayReady: controller && controller.brushDrawing && controller.brushPreviewUrl !== "" &&
         brushLiveImage.status === Image.Ready && String(brushLiveImage.source) === String(controller.brushPreviewUrl)
+    readonly property bool softProofVisible: controller && controller.softProofReady && !root.brushLiveDisplayReady
     property real zoom: 0
     property real centerX: .5
     property real centerY: .5
@@ -120,7 +121,7 @@ Item {
             source: controller.previewUrl
             cache: false; asynchronous: true; smooth: root.zoom === 0
             z: 1
-            visible: !controller.gpuActive && !root.brushLiveDisplayReady
+            visible: !controller.gpuActive && !root.brushLiveDisplayReady && !root.softProofVisible
             fillMode: Image.Stretch
         }
         // Do not instantiate an RHI item in explicit CPU/software mode. An
@@ -129,7 +130,7 @@ Item {
             anchors.fill: parent
             active: root.controller.gpuEnabled && root.controller.currentSourceAvailable
             sourceComponent: Component {
-                GpuPreview { controller: root.controller }
+                GpuPreview { controller: root.controller; presentationCovered: root.softProofVisible }
             }
             z: 0
             visible: !root.brushLiveDisplayReady
@@ -143,6 +144,14 @@ Item {
             // read only shares that bounded frame and avoids stale async URLs.
             cache: false; asynchronous: false; smooth: root.zoom === 0
             visible: root.brushLiveDisplayReady
+            fillMode: Image.Stretch
+        }
+        Image {
+            objectName: "softProofPreviewImage"
+            anchors.fill: parent; z: 3
+            source: controller.softProofUrl
+            cache: false; asynchronous: false; smooth: root.zoom === 0
+            visible: root.softProofVisible
             fillMode: Image.Stretch
         }
         MaskCanvasOverlay {
