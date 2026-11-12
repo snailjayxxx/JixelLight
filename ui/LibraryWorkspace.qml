@@ -38,8 +38,10 @@ Rectangle {
         }
         return rows
     }
-    function choose(index, modifiers) {
+    function choose(photo, modifiers) {
+        const index = photo.index
         let selection = controller.selectedIndices.slice()
+        let nextAnchor = selectionAnchor
         const order = visiblePhotos.map(row => row.index)
         const anchor = order.indexOf(selectionAnchor), position = order.indexOf(index)
         if ((modifiers & Qt.ShiftModifier) && anchor >= 0 && position >= 0)
@@ -48,9 +50,10 @@ Rectangle {
             const existing = selection.indexOf(index)
             if (existing >= 0) selection.splice(existing,1)
             else selection.push(index)
-            selectionAnchor = index
-        } else { selection = [index]; selectionAnchor = index }
-        controller.selectPhoto(index)
+            nextAnchor = index
+        } else { selection = [index]; nextAnchor = index }
+        if (!controller.executeCommand({command: "photo.select", photo: photo.id})) return
+        selectionAnchor = nextAnchor
         controller.setPhotoSelection(selection)
     }
     color: "#0d1014"
@@ -107,6 +110,7 @@ Rectangle {
             delegate: Item {
                 required property int index
                 required property var modelData
+                objectName: "libraryPhoto-" + modelData.index
                 width: grid.cellWidth
                 height: grid.cellHeight
                 Rectangle {
@@ -169,10 +173,10 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         acceptedButtons: Qt.LeftButton
-                        onClicked: function(mouse) { root.choose(modelData.index,mouse.modifiers) }
+                        onClicked: function(mouse) { root.choose(modelData,mouse.modifiers) }
                         onDoubleClicked: {
-                            root.controller.selectPhoto(modelData.index)
-                            root.editRequested()
+                            if (root.controller.executeCommand({command: "photo.select", photo: modelData.id}))
+                                root.editRequested()
                         }
                     }
                 }

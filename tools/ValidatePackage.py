@@ -108,6 +108,7 @@ def main() -> int:
                   and data.get('ui_vignette_passed') is True
                   and data.get('ui_export_naming_passed') is True
                   and data.get('ui_selected_export_passed') is True
+                  and data.get('ui_photo_selection_passed') is True
                   and data.get('gpu_active') is (mode == 'gpu')
                   and data.get('screenshot_saved') is True and screenshot.is_file())
             ok = (ok and data.get('look_validation_required') is True

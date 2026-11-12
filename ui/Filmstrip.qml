@@ -52,6 +52,7 @@ Rectangle {
             delegate: Rectangle {
                 required property int index
                 required property var modelData
+                objectName: "filmstripPhoto-" + index
                 width: 116
                 height: strip.height
                 radius: 4
@@ -99,10 +100,10 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.LeftButton
-                    onClicked: root.controller.selectPhoto(index)
+                    onClicked: root.controller.executeCommand({command: "photo.select", photo: modelData.id})
                     onDoubleClicked: {
-                        root.controller.selectPhoto(index)
-                        root.editRequested()
+                        if (root.controller.executeCommand({command: "photo.select", photo: modelData.id}))
+                            root.editRequested()
                     }
                 }
             }
