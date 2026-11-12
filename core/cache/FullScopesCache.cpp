@@ -28,7 +28,7 @@ ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelT
             catch (...) {} // Optional diagnostics must not fail histogram work.
         }
     });
-    PerformanceSpan timing("full_scopes_cached");
+    PerformanceSpan timing("full_scopes_cached", {}, PerformanceSpan::CpuObservation::ProcessAndThread);
     if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
     if (request.image.isNull()) return {};
     const auto failed=[](const QString &message,bool retry=false){ScopesResult r;r.error=message;r.retryableBudget=retry;return r;};

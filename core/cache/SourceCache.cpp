@@ -107,7 +107,7 @@ SourceData SourceCache::diskPreview(const QString &key) {
     QMutexLocker lock(&m_diskMutex);
     QFile file(QDir(m_diskDirectory).filePath(key+".jlpv"));
     if (!file.open(QIODevice::ReadOnly)) return {};
-    PerformanceSpan timer("disk_preview_read");
+    PerformanceSpan timer("disk_preview_read", {}, PerformanceSpan::CpuObservation::ProcessAndThread);
     QDataStream stream(&file); stream.setVersion(QDataStream::Qt_6_8);
     quint32 magic=0,w=0,h=0,metaSize=0; quint64 bytes=0;
     stream >> magic >> w >> h >> metaSize >> bytes;
@@ -131,7 +131,7 @@ void SourceCache::storeDiskPreview(const SourceData &source, const CancelToken &
     // RGBA64 .jlpv format; its >1 and negative values would be silently lost.
     if (source.image.format()==QImage::Format_RGBA32FPx4) return;
     if (source.key.size()!=64 || source.image.isNull() || cancelled(token)) return;
-    PerformanceSpan timer("disk_preview_write");
+    PerformanceSpan timer("disk_preview_write", {}, PerformanceSpan::CpuObservation::ProcessAndThread);
     QImage preview = source.image;
     if (preview.width()>2048 || preview.height()>2048) preview = preview.scaled(2048,2048,Qt::KeepAspectRatio,Qt::SmoothTransformation);
     preview = preview.convertToFormat(QImage::Format_RGBA64);
@@ -165,7 +165,7 @@ SourceData loadSourceImpl(SourceCache *cache, const QString &path, const CancelT
                          const std::function<void(SourceData)> &partial) {
     SourceData out;
     try {
-        PerformanceSpan total("source_load");
+        PerformanceSpan total("source_load", {}, PerformanceSpan::CpuObservation::ProcessAndThread);
         out.key = SourceCache::fileKey(path);
         if (out.key.isEmpty()) { out.error = "File not found"; return out; }
         auto cached = cache ? cache->get(out.key) : SourceData{};

@@ -13,10 +13,14 @@ public:
 };
 class PerformanceSpan final {
 public:
-    explicit PerformanceSpan(QString stage, QJsonObject detail = {}) : m_stage(std::move(stage)), m_detail(std::move(detail)) { m_timer.start(); }
-    ~PerformanceSpan() { PerformanceRecorder::sample(m_stage, m_timer.nsecsElapsed() / 1.0e6, m_detail); }
+    enum class CpuObservation { Disabled, ProcessAndThread };
+    explicit PerformanceSpan(QString stage, QJsonObject detail = {}, CpuObservation cpu = CpuObservation::Disabled);
+    ~PerformanceSpan();
 private:
     QString m_stage;
     QJsonObject m_detail;
     QElapsedTimer m_timer;
+    CpuObservation m_cpuObservation;
+    qint64 m_processCpuStart = -1, m_threadCpuStart = -1;
+    quintptr m_cpuThread = 0;
 };

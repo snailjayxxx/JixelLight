@@ -7,6 +7,9 @@
 #include <QThread>
 #include <deque>
 #include <algorithm>
+#include <cerrno>
+#include <limits>
+#include <time.h>
 #if defined(Q_OS_WIN)
 #include <windows.h>
 #include <psapi.h>
@@ -19,6 +22,56 @@ namespace {
 QMutex mutex;
 std::deque<QJsonObject> samples;
 QJsonObject counters, values;
+
+qint64 cpuNanoseconds(bool process) {
+#if defined(Q_OS_WIN)
+    FILETIME created{}, exited{}, kernel{}, user{};
+    const auto previousError = GetLastError();
+    const bool ok = process ? GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)
+                            : GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user);
+    SetLastError(previousError);
+    if (!ok) return -1;
+    const auto ticks = [](const FILETIME &time) { return (quint64(time.dwHighDateTime) << 32) | time.dwLowDateTime; };
+    const auto kernelTicks = ticks(kernel), userTicks = ticks(user);
+    constexpr auto limit = quint64((std::numeric_limits<qint64>::max)() / 100);
+    if (kernelTicks > limit || userTicks > limit - kernelTicks) return -1;
+    return qint64((kernelTicks + userTicks) * 100);
+#elif defined(Q_OS_UNIX) && defined(CLOCK_PROCESS_CPUTIME_ID) && defined(CLOCK_THREAD_CPUTIME_ID)
+    timespec value{};
+    const auto previousError = errno;
+    const auto result = clock_gettime(process ? CLOCK_PROCESS_CPUTIME_ID : CLOCK_THREAD_CPUTIME_ID, &value);
+    errno = previousError;
+    if (result != 0
+        || value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000) return -1;
+    if (quint64(value.tv_sec) > quint64(((std::numeric_limits<qint64>::max)() - value.tv_nsec) / 1000000000)) return -1;
+    return qint64(value.tv_sec) * 1000000000 + value.tv_nsec;
+#else
+    Q_UNUSED(process);
+    return -1;
+#endif
+}
+QJsonValue cpuDelta(qint64 start, qint64 end) {
+    return start >= 0 && end >= start ? QJsonValue(double(end - start) / 1.0e6) : QJsonValue(QJsonValue::Null);
+}
+}
+PerformanceSpan::PerformanceSpan(QString stage, QJsonObject detail, CpuObservation cpu)
+    : m_stage(std::move(stage)), m_detail(std::move(detail)), m_cpuObservation(cpu) {
+    m_timer.start();
+    if (cpu == CpuObservation::ProcessAndThread) {
+        m_cpuThread = reinterpret_cast<quintptr>(QThread::currentThreadId());
+        m_processCpuStart = cpuNanoseconds(true);
+        m_threadCpuStart = cpuNanoseconds(false);
+    }
+}
+PerformanceSpan::~PerformanceSpan() {
+    const double elapsed = m_timer.nsecsElapsed() / 1.0e6;
+    if (m_cpuObservation == CpuObservation::ProcessAndThread) {
+        m_detail["process_cpu_ms"] = cpuDelta(m_processCpuStart, cpuNanoseconds(true));
+        const auto sameThread = m_cpuThread == reinterpret_cast<quintptr>(QThread::currentThreadId());
+        m_detail["thread_cpu_ms"] = cpuDelta(m_threadCpuStart, sameThread ? cpuNanoseconds(false) : -1);
+        m_detail["cpu_time_scope"] = "process-all-threads-and-span-thread";
+    }
+    PerformanceRecorder::sample(m_stage, elapsed, m_detail);
 }
 void PerformanceRecorder::sample(const QString &stage, double ms, const QJsonObject &detail) {
     QJsonObject entry = detail;
@@ -59,5 +112,5 @@ QJsonObject PerformanceRecorder::snapshot() {
     for (const auto &entry : samples) array.append(entry);
     return {{"schema", 1}, {"timings", array}, {"counters", counters}, {"values", values},
             {"resident_bytes_at_snapshot", rss}, {"logical_processors", QThread::idealThreadCount()},
-            {"note", "CPU timings measure elapsed work; GPU submit/readback are not presentation latency. No original RAW bytes included."}};
+            {"note", "duration_ms measures elapsed work. Optional process_cpu_ms includes concurrent process threads; thread_cpu_ms covers the span thread. Null means unavailable. CPU/elapsed gaps do not isolate a waiting cause. GPU submit/readback are not presentation latency. No original RAW bytes included."}};
 }

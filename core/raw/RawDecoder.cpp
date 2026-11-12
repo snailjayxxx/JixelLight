@@ -161,7 +161,7 @@ QImage RawDecoder::decode(const QString &path, QString *errorMessage, RawMetadat
     params.gamm[1] = 1.0;
 
     if (cancelled(cancel)) return {};
-    { PerformanceSpan timer(QStringLiteral("raw_develop")); result = raw.dcraw_process(); }
+    { PerformanceSpan timer(QStringLiteral("raw_develop"), {}, PerformanceSpan::CpuObservation::ProcessAndThread); result = raw.dcraw_process(); }
     if (result != LIBRAW_SUCCESS) {
         if (errorMessage) *errorMessage = libRawError(result);
         return {};
