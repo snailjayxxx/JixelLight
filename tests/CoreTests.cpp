@@ -25,6 +25,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <thread>
 #include <vector>
 
 #include "app/PhotoController.h"
@@ -6967,8 +6968,13 @@ private slots:
             {{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},QJsonObject{{"command","history.undo"}}}}},
             {{"command","export.run"},{"destination",dir.filePath("must-not-exist.png")}},{{"command",true}}};
         for(const auto &command:invalid){QVERIFY(!controller.executeCommand(command.toVariantMap()));QCOMPARE(controller.gpuPlan(true).state.toJson(),before);QCOMPARE(controller.editHistory(),history);}
-        auto worker=QtConcurrent::run([&]{return controller.executeCommand({{"command","develop.set"},{"parameter","exposure"},{"value",3}});});
-        worker.waitForFinished();QVERIFY(!worker.result());QCOMPARE(controller.gpuPlan(true).state.toJson(),before);QCOMPARE(controller.editHistory(),history);
+        // Waiting on QFuture can steal its task onto this GUI thread. A
+        // dedicated thread must actually exercise the foreign-thread guard.
+        bool foreignThread=false,accepted=true;
+        std::thread worker([&]{foreignThread=QThread::currentThread()!=controller.thread();
+            accepted=controller.executeCommand({{"command","develop.set"},{"parameter","exposure"},{"value",3}});});
+        worker.join();QVERIFY(foreignThread);QVERIFY(!accepted);
+        QCOMPARE(controller.gpuPlan(true).state.toJson(),before);QCOMPARE(controller.editHistory(),history);
         QVERIFY(!QFileInfo::exists(dir.filePath("must-not-exist.png")));
         CommandRegistry::Control output;output.kind=CommandRegistry::ControlKind::Redo;
         QVERIFY(!CommandRegistry::decodeControl({{"command","history.undo"},{"extra",1}},&output));
