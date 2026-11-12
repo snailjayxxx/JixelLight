@@ -621,7 +621,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {
-    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
+    struct State { QElapsedTimer elapsed; QJsonArray screenshotTimings,curationCommands; int phase=0, edits=0; quint64 croppedScopePixels=0, straightenedScopePixels=0; double straightenDegrees=0; bool straightenPassed=false; bool lookEnabled=false; bool gridVisited=false, filmstripPresent=false, presetActionsPresent=false, restoredDevelop=false, curationPassed=false, curationCommandsPassed=false, catalogPassed=false, catalogDatesPassed=false, copiesPassed=false, historyPassed=false, geometryPassed=false, interactiveCropPassed=false; QJsonObject vignettePointerPose; int vignetteStable=0,vignetteWaits=0,vignetteNotReady=0,vignettePolishes=0; int finalGpuWaitTicks=0,firstFinalWithoutGpuMs=-1; };
     auto state=std::make_shared<State>();state->elapsed.start();
     const auto saveScreenshot=[window,state](const QString &path) {
         QElapsedTimer grabTimer;grabTimer.start();
@@ -704,6 +704,15 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 && controller->addSelectionToAlbum("Second album")
                 && controller->setSelectionLabel("blue")
                 && controller->exposure() == exposure;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto command=value.toObject()["command"].toObject();if(command["command"].toString()=="catalog.curate")state->curationCommands.append(command);
+            }
+            const auto curated=[](const QString &target,const QString &field,const QJsonValue &value){return QJsonObject{{"command","catalog.curate"},{"target",target},{"field",field},{"value",value}};};
+            const QJsonArray expectedCuration{curated("current","rating",4),curated("current","flag","pick"),curated("selection","keywords","fusion,smoke"),
+                curated("selection","album_add","Smoke validation"),curated("selection","album_add","Second album"),curated("selection","label","blue")};
+            state->curationCommandsPassed=true;for(const auto &command:expectedCuration)state->curationCommandsPassed=state->curationCommandsPassed&&state->curationCommands.contains(command);
+            state->curationPassed=state->curationPassed&&state->curationCommandsPassed;
+            state->catalogPassed=state->catalogPassed&&state->curationCommandsPassed;
             resizeForSmoke(window,1180,720);
             window->setProperty("workspaceIndex", 0);
             state->phase=20;
@@ -1436,6 +1445,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_preset_actions_found"]=state->presetActionsPresent;
         report["ui_develop_restored"]=state->restoredDevelop;
         report["ui_curation_passed"]=state->curationPassed;
+        report["ui_curation_command_trace_passed"]=state->curationCommandsPassed;report["ui_curation_commands"]=state->curationCommands;
         report["ui_catalog_passed"]=state->catalogPassed;
         report["ui_catalog_dates_passed"]=state->catalogDatesPassed;
         report["ui_virtual_copies_passed"]=state->copiesPassed;

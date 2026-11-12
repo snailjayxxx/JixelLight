@@ -154,6 +154,14 @@ private slots:
             QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopCurationSharesCatalogNormalizationWithoutGrantingSessionWrites(){
+        const QJsonObject command{{"command","catalog.curate"},{"target","selection"},{"field","keywords"},{"value","z, a,z"}};
+        CommandRegistry::Curation request;QVERIFY(CommandRegistry::decodeCuration(command,&request));QVERIFY(request.selection);QCOMPARE(request.text,QString("a,z"));
+        auto bad=command;bad["target"]="all";request.field="sentinel";QVERIFY(!CommandRegistry::decodeCuration(bad,&request));QCOMPARE(request.field,QString("sentinel"));
+        CommandSession result;result.photoCount=61;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,61);QVERIFY(result.exports.isEmpty());
+        QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"catalog.curate"),CommandRegistry::curationSchema());
+        QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"catalog.curate").isEmpty());
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

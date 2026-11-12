@@ -3,6 +3,7 @@
 #include "core/pipeline/PointColor.h"
 #include "core/look/LookProfiles.h"
 #include "core/color/ColorManagement.h"
+#include "core/library/CatalogTags.h"
 #include <QJsonArray>
 #include <QStringList>
 #include <QRegularExpression>
@@ -121,6 +122,37 @@ struct CommandRegistry {
             {"source_retirement",move?"explicit move: system trash only after verified copy and durable catalog identity; reviewed journal recovery remains separate":"none; sources remain in place"},
             {"requires_saved_project",move},{"completion","true means accepted; observe existing import progress/completion signals"},
             {"offline_sessions","unsupported; photo.import retains Add-only behavior"}};
+    }
+    struct Curation {QString field,text;int rating=0;bool selection=false;};
+    static bool decodeCuration(const QJsonObject &command,Curation *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid catalog curation command";return false;};
+        if(!output||command["command"].toString()!="catalog.curate"||!fields(command,{"target","field","value"})
+            ||!command["target"].isString()||!command["field"].isString())return fail();
+        const auto target=command["target"].toString();if(target!="current"&&target!="selection")return fail();
+        Curation staged;staged.selection=target=="selection";staged.field=command["field"].toString();
+        if(staged.field=="rating") {
+            if(!integer(command,"value",0,5))return fail();staged.rating=command["value"].toInt();
+        }else {
+            if(!command["value"].isString())return fail();staged.text=command["value"].toString();
+            if(staged.field=="flag") {if(!QStringList{"none","pick","reject"}.contains(staged.text))return fail();}
+            else if(staged.field=="label") {if(!CatalogTags::validLabel(staged.text))return fail();}
+            else if(staged.field=="keywords") {
+                auto tags=staged.text.split(',');if(!CatalogTags::normalize(&tags,64))return fail();staged.text=tags.join(',');
+            }else if(staged.field=="album_add"||staged.field=="album_remove") {
+                QStringList album{staged.text};if(!CatalogTags::normalize(&album,1)||album.isEmpty())return fail();staged.text=album.first();
+            }else return fail();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject curationSchema() {
+        return {{"name","catalog.curate"},{"scope","desktop"},{"fields",QJsonArray{"target","field","value"}},
+            {"target",QJsonArray{"current","selection"}},{"selection","receiving controller's existing selection, frozen before synchronous mutation; empty rejects without fallback"},
+            {"field",QJsonArray{"rating","flag","keywords","label","album_add","album_remove"}},{"rating",QJsonArray{0,5}},
+            {"flags",QJsonArray{"none","pick","reject"}},{"labels",QJsonArray{"none","red","yellow","green","blue","purple"}},
+            {"keywords","comma-delimited text; trim/sort/exact deduplicate, at most64 entries of80 UTF16 units"},
+            {"albums","trimmed nonempty name, at most80 UTF16 units; at most32 albums per target"},
+            {"catalog_writes",true},{"source_writes",false},{"develop_history_steps",0},
+            {"offline_sessions","unsupported; catalog metadata and Develop history remain separate domains"}};
     }
     enum class ImportScope { Desktop, Session };
     struct PhotoImport {QString source,photo;};
@@ -770,7 +802,7 @@ struct CommandRegistry {
             {"workflow_commands",QJsonArray{photoSelectionSchema(),QJsonObject{{"name","photo.import"},
                 {"desktop",photoImportSchema(ImportScope::Desktop)},{"session",photoImportSchema(ImportScope::Session)}},
                 QJsonObject{{"name","export.run"},{"desktop",currentExportSchema(ExportScope::Desktop)},
-                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true)}},
+                    {"session",currentExportSchema(ExportScope::Session)}},batchExportSchema(),photoTransferSchema(false),photoTransferSchema(true),curationSchema()}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

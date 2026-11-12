@@ -313,51 +313,55 @@ bool PhotoController::setPhotoSelection(const QVariantList &indices) {
     }
     m_selectedPhotos = selected; emit libraryChanged(); return true;
 }
-bool PhotoController::setSelectionRating(int rating) {
-    if (xmpMergeBusy()) return false;
-    if (rating < 0 || rating > 5 || m_selectedPhotos.isEmpty()) return false;
-    for (int index : m_selectedPhotos) {
-        auto &photo = m_photos[index]; photo.rating = rating;
-        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
+bool PhotoController::executeCurationCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing||xmpMergeBusy())return false;
+    CommandRegistry::Curation request;if(!CommandRegistry::decodeCuration(command,&request))return false;
+    if(!request.selection&&!hasImage())return false;
+    const QSet<int> indices=request.selection?m_selectedPhotos:QSet<int>{m_currentIndex};if(indices.isEmpty())return false;
+    for(const int index:indices)if(index<0||index>=m_photos.size())return false;
+    const bool curation=request.field=="rating"||request.field=="flag";
+    if(!request.selection&&curation) {
+        const auto &photo=m_photos[m_currentIndex];
+        if(request.field=="rating"?photo.rating==request.rating:photo.flag==request.text)return true;
     }
-    enqueueEdits(); emit libraryChanged(); emit curationChanged();
-    ActionTrace::instance().record("selection_rating", {{"count",m_selectedPhotos.size()},{"rating",rating}}); return true;
-}
-bool PhotoController::setSelectionFlag(const QString &flag) {
-    if (xmpMergeBusy()) return false;
-    if ((flag != "none" && flag != "pick" && flag != "reject") || m_selectedPhotos.isEmpty()) return false;
-    for (int index : m_selectedPhotos) {
-        auto &photo = m_photos[index]; photo.flag = flag;
-        if (m_project.isOpen()) m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
-    }
-    enqueueEdits(); emit libraryChanged(); emit curationChanged();
-    ActionTrace::instance().record("selection_flag", {{"count",m_selectedPhotos.size()},{"flag",flag}}); return true;
-}
-bool PhotoController::updateSelectedTags(const QString &operation, const QString &value) {
-    if (xmpMergeBusy()) return false;
-    if (m_selectedPhotos.isEmpty()) return false;
-    QHash<int, CatalogTags> staged;
-    for (int index : m_selectedPhotos) {
-        auto tags = m_photos[index].tags;
-        if (operation == "keywords") tags.keywords = value.split(',');
-        else if (operation == "label") tags.label = value;
-        else {
-            const auto name = value.trimmed();
-            if (name.isEmpty()) return false;
-            if (operation == "album_add") tags.albums.append(name);
-            else if (operation == "album_remove") tags.albums.removeAll(name);
-            else return false;
-        }
-        if (!CatalogTags::normalize(&tags.keywords,64) || !CatalogTags::normalize(&tags.albums,32)
-            || !CatalogTags::validLabel(tags.label)) return false;
+    QHash<int,CatalogTags> staged;
+    if(!curation)for(const int index:indices) {
+        auto tags=m_photos[index].tags;
+        if(request.field=="keywords")tags.keywords=request.text.split(',');
+        else if(request.field=="label")tags.label=request.text;
+        else if(request.field=="album_add")tags.albums.append(request.text);
+        else tags.albums.removeAll(request.text);
+        if(!CatalogTags::normalize(&tags.keywords,64)||!CatalogTags::normalize(&tags.albums,32)||!CatalogTags::validLabel(tags.label))return false;
         staged.insert(index,tags);
     }
-    for (auto it = staged.begin(); it != staged.end(); ++it) {
-        auto &photo = m_photos[it.key()]; photo.tags = it.value();
-        if (m_project.isOpen()) m_dirtyTags.insert(photo.storageKey(),photo.tags);
+    for(const int index:indices) {
+        auto &photo=m_photos[index];
+        if(request.field=="rating")photo.rating=request.rating;
+        else if(request.field=="flag")photo.flag=request.text;
+        else photo.tags=staged[index];
+        if(m_project.isOpen()) {
+            if(curation)m_dirtyCuration.insert(photo.storageKey(),{photo.rating,photo.flag});
+            else m_dirtyTags.insert(photo.storageKey(),photo.tags);
+        }
     }
-    enqueueEdits(); emit libraryChanged();
-    ActionTrace::instance().record("selection_" + operation, {{"count",staged.size()}}); return true;
+    if(request.selection)enqueueEdits();
+    else if(m_project.isOpen()){m_saveTimer.start();if(!m_saveMaxTimer.isActive())m_saveMaxTimer.start();}
+    const QJsonValue value=request.field=="rating"?QJsonValue(request.rating):QJsonValue(request.text);
+    const QJsonObject canonical{{"command","catalog.curate"},{"target",request.selection?"selection":"current"},{"field",request.field},{"value",value}};
+    QJsonObject details{{"count",indices.size()},{"command",canonical}};
+    if(!request.selection){const auto &photo=m_photos[*indices.constBegin()];details["file"]=photo.path;details["photo_key"]=photo.storageKey();}
+    if(curation)details[request.field]=value;
+    ActionTrace::instance().record((request.selection?"selection_":"photo_")+request.field,details);
+    emit libraryChanged();if(curation)emit curationChanged();return true;
+}
+bool PhotoController::setSelectionRating(int rating) {
+    return executeCurationCommand({{"command","catalog.curate"},{"target","selection"},{"field","rating"},{"value",rating}});
+}
+bool PhotoController::setSelectionFlag(const QString &flag) {
+    return executeCurationCommand({{"command","catalog.curate"},{"target","selection"},{"field","flag"},{"value",flag}});
+}
+bool PhotoController::updateSelectedTags(const QString &operation,const QString &value) {
+    return executeCurationCommand({{"command","catalog.curate"},{"target","selection"},{"field",operation},{"value",value}});
 }
 bool PhotoController::setSelectionKeywords(const QString &text) { return updateSelectedTags("keywords",text); }
 bool PhotoController::setSelectionLabel(const QString &label) { return updateSelectedTags("label",label); }
@@ -681,6 +685,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString()=="catalog.curate")return executeCurationCommand(object);
     if(object["command"].toString()=="photo.copy"||object["command"].toString()=="photo.move")return executePhotoTransfer(object);
     if(object["command"].toString()=="export.batch")return executeBatchExport(object);
     if(object["command"].toString()=="export.run")return executeCurrentExport(object,true);
@@ -1512,33 +1517,10 @@ bool PhotoController::openProject(const QUrl &url) {
 }
 
 void PhotoController::setRating(int rating) {
-    if (xmpMergeBusy()) return;
-    if (!hasImage()) return;
-    rating = std::clamp(rating, 0, 5);
-    auto &photo = m_photos[m_currentIndex];
-    if (photo.rating == rating) return;
-    photo.rating = rating;
-    if (m_project.isOpen()) {
-        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
-        m_saveTimer.start();
-        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
-    }
-    ActionTrace::instance().record("photo_rating", {{"file", photo.path}, {"rating", rating}});
-    emit libraryChanged(); emit curationChanged();
+    executeCurationCommand({{"command","catalog.curate"},{"target","current"},{"field","rating"},{"value",std::clamp(rating,0,5)}});
 }
 void PhotoController::setFlag(const QString &flag) {
-    if (xmpMergeBusy()) return;
-    if (!hasImage() || (flag != QStringLiteral("none") && flag != QStringLiteral("pick") && flag != QStringLiteral("reject"))) return;
-    auto &photo = m_photos[m_currentIndex];
-    if (photo.flag == flag) return;
-    photo.flag = flag;
-    if (m_project.isOpen()) {
-        m_dirtyCuration.insert(photo.storageKey(), {photo.rating, photo.flag});
-        m_saveTimer.start();
-        if (!m_saveMaxTimer.isActive()) m_saveMaxTimer.start();
-    }
-    ActionTrace::instance().record("photo_flag", {{"file", photo.path}, {"flag", flag}});
-    emit libraryChanged(); emit curationChanged();
+    executeCurationCommand({{"command","catalog.curate"},{"target","current"},{"field","flag"},{"value",flag}});
 }
 
 void PhotoController::resetAdjustments() {
