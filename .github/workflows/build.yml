@@ -48,6 +48,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/luminance-mask-owned
         build/point-color-owned
         build/native-brush-monitor.json
         build/xmp-controller-native/
@@ -76,6 +77,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-luminance-mask-*
         gui-point-color-*
         diagnostic-validation/
         benchmark.json
@@ -273,6 +275,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestPointColorEvidence.py' -v
           python tools/ValidatePointColor.py "$EXE" gui-point-color-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidatePointColor.py "$EXE" gui-point-color-gpu.json gpu --expected-commit "$STAMP"
+      - name: Luminance mask controls, durable range and exact export
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestLuminanceMaskEvidence.py' -v
+          python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -717,6 +732,7 @@ jobs:
         build/clarity-owned
         build/texture-owned
         build/dehaze-owned
+        build/luminance-mask-owned
         build/point-color-owned
         build/native-brush-monitor.json
         build/xmp-controller-native/
@@ -743,6 +759,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-luminance-mask-*
         gui-point-color-*
         diagnostic-validation/
         raw-render-matrix.log
@@ -864,6 +881,15 @@ jobs:
           python -m unittest discover -s tests -p 'TestPointColorEvidence.py' -v
           python tools/ValidatePointColor.py "$EXE" gui-point-color-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidatePointColor.py "$EXE" gui-point-color-gpu.json gpu --expected-commit "$STAMP"
+      - name: Luminance mask controls, durable range and exact export
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestLuminanceMaskEvidence.py' -v
+          python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateLuminanceMask.py "$EXE" gui-luminance-mask-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |

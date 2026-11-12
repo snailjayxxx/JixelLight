@@ -96,6 +96,7 @@ def main():
         assert {'denoise.reset','clarity.reset','texture.reset','dehaze.reset'} <= {c['name'] for c in schema['commands']}
         assert {p['name'] for p in schema['parameters']} >= {'pointColorHue','pointColorSaturation','pointColorLuminance','pointColorHueRange','pointColorChromaRange','pointColorLightnessRange'}
         assert {'point.color.select','point.color.select.lab','point.color.enable','point.color.reset'} <= {c['name'] for c in schema['commands']}
+        assert {'mask.luminance.enable','mask.luminance.invert','mask.luminance.set','mask.luminance.range','mask.luminance.reset'} <= {c['name'] for c in schema['commands']}
         geometry_parameters = next(c for c in schema['commands'] if c['name'] == 'geometry.set')['parameters']
         assert geometry_parameters == [
             {'name': 'perspectiveHorizontal', 'minimum': -.4, 'maximum': .4},
@@ -403,6 +404,25 @@ def main():
             else:assert result['adjustments']['pointColor']['enabled'] is False
         for index,bad in enumerate([{'command':'point.color.select','color':[True,0,0]},{'command':'point.color.select.lab','lab':[0,0,5]},{'command':'point.color.enable','enabled':1},{'command':'point.color.reset','extra':True}]):
             commands.write_text(json.dumps(point_selection+[bad]));target=root/f'point-color-rejected-{index}.png';run('--commands',commands,sharpen_source,target,success=False);assert not target.exists()
+        assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest()==sharpen_hash
+        luminance=[{'command':'mask.luminance.enable','enabled':True},
+            {'command':'mask.luminance.range','lower':0,'upper':1,'feather':.1},
+            {'command':'mask.luminance.set','parameter':'exposure','value':1}]
+        commands.write_text(json.dumps(exposure+luminance));target=root/'luminance-mask.png'
+        result=json.loads(run('--commands',commands,sharpen_source,target).stdout)
+        assert result['adjustments']['luminanceMask']==dict(schema=1,enabled=True,inverted=False,exposure=1,lower=0,upper=1,feather=.1)
+        commands.write_text(json.dumps([{'command':'develop.set','parameter':'exposure','value':2}]))
+        reference=root/'luminance-gain-reference.png';run('--commands',commands,sharpen_source,reference)
+        assert png16_pixels(target)==png16_pixels(reference)
+        for suffix,command in [('disabled',{'command':'mask.luminance.enable','enabled':False}),('inverted',{'command':'mask.luminance.invert','inverted':True}),('reset',{'command':'mask.luminance.reset'})]:
+            commands.write_text(json.dumps(exposure+luminance+[command]));target=root/f'luminance-{suffix}.png'
+            result=json.loads(run('--commands',commands,sharpen_source,target).stdout);assert png16_pixels(target)==png16_pixels(detail_plain)
+            if suffix=='reset':assert 'luminanceMask' not in result['adjustments']
+        for i,bad in enumerate([{'command':'mask.luminance.enable','enabled':1},
+            {'command':'mask.luminance.range','lower':.8,'upper':.2,'feather':.1},
+            {'command':'mask.luminance.set','parameter':'feather','value':0},
+            {'command':'mask.luminance.reset','extra':True}]):
+            commands.write_text(json.dumps(luminance+[bad]));target=root/f'luminance-rejected-{i}.png';run('--commands',commands,sharpen_source,target,success=False);assert not target.exists()
         assert hashlib.sha256(sharpen_source.read_bytes()).hexdigest()==sharpen_hash
         gradient = [
             {'command': 'mask.linear.enable', 'enabled': True},
@@ -998,7 +1018,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
+        print(json.dumps({'ok': True, 'checks': ['schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'luminance-range-mask-analytic-export', 'luminance-mask-invert-disable-reset', 'luminance-mask-atomic-range-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection']}))
 
 
 if __name__ == '__main__':

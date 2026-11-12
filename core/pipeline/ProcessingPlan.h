@@ -1,5 +1,6 @@
 #pragma once
 #include "core/pipeline/ImagePipeline.h"
+#include "core/pipeline/LuminanceRangeMask.h"
 #include <array>
 #include <algorithm>
 #include <QRectF>
@@ -26,7 +27,7 @@ struct ProcessingPlan {
                 BlackWhite=40, BlackWhiteMix0=41, BlackWhiteMix1=42,
                 GradingOptions=43, GradingShadows=44, GradingMidtones=45,
                 GradingHighlights=46, LinearMask=47, LinearMaskDirection=48,
-                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, PointColorAdjust=58, PointColorCenter=59, PointColorRange=60, SlotCount=61 };
+                RadialMask=49, RadialMaskShape=50, Grain=51, IndependentDetail=52, Denoise=53, Clarity=54, Texture=55, Dehaze=56, DehazeAirlight=57, PointColorAdjust=58, PointColorCenter=59, PointColorRange=60, LuminanceMask=61, LuminanceMaskOptions=62, SlotCount=63 };
     std::array<Float4, SlotCount> data{};
     AdjustmentState state;
     ImagePipeline::InputEncoding encoding = ImagePipeline::InputEncoding::SRgb;
@@ -87,6 +88,16 @@ struct ProcessingPlan {
         if(d.z==0&&d.w==0)return true;
         return denoiseActive()&&std::isfinite(d.z)&&std::isfinite(d.w)&&d.z>=1&&d.w>=1
             &&d.z<=33554432&&d.w<=33554432&&d.z==std::floor(d.z)&&d.w==std::floor(d.w);
+    }
+    bool luminanceMaskActive() const {return data[LuminanceMask].x!=0;}
+    LuminanceRangeMask::Parameters luminanceMaskParameters() const {
+        if(!luminanceMaskActive())return {};
+        const auto m=data[LuminanceMask];return {true,data[LuminanceMaskOptions].x==1,m.x,m.y,m.z,m.w};
+    }
+    bool validLuminanceMask() const {
+        const auto m=data[LuminanceMask],o=data[LuminanceMaskOptions];
+        if(m.x==0)return m.y==0&&m.z==0&&m.w==0&&o.x==0&&o.y==0&&o.z==0&&o.w==0;
+        return (o.x==0||o.x==1)&&o.y==0&&o.z==0&&o.w==0&&LuminanceRangeMask::valid(luminanceMaskParameters());
     }
     bool pointColorActive() const {return data[PointColorAdjust].x!=0;}
     bool pointColorNeedsCpuPrecision() const {
@@ -161,7 +172,7 @@ struct ProcessingPlan {
             density=std::min(float(size.width())/(c.z*frame.z),float(size.height())/(c.w*frame.w));
         return {c.x,std::clamp(24.f*density,0.f,24.f),0,0};
     }
-    bool validSpatialSettings() const {return validPointColor()&&validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
+    bool validSpatialSettings() const {return validLuminanceMask()&&validPointColor()&&validIndependentDetail()&&validDenoise()&&validDehaze()&&validTexture()&&validClarity();}
     Float4 denoise(const QSize &size) const {
         const auto d=data[Denoise],frame=data[FrameRect];if(!denoiseActive()||!validDenoise())return {};
         float density=1;
@@ -188,4 +199,4 @@ private:
     friend class BrushRenderRequest;
 };
 static_assert(sizeof(Float4) == 16);
-static_assert(sizeof(ProcessingPlan::data) == 976);
+static_assert(sizeof(ProcessingPlan::data) == 1008);

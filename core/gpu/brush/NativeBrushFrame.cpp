@@ -38,7 +38,7 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
     const auto look = intent.data[ProcessingPlan::LookDetail];
     if (look.x || look.y || look.z || look.w || intent.state.look.lut
         || intent.data[ProcessingPlan::IndependentDetail].x>0
-        || intent.pointColorActive() || intent.denoiseActive() || intent.dehazeActive() || intent.textureActive() || intent.clarityActive()
+        || intent.luminanceMaskActive() || intent.pointColorActive() || intent.denoiseActive() || intent.dehazeActive() || intent.textureActive() || intent.clarityActive()
         || (intent.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&intent.output==ColorManagement::OutputSpace::ProPhotoRgb&&source->m_floatFacts.negativeRgb)
         || (intent.data[ProcessingPlan::Grain].x>0 && intent.output==ColorManagement::OutputSpace::AdobeRgb)
         || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);

@@ -382,6 +382,11 @@ inline Vec3 wbExposure(Vec3 v, const ColorKernel &kernel) {
     if (kernel.flags.w > 0.0f) v = scale(v, kernel.flags.w); // camera/model exposure zero-point only
     return v;
 }
+inline Vec3 applyLuminanceMask(Vec3 v,Vec3 input,const ColorKernel &kernel) {
+    if(!kernel.plan.luminanceMaskActive())return v;
+    const float gain=LuminanceRangeMask::gain(proPhotoToXyzD50(input).y,kernel.plan.luminanceMaskParameters());
+    return gain==1?v:scale(v,gain);
+}
 inline Vec3 applyLinearMask(Vec3 v,const ColorKernel &kernel,int x,int y) {
     const auto m=kernel.plan.data[ProcessingPlan::LinearMask];
     if (m.x==0.0f) return v;
@@ -544,8 +549,10 @@ inline Vec3 applyGrain(Vec3 v,const ColorKernel &kernel,int x,int y) {
 }
 template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     observe(ColorStage::InputLinear,v);
+    const Vec3 selectionInput=v;
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
     // Preexisting vignette diagnostic boundary includes this spatial gain.
+    v=applyLuminanceMask(v,selectionInput,kernel);
     v=applyLinearMask(v,kernel,x,y);
     v=applyRadialMask(v,kernel,x,y);
     // M4.4A: research-only, validated per-pixel scene-linear brush EV plane.
@@ -702,6 +709,10 @@ ProcessingPlan ProcessingPlan::compile(const AdjustmentState &original, ImagePip
     plan.data[Vignette]={finite(state.vignetteAmount,0,-3,3),finite(state.vignetteMidpoint,.5,0,.95),finite(state.vignetteFeather,1,.01,1),0};
     plan.data[Grain]={finite(state.grainAmount,0,0,100)*.0006f,512.0f/finite(state.grainSize,1,.5,4),0,0};
     plan.data[IndependentDetail]={finite(state.sharpenAmount,0,0,100)*.015f,finite(state.sharpenRadius,3,.5,6),0,0};
+    if(state.luminanceMaskEnabled&&state.luminanceMaskExposure!=0) {
+        plan.data[LuminanceMask]={float(state.luminanceMaskExposure),float(state.luminanceMaskLower),float(state.luminanceMaskUpper),float(state.luminanceMaskFeather)};
+        plan.data[LuminanceMaskOptions]={state.luminanceMaskInverted?1.f:0.f,0,0,0};
+    }
     const float pointHue=finite(state.pointColorHue,0,-180,180),pointSat=finite(state.pointColorSaturation,0,-100,100)*.01f,
         pointLuma=finite(state.pointColorLuminance,0,-100,100)*.003f;
     if(state.pointColorEnabled&&(pointHue!=0||pointSat!=0||pointLuma!=0)) {
@@ -1278,6 +1289,11 @@ ImagePipeline::DiagnosticResult ImagePipeline::diagnoseWithPlan(const QImage &so
         result.stages.insert("source_fp32_bounds",double(MaxLinearInputMagnitude));
         result.stages.insert("note","CPU FP32 scene input, quantized RGBA64 display output; RAW decoder not yet FP32");
     }
+    result.stages.insert("luminance_mask",QJsonObject{{"backend","cpu-reference"},{"active",plan.luminanceMaskActive()},{"enabled",plan.state.luminanceMaskEnabled},
+        {"lower_y",plan.state.luminanceMaskLower},{"upper_y",plan.state.luminanceMaskUpper},{"feather_y",plan.state.luminanceMaskFeather},
+        {"exposure_ev",plan.state.luminanceMaskExposure},{"inverted",plan.state.luminanceMaskInverted},
+        {"selection","scene-linear ProPhoto Y after spatial processing; before WB/global/local exposure"},
+        {"order","after WB multiplication; before gradient/brush/vignette gains"},{"output_boundary","Vignette"},{"monitor_icc",false}});
     result.stages.insert("point_color",QJsonObject{{"backend","cpu-reference"},{"enabled",plan.state.pointColorEnabled},
         {"active",plan.pointColorActive()},{"selection_oklab",QJsonArray{plan.state.pointColorLab[0],plan.state.pointColorLab[1],plan.state.pointColorLab[2]}},
         {"order","after HSL, Sony styling, B&W and grading; before target gamut/transfer, LUT, grain and detail"},
@@ -1332,7 +1348,7 @@ std::optional<PointColor::Lab> ImagePipeline::samplePointColor(const QImage &sou
         alpha=q.alpha()/65535.f;v=inputLinear(q,kernel);
     }
     if(alpha<=1.e-20f)return {};
-    v=wbExposure(v,kernel);v=applyLinearMask(v,kernel,point.x(),point.y());v=applyRadialMask(v,kernel,point.x(),point.y());
+    const Vec3 selectionInput=v;v=wbExposure(v,kernel);v=applyLuminanceMask(v,selectionInput,kernel);v=applyLinearMask(v,kernel,point.x(),point.y());v=applyRadialMask(v,kernel,point.x(),point.y());
     if(brushEv!=0)v=scale(v,std::exp2(brushEv));
     v=applyVignette(v,kernel,point.x(),point.y());v=applyHighlightRecovery(v,kernel.tone.y);
     v=toneNeutral(v,kernel);v=perceptualLook(v,kernel,false);

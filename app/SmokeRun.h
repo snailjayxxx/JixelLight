@@ -48,3 +48,5 @@ void startPointColorSmokeRun(PhotoController *,QQuickWindow *,const QString &,co
 void startTextureSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 void startClaritySmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
 void startDenoiseSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
+
+void startLuminanceMaskSmokeRun(PhotoController *,QQuickWindow *,const QString &,const QString &);
