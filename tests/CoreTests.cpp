@@ -7049,7 +7049,9 @@ private slots:
         QVERIFY(CommandRegistry::decodePhotoSelection({{"command","photo.select"},{"photo",keyA}},&output));QCOMPARE(output,keyA);
         QVERIFY(QFile::remove(a));QVERIFY(c.executeCommand({{"command","photo.select"},{"photo",keyA}}));
         QVERIFY(c.hasImage());QVERIFY(!c.currentSourceAvailable());QCOMPARE(c.currentIndex(),0);
-        QVERIFY(c.prepareToClose());QVERIFY(!c.executeCommand({{"command","photo.select"},{"photo",keyB}}));QCOMPARE(c.currentIndex(),0);
+        // Save/queue preflight can be followed by a vetoed window close. It
+        // does not enter destruction or disable the still-live controller.
+        QVERIFY(c.prepareToClose());QVERIFY(c.executeCommand({{"command","photo.select"},{"photo",keyB}}));QCOMPARE(c.currentIndex(),1);
     }
 
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
