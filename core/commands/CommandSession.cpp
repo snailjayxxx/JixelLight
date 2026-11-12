@@ -65,15 +65,18 @@ bool CommandSession::compile(const QJsonObject &manifest,const QString &baseDire
             staged.exports.push_back({current,photo.source,QDir::cleanPath(base.absoluteFilePath(command["destination"].toString())),space,photo.state});continue;
         }
         if(name=="history.undo"||name=="history.redo"){
-            const bool undo=name=="history.undo";
-            if(!fields(command,{"command"})||(undo?!photo.history.canUndo():!photo.history.canRedo()))return reject("History boundary or invalid fields");
+            CommandRegistry::Control control;
+            if(!CommandRegistry::decodeControl(command,&control))return reject("History boundary or invalid fields");
+            const bool undo=control.kind==CommandRegistry::ControlKind::Undo;
+            if(undo?!photo.history.canUndo():!photo.history.canRedo())return reject("History boundary or invalid fields");
             const auto &next=undo?photo.history.undo():photo.history.redo();if(!charge(next))return reject("Session state budget exceeded");
             photo.state=next;continue;
         }
         QJsonArray edits;
         if(name=="edit.batch"){
-            if(!fields(command,{"command","commands"})||!command["commands"].isArray()||command["commands"].toArray().isEmpty())return reject("Invalid edit batch");
-            edits=command["commands"].toArray();
+            CommandRegistry::Control control;
+            if(!CommandRegistry::decodeControl(command,&control))return reject("Invalid edit batch");
+            edits=std::move(control.edits);
             if(edits.size()>10000-staged.commandCount)return reject("Aggregate command limit exceeded");
             staged.commandCount+=int(edits.size());
         }else edits.append(command);
@@ -97,6 +100,7 @@ QJsonObject CommandSession::schema(){
         {"validation","whole plan before image decode or output; source facts/metadata may be read"},
         {"runtime_failure","stop; completed exports retained"},{"edit_commands","same CommandRegistry as desktop/--commands; source-specific as-shot metadata"},
         {"history","per-photo desktop EditHistory; edit.batch is one undo step; invalid boundary rejects whole plan"},
+        {"shared_controls",CommandRegistry::controlSchema()},
         {"commands",QJsonArray{
             QJsonObject{{"name","photo.import"},{"fields",QJsonArray{"photo","source"}},{"operation","register a transient photo and select it; no file copy/catalog write"}},
             QJsonObject{{"name","photo.select"},{"fields",QJsonArray{"photo"}}},

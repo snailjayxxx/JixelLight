@@ -12,6 +12,30 @@ struct CommandRegistry {
     // Constructed by GUI/CLI from the actual source; never accepted in command
     // JSON. A single batch uses one immutable source metadata snapshot.
     struct LookContext { bool rawSource=false; QVariantMap metadata; };
+    enum class ControlKind { EditBatch, Undo, Redo };
+    struct Control {ControlKind kind=ControlKind::EditBatch;QJsonArray edits;};
+    static bool isControlCommand(const QString &name) {
+        return name=="edit.batch"||name=="history.undo"||name=="history.redo";
+    }
+    static bool decodeControl(const QJsonObject &command,Control *output,QString *error=nullptr) {
+        if(error)error->clear();const auto name=command["command"].toString();Control staged;
+        const auto fail=[&]{if(error)*error="Invalid history or edit-batch command";return false;};
+        if(!output || !isControlCommand(name))return fail();
+        if(name=="edit.batch") {
+            if(!fields(command,{"commands"})||!command["commands"].isArray())return fail();
+            staged.edits=command["commands"].toArray();if(staged.edits.isEmpty()||staged.edits.size()>10000)return fail();
+        }else {
+            if(!fields(command,{}))return fail();
+            staged.kind=name=="history.undo"?ControlKind::Undo:ControlKind::Redo;
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject controlSchema() {
+        const QJsonArray commands{
+            QJsonObject{{"name","edit.batch"},{"fields",QJsonArray{"commands"}},{"minimum_commands",1},{"maximum_commands",10000},{"undo_steps",1}},
+            QJsonObject{{"name","history.undo"},{"fields",QJsonArray{}}},QJsonObject{{"name","history.redo"},{"fields",QJsonArray{}}}};
+        return {{"scope","desktop dispatcher and offline sessions; controls are not valid inside edit-only batches"},{"commands",commands}};
+    }
     struct Parameter { const char *name; double AdjustmentState::*member; double minimum, maximum; };
     struct GeometryParameter { const char *name; double GeometryState::*member; double minimum, maximum; };
     static const auto &geometryParameters() {
@@ -582,7 +606,7 @@ struct CommandRegistry {
             QJsonObject{{"name","curve.set"},{"fields",QJsonArray{"channel","point","value"}},{"channel",QJsonArray{"master","red","green","blue"}},{"point",QJsonArray{0,4}},{"value",QJsonArray{0,1}}},
             QJsonObject{{"name","curve.reset"},{"fields",QJsonArray{"channel"}},{"channel",QJsonArray{"master","red","green","blue"}}}
         };
-        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"unknown_fields","reject"},{"range_policy","clamp"},
+        return {{"schema",1},{"command","develop.set"},{"parameters",descriptors},{"commands",commands},{"control_commands",controlSchema()},{"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
     }
