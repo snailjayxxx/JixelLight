@@ -846,6 +846,10 @@ private:
     bool executeBatchExport(const QJsonObject &command);
     bool executePhotoTransfer(const QJsonObject &command);
     bool executeCurationCommand(const QJsonObject &command);
+    bool executeVirtualVersion(const QJsonObject &command);
+    bool createVirtualCopyImpl(const QString &name);
+    bool renameCurrentVirtualCopyImpl(const QString &name);
+    bool removeCurrentVirtualCopyImpl();
     bool transferImportFromUrls(const QVariantList &,const QUrl &,const QString &,int,bool move);
     bool startCopyImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     bool startMoveImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);

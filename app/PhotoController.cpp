@@ -246,6 +246,25 @@ QStringList PhotoController::currentKeywords() const { return hasImage() ? m_pho
 QStringList PhotoController::currentAlbums() const { return hasImage() ? m_photos[m_currentIndex].tags.albums : QStringList{}; }
 QString PhotoController::currentColorLabel() const { return hasImage() ? m_photos[m_currentIndex].tags.label : QStringLiteral("none"); }
 bool PhotoController::createVirtualCopy(const QString &name) {
+    return executeVirtualVersion({{"command","version.create"},{"name",name}});
+}
+bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+    return executeVirtualVersion({{"command","version.rename"},{"name",name}});
+}
+bool PhotoController::removeCurrentVirtualCopy() {
+    return executeVirtualVersion({{"command","version.remove"}});
+}
+bool PhotoController::executeVirtualVersion(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::VirtualVersion request;if(!CommandRegistry::decodeVirtualVersion(command,&request))return false;
+    switch(request.kind) {
+        case CommandRegistry::VirtualKind::Create:return createVirtualCopyImpl(request.name);
+        case CommandRegistry::VirtualKind::Rename:return renameCurrentVirtualCopyImpl(request.name);
+        case CommandRegistry::VirtualKind::Remove:return removeCurrentVirtualCopyImpl();
+    }
+    return false;
+}
+bool PhotoController::createVirtualCopyImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || !flushEdits()) return false;
     auto copy = m_photos[m_currentIndex];
@@ -262,11 +281,12 @@ bool PhotoController::createVirtualCopy(const QString &name) {
         setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
     }
     m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
-    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title}});
+    ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title},
+        {"command",QJsonObject{{"command","version.create"},{"name",title}}}});
     setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
 }
 
-bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
+bool PhotoController::renameCurrentVirtualCopyImpl(const QString &name) {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const auto title = name.trimmed(); QStringList checked{title};
@@ -277,10 +297,11 @@ bool PhotoController::renameCurrentVirtualCopy(const QString &name) {
     }
     photo.versionName = title; photo.name = QFileInfo(photo.path).fileName() + " · " + title;
     emit libraryChanged();
-    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title}});
+    ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title},
+        {"command",QJsonObject{{"command","version.rename"},{"name",title}}}});
     return true;
 }
-bool PhotoController::removeCurrentVirtualCopy() {
+bool PhotoController::removeCurrentVirtualCopyImpl() {
     if (xmpMergeBusy()) return false;
     if (!hasImage() || m_photos[m_currentIndex].copyKey.isEmpty() || !flushEdits()) return false;
     const int removed = m_currentIndex; const auto photo = m_photos[removed];
@@ -298,7 +319,7 @@ bool PhotoController::removeCurrentVirtualCopy() {
     m_currentIndex = -2;
     selectPhoto(std::min(removed,int(m_photos.size())-1));
     if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged(); }
-    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path}});
+    ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path},{"command",QJsonObject{{"command","version.remove"}}}});
     setStatus(uiText("已删除虚拟副本：", "Virtual copy deleted: ") + photo.versionName);
     return true;
 }
@@ -685,6 +706,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(QStringList{"version.create","version.rename","version.remove"}.contains(object["command"].toString()))return executeVirtualVersion(object);
     if(object["command"].toString()=="catalog.curate")return executeCurationCommand(object);
     if(object["command"].toString()=="photo.copy"||object["command"].toString()=="photo.move")return executePhotoTransfer(object);
     if(object["command"].toString()=="export.batch")return executeBatchExport(object);

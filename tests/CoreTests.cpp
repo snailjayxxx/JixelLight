@@ -7363,6 +7363,51 @@ private slots:
         QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(fixtureBytes(a),bytesA);QCOMPARE(fixtureBytes(b),bytesB);
     }
 
+    void virtualVersionCommandsKeepIndependentHistoryStableKeysAndOriginalBytesAcrossReopen() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,6));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"VersionCommands"));QVERIFY(c.importFile(QUrl::fromLocalFile(source)));
+        c.setExposure(.5);c.finishInteraction();c.setRating(3);const auto originalKey=c.library()[0].toMap()["id"].toString();const auto originalState=c.gpuPlan(true).state.toJson();const auto originalHistory=c.editHistory();
+        QVERIFY(c.executeCommand({{"command","version.create"},{"name","  First  "}}));QCOMPARE(c.library().size(),2);QVERIFY(!c.canUndo());
+        const auto copyKey=c.library()[1].toMap()["id"].toString();QVERIFY(copyKey.startsWith("jixel-copy:"));QVERIFY(copyKey!=originalKey);QCOMPARE(c.currentRating(),3);
+        QCOMPARE(c.library()[1].toMap()["versionName"].toString(),QString("First"));QCOMPARE(c.gpuPlan(true).state.toJson(),originalState);
+        c.setExposure(-.75);c.finishInteraction();const auto copyState=c.gpuPlan(true).state.toJson();const auto copyHistory=c.editHistory();
+        QVERIFY(c.executeCommand({{"command","version.rename"},{"name"," Renamed "}}));QCOMPARE(c.library()[1].toMap()["id"].toString(),copyKey);QCOMPARE(c.editHistory(),copyHistory);
+        c.selectPhoto(0);QCOMPARE(c.gpuPlan(true).state.toJson(),originalState);QCOMPARE(c.editHistory(),originalHistory);QVERIFY(c.prepareToClose());
+        PhotoController reopened(nullptr);QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));QCOMPARE(reopened.library().size(),2);int copy=-1;
+        for(int i=0;i<2;++i)if(reopened.library()[i].toMap()["id"].toString()==copyKey)copy=i;QVERIFY(copy>=0);reopened.selectPhoto(copy);
+        QCOMPARE(reopened.library()[copy].toMap()["versionName"].toString(),QString("Renamed"));QCOMPARE(reopened.gpuPlan(true).state.toJson(),copyState);QCOMPARE(reopened.editHistory(),copyHistory);
+        QVERIFY(reopened.executeCommand({{"command","version.remove"}}));QCOMPARE(reopened.library().size(),1);QCOMPARE(reopened.library()[0].toMap()["id"].toString(),originalKey);
+        QCOMPARE(reopened.gpuPlan(true).state.toJson(),originalState);QCOMPARE(reopened.editHistory(),originalHistory);QVERIFY(!reopened.executeCommand({{"command","version.remove"}}));QVERIFY(reopened.prepareToClose());
+        PhotoController final(nullptr);QVERIFY(final.openProject(QUrl::fromLocalFile(reopened.projectPath())));QCOMPARE(final.library().size(),1);QCOMPARE(final.currentRating(),3);QCOMPARE(fixtureBytes(source),bytes);
+        QSet<QString> traced;for(const auto &value:ActionTrace::instance().snapshot()) {
+            const auto row=value.toObject(),command=row["command"].toObject();if(row["photo_key"].toString()!=copyKey)continue;
+            if(command==QJsonObject{{"command","version.create"},{"name","First"}})traced.insert("create");
+            if(command==QJsonObject{{"command","version.rename"},{"name","Renamed"}})traced.insert("rename");
+            if(command==QJsonObject{{"command","version.remove"}})traced.insert("remove");
+        }
+        QCOMPARE(traced,QSet<QString>({"create","rename","remove"}));
+    }
+
+    void virtualVersionCommandsRejectInvalidOriginalNestedAndForeignRequestsAndKeepDefaultNames() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());PhotoController c(nullptr);QVERIFY(!c.executeCommand({{"command","version.create"}}));QVERIFY(!c.executeCommand({{"command","version.remove"}}));
+        const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.25);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();
+        const QList<QJsonObject> invalid{{{"command","version.create"},{"name",true}},{{"command","version.create"},{"name",QString(81,'x')}},
+            {{"command","version.create"},{"name","a\nb"}},{{"command","version.create"},{"source",source}},{{"command","version.rename"}},
+            {{"command","version.rename"},{"name",""}},{{"command","version.rename"},{"name","Original"}},{{"command","version.remove"}},
+            {{"command","version.remove"},{"name","x"}},{{"command","version.remove"},{"index",0}},{{"command","version.unknown"}}};
+        for(const auto &command:invalid){QVERIFY(!c.executeCommand(command.toVariantMap()));QCOMPARE(c.library().size(),1);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);}
+        const QJsonObject create{{"command","version.create"}};
+        QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},create}}}));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand(create.toVariantMap());});worker.join();QVERIFY(foreign);QVERIFY(!accepted);QCOMPARE(c.library().size(),1);
+        QVERIFY(c.prepareToClose());QVERIFY(c.executeCommand(create.toVariantMap()));QCOMPARE(c.library()[1].toMap()["versionName"].toString(),QString("Version 2"));
+        const auto key=c.library()[1].toMap()["id"].toString();
+        for(const auto &name:QList<QJsonValue>{QString(" "),true,QString(81,'x'),QString("a\nb")}) {
+            QVERIFY(!c.executeCommand(QJsonObject{{"command","version.rename"},{"name",name}}.toVariantMap()));QCOMPARE(c.library()[1].toMap()["id"].toString(),key);QCOMPARE(c.library()[1].toMap()["versionName"].toString(),QString("Version 2"));
+        }
+        QVERIFY(c.executeCommand({{"command","version.remove"}}));QCOMPARE(c.library().size(),1);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(fixtureBytes(source),bytes);
+    }
+
     void diagnosticReplayPreservesStoredIntentWithoutReadingTheSource() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("unavailable-source.ARW");
         QVERIFY(!QFileInfo::exists(source));AdjustmentState stored;stored.look.mode="as-shot";stored.exposure=.75;

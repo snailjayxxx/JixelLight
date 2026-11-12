@@ -162,6 +162,18 @@ private slots:
         QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"catalog.curate"),CommandRegistry::curationSchema());
         QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"catalog.curate").isEmpty());
     }
+    void desktopVirtualVersionNamesAreStrictAndSessionsCannotMutateCatalogVersions(){
+        CommandRegistry::VirtualVersion request;QVERIFY(CommandRegistry::decodeVirtualVersion({{"command","version.create"}},&request));QVERIFY(request.name.isEmpty());
+        QVERIFY(CommandRegistry::decodeVirtualVersion({{"command","version.rename"},{"name"," Copy "}},&request));QCOMPARE(request.name,QString("Copy"));
+        for(const auto &bad:QList<QJsonObject>{{{"command","version.create"},{"name",true}},{{"command","version.rename"},{"name"," "}},{{"command","version.remove"},{"name","Copy"}}}) {
+            request.name="sentinel";QVERIFY(!CommandRegistry::decodeVirtualVersion(bad,&request));QCOMPARE(request.name,QString("sentinel"));
+        }
+        for(const auto &name:QStringList{"version.create","version.rename","version.remove"}) {
+            QJsonObject command{{"command",name}};if(name=="version.rename")command["name"]="Copy";CommandSession result;result.photoCount=81;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,81);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::virtualVersionSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));

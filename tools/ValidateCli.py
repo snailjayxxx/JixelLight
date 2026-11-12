@@ -147,6 +147,10 @@ def main():
         curation_form = next(c for c in schema['workflow_commands'] if c['name'] == 'catalog.curate')
         assert curation_form['scope'] == 'desktop' and curation_form['catalog_writes'] is True and curation_form['source_writes'] is False
         assert curation_form['develop_history_steps'] == 0 and all(c['name'] != 'catalog.curate' for c in schema['session']['commands'])
+        for name in ('version.create', 'version.rename', 'version.remove'):
+            version_form = next(c for c in schema['workflow_commands'] if c['name'] == name)
+            assert version_form['scope'] == 'desktop' and version_form['source_writes'] is False and version_form['catalog_writes'] is True
+            assert all(c['name'] != name for c in schema['session']['commands'])
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -201,7 +205,9 @@ def main():
                      {'command': 'export.batch', 'folder': str(root)},
                      {'command': 'photo.copy', 'sources': [str(source)], 'folder': str(root)},
                      {'command': 'photo.move', 'sources': [str(source)], 'folder': str(root)},
-                     {'command': 'catalog.curate', 'target': 'current', 'field': 'rating', 'value': 5}]:
+                     {'command': 'catalog.curate', 'target': 'current', 'field': 'rating', 'value': 5},
+                     {'command': 'version.create', 'name': 'Copy'}, {'command': 'version.rename', 'name': 'Copy'},
+                     {'command': 'version.remove'}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))
