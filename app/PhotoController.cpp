@@ -44,7 +44,7 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include "core/look/LookProfiles.h"
 
-PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget)
+PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *parent,std::shared_ptr<BrushRenderBudget> brushBudget,MoveImportTrash moveTrash)
     : QObject(parent),m_provider(provider),m_brushBudget(brushBudget?std::move(brushBudget):BrushRenderBudget::sharedDefault()) {
     connect(this,&PhotoController::currentIndexChanged,this,&PhotoController::pipelineDescriptionChanged);
     connect(this,&PhotoController::currentMetadataChanged,this,&PhotoController::pipelineDescriptionChanged);
@@ -62,6 +62,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *paren
     if (m_language != QStringLiteral("zh_CN") && m_language != QStringLiteral("en_US")) m_language = QStringLiteral("zh_CN");
     m_statusMessage = uiText(QStringLiteral("就绪"), QStringLiteral("Ready"));
     m_gpuEnabled = !qEnvironmentVariableIsSet("JIXELLIGHT_FORCE_CPU") && settings.value("performance/gpuEnabled", true).toBool();
+    m_moveImportTrash=std::move(moveTrash);
     initializeJobs();
     initializeSoftProof();
     m_nativeBrush=std::make_unique<NativeBrushController>(this);
@@ -1224,13 +1225,14 @@ void PhotoController::openCopyImportDialog() {
     QVariantList urls; for (const auto &file : files) urls.push_back(QUrl::fromLocalFile(file));
     emit copyImportRequested(urls);
 }
-void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel(); }
+void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel();if(m_moveImportQueue)m_moveImportQueue->cancel(); }
 bool PhotoController::prepareToClose() {
     if (m_xmpMerge) {
         if (m_xmpMerge->phase==XmpMergePhase::ReloadRequired) return m_project.flush();
         if (!cancelXmpMerge()) return false;
     }
     m_copyImportQueue->stopAndCollect();
+    if(m_moveImportQueue)m_moveImportQueue->stopAndCollect();
     return flushEdits();
 }
 
@@ -1710,6 +1712,7 @@ PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
         {"parameter_revision", qint64(snapshot.revision)}, {"statistics_revision", qint64(m_scopesRevision)},
         {"is_current", m_scopesRevision == snapshot.revision}, {"viewport_preparing", m_preparing}};
     auto &values = snapshot.performanceValues;
+    values["move_import"] = QJsonObject::fromVariantMap(moveImportDiagnostics());
     values["soft_proof"] = QJsonObject::fromVariantMap(softProofDiagnostics());
     values["stage_dependencies"] = StageGraph::describe(m_loadedKey, snapshot.prepare, snapshot.state, currentIsRaw(), rawBaseExposureStops());
     if (m_renderCache) values["render_cache"] = m_renderCache->snapshot();
@@ -1879,7 +1882,7 @@ PhotoController::~PhotoController() {
     m_budgetRetryTimer.stop();
     m_relinkJob.reset(); m_identityJob.reset();
     m_importNameDatesJob.reset();
-    m_copyImportQueue.reset();
+    m_copyImportQueue.reset();m_moveImportQueue.reset();m_moveRecoveryPreview.reset();
     m_plotTimer.stop(); m_plotJob.reset();
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
@@ -1941,6 +1944,7 @@ void PhotoController::initializeJobs() {
         setStatus(m_copyImportStatus); emit copyImportChanged();
         ActionTrace::instance().record("copy_import_finished",{{"copied",result.completed.size()},{"imported",added},{"cancelled",result.wasCancelled},{"error",result.error}});
     });
+    initializeMoveImport();
     m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
     connect(&m_plotTimer,&QTimer::timeout,this,&PhotoController::requestScopePlot);
     m_analysisFrameCache=std::make_shared<AnalysisFrameCache>();

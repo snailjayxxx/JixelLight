@@ -32,6 +32,7 @@ from ValidatePointColor import validate_pointColor
 from ValidateLuminanceMask import validate_luminance_mask
 from ValidateColorMask import validate_color_mask
 from ValidateSoftProof import validate_soft_proof
+from ValidateMoveImport import validate_move_import
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -345,6 +346,12 @@ def main() -> int:
         for mode in ('cpu', 'gpu'):
             results.append(validate_soft_proof(executable, environment, Path(proof_temp) / mode,
                 reports / ('soft-proof-' + mode + '.json'), mode,
+                expected_commit=results[0].get('source_commit')))
+    # All86 earlier contexts remain before the real owned-file move workflows.
+    with tempfile.TemporaryDirectory(prefix='jixellight-move-import-package-') as move_temp:
+        for mode in ('cpu', 'gpu'):
+            results.append(validate_move_import(executable, environment, Path(move_temp) / mode,
+                reports / ('move-import-' + mode + '.json'), mode,
                 expected_commit=results[0].get('source_commit')))
     manifest = {'executable': executable.name,
                 'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),

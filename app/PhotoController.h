@@ -19,6 +19,7 @@ class QQuickWindow;
 #include "core/async/LatestFrameJob.h"
 #include "core/export/ExportQueue.h"
 #include "core/import/CopyImportQueue.h"
+#include "core/import/MoveImportQueue.h"
 #include "core/preview/SoftProofPreview.h"
 #include "core/look/CameraReference.h"
 #include "core/look/LookCalibration.h"
@@ -188,6 +189,10 @@ class PhotoController final : public QObject {
     Q_PROPERTY(qulonglong scopePlotPixels READ scopePlotPixels NOTIFY scopePlotChanged)
     Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
+    Q_PROPERTY(QVariantMap moveImportDiagnostics READ moveImportDiagnostics NOTIFY copyImportChanged)
+    Q_PROPERTY(bool moveImportBusy READ moveImportBusy NOTIFY copyImportChanged)
+    Q_PROPERTY(QVariantMap moveImportRecoveryPreview READ moveImportRecoveryPreview NOTIFY moveImportRecoveryChanged)
+    Q_PROPERTY(QString moveImportJournal READ moveImportJournal NOTIFY copyImportChanged)
     Q_PROPERTY(bool copyImportBusy READ copyImportBusy NOTIFY copyImportChanged)
     Q_PROPERTY(quint64 importNameRevision READ importNameRevision NOTIFY importNamePreviewChanged)
     Q_PROPERTY(double copyImportProgress READ copyImportProgress NOTIFY copyImportChanged)
@@ -223,7 +228,7 @@ public:
     Q_INVOKABLE bool loadLookProfile(const QUrl &url);
     Q_INVOKABLE bool saveLookProfile(const QUrl &url);
     explicit PhotoController(ProcessedImageProvider *provider,QObject *parent=nullptr,
-                             std::shared_ptr<BrushRenderBudget> brushBudget={});
+                             std::shared_ptr<BrushRenderBudget> brushBudget={},MoveImportTrash moveTrash={});
     std::shared_ptr<BrushRenderBudget> brushRenderBudget() const {return m_brushBudget;}
     ~PhotoController() override;
     QVariantList library() const;
@@ -463,6 +468,15 @@ public:
 
     Q_INVOKABLE void openImportDialog();
     Q_INVOKABLE void openCopyImportDialog();
+    Q_INVOKABLE void openMoveImportDialog();
+    Q_INVOKABLE bool moveImport(const QVariantList &,const QUrl &,const QString &pattern=QString(),int sequenceStart=1);
+    Q_INVOKABLE bool resumeMoveImport(const QString &journal);
+    Q_INVOKABLE void inspectMoveImportRecovery(const QString &journal);
+    Q_INVOKABLE void cancelMoveImportRecoveryPreview();
+    QVariantMap moveImportRecoveryPreview()const{return m_moveRecoveryView;}
+    QVariantMap moveImportDiagnostics()const;
+    bool moveImportBusy()const{return m_moveImportQueue&&m_moveImportQueue->busy();}
+    QString moveImportJournal()const{return m_moveImportJournal;}
     Q_INVOKABLE bool copyImport(const QVariantList &urls,const QUrl &directory,
                                 const QString &pattern=QString(),int sequenceStart=1);
     Q_INVOKABLE QVariantMap previewImportNames(const QVariantList &urls,const QString &pattern,int sequenceStart);
@@ -470,7 +484,7 @@ public:
     quint64 importNameRevision() const { return m_importNameRevision; }
     Q_INVOKABLE void cancelCopyImport();
     Q_INVOKABLE bool prepareToClose();
-    bool copyImportBusy() const { return m_copyImportQueue && m_copyImportQueue->busy(); }
+    bool copyImportBusy() const { return (m_copyImportQueue && m_copyImportQueue->busy())||moveImportBusy(); }
     double copyImportProgress() const { return m_copyImportProgress; }
     QString copyImportStatus() const { return m_copyImportStatus; }
     Q_INVOKABLE bool importFile(const QUrl &url);
@@ -580,6 +594,8 @@ signals:
     void copyImportChanged();
     void importNamePreviewChanged();
     void copyImportRequested(const QVariantList &urls);
+    void moveImportRequested(const QVariantList &urls);
+    void moveImportRecoveryChanged();
     void scopePlotChanged();
     void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
@@ -691,6 +707,13 @@ private:
     std::shared_ptr<ScopePlotCache> m_scopePlotCache;
     std::unique_ptr<ExportQueue> m_exportQueue;
     std::unique_ptr<CopyImportQueue> m_copyImportQueue;
+    std::unique_ptr<MoveImportQueue> m_moveImportQueue;
+    QString m_moveImportProject,m_moveImportJournal,m_moveRecoveryPath;
+    MoveImportTrash m_moveImportTrash;
+    QJsonObject m_moveImportFacts;
+    QVariantMap m_moveRecoveryView;
+    std::unique_ptr<LatestJob<QString,MoveImportBatch>> m_moveRecoveryPreview;
+    void initializeMoveImport();
     struct ImportNameDateRequest { QHash<QString,QString> sources; };
     QCache<QString,QString> m_importNameTimes{1000};
     QHash<QString,QString> m_importNamePending;

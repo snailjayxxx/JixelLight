@@ -79,6 +79,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-move-import-*
         gui-soft-proof-*
         gui-color-mask-*
         gui-luminance-mask-*
@@ -328,6 +329,19 @@ jobs:
           python -m unittest discover -s tests -p 'TestSoftProofEvidence.py' -v
           python tools/ValidateSoftProof.py "$EXE" gui-soft-proof-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateSoftProof.py "$EXE" gui-soft-proof-gpu.json gpu --expected-commit "$STAMP"
+      - name: Owned move import, system trash and reviewed recovery
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            EXE=build/bin/Release/JixelLight.exe
+          else
+            EXE=$(find build -path '*/JixelLight.app/Contents/MacOS/JixelLight' -type f | head -1)
+          fi
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestMoveImportEvidence.py' -v
+          python tools/ValidateMoveImport.py "$EXE" gui-move-import-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateMoveImport.py "$EXE" gui-move-import-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
@@ -801,6 +815,7 @@ jobs:
         gui-clarity-*
         gui-texture-*
         gui-dehaze-*
+        gui-move-import-*
         gui-soft-proof-*
         gui-color-mask-*
         gui-luminance-mask-*
@@ -962,6 +977,15 @@ jobs:
           python -m unittest discover -s tests -p 'TestSoftProofEvidence.py' -v
           python tools/ValidateSoftProof.py "$EXE" gui-soft-proof-cpu.json cpu --expected-commit "$STAMP"
           python tools/ValidateSoftProof.py "$EXE" gui-soft-proof-gpu.json gpu --expected-commit "$STAMP"
+      - name: Owned move import, system trash and reviewed recovery
+        shell: bash
+        run: |
+          EXE=build/bin/JixelLight
+          test -f "$EXE"
+          STAMP=$(git rev-parse --short HEAD)
+          python -m unittest discover -s tests -p 'TestMoveImportEvidence.py' -v
+          python tools/ValidateMoveImport.py "$EXE" gui-move-import-cpu.json cpu --expected-commit "$STAMP"
+          python tools/ValidateMoveImport.py "$EXE" gui-move-import-gpu.json gpu --expected-commit "$STAMP"
       - name: Bilingual anchored project-menu layout
         shell: bash
         run: |
