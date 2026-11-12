@@ -130,12 +130,17 @@ jobs:
           key: native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-${{ hashFiles('vcpkg.json', 'triplets/**') }}
           restore-keys: |
             native-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.dependency-key.outputs.vcpkg }}-
+      - name: Activate MSVC for Windows Ninja
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Configure
         id: configure
         shell: bash
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          ${{ runner.os == 'Windows' && '-DCMAKE_CONFIGURATION_TYPES=Release' || '' }}
+          ${{ runner.os == 'Windows' && '-G Ninja -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE="$GITHUB_WORKSPACE/build/bin/Release"' || '' }}
           -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/triplets"
