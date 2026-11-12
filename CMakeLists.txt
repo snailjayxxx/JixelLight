@@ -635,3 +635,5 @@ target_link_libraries(JixelLightMoveImportTests PRIVATE JixelLightCore Qt6::Test
 set_target_properties(JixelLightMoveImportTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME move-import COMMAND JixelLightMoveImportTests -o move-import-results.txt,txt -o -,txt)
 set_tests_properties(move-import PROPERTIES TIMEOUT 120 ENVIRONMENT "JIXELLIGHT_CPU_THREADS=4;JIXELLIGHT_FORCE_CPU=1")
+
+include(cmake/PrecompiledHeaders.cmake)
