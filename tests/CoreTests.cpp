@@ -293,7 +293,7 @@ private slots:
         const ScopeRequest working{f.source,f.plan,1,true,f.geometry,AnalysisDomain::Working};const ScopePlotRequest plot{f.source,f.plan,f.geometry,"waveform",1,true,AnalysisDomain::Working};
         const auto failed=hist.analyze(working);QVERIFY(!failed.pixelCount);QVERIFY(failed.retryableBudget);QVERIFY(!failed.error.isEmpty());const auto badPlot=plots.render(plot);QVERIFY(badPlot.image.isNull());QVERIFY(badPlot.retryableBudget);QCOMPARE(budget->snapshot().charged,qint64(0));
         auto source=working;source.domain=AnalysisDomain::Source;QVERIFY(hist.analyze(source).pixelCount);auto sourcePlot=plot;sourcePlot.domain=AnalysisDomain::Source;QVERIFY(!plots.render(sourcePlot).image.isNull());
-        const auto entries=hist.snapshot()["entries"],plotEntries=plots.snapshot()["entries"];const auto frameState=frames->snapshot();
+        const QJsonValue entries=hist.snapshot().value("entries"),plotEntries=plots.snapshot().value("entries");const auto frameState=frames->snapshot();
         const auto cancelled=std::make_shared<std::atomic_bool>(true);QVERIFY(!hist.analyze(source,cancelled).pixelCount);QVERIFY(plots.render(sourcePlot,cancelled).image.isNull());
         source.image=QImage(3,257,QImage::Format_RGBA32FPx4);source.image.fill(QColor::fromRgbF(.2,.2,.2));reinterpret_cast<float *>(source.image.scanLine(256))[8]=std::numeric_limits<float>::infinity();source.geometry={};sourcePlot.source=source.image;sourcePlot.geometry={};
         QVERIFY(!hist.analyze(source).pixelCount);QVERIFY(plots.render(sourcePlot).image.isNull());

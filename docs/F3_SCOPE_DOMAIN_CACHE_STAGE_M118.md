@@ -12,4 +12,6 @@ Six new Core cases (expected270) cover analytic float plot bins including hidden
 
 The first build at aba16ee stopped at the new `analyzeDomain` implementation because its brush guard lacked an explicit BrushMaskTileRaster include. No tests ran. The original failed compiler log and source/build identities are indexed in `failed-build-aba16ee-first.json`; the include correction requires a fresh development run.
 
+The second run at efd896c built and passed GPU82/Sony preflight, then five new Core cases passed before the sixth crashed in `QTest::qCompare<QJsonValueRef>`/`QJsonValueConstRef::concrete`. The new test had retained references into temporary snapshot JSON objects. Its snapshots now copy `QJsonValue` through `value()`. The original crash report, failed results, runtime binaries and build graph remain in `failed-development-efd896c-second/`; this corrects the test's temporary lifetime without changing production caching or any bounds.
+
 M117's original two failed oracle assertions and its stopped evidence-path freshness check remain recorded separately; the corrected exact pre-output fingerprint passes a focused run at fd4d543. M117's own development/native run is a prerequisite for this stage's build. None of these private stages claim native-FP32 LibRaw demosaicing or A7R VI real-shot acceptance. Main and protected PR15 remain unmerged.
