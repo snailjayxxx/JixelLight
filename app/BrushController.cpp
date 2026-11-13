@@ -392,7 +392,7 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
         const bool exceedsDocument=facts.valid&&std::size_t(facts.dabs)+stroke->dabs.size()>BrushMaskDocument::MaxTotalDabs;
         if(!brushCandidate(*g,std::move(*stroke),&candidate)){
             if(exceedsDocument&&backup&&backup->restoreRecoveryPrefix()){g->builder=std::move(backup);offerBrushRecovery(std::move(g));}
-            setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};
+            if(current())setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};
         }
         if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
