@@ -5,6 +5,7 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QPointer>
 #include <QThread>
 #include <QUuid>
 #include <limits>
@@ -129,9 +130,12 @@ void PhotoController::discardBrushRecovery() {
     if(m_brushRecovery){m_brushRecovery.reset();emit brushRecoveryChanged();}
 }
 void PhotoController::cancelBrushStroke() {
-    discardBrushRecovery();
-    const bool drawing=bool(m_brushGesture),warned=brushCapacityWarning();m_brushGesture.reset();clearBrushPreview();
-    if(drawing)emit brushDrawingChanged();if(warned)emit brushCapacityWarningChanged();
+    if(QThread::currentThread()!=thread())return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch,revision=m_requestedRevision;const bool closing=m_closing;
+    const auto current=[this,guard,catalog,epoch,revision,closing]{return guard&&closing==m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
+    discardBrushRecovery();if(!current())return;
+    const bool drawing=bool(m_brushGesture),warned=brushCapacityWarning();m_brushGesture.reset();clearBrushPreview();if(!current())return;
+    if(drawing){emit brushDrawingChanged();if(!current())return;}if(warned)emit brushCapacityWarningChanged();
 }
 void PhotoController::initializeBrushPreview() {
     // Coalesce only preparation of the live frame; every input still enters
@@ -380,8 +384,9 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
     }catch(...){setStatus(uiText("笔触未应用：内存不足或处理失败。","Stroke was not applied: allocation or processing failed."));return {};}
     if(!brushGestureCurrent(*g))return {};
     auto &photo=m_photos[m_currentIndex];photo.history.finish();photo.state=std::move(candidate);
-    persistAndApply(g->mode==BrushMaskGeometry::StrokeMode::Erase?"brush_erase":"brush_stroke",
-        {{"layer",g->layer},{"mode",g->mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}});finishInteraction();return g->layer;
+    const auto layer=g->layer;
+    if(persistAndApply(g->mode==BrushMaskGeometry::StrokeMode::Erase?"brush_erase":"brush_stroke",
+        {{"layer",layer},{"mode",g->mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}}))finishInteraction();return layer;
 }
 bool PhotoController::setBrushLayerEnabled(const QString &id,bool enabled) {
     return executeEditCommand({{"command","mask.brush.enable"},{"layer",id},{"enabled",enabled}});
@@ -396,13 +401,13 @@ bool PhotoController::removeBrushLayer(const QString &id) {
     auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
     if(!CommandRegistry::execute(next,{{"command","mask.brush.remove"},{"layer",id}}))return false;
     m_photos[m_currentIndex].history.finish();*state=std::move(next);
-    persistAndApply("brush_layer_remove",{{"layer",id}});finishInteraction();return true;
+    if(persistAndApply("brush_layer_remove",{{"layer",id}}))finishInteraction();return true;
 }
 bool PhotoController::removeLastBrushStroke(const QString &id) {
     auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
     if(!CommandRegistry::execute(next,{{"command","mask.brush.remove-last-stroke"},{"layer",id}}))return false;
     m_photos[m_currentIndex].history.finish();*state=std::move(next);
-    persistAndApply("brush_stroke_remove",{{"layer",id}});finishInteraction();return true;
+    if(persistAndApply("brush_stroke_remove",{{"layer",id}}))finishInteraction();return true;
 }
 QVariantMap PhotoController::brushStrokeSelection(const QString &id,int index) const {
     if(!currentSourceAvailable()||!m_sourceIsFull||m_fullSource.isNull()||m_loading||m_closing||m_brushGesture||m_cropEditing)return {};
@@ -433,5 +438,5 @@ bool PhotoController::removeBrushStroke(const QString &id,int index,const QStrin
     auto *state=mutableCurrentState();if(!state)return false;auto next=*state;
     if(!CommandRegistry::execute(next,{{"command","mask.brush.remove-stroke"},{"layer",id},{"index",index}}))return false;
     m_photos[m_currentIndex].history.finish();*state=std::move(next);
-    persistAndApply("brush_stroke_selected_remove",{{"layer",id},{"index",index}});finishInteraction();return true;
+    if(persistAndApply("brush_stroke_selected_remove",{{"layer",id},{"index",index}}))finishInteraction();return true;
 }
