@@ -79,6 +79,19 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void cropEntryCannotResumeAfterNotificationAcceptedClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("crop-entry-close.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"CropEntryClose"));c.setExposure(.75);c.finishInteraction();
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.flushEdits());
+        bool notified=false,closed=false;quint64 revision=0;
+        QObject::connect(&c,&PhotoController::libraryChanged,&c,[&]{if(notified)return;notified=true;closed=c.beginClose();revision=c.m_requestedRevision;});
+        const bool accepted=c.beginCrop();QVERIFY(notified);QVERIFY(closed);QVERIFY(c.m_closing);
+        QCOMPARE(c.m_cropEditing,false);QVERIFY(!accepted);QCOMPARE(c.m_requestedRevision,revision);
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.exposure,.75);QCOMPARE(fileHash(path),original);
+    }
     void editPublicationSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("action");QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
         const auto rows=[](const QString &action,const QStringList &contexts){for(const auto &context:contexts)for(bool closeOnly:{true,false})
