@@ -55,7 +55,7 @@ PhotoController::PhotoController(ProcessedImageProvider *provider,QObject *paren
     connect(this,&PhotoController::adjustmentsChanged,this,&PhotoController::cancelBrushStroke);
     connect(this,&PhotoController::cropEditingChanged,this,&PhotoController::cancelBrushStroke);
     // A queued check observes revision changes made after notification emission.
-    const auto expireRecovery=[this]{if(m_brushRecovery&&!brushRecoveryAvailable())discardBrushRecovery();};
+    const auto expireRecovery=[this]{if(!m_closing&&m_brushRecovery&&!brushRecoveryAvailable())discardBrushRecovery();};
     connect(this,&PhotoController::backendChanged,this,expireRecovery,Qt::QueuedConnection);
     connect(this,&PhotoController::activityChanged,this,expireRecovery,Qt::QueuedConnection);
     connect(this,&PhotoController::previewGeometryChanged,this,expireRecovery,Qt::QueuedConnection);
