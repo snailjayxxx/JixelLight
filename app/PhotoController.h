@@ -491,6 +491,7 @@ public:
     quint64 importNameRevision() const { return m_importNameRevision; }
     Q_INVOKABLE void cancelCopyImport();
     Q_INVOKABLE bool prepareToClose();
+    Q_INVOKABLE bool beginClose();
     bool copyImportBusy() const { return (m_copyImportQueue && m_copyImportQueue->busy())||moveImportBusy(); }
     QString copyImportOperationId() const {
         return moveImportBusy()?m_moveImportQueue->operationId():(m_copyImportQueue?m_copyImportQueue->operationId():QString{});
@@ -745,7 +746,7 @@ private:
     QJsonObject m_preparedGeometry;
     bool m_preparing = false;
     bool m_cropEditing = false;
-    bool m_interacting = false, m_sourceIsFull = false, m_closing = false;
+    bool m_interacting = false, m_sourceIsFull = false, m_closing = false, m_closePreparing = false;
     quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;
     int m_scopesRank = -1;
     QSize m_viewport{1600, 1000};
