@@ -49,6 +49,7 @@
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/pipeline/StageGraph.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
+#include "core/pipeline/ColorStageDiagnostics.h"
 #include "core/pipeline/FloatSceneResampler.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/cache/FullScopesCache.h"
@@ -215,6 +216,175 @@ qint64 analysisIntegrationStagesSince(const QString &marker,const QString &stage
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void streamedLinearAnalysisMatchesWholeSpatialFramesAndIndependentPlotCounts() {
+        const auto f=analysisIntegrationFixture();auto state=f.plan.state;state.brushMasks={};state.textureAmount=21;state.clarityAmount=17;state.denoiseLuma=18;state.denoiseChroma=11;
+        const auto plan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);const auto corrected=f.geometry.apply(f.source);
+        for(const auto domain:{AnalysisDomain::Source,AnalysisDomain::Working}) {
+            QString error;const auto frame=ImagePipeline::analysisRegion(corrected,plan,corrected.rect(),domain,{},&error);QVERIFY2(!frame.isNull(),qPrintable(error));
+            const auto counts=ScopesEngine::analyzeDomain(corrected,plan,domain);QVERIFY2(counts.error.isEmpty(),qPrintable(counts.error));QVERIFY(analysisIntegrationSameHistogram(counts,ScopesEngine::analyzeLinear(frame)));
+            const ScopePlotRequest request{f.source,plan,f.geometry,"waveform",1,true,domain};const auto plots=renderScopePlots(request,{});
+            const QStringList modes{"waveform","parade","vectorscope"};for(int i=0;i<3;++i){ScopePlotCounts expected(modes[i]);QVERIFY(expected.addLinear(frame));QVERIFY2(plots[i].error.isEmpty(),qPrintable(plots[i].error));QCOMPARE(plots[i].image,expected.image());QCOMPARE(plots[i].pixels,counts.pixelCount);auto single=request;single.mode=modes[i];QCOMPARE(renderScopePlot(single,{}).image,expected.image());}
+        }
+    }
+    void preparedWorkingAnalysisPreservesViewportDensityAndRejectsTamperedPlans() {
+        const auto f=analysisIntegrationFixture();auto state=f.plan.state;state.textureAmount=24;state.clarityAmount=13;state.denoiseLuma=12;
+        auto plan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);plan.setFrameRect({.1,.2,.6,.5});plan.setReferenceFrameSize({701,503});
+        const auto prepared=FloatSceneResampler::scale(f.source,{91,169});QString error;auto whole=BrushAnalysisRequest::createPrepared(prepared,plan,BrushRenderRequest::Layout::Whole,{},&error);QVERIFY2(whole,qPrintable(error));auto frame=whole->render({},&error);QVERIFY2(frame,qPrintable(error));QCOMPARE(frame.image().size(),prepared.size());
+        const auto expected=ScopesEngine::analyzeLinear(frame.image());FullScopesCache hist;ScopeRequest request{prepared,plan,1,false,{},AnalysisDomain::Working};QVERIFY(analysisIntegrationSameHistogram(hist.analyze(request),expected));
+        ScopePlotCache plots;for(const auto &mode:QStringList{"waveform","parade","vectorscope"}){ScopePlotCounts counts(mode);QVERIFY(counts.addLinear(frame.image()));const auto result=plots.render({prepared,plan,{},mode,1,false,AnalysisDomain::Working});QVERIFY2(result.error.isEmpty(),qPrintable(result.error));QCOMPARE(result.image,counts.image());QCOMPARE(result.pixels,expected.pixelCount);}
+        auto tampered=plan;tampered.data[ProcessingPlan::Wb0].x+=1;QVERIFY(!BrushAnalysisRequest::createPrepared(prepared,tampered));request.plan=tampered;const auto refused=hist.analyze(request);QVERIFY(!refused.pixelCount);QVERIFY(!refused.error.isEmpty());
+    }
+    void linearScopePlotsCountFloatLevelsAndUnclippedColorDifferences() {
+        QImage frame(4,2,QImage::Format_RGBA32FPx4);frame.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+        const std::array<std::array<float,4>,4> pixels{{{-.25f,-.25f,-.25f,0},{.125f,.125f,.125f,.1234567f},{1,1,1,1},{2,.25f,-1,.5f}}};
+        for(int y=0;y<2;++y)std::memcpy(frame.scanLine(y),pixels.data(),sizeof(pixels));
+        const auto original=FloatFrameFingerprint::capture(frame);
+        for(const auto &mode:QStringList{"waveform","parade","vectorscope"}) {
+            ScopePlotCounts counts(mode);QVERIFY(counts.addLinear(frame));QCOMPARE(counts.pixels,quint64(8));
+            QVector<quint64> expected(counts.bins.size());
+            for(int x=0;x<4;++x) {
+                const double r=pixels[x][0],g=pixels[x][1],b=pixels[x][2],Y=(2126*r+7152*g+722*b)/10000;
+                const int column=x*85;const auto level=[](double v){return std::min(1023,int(std::clamp(v,0.,1.)*1024));};
+                if(mode=="waveform")expected[(1023-level(Y))*256+column]+=2;
+                else if(mode=="parade")for(int c=0;c<3;++c)expected[(1023-level(pixels[x][c]))*768+c*256+column]+=2;
+                else {const int cx=int(std::lround(std::clamp(.5+(b-Y)/1.8556,0.,1.)*511)),cy=int(std::lround(std::clamp(.5-(r-Y)/1.5748,0.,1.)*511));expected[cy*512+cx]+=2;}
+            }
+            QCOMPARE(counts.bins,expected);QVERIFY(!counts.image().isNull());
+            auto invalid=frame.copy();reinterpret_cast<float *>(invalid.scanLine(1))[15]=std::numeric_limits<float>::quiet_NaN();
+            QVERIFY(!counts.addLinear(invalid));QCOMPARE(counts.pixels,quint64(0));QVERIFY(counts.image().isNull());
+            QVERIFY(!counts.addLinear(frame.convertToFormat(QImage::Format_RGBA64)));
+            QVERIFY(!counts.addLinear(frame,std::make_shared<std::atomic_bool>(true)));
+        }
+        QCOMPARE(FloatFrameFingerprint::capture(frame),original);
+    }
+    void analysisDomainKeysSeparateStagesAndSourceIgnoresEditAndOutputChanges() {
+        const auto f=analysisIntegrationFixture();ScopeRequest source{f.source,f.plan,1,true,f.geometry,AnalysisDomain::Source};
+        auto working=source;working.domain=AnalysisDomain::Working;auto display=source;display.domain=AnalysisDomain::Display;
+        const auto key=StageGraph::fullScopesKey(source);QVERIFY(!key.isEmpty());QVERIFY(key!=StageGraph::fullScopesKey(working));QVERIFY(key!=StageGraph::fullScopesKey(display));
+        auto changed=source;auto state=f.plan.state;state.exposure=1;state.masterCurve[1]=.2;state.grainAmount=40;state.brushMasks={};
+        changed.plan=ProcessingPlan::compile(state,f.plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0);changed.revision=55;
+        QCOMPARE(StageGraph::fullScopesKey(changed),key);
+        changed.domain=AnalysisDomain::Working;QVERIFY(StageGraph::fullScopesKey(changed)!=StageGraph::fullScopesKey(working));
+        changed=source;changed.geometry.flipVertical=true;QVERIFY(StageGraph::fullScopesKey(changed)!=key);
+        changed=source;changed.plan.encoding=ImagePipeline::InputEncoding::SRgb;QVERIFY(StageGraph::fullScopesKey(changed)!=key);
+        changed=source;changed.image.detach();QVERIFY(StageGraph::fullScopesKey(changed)!=key);
+        changed=source;changed.domain=static_cast<AnalysisDomain>(99);QVERIFY(StageGraph::fullScopesKey(changed).isEmpty());
+        ScopePlotRequest plot{f.source,f.plan,f.geometry,"waveform",1,true,AnalysisDomain::Source};const auto plotKey=StageGraph::scopePlotsKey(plot);
+        plot.mode="vectorscope";plot.revision=8;QCOMPARE(StageGraph::scopePlotsKey(plot),plotKey);plot.domain=AnalysisDomain::Display;QVERIFY(StageGraph::scopePlotsKey(plot)!=plotKey);
+    }
+    void linearHistogramAndPlotCachesKeepDomainsDistinctAndEncodedFramesUntouched() {
+        const auto f=analysisIntegrationFixture();auto frames=std::make_shared<AnalysisFrameCache>(8*1024*1024);FullScopesCache hist(4*1024*1024,frames);ScopePlotCache plots(16*1024*1024,frames);
+        ScopeRequest request{f.source,f.plan,1,true,f.geometry,AnalysisDomain::Display};QVERIFY(analysisIntegrationSameHistogram(hist.analyze(request),f.histogram));
+        const auto encoded=frames->snapshot();const auto corrected=f.geometry.apply(f.source);QString error;
+        auto admitted=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error);QVERIFY2(admitted,qPrintable(error));auto lease=admitted->render({},&error);QVERIFY2(lease,qPrintable(error));
+        const auto working=lease.sharedImage();const auto source=ImagePipeline::analysisRegion(corrected,f.plan,corrected.rect(),AnalysisDomain::Source,{},&error);QVERIFY2(!source.isNull(),qPrintable(error));
+        for(const auto domain:{AnalysisDomain::Source,AnalysisDomain::Working}) {
+            request.domain=domain;const auto &frame=domain==AnalysisDomain::Source?source:working;
+            const auto result=hist.analyze(request);QVERIFY2(result.error.isEmpty(),qPrintable(result.error));QVERIFY(analysisIntegrationSameHistogram(result,ScopesEngine::analyzeLinear(frame)));
+            request.revision+=1;QVERIFY(analysisIntegrationSameHistogram(hist.analyze(request),result));
+            for(const auto &mode:QStringList{"waveform","parade","vectorscope"}) {ScopePlotCounts expected(mode);QVERIFY(expected.addLinear(frame));const auto result=plots.render({f.source,f.plan,f.geometry,mode,1,true,domain});QVERIFY2(result.error.isEmpty(),qPrintable(result.error));QCOMPARE(result.image,expected.image());QCOMPARE(result.pixels,expected.pixels);}
+        }
+        QCOMPARE(hist.snapshot()["entries"].toInteger(),qint64(3));QCOMPARE(hist.snapshot()["hits"].toInteger(),qint64(2));
+        QCOMPARE(plots.snapshot()["entries"].toInteger(),qint64(2));QCOMPARE(plots.snapshot()["hits"].toInteger(),qint64(4));
+        QCOMPARE(frames->snapshot(),encoded);request.domain=AnalysisDomain::Display;QVERIFY(analysisIntegrationSameHistogram(hist.analyze(request),f.histogram));
+    }
+    void linearCachesRejectPartialAndBudgetFailuresWithoutPublishing() {
+        const auto f=analysisIntegrationFixture();auto frames=std::make_shared<AnalysisFrameCache>();auto budget=std::make_shared<BrushRenderBudget>(0);FullScopesCache hist(4*1024*1024,frames,budget);ScopePlotCache plots(16*1024*1024,frames,budget);
+        const ScopeRequest working{f.source,f.plan,1,true,f.geometry,AnalysisDomain::Working};const ScopePlotRequest plot{f.source,f.plan,f.geometry,"waveform",1,true,AnalysisDomain::Working};
+        const auto failed=hist.analyze(working);QVERIFY(!failed.pixelCount);QVERIFY(failed.retryableBudget);QVERIFY(!failed.error.isEmpty());const auto badPlot=plots.render(plot);QVERIFY(badPlot.image.isNull());QVERIFY(badPlot.retryableBudget);QCOMPARE(budget->snapshot().charged,qint64(0));
+        auto source=working;source.domain=AnalysisDomain::Source;QVERIFY(hist.analyze(source).pixelCount);auto sourcePlot=plot;sourcePlot.domain=AnalysisDomain::Source;QVERIFY(!plots.render(sourcePlot).image.isNull());
+        const QJsonValue entries=hist.snapshot().value("entries"),plotEntries=plots.snapshot().value("entries");const auto frameState=frames->snapshot();
+        const auto cancelled=std::make_shared<std::atomic_bool>(true);QVERIFY(!hist.analyze(source,cancelled).pixelCount);QVERIFY(plots.render(sourcePlot,cancelled).image.isNull());
+        source.image=QImage(3,257,QImage::Format_RGBA32FPx4);source.image.fill(QColor::fromRgbF(.2,.2,.2));reinterpret_cast<float *>(source.image.scanLine(256))[8]=std::numeric_limits<float>::infinity();source.geometry={};sourcePlot.source=source.image;sourcePlot.geometry={};
+        QVERIFY(!hist.analyze(source).pixelCount);QVERIFY(plots.render(sourcePlot).image.isNull());
+        QCOMPARE(hist.snapshot()["entries"],entries);QCOMPARE(plots.snapshot()["entries"],plotEntries);QCOMPARE(frames->snapshot(),frameState);
+        auto invalid=working;invalid.domain=static_cast<AnalysisDomain>(99);QVERIFY(!hist.analyze(invalid).pixelCount);
+    }
+    void linearHistogramCountsExactBinsRangesAndHiddenChannelsWithoutIntegerConversion() {
+        QImage frame(8,2,QImage::Format_RGBA32FPx4);frame.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));const std::array<float,8> values{-.25f,0.f,1.f/1024,.125f,.5f,.75f,1.f,2.f};
+        for(int y=0;y<2;++y)for(int x=0;x<8;++x){auto *p=reinterpret_cast<float *>(frame.scanLine(y))+4*x;p[0]=p[1]=p[2]=values[std::size_t(x)];p[3]=(x+y)%2?0.f:.1234567f;}
+        const auto before=FloatFrameFingerprint::capture(frame);const auto actual=ScopesEngine::analyzeLinear(frame);QCOMPARE(actual.pixelCount,quint64(16));QVERIFY(actual.error.isEmpty());QCOMPARE(actual.shadowClipPercent,25.);QCOMPARE(actual.highlightClipPercent,25.);
+        for(const auto *channel:{&actual.red,&actual.green,&actual.blue,&actual.luma}){QCOMPARE(channel->size(),1024);quint64 sum=0;for(int i=0;i<1024;++i){const quint64 expected=i==0||i==1023?4:i==1||i==128||i==512||i==768?2:0;QCOMPARE((*channel)[i].toULongLong(),expected);sum+=(*channel)[i].toULongLong();}QCOMPARE(sum,quint64(16));}
+        const auto rebinned=ScopesEngine::analyzeLinear(frame,256);QCOMPARE(rebinned.red.size(),256);QCOMPARE(rebinned.red[0].toULongLong(),quint64(6));QCOMPARE(rebinned.red[32].toULongLong(),quint64(2));QCOMPARE(rebinned.red[255].toULongLong(),quint64(4));QCOMPARE(FloatFrameFingerprint::capture(frame),before);
+        QImage huge(1,1,QImage::Format_RGBA32FPx4);huge.setColorSpace(frame.colorSpace());auto *p=reinterpret_cast<float *>(huge.bits());p[0]=p[1]=p[2]=std::numeric_limits<float>::max();p[3]=1;const auto bounded=ScopesEngine::analyzeLinear(huge);QCOMPARE(bounded.pixelCount,quint64(1));QCOMPARE(bounded.luma[1023].toULongLong(),quint64(1));
+    }
+    void linearHistogramsRefusePartialInvalidFramesAndWorkingStripsMatchWholeCounts() {
+        QImage frame(4,129,QImage::Format_RGBA32FPx4);frame.fill(QColor::fromRgbF(.2,.3,.4,1));frame.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+        for(const auto value:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()})for(int channel=0;channel<4;++channel){auto invalid=frame.copy();reinterpret_cast<float *>(invalid.scanLine(128))[12+channel]=value;const auto result=ScopesEngine::analyzeLinear(invalid);QCOMPARE(result.pixelCount,quint64(0));QVERIFY(result.red.isEmpty());QVERIFY(!result.error.isEmpty());}
+        auto wrong=frame.copy();wrong.setColorSpace(QColorSpace(QColorSpace::SRgb));QCOMPARE(ScopesEngine::analyzeLinear(wrong).pixelCount,quint64(0));QCOMPARE(ScopesEngine::analyzeLinear(frame.convertToFormat(QImage::Format_RGBA64)).pixelCount,quint64(0));const auto cancelled=std::make_shared<std::atomic_bool>(true);QCOMPARE(ScopesEngine::analyzeLinear(frame,1024,cancelled).pixelCount,quint64(0));
+        const auto f=analysisIntegrationFixture();QString error;auto whole=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error);QVERIFY2(whole,qPrintable(error));auto image=whole->render({},&error);QVERIFY2(image,qPrintable(error));const auto reference=ScopesEngine::analyzeLinear(image.image());
+        auto strips=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Stripes128,{},&error);QVERIFY2(strips,qPrintable(error));const auto actual=ScopesEngine::analyzeWorking(*strips,{},&error);QVERIFY2(actual.error.isEmpty(),qPrintable(error));QCOMPARE(actual.pixelCount,reference.pixelCount);QCOMPARE(actual.red,reference.red);QCOMPARE(actual.green,reference.green);QCOMPARE(actual.blue,reference.blue);QCOMPARE(actual.luma,reference.luma);QCOMPARE(actual.shadowClipPercent,reference.shadowClipPercent);QCOMPARE(actual.highlightClipPercent,reference.highlightClipPercent);QCOMPARE(ScopesEngine::analyzeWorking(*strips).pixelCount,quint64(0));
+    }
+    void admittedWorkingBrushMatchesTheExistingPreOutputDiagnosticBoundary() {
+        auto f=analysisIntegrationFixture();auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        // The existing diagnostic renderer deliberately refuses enabled brushes.
+        // Keep a real admission, with a zero-EV layer, and compare its exact
+        // pre-output boundary to the unchanged no-brush diagnostic oracle.
+        auto state=f.plan.state;state.brushMasks.layers.front().exposureEv=0;
+        f.plan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);
+        state.brushMasks={};const auto diagnosticPlan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);
+        auto request=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(request,qPrintable(error));
+        const auto cost=request->reservedBytes();auto output=request->render({},&error);QVERIFY2(output,qPrintable(error));QCOMPARE(output.image().format(),QImage::Format_RGBA32FPx4);QCOMPARE(output.image().colorSpace(),QColorSpace(QColorSpace::SRgbLinear));
+        const auto corrected=f.geometry.apply(f.source);const auto original=ImagePipeline::diagnoseWithPlan(corrected,diagnosticPlan);QVERIFY(!original.image.isNull());QCOMPARE(output.image().size(),corrected.size());
+        ColorStageDiagnostics observed(output.image().width(),output.image().height(),f.plan);
+        for(int y=0;y<output.image().height();++y){const auto *p=reinterpret_cast<const float *>(output.image().constScanLine(y));const auto *source=reinterpret_cast<const float *>(corrected.constScanLine(y));for(int x=0;x<output.image().width();++x){QCOMPARE(p[4*x+3],source[4*x+3]);for(int i=0;i<int(ColorStage::Count);++i)observed.observe(static_cast<ColorStage>(i),x,p[4*x],p[4*x+1],p[4*x+2]);}observed.finishRow();}
+        const auto find=[](const QJsonObject &stages){for(const auto &v:stages["entries"].toArray()){const auto row=v.toObject();if(row["id"]=="perceptual_look")return row;}return QJsonObject{};};
+        const auto actual=find(observed.result()),expected=find(original.stages);QVERIFY(!expected.isEmpty());QCOMPARE(actual,expected);
+        QVERIFY(!request->render());auto view=output.sharedImage();QVERIFY(!view.isNull());const auto bytes=output.image().sizeInBytes();QVERIFY(cost>bytes);request.reset();QCOMPARE(budget->snapshot().charged,bytes);output={};QCOMPARE(budget->snapshot().charged,bytes);view={};QCOMPARE(budget->snapshot().charged,qint64(0));
+    }
+    void admittedWorkingBrushStripsMatchWholeAndChargeTheLargerFloatOutputs() {
+        const auto f=analysisIntegrationFixture();auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        auto display=BrushRenderRequest::createOriginal(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(display,qPrintable(error));const auto displayCost=display->reservedBytes();display.reset();
+        auto whole=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(whole,qPrintable(error));const auto floatCost=whole->reservedBytes();QVERIFY(floatCost>displayCost);auto reference=whole->render({},&error);QVERIFY2(reference,qPrintable(error));
+        auto strips=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Stripes128,{},&error,budget);QVERIFY2(strips,qPrintable(error));QList<QImage> retained;int next=0;
+        QVERIFY2(strips->visitStrips([&](const BrushImageLease &lease,int y){if(y!=next||lease.image().format()!=QImage::Format_RGBA32FPx4||lease.image().width()!=reference.image().width())return false;for(int row=0;row<lease.image().height();++row){const auto *actual=reinterpret_cast<const float *>(lease.image().constScanLine(row));const auto *expected=reinterpret_cast<const float *>(reference.image().constScanLine(y+row));for(int i=0;i<lease.image().width()*4;++i)if(std::abs(actual[i]-expected[i])>.00001f)return false;}retained.append(lease.sharedImage());next+=lease.image().height();return !retained.last().isNull();},{},&error),qPrintable(error));
+        QCOMPARE(next,reference.image().height());QVERIFY(retained.size()>=2);QVERIFY(!strips->visitStrips([](const BrushImageLease &,int){return true;}));
+        strips.reset();whole.reset();reference={};qint64 retainedBytes=0;for(const auto &image:retained)retainedBytes+=image.sizeInBytes();QCOMPARE(budget->snapshot().charged,retainedBytes);retained.clear();QCOMPARE(budget->snapshot().charged,qint64(0));
+        auto small=std::make_shared<BrushRenderBudget>(floatCost-1);BrushAdmissionFailure failure=BrushAdmissionFailure::None;QVERIFY(!BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,small,&failure));QCOMPARE(failure,BrushAdmissionFailure::BudgetUnavailable);QCOMPARE(small->snapshot().charged,qint64(0));
+    }
+    void admittedWorkingBrushKeepsItsSnapshotAndReleasesCancelledPartialOutput() {
+        auto f=analysisIntegrationFixture();const auto original=FloatFrameFingerprint::capture(f.source);QString error;auto budget=std::make_shared<BrushRenderBudget>();auto token=std::make_shared<std::atomic_bool>(false);
+        auto request=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Stripes128,token,&error,budget);QVERIFY2(request,qPrintable(error));QImage retained;int callbacks=0;
+        QVERIFY(!request->visitStrips([&](const BrushImageLease &lease,int){++callbacks;retained=lease.sharedImage();token->store(true,std::memory_order_relaxed);return false;},token,&error));QCOMPARE(callbacks,1);QVERIFY(!retained.isNull());request.reset();QCOMPARE(budget->snapshot().charged,retained.sizeInBytes());retained={};QCOMPARE(budget->snapshot().charged,qint64(0));QCOMPARE(FloatFrameFingerprint::capture(f.source),original);
+        BrushAdmissionFailure failure=BrushAdmissionFailure::None;QVERIFY(!BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,token,&error,budget,&failure));QCOMPARE(failure,BrushAdmissionFailure::Cancelled);QCOMPARE(budget->snapshot().charged,qint64(0));
+        auto expected=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);auto captured=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY(expected);QVERIFY(captured);auto reference=expected->render();QVERIFY(reference);reinterpret_cast<float *>(f.source.bits())[0]=.9f;auto unchanged=captured->render();QVERIFY(unchanged);QCOMPARE(FloatFrameFingerprint::capture(unchanged.image()),FloatFrameFingerprint::capture(reference.image()));
+    }
+    void sourceAnalysisPreservesLinearHeadroomHiddenRgbAndIgnoresEdits() {
+        QImage source(4,2,QImage::Format_RGBA32FPx4);source.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+        for(int y=0;y<2;++y)for(int x=0;x<4;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;const float value=x==0?1.4f:x==1?-.2f:.25f;p[0]=p[1]=p[2]=value;p[3]=x==0?0.f:x==1?.0001f:.7f;}
+        const auto before=FloatFrameFingerprint::capture(source);AdjustmentState neutral;neutral.look.mode="off";neutral.look.code.clear();
+        const auto plan=ProcessingPlan::compile(neutral,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
+        QString error;const auto baseline=ImagePipeline::analysisRegion(source,plan,source.rect(),AnalysisDomain::Source,{},&error);QVERIFY2(!baseline.isNull(),qPrintable(error));QCOMPARE(baseline.format(),QImage::Format_RGBA32FPx4);QCOMPARE(baseline.colorSpace(),QColorSpace(QColorSpace::SRgbLinear));
+        auto edited=neutral;edited.exposure=2;edited.temperature=30;edited.tint=-20;edited.grainAmount=40;edited.linearMaskEnabled=true;edited.linearMaskExposure=1;edited.textureAmount=20;edited.denoiseLuma=30;
+        const auto altered=ProcessingPlan::compile(edited,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,false,0);
+        const auto result=ImagePipeline::analysisRegion(source,altered,source.rect(),AnalysisDomain::Source);QCOMPARE(FloatFrameFingerprint::capture(result),FloatFrameFingerprint::capture(baseline));
+        for(int y=0;y<2;++y)for(int x=0;x<4;++x){const auto *p=reinterpret_cast<const float *>(baseline.constScanLine(y))+4*x;const auto *in=reinterpret_cast<const float *>(source.constScanLine(y))+4*x;QCOMPARE(p[3],in[3]);for(int c=0;c<3;++c)QVERIFY(std::abs(p[c]-in[c])<.0002f);}
+        QVERIFY(reinterpret_cast<const float *>(baseline.constScanLine(0))[0]>1);QVERIFY(reinterpret_cast<const float *>(baseline.constScanLine(0))[4]<0);QCOMPARE(FloatFrameFingerprint::capture(source),before);
+    }
+    void workingAnalysisCapturesPreOutputExposureWithoutCurvesGrainOrIntegerAlpha() {
+        QImage source(9,7,QImage::Format_RGBA32FPx4);for(int y=0;y<7;++y)for(int x=0;x<9;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=p[1]=p[2]=.6f+x*.002f;p[3]=(x+y)%3?.1234567f:0.f;}
+        AdjustmentState state;state.look.mode="off";state.look.code.clear();state.exposure=1;
+        const auto make=[&](const AdjustmentState &s){return ProcessingPlan::compile(s,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);};
+        const auto working=ImagePipeline::analysisRegion(source,make(state),source.rect(),AnalysisDomain::Working);QVERIFY(!working.isNull());QCOMPARE(working.format(),QImage::Format_RGBA32FPx4);
+        auto outputEdits=state;outputEdits.masterCurve={0,.12,.4,.75,1};outputEdits.grainAmount=35;
+        const auto unchanged=ImagePipeline::analysisRegion(source,make(outputEdits),source.rect(),AnalysisDomain::Working);QCOMPARE(FloatFrameFingerprint::capture(unchanged),FloatFrameFingerprint::capture(working));
+        const auto displayed=ImagePipeline::analysisRegion(source,make(outputEdits),source.rect(),AnalysisDomain::Display),original=ImagePipeline::processRegion(source,make(outputEdits),source.rect());QVERIFY(!displayed.isNull());QCOMPARE(displayed,original);QCOMPARE(displayed.colorSpace(),original.colorSpace());
+        for(int y=0;y<7;++y)for(int x=0;x<9;++x){const auto *p=reinterpret_cast<const float *>(working.constScanLine(y))+4*x;const auto *in=reinterpret_cast<const float *>(source.constScanLine(y))+4*x;QCOMPARE(p[3],in[3]);for(int c=0;c<3;++c)QVERIFY(std::abs(p[c]-2*in[c])<.0003f);}
+    }
+    void workingAnalysisSpatialHalosAndCoordinatesMatchWholeFrame() {
+        QImage source(43,35,QImage::Format_RGBA64);source.setColorSpace(QColorSpace(QColorSpace::SRgb));for(int y=0;y<35;++y)for(int x=0;x<43;++x)reinterpret_cast<QRgba64 *>(source.scanLine(y))[x]=QRgba64::fromRgba64(1000+(x*1337+y*911)%40000,2000+(y*1277+x*213)%43000,9000+(x*173+y*217)%35000,(x+y)%4?43000:0);
+        AdjustmentState state;state.look.mode="off";state.look.code.clear();state.exposure=.25;state.textureAmount=17;state.clarityAmount=12;state.denoiseLuma=20;state.denoiseChroma=15;state.dehazeAmount=11;state.linearMaskEnabled=true;state.linearMaskExposure=.4;
+        const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace::SRgb,false,0);const auto whole=ImagePipeline::analysisRegion(source,plan,source.rect(),AnalysisDomain::Working);QVERIFY(!whole.isNull());
+        for(const auto &roi:QList<QRect>{{0,0,43,9},{0,9,43,17},{0,26,43,9},{7,5,19,23}}){const auto piece=ImagePipeline::analysisRegion(source,plan,roi,AnalysisDomain::Working);QCOMPARE(piece.size(),roi.size());for(int y=0;y<roi.height();++y){const auto *p=reinterpret_cast<const float *>(piece.constScanLine(y));const auto *expected=reinterpret_cast<const float *>(whole.constScanLine(roi.y()+y))+4*roi.x();for(int x=0;x<roi.width()*4;++x)QVERIFY2(std::abs(p[x]-expected[x])<.00001f,"Working-domain ROI differs from complete spatial frame");}}
+    }
+    void analysisDomainsRejectInvalidSourceCancellationAndUnadmittedBrushOutput() {
+        AnalysisDomain value=AnalysisDomain::Working;for(const auto &key:QStringList{"","Source"," display","unknown"}){QVERIFY(!decodeAnalysisDomain(key,&value));QCOMPARE(value,AnalysisDomain::Working);}for(const auto domain:{AnalysisDomain::Source,AnalysisDomain::Working,AnalysisDomain::Display}){QVERIFY(decodeAnalysisDomain(analysisDomainKey(domain),&value));QCOMPARE(value,domain);}QVERIFY(!decodeAnalysisDomain("source",nullptr));
+        QImage source(4,3,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.3,.3,.3,1));AdjustmentState state;state.look.mode="off";auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);QString error;
+        const auto token=std::make_shared<std::atomic_bool>(true);for(const auto domain:{AnalysisDomain::Source,AnalysisDomain::Working}){QVERIFY(ImagePipeline::analysisRegion(source,plan,source.rect(),domain,token,&error).isNull());QVERIFY(!error.isEmpty());QVERIFY(ImagePipeline::analysisRegion(source,plan,QRect(99,99,2,2),domain).isNull());}
+        for(const auto v:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),ImagePipeline::MaxLinearInputMagnitude*2}){auto invalid=source.copy();reinterpret_cast<float *>(invalid.scanLine(0))[0]=v;for(const auto domain:{AnalysisDomain::Source,AnalysisDomain::Working})QVERIFY(ImagePipeline::analysisRegion(invalid,plan,invalid.rect(),domain).isNull());}
+        QVERIFY(ImagePipeline::analysisRegion(source,plan,source.rect(),static_cast<AnalysisDomain>(99),{},&error).isNull());QVERIFY(!error.isEmpty());
+        BrushMaskDocument::Layer layer{"admission",true,1,{}};plan.state.brushMasks.layers.push_back(layer);QVERIFY(ImagePipeline::analysisRegion(source,plan,source.rect(),AnalysisDomain::Working,{},&error).isNull());QVERIFY(error.contains("admission"));QVERIFY(!ImagePipeline::analysisRegion(source,plan,source.rect(),AnalysisDomain::Source).isNull());
+    }
     void floatSceneCacheRoundTripPreservesEveryFloatBitAndSourceIdentity() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         SourceCache cache(4*1024*1024,dir.path());

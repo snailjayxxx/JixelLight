@@ -7,6 +7,7 @@
 #include "core/async/LatestJob.h"
 #include "core/pipeline/SpatialDehaze.h"
 #include "core/pipeline/PointColor.h"
+#include "core/pipeline/AnalysisDomain.h"
 
 struct ProcessingPlan;
 class BrushRenderRequest;
@@ -42,6 +43,10 @@ public:
     // Input color-mask selection ignores all WB/color/exposure/output edits.
     static std::optional<PointColor::Lab> sampleMaskColor(const QImage &,const ProcessingPlan &,const QPoint &,const CancelToken &cancel = {});
     static QImage processRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,const CancelToken &cancel = {});
+    // Analysis-only linear FP32 pixels. Display delegates to the original U16
+    // renderer. Geometry is supplied by the caller; no monitor ICC is applied.
+    static QImage analysisRegion(const QImage &source,const ProcessingPlan &plan,const QRect &region,
+                                AnalysisDomain domain,const CancelToken &cancel={},QString *error=nullptr);
     static SpatialDehaze::Airlight estimateDehazeAirlight(const QImage &,const ProcessingPlan &,const CancelToken &cancel = {});
     // Resolve once on the whole corrected frame before ROI/tile extraction.
     static bool resolveDehazeAirlight(const QImage &,ProcessingPlan &,const CancelToken &cancel = {});
@@ -64,4 +69,6 @@ private:
                                       int stripeHeight,const CancelToken &cancel,QString *error);
     static QImage renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,
                                      const CancelToken &cancel,bool parallel);
+    static QImage renderAdmittedWorking(const QImage &source,const ProcessingPlan &plan,const QRect &region,
+                                       const CancelToken &cancel,bool parallel);
 };

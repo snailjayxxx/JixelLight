@@ -147,7 +147,7 @@ bool samePreparedPlan(const ProcessingPlan &expected,const ProcessingPlan &provi
     return a.toJson()==b.toJson();
 }
 qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frameSize,
-                     const ProcessingPlan &plan,BrushRenderRequest::Layout layout) {
+                     const ProcessingPlan &plan,BrushRenderRequest::Layout layout,bool workingAnalysis=false) {
     // All dimensions are bounded before this arithmetic: <=32 Mi pixels and
     // 16 bytes/channel group; qint64 products cannot approach overflow.
     const qint64 sourceBytes=source.sizeInBytes();
@@ -175,10 +175,12 @@ qint64 estimateBytes(const QImage &source,const QRect &region,const QSize &frame
         const auto copy=region==QRect(QPoint{},frameSize)?qint64(0):expandedPixels*(source.format()==QImage::Format_RGBA32FPx4?16:8);
         const auto color=2*sourceBytes+copy+(24+detailExtra+spatialExtra)*expandedPixels+8*pixels;
         pixelsAndWork=std::max({3*sourceBytes,color,sourceBytes+(24+detailExtra)*pixels});
+        if(workingAnalysis)pixelsAndWork+=8*(expandedPixels+pixels);
     } else {
         const qint64 stripePixels=qint64(expanded.width())*std::min(expanded.height(),128+2*halo);
         // Max sum of retained center outputs=8P; conservative codec reserve=16P.
         pixelsAndWork=3*sourceBytes+24*pixels+(40+detailExtra+spatialExtra)*stripePixels;
+        if(workingAnalysis)pixelsAndWork+=8*(stripePixels+pixels);
     }
     if(retainedLut>std::numeric_limits<qint64>::max()-fixed-pixelsAndWork)return -1;
     return pixelsAndWork+fixed+retainedLut;
@@ -246,6 +248,10 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &sou
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
     Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    return createPreparedDomain(source,plan,layout,cancel,error,std::move(budget),failure,false);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPreparedDomain(const QImage &source,const ProcessingPlan &plan,
+    Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure,bool workingAnalysis) {
     if(error)error->clear();
     if(failure)*failure=BrushAdmissionFailure::Invalid;
     if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
@@ -253,11 +259,16 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QIm
     Spec spec;spec.sourceStage=SourceStage::Prepared;spec.layout=layout;
     spec.encoding=plan.encoding;spec.output=plan.output;spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
     const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
-    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan,failure);
+    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan,failure,workingAnalysis);
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createOriginal(const QImage &source,const ProcessingPlan &plan,
     const GeometryState &geometry,Layout layout,const CancelToken &cancel,QString *error,
     std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    return createOriginalDomain(source,plan,geometry,layout,cancel,error,std::move(budget),failure,false);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createOriginalDomain(const QImage &source,const ProcessingPlan &plan,
+    const GeometryState &geometry,Layout layout,const CancelToken &cancel,QString *error,
+    std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure,bool workingAnalysis) {
     if(failure)*failure=BrushAdmissionFailure::Invalid;
     if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
     if(!validPreparedPlan(plan,error))return {};
@@ -266,12 +277,12 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createOriginal(const QIm
         Spec spec;spec.layout=layout;spec.encoding=plan.encoding;spec.output=plan.output;
         spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
         const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
-        return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr,failure);
+        return createImpl(source,state,spec,cancel,error,std::move(budget),nullptr,failure,workingAnalysis);
     }catch(...){fail(error,"Cannot capture original brush request");return {};}
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage &source,const AdjustmentState &state,
     const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
-    const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure) {
+    const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure,bool workingAnalysis) {
     if(error)error->clear();
     if(failure)*failure=BrushAdmissionFailure::Invalid;
     const auto refuse=[&](const QString &message)->std::unique_ptr<BrushRenderRequest>{
@@ -322,7 +333,7 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
             plan.data[ProcessingPlan::Texture]=texture;
         }
         for(const auto &v:plan.data)for(const auto x:{v.x,v.y,v.z,v.w})if(!std::isfinite(x))return refuse("Non-finite admitted brush plan");
-        const auto bytes=estimateBytes(source,region,size,plan,spec.layout);
+        const auto bytes=estimateBytes(source,region,size,plan,spec.layout,workingAnalysis);
         if(bytes<=0)return refuse("Invalid admitted brush memory estimate");
         if(!budget)budget=BrushRenderBudget::sharedDefault();
         auto reservation=budget->reserve(bytes);
@@ -340,7 +351,7 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createImpl(const QImage 
         if(cancelled(cancel))return refuse("Cancelled");
         auto request=std::unique_ptr<BrushRenderRequest>(new BrushRenderRequest);
         request->m_source=std::move(frozenSource);request->m_plan=std::move(plan);request->m_geometry=geometry;request->m_spec=spec;
-        request->m_frameSize=size;request->m_region=region;request->m_reservedBytes=bytes;
+        request->m_frameSize=size;request->m_region=region;request->m_reservedBytes=bytes;request->m_workingAnalysis=workingAnalysis;
         request->m_budget=std::move(budget);request->m_reservation=std::move(reservation);
         PerformanceRecorder::count("brush_admitted_requests");
         PerformanceRecorder::value("brush_admitted_reserved_bytes",bytes);
@@ -368,7 +379,8 @@ BrushImageLease BrushRenderRequest::render(const CancelToken &cancel,QString *er
         auto plan=m_plan;
         if(plan.dehazeActive()&&plan.data[ProcessingPlan::DehazeAirlight].w==0&&m_spec.sourceStage==SourceStage::Original)
             plan.setDehazeAirlight(ImagePipeline::estimateDehazeAirlight(source,plan,cancel));
-        auto rendered=ImagePipeline::renderAdmittedBrush(source,plan,m_region,cancel,m_spec.parallel);
+        auto rendered=m_workingAnalysis?ImagePipeline::renderAdmittedWorking(source,plan,m_region,cancel,m_spec.parallel)
+            :ImagePipeline::renderAdmittedBrush(source,plan,m_region,cancel,m_spec.parallel);
         if(rendered.isNull()||cancelled(cancel)){fail(error,cancelled(cancel)?"Cancelled":"Admitted brush rendering failed");return {};}
         BrushImageLease lease;
         lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(rendered.sizeInBytes());
@@ -389,7 +401,8 @@ bool BrushRenderRequest::visitStrips(const StripConsumer &consumer,const CancelT
             if(cancelled(cancel))return fail(error,"Cancelled");
             const QRect region(m_region.x(),y,m_region.width(),std::min(128,m_region.bottom()-y+1));
             BrushImageLease lease;
-            lease.m_image=ImagePipeline::renderAdmittedBrush(source,plan,region,cancel,m_spec.parallel);
+            lease.m_image=m_workingAnalysis?ImagePipeline::renderAdmittedWorking(source,plan,region,cancel,m_spec.parallel)
+                :ImagePipeline::renderAdmittedBrush(source,plan,region,cancel,m_spec.parallel);
             if(lease.m_image.isNull())return fail(error,cancelled(cancel)?"Cancelled":"Admitted strip rendering failed");
             lease.m_reservation=std::static_pointer_cast<const BrushRenderBudget::Reservation>(m_reservation)->split(lease.m_image.sizeInBytes());
             if(!lease.m_reservation)return fail(error,"Cannot retain admitted strip payload");
@@ -407,4 +420,25 @@ QImage BrushRenderRequest::retainFloatUpload(QImage image) {
         if(!retained.isNull())m_uploadRetained=true;
         return retained;
     }catch(...){return {};}
+}
+
+std::unique_ptr<BrushAnalysisRequest> BrushAnalysisRequest::create(const QImage &source,const ProcessingPlan &plan,
+    const GeometryState &geometry,BrushRenderRequest::Layout layout,const CancelToken &cancel,QString *error,
+    std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    auto owned=BrushRenderRequest::createOriginalDomain(source,plan,geometry,layout,cancel,error,std::move(budget),failure,true);
+    if(!owned)return {};
+    try {
+        auto result=std::unique_ptr<BrushAnalysisRequest>(new BrushAnalysisRequest);
+        result->m_request=std::move(owned);return result;
+    }catch(...) {
+        if(failure)*failure=BrushAdmissionFailure::Invalid;
+        fail(error,"Cannot allocate working analysis request");return {};
+    }
+}
+std::unique_ptr<BrushAnalysisRequest> BrushAnalysisRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
+    BrushRenderRequest::Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    auto owned=BrushRenderRequest::createPreparedDomain(source,plan,layout,cancel,error,std::move(budget),failure,true);
+    if(!owned)return {};
+    try {auto result=std::unique_ptr<BrushAnalysisRequest>(new BrushAnalysisRequest);result->m_request=std::move(owned);return result;}
+    catch(...){if(failure)*failure=BrushAdmissionFailure::Invalid;fail(error,"Cannot allocate prepared working analysis request");return {};}
 }

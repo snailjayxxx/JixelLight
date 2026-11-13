@@ -35,5 +35,6 @@ struct ScopeRequest {
     quint64 revision = 0;
     bool fullResolution = false;
     GeometryState geometry;
+    AnalysisDomain domain = AnalysisDomain::Display;
 };
 PreparedPreview preparePreview(const PrepareRequest &request, const CancelToken &cancel);

@@ -554,7 +554,7 @@ inline Vec3 applyGrain(Vec3 v,const ColorKernel &kernel,int x,int y) {
     const float delta=FilmGrain::sample(gx,gy)*grain.x*kernel.grainWeight*taper;
     return {v.x+delta,v.y+delta,v.z+delta};
 }
-template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
+template<AnalysisDomain Domain=AnalysisDomain::Display,class Observer> inline auto colorPixelLinear(Vec3 v,quint16 alpha,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     observe(ColorStage::InputLinear,v);
     const Vec3 selectionInput=v;
     v=wbExposure(v,kernel); observe(ColorStage::WbExposure,v);
@@ -570,6 +570,8 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     v=applyHighlightRecovery(v,kernel.tone.y); observe(ColorStage::HighlightRecovery,v);
     v=toneNeutral(v,kernel); observe(ColorStage::ToneNeutral,v);
     v=perceptualLook(v,kernel); observe(ColorStage::PerceptualLook,v);
+    if constexpr(Domain==AnalysisDomain::Working)return v;
+    else {
     v=outputLinear(v,kernel); observe(ColorStage::OutputLinear,v);
     v=outputTransfer(v,kernel); observe(ColorStage::OutputTransfer,v);
     v=lookLut(v,kernel); observe(ColorStage::LookLut,v);
@@ -580,6 +582,7 @@ template<class Observer> inline QRgba64 colorPixelLinear(Vec3 v,quint16 alpha,co
     const auto quantize = [&](float value) { return quint16(std::lround(clamp01(value)*65535.0f)); };
 #endif
     return QRgba64::fromRgba64(quantize(v.x),quantize(v.y),quantize(v.z),alpha);
+    }
 }
 template<class Observer> inline QRgba64 colorPixel(QRgba64 original,const ColorKernel &kernel,int x,int y,Observer observe,float brushEv=0) {
     return colorPixelLinear(inputLinear(original,kernel),original.alpha(),kernel,x,y,observe,brushEv);
@@ -1013,6 +1016,12 @@ bool ImagePipeline::preflightAdmittedBrush(const QSize &frameSize,const Processi
     return preflightBrushRequest(frameSize,plan,region,stripeHeight,std::size_t(BrushRenderRequest::MaxSourcePixels),token,error);
 }
 namespace {
+inline bool writeWorkingPixel(float *pixel,Vec3 input,float alpha,const ColorKernel &kernel,int x,int y,float ev=0) {
+    const auto value=colorPixelLinear<AnalysisDomain::Working>(input,0,kernel,x,y,NoColorObservation{},ev);
+    if(!std::isfinite(value.x)||!std::isfinite(value.y)||!std::isfinite(value.z)||!std::isfinite(alpha))return false;
+    pixel[0]=value.x;pixel[1]=value.y;pixel[2]=value.z;pixel[3]=alpha;return true;
+}
+template<AnalysisDomain Domain=AnalysisDomain::Display>
 QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const CancelToken &token,bool parallel,
                         const QSize &sourceSize,const QPoint &origin,
                         std::size_t brushPixelBudget=BrushMaskTileRaster::MaxResearchFramePixels,
@@ -1043,10 +1052,17 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
     const QImage input=preparedLinear?(preparedSpatial?*preparedSpatial:prepareSpatialInput(source,kernel,plan,sourceSize,token,parallel))
         :floating?source:ImagePipeline::rgba64Source(source,token);
     if (input.isNull()) return {};
-    QImage out(input.size(),QImage::Format_RGBA64);
+    QImage out(input.size(),Domain==AnalysisDomain::Working?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
     if (out.isNull()) return {};
     const uchar *src=input.constBits(); const qsizetype srcStride=input.bytesPerLine();
     uchar *dst=out.bits(); const qsizetype dstStride=out.bytesPerLine();
+    const auto finish=[&](QImage image) {
+        if constexpr(Domain==AnalysisDomain::Display)return finishColor(std::move(image),plan,sourceSize,token);
+        else {
+            if(cancelled(token))return QImage{};
+            image.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));return image;
+        }
+    };
     const auto recordBrushTiles=[&](std::size_t rasterized) {
         PerformanceRecorder::count("brush_research_cpu_tiles",qint64(brushFrame.tiles.size()));
         PerformanceRecorder::count("brush_research_rasterized_tiles",qint64(rasterized));
@@ -1073,6 +1089,7 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
             for(int yy=0;yy<h;++yy) {
                 if(cancelled(token) || failed.load(std::memory_order_relaxed)) return false;
                 auto *line=reinterpret_cast<QRgba64 *>(dst+(tileY+yy)*dstStride);
+                auto *linearLine=reinterpret_cast<float *>(dst+(tileY+yy)*dstStride);
                 const auto *raw=src+(tileY+yy)*srcStride;
                 const auto *rgba=(floating||preparedLinear) ? reinterpret_cast<const float *>(raw) : nullptr;
                 const auto *rgba64=(floating||preparedLinear) ? nullptr : reinterpret_cast<const QRgba64 *>(raw);
@@ -1081,7 +1098,12 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
                     const float ev=tile.candidateVisits==0 ? 0.0f
                         : mask.weightedExposureEv[std::size_t(yy)*w+xx];
                     if (!std::isfinite(ev) || std::abs(ev)>8.0f) return false;
-                    line[x]=preparedLinear
+                    if constexpr(Domain==AnalysisDomain::Working) {
+                        const auto value=preparedLinear?Vec3{rgba[4*x],rgba[4*x+1],rgba[4*x+2]}
+                            :floating?inputLinear(Vec3{rgba[4*x],rgba[4*x+1],rgba[4*x+2]},kernel):inputLinear(rgba64[x],kernel);
+                        const auto alpha=(floating||preparedLinear)?rgba[4*x+3]:rgba64[x].alpha()/65535.f;
+                        if(!writeWorkingPixel(linearLine+4*x,value,alpha,kernel,x+origin.x(),tileY+yy+origin.y(),ev))return false;
+                    }else line[x]=preparedLinear
                         ? colorPixelPreparedLinear(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
                         :floating ? colorPixelFloat(rgba+4*x,kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev)
                         : colorPixel(rgba64[x],kernel,x+origin.x(),tileY+yy+origin.y(),NoColorObservation{},ev);
@@ -1144,12 +1166,24 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
         PerformanceRecorder::count("brush_research_helper_tasks",submitted);
         PerformanceRecorder::count("brush_research_parallel_frames",submitted>0?1:0);
         PerformanceRecorder::count("brush_research_serial_frames",submitted==0?1:0);
-        return finishColor(std::move(out),plan,sourceSize,token);
+        return finish(std::move(out));
     }
     // An all-zero candidate frame uses the historical row renderer, including
     // its parallel scheduling. Preflight, research caps and source validation
     // have already run, so this cannot turn malformed active masks into identity.
+    std::atomic_bool invalidAnalysis{false};
     ParallelRows::run(out.height(),out.width(),token,[&](int y) {
+        if constexpr(Domain==AnalysisDomain::Working) {
+            auto *line=reinterpret_cast<float *>(dst+y*dstStride);
+            const auto *pixels=(floating||preparedLinear)?reinterpret_cast<const float *>(src+y*srcStride):nullptr;
+            const auto *integers=(floating||preparedLinear)?nullptr:reinterpret_cast<const QRgba64 *>(src+y*srcStride);
+            for(int x=0;x<out.width();++x) {
+                const auto value=preparedLinear?Vec3{pixels[4*x],pixels[4*x+1],pixels[4*x+2]}
+                    :floating?inputLinear(Vec3{pixels[4*x],pixels[4*x+1],pixels[4*x+2]},kernel):inputLinear(integers[x],kernel);
+                const auto alpha=(floating||preparedLinear)?pixels[4*x+3]:integers[x].alpha()/65535.f;
+                if(!writeWorkingPixel(line+4*x,value,alpha,kernel,x+origin.x(),y+origin.y())){invalidAnalysis.store(true,std::memory_order_relaxed);return;}
+            }
+        }else {
         auto *line=reinterpret_cast<QRgba64 *>(dst+y*dstStride);
         if (preparedLinear) {
             const auto *pixels=reinterpret_cast<const float *>(src+y*srcStride);
@@ -1164,9 +1198,11 @@ QImage processColorFrame(const QImage &source,const ProcessingPlan &plan,const C
             for (int x=0;x<out.width();++x)
                 line[x]=colorPixel(in[x],kernel,x+origin.x(),y+origin.y(),NoColorObservation{});
         }
+        }
     },parallel);
+    if constexpr(Domain==AnalysisDomain::Working)if(invalidAnalysis.load(std::memory_order_relaxed))return {};
     if (brushResearch && !cancelled(token)) recordBrushTiles(0);
-    return finishColor(std::move(out),plan,sourceSize,token);
+    return finish(std::move(out));
 }
 }
 SpatialDehaze::Airlight ImagePipeline::estimateDehazeAirlight(const QImage &source,const ProcessingPlan &plan,const CancelToken &cancel) {
@@ -1396,6 +1432,44 @@ QImage ImagePipeline::processRegion(const QImage &source,const ProcessingPlan &r
     if(result.isNull())return {};
     return result.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));
 }
+QImage ImagePipeline::analysisRegion(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,
+                                     AnalysisDomain domain,const CancelToken &token,QString *error) {
+    if(error)error->clear();const auto fail=[&](const QString &reason){if(error)*error=reason;return QImage{};};
+    if(source.isNull()||cancelled(token))return fail("Analysis source is empty or cancelled");
+    if(domain==AnalysisDomain::Display)return processRegion(source,requestedPlan,region,token);
+    if(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)return fail("Invalid analysis domain");
+    if(requestedPlan.encoding!=InputEncoding::SRgb&&requestedPlan.encoding!=InputEncoding::LinearProPhoto)return fail("Invalid analysis source encoding");
+    const auto roi=region.intersected(source.rect());if(roi.isEmpty())return fail("Analysis region is empty");
+    if(domain==AnalysisDomain::Working) {
+        // The float output needs its own admitted brush accounting before any
+        // production consumer can request it. Never bypass the existing lease.
+        if(BrushMaskTileRaster::anyEnabled(requestedPlan.state.brushMasks))return fail("Working analysis with brushes requires float-output admission");
+        auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return fail("Analysis airlight resolution failed");
+        const auto expanded=expandedColorRegion(source.size(),plan,roi);if(expanded.isEmpty())return fail("Analysis halo region is invalid");
+        auto frame=processColorFrame<AnalysisDomain::Working>(source.copy(expanded),plan,token,true,source.size(),expanded.topLeft());
+        if(frame.isNull())return fail("Working analysis did not complete");
+        return frame.copy(QRect(roi.topLeft()-expanded.topLeft(),roi.size()));
+    }
+    const auto regionSource=source.copy(roi);const bool floating=regionSource.format()==QImage::Format_RGBA32FPx4;
+    if(floating&&!validFloatSource(regionSource,token))return fail("Invalid floating analysis source");
+    const auto input=floating?regionSource:rgba64Source(regionSource,token);if(input.isNull())return fail("Analysis source conversion failed");
+    QImage output(input.size(),QImage::Format_RGBA32FPx4);if(output.isNull())return fail("Analysis frame allocation failed");
+    const ColorKernel kernel(requestedPlan,source.size());std::atomic_bool invalid{false};
+    const auto *src=input.constBits();const auto srcStride=input.bytesPerLine();auto *dst=output.bits();const auto dstStride=output.bytesPerLine();
+    ParallelRows::run(input.height(),input.width(),token,[&](int y) {
+        const auto *floats=floating?reinterpret_cast<const float *>(src+y*srcStride):nullptr;
+        const auto *integers=floating?nullptr:reinterpret_cast<const QRgba64 *>(src+y*srcStride);
+        auto *out=reinterpret_cast<float *>(dst+y*dstStride);
+        for(int x=0;x<input.width();++x) {
+            const auto decoded=floating?inputLinear(Vec3{floats[4*x],floats[4*x+1],floats[4*x+2]},kernel):inputLinear(integers[x],kernel);
+            const auto value=multiply(requestedPlan.data.data()+ProcessingPlan::Working0,decoded);
+            if(!std::isfinite(value.x)||!std::isfinite(value.y)||!std::isfinite(value.z)){invalid.store(true,std::memory_order_relaxed);return;}
+            out[4*x]=value.x;out[4*x+1]=value.y;out[4*x+2]=value.z;out[4*x+3]=floating?floats[4*x+3]:integers[x].alpha()/65535.f;
+        }
+    });
+    if(cancelled(token)||invalid.load(std::memory_order_relaxed))return fail("Source analysis cancelled or nonfinite");
+    output.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));return output;
+}
 QImage ImagePipeline::renderAdmittedBrush(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,
                                          const CancelToken &token,bool parallel) {
     auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
@@ -1405,4 +1479,13 @@ QImage ImagePipeline::renderAdmittedBrush(const QImage &source,const ProcessingP
     if(expanded.isEmpty())return {};
     const auto rendered=processColorFrame(source.copy(expanded),plan,token,parallel,source.size(),expanded.topLeft(),std::size_t(BrushRenderRequest::MaxSourcePixels));
     return rendered.isNull()?QImage{}:rendered.copy(QRect(region.topLeft()-expanded.topLeft(),region.size()));
+}
+QImage ImagePipeline::renderAdmittedWorking(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,
+                                           const CancelToken &token,bool parallel) {
+    auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
+    if(region==source.rect())return processColorFrame<AnalysisDomain::Working>(source,plan,token,parallel,source.size(),{},std::size_t(BrushRenderRequest::MaxSourcePixels));
+    if(region.isEmpty()||!source.rect().contains(region))return {};
+    const auto expanded=expandedColorRegion(source.size(),plan,region);if(expanded.isEmpty())return {};
+    const auto frame=processColorFrame<AnalysisDomain::Working>(source.copy(expanded),plan,token,parallel,source.size(),expanded.topLeft(),std::size_t(BrushRenderRequest::MaxSourcePixels));
+    return frame.isNull()?QImage{}:frame.copy(QRect(region.topLeft()-expanded.topLeft(),region.size()));
 }

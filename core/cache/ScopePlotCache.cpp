@@ -30,14 +30,17 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
     const int index=request.mode=="waveform" ? 0 : request.mode=="parade" ? 1 : request.mode=="vectorscope" ? 2 : -1;
     if (index<0 || request.source.isNull()) return {};
     if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
-    const bool brush=BrushMaskTileRaster::anyEnabled(request.plan.state.brushMasks);
+    if(analysisDomainKey(request.domain).isEmpty())return {{},0,"Invalid analysis domain"};
+    const bool linear=request.domain!=AnalysisDomain::Display;
+    const bool brush=request.domain!=AnalysisDomain::Source&&BrushMaskTileRaster::anyEnabled(request.plan.state.brushMasks);
     QString error;
     if(brush&&!BrushRenderRequest::validPreparedPlan(request.plan,&error))return {{},0,error};
-    const auto lut=request.plan.data[ProcessingPlan::LookStyle].w>0 ? request.plan.state.look.lut : nullptr;
+    const auto lut=request.domain!=AnalysisDomain::Source&&request.plan.data[ProcessingPlan::LookStyle].w>0 ? request.plan.state.look.lut : nullptr;
     constexpr qint64 inkBytes=qint64(4*ScopePlotCounts::Columns*ScopePlotCounts::Levels+ScopePlotCounts::ChromaSize*ScopePlotCounts::ChromaSize)*sizeof(QRgb);
     const qint64 bytes=sizeof(Entry)+inkBytes+(lut ? qint64(lut->rgb.capacity())*sizeof(float) : 0),cost=(bytes+1023)/1024;
     const bool cacheable=m_entries.maxCost()>0 && cost<=m_entries.maxCost();
     const auto key=cacheable ? StageGraph::scopePlotsKey(request) : QString{};
+    if(linear&&StageGraph::linearAnalysisKey(request.source,request.plan,request.geometry,request.domain).isEmpty())return {{},0,"Invalid linear analysis request"};
     {
         QMutexLocker lock(&m_mutex);
         if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
@@ -51,14 +54,21 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
         } else { ++m_bypasses; PerformanceRecorder::count("scope_plot_cache_bypass"); }
         recordLocked();
     }
-    const auto analysisKey=m_analysisFrames && request.fullResolution
+    const auto analysisKey=m_analysisFrames && request.fullResolution&&!linear
         ? StageGraph::analysisFrameKey(request.source,request.plan,request.geometry):QString{};
     // Look up completed frames only. A producer still filling its strips does
     // not delay this independent plot request or share its cancellation token.
     const auto completed=m_analysisFrames && !analysisKey.isEmpty()
         ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
     std::unique_ptr<BrushRenderRequest> admitted;
-    if(brush&&!completed) {
+    std::unique_ptr<BrushAnalysisRequest> working;
+    if(brush&&linear) {
+        BrushAdmissionFailure reason;
+        working=request.fullResolution?BrushAnalysisRequest::create(request.source,request.plan,request.geometry,
+            BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason)
+            :BrushAnalysisRequest::createPrepared(request.source,request.plan,BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
+        if(!working)return cancelled(cancel)?ScopePlotResult{}:ScopePlotResult{{},0,error,reason==BrushAdmissionFailure::BudgetUnavailable};
+    } else if(brush&&!completed) {
         BrushAdmissionFailure reason;
         admitted=BrushRenderRequest::createOriginal(request.source,request.plan,request.geometry,
             BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
@@ -68,7 +78,7 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
     // bounded tiles and avoiding speculative work that cannot be reused.
     if (!cacheable) {
         auto result=completed ? renderEncodedScopePlot(completed.image(),request.mode,cancel)
-            :admitted?renderScopePlot(*admitted,request.mode,cancel):renderScopePlot(request,cancel);
+            :working?renderScopePlot(*working,request.mode,cancel):admitted?renderScopePlot(*admitted,request.mode,cancel):renderScopePlot(request,cancel);
         if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
         return result;
     }
@@ -79,7 +89,7 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
     std::array<ScopePlotResult,3> results;
     if (requestedOnly) results[index]=renderEncodedScopePlot(completed.image(),request.mode,cancel);
     else results=completed ? renderEncodedScopePlots(completed.image(),cancel)
-        :admitted?renderScopePlots(*admitted,cancel):renderScopePlots(request,cancel);
+        :working?renderScopePlots(*working,cancel):admitted?renderScopePlots(*admitted,cancel):renderScopePlots(request,cancel);
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     const auto valid=[](const ScopePlotResult &r) { return !r.image.isNull() && r.pixels && r.error.isEmpty(); };

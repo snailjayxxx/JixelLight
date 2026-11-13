@@ -184,6 +184,7 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool exactScopes READ exactScopes WRITE setExactScopes NOTIFY scopesChanged)
     Q_PROPERTY(qulonglong scopesPixelCount READ scopesPixelCount NOTIFY scopesChanged)
     Q_PROPERTY(QString scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopePlotChanged)
+    Q_PROPERTY(QString scopeDomain READ scopeDomain WRITE setScopeDomain NOTIFY scopeDomainChanged)
     Q_PROPERTY(QString scopePlotUrl READ scopePlotUrl NOTIFY scopePlotChanged)
     Q_PROPERTY(QString scopePlotStatus READ scopePlotStatus NOTIFY scopePlotChanged)
     Q_PROPERTY(bool scopePlotCurrent READ scopePlotCurrent NOTIFY scopePlotChanged)
@@ -245,10 +246,12 @@ public:
     bool exactScopes() const { return m_exactScopes; }
     qulonglong scopesPixelCount() const { return m_scopes.pixelCount; }
     QString scopeMode() const { return m_scopeMode; }
+    QString scopeDomain() const { return analysisDomainKey(m_scopeDomain); }
+    Q_INVOKABLE void setScopeDomain(const QString &domain);
     Q_INVOKABLE void setScopeMode(const QString &mode);
     QString scopePlotUrl() const;
     QString scopePlotStatus() const;
-    bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes; }
+    bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes && m_plotDomain==m_scopeDomain; }
     qulonglong scopePlotPixels() const { return m_scopePlot.pixels; }
     bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
     QString exportOperationId() const { return m_exportQueue ? m_exportQueue->operationId() : QString{}; }
@@ -608,6 +611,7 @@ signals:
     void moveImportRequested(const QVariantList &urls);
     void moveImportRecoveryChanged();
     void scopePlotChanged();
+    void scopeDomainChanged();
     void cropEditingChanged();
     void lookChanged(); void referenceChanged(); void calibrationChanged();
     void libraryChanged(); void currentIndexChanged(); void previewUrlChanged(); void scopesChanged();
@@ -769,6 +773,10 @@ private:
     struct PointColorRequest {QImage source;ProcessingPlan plan;QPoint point;quint64 photo=0,generation=0,revision=0;bool inputMask=false;};
     std::unique_ptr<LatestJob<PointColorRequest,std::optional<PointColor::Lab>>> m_pointColorJob;
     std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_scopeJob, m_fullScopeJob;
+    std::unique_ptr<LatestJob<ScopeRequest, ScopesResult>> m_inputScopeJob;
+    AnalysisDomain m_scopeDomain=AnalysisDomain::Display,m_scopesDomain=AnalysisDomain::Display,m_plotDomain=AnalysisDomain::Display;
+    quint64 m_inputScopeSubmittedRevision=0;
+    AnalysisDomain m_inputScopeSubmittedDomain=AnalysisDomain::Display;
     std::unique_ptr<LatestJob<ScopePlotRequest, ScopePlotResult>> m_plotJob;
     ScopePlotResult m_scopePlot;
     QString m_scopeMode = "histogram";
@@ -779,7 +787,7 @@ private:
     quint64 m_scopesErrorRevision=0;
     int m_scopesErrorRank=-1;
     struct DeferredBudgetJob {quint64 revision=0;int attempts=0;bool pending=false;};
-    std::array<DeferredBudgetJob,3> m_deferredBudgetJobs{};
+    std::array<DeferredBudgetJob,4> m_deferredBudgetJobs{};
     QTimer m_budgetRetryTimer;
     void deferBudgetJob(int job,quint64 revision);
     void retryBudgetJobs(bool afterExport=false);
@@ -840,7 +848,8 @@ private:
     void markDirty();
     void enqueueEdits();
     void requestFullScopes();
-    void acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label);
+    void requestPreviewScopes();
+    void acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label,AnalysisDomain domain=AnalysisDomain::Display);
     void completeFrame(quint64 revision);
     void setBusy(bool busy);
     void prefetchNeighbor();
