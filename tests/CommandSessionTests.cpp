@@ -227,6 +227,13 @@ private slots:
             const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::proofSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopScopesCannotMutateAnOfflineSessionOrItsEarlierExports(){
+        for(const auto &command:QList<QJsonObject>{{{"command","scopes.domain"},{"domain","source"}},{{"command","scopes.mode"},{"mode","waveform"}},{{"command","scopes.full-resolution"},{"enabled",true}}}) {
+            CommandRegistry::ScopePresentation parsed;QVERIFY(CommandRegistry::decodeScopePresentation(command,&parsed));CommandSession result;result.photoCount=89;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,89);QVERIFY(result.exports.isEmpty());
+            const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::scopePresentationSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void desktopRelinkActionsCannotRetargetCatalogsFromOfflineSessions(){
         for(const auto &command:QList<QJsonObject>{
             {{"command","photo.relink.request"},{"version","owned-version"},{"candidate","owned.bmp"},{"catalog_token","12"}},

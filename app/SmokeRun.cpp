@@ -1030,6 +1030,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             else {controller->setScopeMode("histogram");state->phase=440;return;}
             ++state->phase;
         } else if(state->phase==440&&ready) {
+            const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);scopeDomains->insert("trace_marker",marker);
+            ActionTrace::instance().record("scopes_smoke_boundary",{{"marker",marker}});
             scopeDomains->insert("revision",QString::number(controller->renderRevision()));
             scopeDomains->insert("whole_develop",controller->gpuPlan().state.toJson());scopeDomains->insert("history_cursor",historyCursor(controller));
             scopeDomains->insert("prepared_pixels",StageGraph::outputFingerprint(controller->gpuSource()));
@@ -1050,7 +1052,17 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             controller->setScopeMode("histogram");scopeDomains->insert("display_pointer",selectScopeDomain(2)&&controller->scopeDomain()=="display"&&controller->scopesPixelCount()==0);state->phase=444;
         } else if(state->phase==444&&ready&&controller->scopeDomain()=="display"&&controller->scopesPixelCount()>0) {
             const auto source=controller->gpuSource();scopeDomains->insert("display_restored",domainInvariant()&&controller->scopesPixelCount()==quint64(source.width())*source.height());
-            controller->setExactScopes(true);state->phase=44;
+            controller->setExactScopes(true);
+            QJsonArray commands;bool seen=false;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();
+                if(row["action"]=="scopes_smoke_boundary"&&row["marker"]==scopeDomains->value("trace_marker")){seen=true;commands={};}
+                else if(seen&&row["action"]=="scopes_command")commands.append(row["command"]);
+            }
+            const QJsonArray expected{QJsonObject{{"command","scopes.full-resolution"},{"enabled",false}},QJsonObject{{"command","scopes.domain"},{"domain","source"}},
+                QJsonObject{{"command","scopes.mode"},{"mode","waveform"}},QJsonObject{{"command","scopes.domain"},{"domain","working"}},
+                QJsonObject{{"command","scopes.mode"},{"mode","histogram"}},QJsonObject{{"command","scopes.domain"},{"domain","display"}},QJsonObject{{"command","scopes.full-resolution"},{"enabled",true}}};
+            scopeDomains->insert("canonical_commands",commands);scopeDomains->insert("command_trace_passed",seen&&commands==expected);state->phase=44;
         } else if (state->phase==44 && ready) {
             auto *menu=window->findChild<QObject *>(QStringLiteral("importActionsMenu"));
             copyTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
@@ -1537,7 +1549,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         for(const auto *key:{"grid_pointer","grid_control_selection","grid_shift_selection","grid_single_selection","sidebar_pointer","filmstrip_pointer",
                             "other_intent_history_unchanged","copy_intent_history_unchanged","canonical_trace"})
             photoSelectionOk=photoSelectionOk&&photoSelectionTrace->value(key).toBool();
-        bool scopeDomainsOk=true;for(const auto *key:{"source_pointer","source_histograms_exact","source_invariants","source_plot","working_pointer","working_histograms_exact","working_invariants","working_plot","display_pointer","display_restored"})scopeDomainsOk=scopeDomainsOk&&scopeDomains->value(key).toBool();
+        bool scopeDomainsOk=true;for(const auto *key:{"source_pointer","source_histograms_exact","source_invariants","source_plot","working_pointer","working_histograms_exact","working_invariants","working_plot","display_pointer","display_restored","command_trace_passed"})scopeDomainsOk=scopeDomainsOk&&scopeDomains->value(key).toBool();
         bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;

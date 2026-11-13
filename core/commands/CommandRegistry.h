@@ -296,6 +296,30 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    enum class ScopeOperation { Domain, Mode, FullResolution };
+    struct ScopePresentation {ScopeOperation operation=ScopeOperation::Domain;QString value;bool enabled=false;};
+    static bool decodeScopePresentation(const QJsonObject &command,ScopePresentation *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid scopes presentation command";return false;};
+        if(!output)return fail();ScopePresentation staged;const auto name=command["command"].toString();
+        if(name=="scopes.full-resolution") {
+            if(!fields(command,{"enabled"})||!command["enabled"].isBool())return fail();
+            staged.operation=ScopeOperation::FullResolution;staged.enabled=command["enabled"].toBool();
+        } else if(name=="scopes.domain"||name=="scopes.mode") {
+            const bool domain=name=="scopes.domain";const auto field=domain?"domain":"mode";
+            if(!fields(command,{field})||!command[field].isString())return fail();staged.value=command[field].toString();
+            if(!(domain?QStringList{"source","working","display"}:QStringList{"histogram","waveform","parade","vectorscope"}).contains(staged.value))return fail();
+            staged.operation=domain?ScopeOperation::Domain:ScopeOperation::Mode;
+        } else return fail();
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject scopePresentationSchema(const QString &name) {
+        const bool domain=name=="scopes.domain",full=name=="scopes.full-resolution";
+        QJsonObject result{{"name",name},{"scope","desktop"},{"fields",full?QJsonArray{"enabled"}:domain?QJsonArray{"domain"}:QJsonArray{"mode"}},
+            {"type",full?"boolean":"string"},{"presentation_only",true},{"source_writes",false},{"catalog_writes",false},{"edit_history_writes",false},{"settings_writes",false},
+            {"completion","true means presentation request accepted; statistics may still be pending"},{"offline_sessions","unsupported; scopes cannot alter Develop or export plans"}};
+        if(!full)result["values"]=domain?QJsonArray{"source","working","display"}:QJsonArray{"histogram","waveform","parade","vectorscope"};
+        return result;
+    }
     enum class ProofOperation { Enable, Target, Profile, Intent, Paper, GamutWarning, BlackPoint, Refresh };
     struct Proof {ProofOperation operation=ProofOperation::Refresh;bool enabled=false;int intent=1;QString text;};
     static bool decodeProof(const QJsonObject &command,Proof *output,QString *error=nullptr) {
@@ -1065,6 +1089,7 @@ struct CommandRegistry {
                 relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel"),
                 proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
                 proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh"),
+                scopePresentationSchema("scopes.domain"),scopePresentationSchema("scopes.mode"),scopePresentationSchema("scopes.full-resolution"),
                 operationCancelSchema(false),operationCancelSchema(true),operationCancelSchema(false,true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
