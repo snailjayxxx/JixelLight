@@ -1,5 +1,6 @@
 #include "core/scopes/ScopesEngine.h"
 #include "core/pipeline/BrushRenderRequest.h"
+#include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/ParallelRows.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QRgba64>

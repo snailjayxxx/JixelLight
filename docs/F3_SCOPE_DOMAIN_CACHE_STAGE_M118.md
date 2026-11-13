@@ -10,4 +10,6 @@ Linear histograms count1024 bins directly from finite FP32 samples. Linear wavef
 
 Six new Core cases (expected270) cover analytic float plot bins including hidden RGB/HDR, no publication after a late nonfinite pixel, domain key separation and Source edit independence, source/working histogram and all three plot oracles, spatial whole/stripe equivalence, prepared viewport/density preservation, tampered plans, budget refusal, cancellation and unchanged encoded-frame cache state. Existing display histogram/plot and CLI/native tests remain the compatibility gates.
 
+The first build at aba16ee stopped at the new `analyzeDomain` implementation because its brush guard lacked an explicit BrushMaskTileRaster include. No tests ran. The original failed compiler log and source/build identities are indexed in `failed-build-aba16ee-first.json`; the include correction requires a fresh development run.
+
 M117's original two failed oracle assertions and its stopped evidence-path freshness check remain recorded separately; the corrected exact pre-output fingerprint passes a focused run at fd4d543. M117's own development/native run is a prerequisite for this stage's build. None of these private stages claim native-FP32 LibRaw demosaicing or A7R VI real-shot acceptance. Main and protected PR15 remain unmerged.
