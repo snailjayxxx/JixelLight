@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import struct
@@ -36,8 +36,10 @@ def validate_report(data, mode, qpa, expected_commit=None):
     require(type(data['initial_history']) is list and len(data['initial_history'])>=1 and data['initial_history']==data['final_history'], 'whole durable history unchanged')
     require(data['profile_model']=='RGB' and re.fullmatch(r'[0-9a-f]{64}',data['profile_sha256']) is not None, 'owned bounded output RGB ICC')
     commands=data.get('proof_commands')
+    require(type(data['profile_path']) is str and bool(data['profile_path']), 'recorded proof profile path')
+    command_profile=PureWindowsPath(data['profile_path']).as_posix() if qpa=='windows' else data['profile_path']
     require(data.get('proof_command_trace_passed') is True and type(commands) is list and commands==[
-        {'command':'proof.profile','source':data['profile_path']},{'command':'proof.enable','enabled':True},
+        {'command':'proof.profile','source':command_profile},{'command':'proof.enable','enabled':True},
         {'command':'proof.paper','enabled':True},{'command':'proof.gamut-warning','enabled':True},
         {'command':'proof.black-point','enabled':False},{'command':'proof.refresh'},
         {'command':'proof.enable','enabled':False},{'command':'proof.enable','enabled':True}]

@@ -4,7 +4,7 @@
 
 Independent dehaze now has a QRhi follow-up with resident full-frame context. Local GPU/native evidence and remaining clean/platform/package gates are recorded in [M62](docs/F4_QRHI_DEHAZE_CACHE_STAGE_M62.md). The [CPU parent](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md) separately passes clean90/90; whole fusion development remains incomplete.
 
-> **开发验证快照（2026-11-13，合并取消功能验收前）：** 软打样 `1058b25` 已完成本地 102 项（951.44 秒）、33 个场景及 12 个二进制校验，三平台 CI430 仍在运行。导出／导入取消 `38155af` 已通过编译、10 组定向回归和实际 CPU／Metal 窗口验证；当前补齐 XMP 审阅取消保护，281 项 Python 验证通过，合并版本将独立完成完整验收。平移修正版的 Linux／macOS 安装包已通过，Windows 继续。原失败证据保留；整体 F0–F6 仍在开发，A7R VI 实拍仍缺样本路径，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
+> **开发验证快照（2026-11-13，Windows 路径验收修正编译前）：** 平移修正版已通过三平台及安装包验收。取消功能 `bf7d387` 完成本地 102 项（940.59 秒）、33 个场景及 13 个二进制校验，CI431 仍在运行。软打样 CI430 的 Linux／macOS 已通过，Windows 在完整 102 项通过后因验收探针比较路径分隔符而失败；修正已加入，283 项 Python 验证通过，将独立重新验收。原失败记录保留；整体 F0–F6 仍在开发，A7R VI 实拍仍缺样本路径，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
