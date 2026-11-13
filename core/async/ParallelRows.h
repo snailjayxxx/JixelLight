@@ -8,10 +8,17 @@
 #include <atomic>
 
 namespace ParallelRows {
+inline int automaticThreadBudget(int logicalProcessors) {
+    if (logicalProcessors <= 2) return 1;
+    // Three-core hosts retain one core for UI work without serializing every
+    // CPU stage. Larger hosts keep their existing two-core reserve and cap.
+    if (logicalProcessors == 3) return 2;
+    return std::min(logicalProcessors - 2, 8);
+}
 inline int threadBudget() {
     bool ok = false;
     const int configured = qEnvironmentVariableIntValue("JIXELLIGHT_CPU_THREADS", &ok);
-    return ok ? std::clamp(configured, 1, 32) : std::clamp(QThread::idealThreadCount() - 2, 1, 8);
+    return ok ? std::clamp(configured, 1, 32) : automaticThreadBudget(QThread::idealThreadCount());
 }
 inline QThreadPool &pool() {
     static QThreadPool pool;
