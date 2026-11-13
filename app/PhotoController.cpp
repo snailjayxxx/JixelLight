@@ -217,21 +217,37 @@ GeometryState PhotoController::previewGeometry() const {
     return geometry;
 }
 bool PhotoController::beginCrop() {
-    if (xmpMergeBusy() || !hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
-    finishInteraction(); m_cropEditing = true;
+    if (QThread::currentThread()!=thread() || m_closing || m_enteringCrop || xmpMergeBusy() || !hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch;
+    m_enteringCrop=true;const auto reset=qScopeGuard([this,guard]{if(guard)m_enteringCrop=false;});
+    if(!finishInteractionImpl())return false;
+    const auto generation=m_prepareGeneration;m_cropEditing = true;
     m_zoom = 0; m_centerX = m_centerY = .5;
-    emit cropEditingChanged(); prepareCurrent(); return true;
+    emit cropEditingChanged();
+    const auto current=[this,guard,catalog,photo]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&m_cropEditing;};
+    if(!current())return false;
+    // The canvas can synchronously prepare its fitted viewport from the mode
+    // notification. That is the accepted crop entry, not a replacement edit.
+    if(generation==m_prepareGeneration)prepareCurrent();
+    return current();
 }
 void PhotoController::cancelCrop() {
-    if (!m_cropEditing) return;
-    m_cropEditing = false; emit cropEditingChanged(); prepareCurrent();
+    if (QThread::currentThread()!=thread() || m_closing || !m_cropEditing) return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,revision=m_requestedRevision;
+    m_cropEditing = false;emit cropEditingChanged();
+    if(!guard||m_closing||catalog!=m_catalogEpoch||photo!=m_photoEpoch||revision!=m_requestedRevision||m_cropEditing)return;
+    prepareCurrent();
 }
 bool PhotoController::applyCrop(double x, double y, double width, double height) {
-    if (!m_cropEditing || !GeometryState::validCrop(x,y,width,height)) return false;
+    if (QThread::currentThread()!=thread() || m_closing || !m_cropEditing || !GeometryState::validCrop(x,y,width,height)) return false;
     const auto crop = currentState().geometry.orientedRect({x,y,width,height},true);
     if (!GeometryState::validCrop(crop.x(),crop.y(),crop.width(),crop.height())) return false;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,revision=m_requestedRevision;
     m_cropEditing = false; emit cropEditingChanged();
-    setCrop(crop.x(),crop.y(),crop.width(),crop.height()); finishInteraction(); return true;
+    if(!guard||m_closing||catalog!=m_catalogEpoch||photo!=m_photoEpoch||revision!=m_requestedRevision||m_cropEditing)return false;
+    auto *state=mutableCurrentState();if(!state)return false;
+    if(!CommandRegistry::execute(*state,{{"command","geometry.crop"},{"x",crop.x()},{"y",crop.y()},{"width",crop.width()},{"height",crop.height()}}))return false;
+    if(persistAndApply("geometry_crop"))finishInteraction();return true;
 }
 
 QVariantList PhotoController::selectedIndices() const {
@@ -2516,12 +2532,16 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
-    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return;
+    finishInteractionImpl();
+}
+bool PhotoController::finishInteractionImpl() {
+    if (QThread::currentThread()!=thread() || m_closing || m_finishingInteraction || xmpMergeBusy()) return false;
     const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch;auto revision=m_requestedRevision;
     const auto current=[this,guard,catalog,epoch,&revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
-    cancelBrushStroke();if(!current())return;
+    m_finishingInteraction=true;const auto reset=qScopeGuard([this,guard]{if(guard)m_finishingInteraction=false;});
+    cancelBrushStroke();if(!current())return false;
     if (hasImage()) m_photos[m_currentIndex].history.finish();
-    emit libraryChanged();if(!current())return;
+    emit libraryChanged();if(!current())return false;
     m_refineTimer.stop();
     const bool wasInteracting=m_interacting;
     m_interacting = false;
@@ -2532,13 +2552,14 @@ void PhotoController::finishInteraction() {
         // replacing the final quality frame after the mouse has been released.
         revision=++m_requestedRevision;
         m_scopesUpdating = true; m_scopesRank = -1;
-        scheduleRender(false);if(!current())return;
+        scheduleRender(false);if(!current())return false;
     }
     if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
     // A GPU frame may already have finished before the refinement timer.
     if(m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
     // Notify availability even when no new render changes the busy flag.
     if(wasInteracting)emit activityChanged();
+    return current();
 }
 
 void PhotoController::completeFrame(quint64 revision) {

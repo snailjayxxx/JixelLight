@@ -4896,7 +4896,12 @@ private slots:
         QVERIFY(AdjustmentTransfer::apply(target,source,{"sony_look"})); QCOMPARE(target.look.mode,QString("as-shot"));
         QVERIFY(target.look.code.isEmpty()); QVERIFY(target.look.parameters.isEmpty()); QVERIFY(!target.look.lut);
     }
+    void selectivePasteUsesFrozenClipboardAndKeepsOtherGroupsAndUndo_data() {
+        QTest::addColumn<bool>("targetFirst");
+        QTest::newRow("source-first")<<false;QTest::newRow("target-first")<<true;
+    }
     void selectivePasteUsesFrozenClipboardAndKeepsOtherGroupsAndUndo() {
+        QFETCH(bool,targetFirst);
         QTemporaryDir dir; QImage image(24,16,QImage::Format_RGB32); image.fill(Qt::gray);
         const auto a=dir.filePath("a.png"),b=dir.filePath("b.png"); QVERIFY(image.save(a)); QVERIFY(image.save(b));
         PhotoController c(nullptr); c.setGpuEnabled(false); QVERIFY(c.importFile(QUrl::fromLocalFile(a))); QVERIFY(c.importFile(QUrl::fromLocalFile(b)));
@@ -4912,8 +4917,24 @@ private slots:
         c.undo(); QCOMPARE(c.exposure(),-1.0); QCOMPARE(c.lookState()["code"].toString(),QString("ST")); c.redo(); QCOMPARE(c.exposure(),1.5);
         const auto pastedHistory=c.editHistory(); QVERIFY(c.pasteAdjustmentGroups({"exposure","sony_look"})); QCOMPARE(c.editHistory(),pastedHistory);
         QVERIFY(c.pasteAdjustmentGroups({"geometry"})); QCOMPARE(c.geometry()["straighten"].toDouble(),3.0); c.undo(); QCOMPARE(c.geometry()["straighten"].toDouble(),-4.0);
+        const auto pastedKey=c.library()[c.currentIndex()].toMap()["id"].toString();QVERIFY(!pastedKey.isEmpty());
         QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Paste")); QVERIFY(c.flushEdits());
-        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath()))); reopened.selectPhoto(1);
+        const auto connection=QUuid::createUuid().toString(QUuid::WithoutBraces);
+        {
+            auto order=QSqlDatabase::addDatabase("QSQLITE",connection);order.setDatabaseName(QDir(c.projectPath()).filePath("Project.db"));QVERIFY(order.open());
+            QSqlQuery query(order);QVERIFY(query.prepare("UPDATE photos SET imported_at=CASE WHEN path=? THEN '1999-01-01 00:00:00' ELSE '2000-01-01 00:00:00' END"));
+            query.addBindValue(targetFirst?b:a);QVERIFY(query.exec());order.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        ProjectDatabase snapshot;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(snapshot.readSnapshot(c.projectPath(),&saved));QCOMPARE(saved.size(),2);
+        QMap<QString,double> savedExposure;for(const auto &row:saved)savedExposure.insert(QFileInfo(row.path).fileName(),row.adjustments.exposure);
+        QCOMPARE(savedExposure.value("a.png"),2.0);QCOMPARE(savedExposure.value("b.png"),1.5);
+        qInfo()<<"PASTE_REOPEN_ORDER"<<targetFirst<<QFileInfo(saved[0].path).fileName()<<saved[0].adjustments.exposure<<QFileInfo(saved[1].path).fileName()<<saved[1].adjustments.exposure;
+        PhotoController reopened(nullptr); QVERIFY(reopened.openProject(QUrl::fromLocalFile(c.projectPath())));
+        int targetIndex=-1;const auto reopenedPhotos=reopened.library();
+        for(int i=0;i<reopenedPhotos.size();++i)if(reopenedPhotos[i].toMap()["id"].toString()==pastedKey)targetIndex=i;
+        QCOMPARE(targetIndex,targetFirst?0:1);reopened.selectPhoto(targetIndex);
+        QCOMPARE(QFileInfo(reopened.currentFile()).canonicalFilePath(),QFileInfo(b).canonicalFilePath());
         QCOMPARE(reopened.exposure(),1.5); QCOMPARE(reopened.geometry()["straighten"].toDouble(),-4.0); QVERIFY(reopened.canRedo());
         reopened.redo(); QCOMPARE(reopened.geometry()["straighten"].toDouble(),3.0);
         QFile original(a); QVERIFY(original.open(QIODevice::ReadOnly)); const auto bytes=original.readAll(); original.close();

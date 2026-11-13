@@ -745,8 +745,8 @@ private:
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
     QJsonObject m_preparedGeometry;
     bool m_preparing = false;
-    bool m_cropEditing = false;
-    bool m_interacting = false, m_sourceIsFull = false, m_closing = false, m_closePreparing = false;
+    bool m_cropEditing = false, m_enteringCrop = false;
+    bool m_interacting = false, m_sourceIsFull = false, m_closing = false, m_closePreparing = false, m_finishingInteraction = false;
     quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;
     int m_scopesRank = -1;
     QSize m_viewport{1600, 1000};
@@ -908,6 +908,7 @@ private:
     bool startMoveImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     void finishImportBatch(int added, int rawAdded);
     bool applyCurrent();
+    bool finishInteractionImpl();
     void loadCurrent();
     // A dialog previews the exact parsed XMP snapshot which is later applied.
     // Never re-read an external file after the user has confirmed its impact.

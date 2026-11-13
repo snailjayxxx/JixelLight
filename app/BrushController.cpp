@@ -89,7 +89,7 @@ QSize PhotoController::brushFrameSize() const {
         BrushRenderRequest::geometrySize(m_fullSource.size(),m_photos[m_currentIndex].state.geometry);
 }
 bool PhotoController::brushReady() const {
-    return !xmpMergeBusy()&&currentSourceAvailable()&&m_sourceIsFull&&!m_fullSource.isNull()&&previewReady()
+    return !m_closing&&!xmpMergeBusy()&&currentSourceAvailable()&&m_sourceIsFull&&!m_fullSource.isNull()&&previewReady()
         &&!m_loading&&!m_preparing&&!m_rendering&&!m_interacting&&!m_cropEditing
         &&qint64(m_fullSource.width())*m_fullSource.height()<=BrushRenderRequest::MaxSourcePixels
         &&!brushFrameSize().isEmpty();
@@ -237,6 +237,7 @@ bool PhotoController::beginStabilizedBrushStrokeModePressurePixels(const QString
     return beginBrushStrokeInput(layer,x,y,radius,hardness,opacity,exposure,mode,pressure,true,movementPixels);
 }
 bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double y,double radius,double hardness,double opacity,double exposure,const QString &mode,double pressure,bool stabilizePen,double movementPixels) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
     if(!std::isfinite(pressure)||pressure<0||pressure>1|| (mode!="paint"&&mode!="erase"))return false;
     const auto strokeMode=mode=="erase"?BrushMaskGeometry::StrokeMode::Erase:BrushMaskGeometry::StrokeMode::Paint;
     if(m_brushGesture||brushRecoveryAvailable())return false;
@@ -257,6 +258,8 @@ bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double
     case BrushPaintRefusal::Dabs:setStatus(uiText("笔刷文档已满，请删除笔触或图层后继续。","Brush document full. Remove a stroke or layer to continue."));return false;
     case BrushPaintRefusal::None:break;
     }
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,generation=m_prepareGeneration,revision=m_requestedRevision;
+    const auto ownerCurrent=[this,guard,catalog,photo,generation,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&generation==m_prepareGeneration&&revision==m_requestedRevision;};
     try {
         auto g=std::make_unique<BrushGesture>();g->photoKey=m_photos[m_currentIndex].storageKey();g->epoch=m_photoEpoch;
         g->catalog=m_catalogEpoch;g->gesture=++m_brushGestureSerial;g->sample=1;g->initial=m_photos[m_currentIndex].state;
@@ -276,16 +279,23 @@ bool PhotoController::beginBrushStrokeInput(const QString &layer,double x,double
         if(!g->builder->setRecoveryLimit(strokeCapacity)
             ||g->builder->appendForRecovery(first)!=BrushMaskGeometry::StrokeBuilder::RecoveryResult::Appended)return false;
         g->capacityHadPositivePressure=pressure>0;
-        discardBrushRecovery();m_brushGesture=std::move(g);emit brushDrawingChanged();updateBrushCapacityWarning();requestBrushPreview();return brushGestureCurrent();
-    }catch(...){setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
+        const auto gesture=g->gesture;discardBrushRecovery();if(!ownerCurrent())return false;m_brushGesture=std::move(g);
+        const auto current=[this,&ownerCurrent,gesture]{return ownerCurrent()&&m_brushGesture&&m_brushGesture->gesture==gesture&&brushGestureCurrent();};
+        emit brushDrawingChanged();if(!current())return false;
+        updateBrushCapacityWarning();if(!current())return false;requestBrushPreview();return current();
+    }catch(...){if(ownerCurrent())setStatus(uiText("无法开始笔触。","Cannot start the stroke."));return false;}
 }
 bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
     if(!brushGestureCurrent()){if(m_brushGesture)cancelBrushStroke();return false;}
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,generation=m_prepareGeneration,revision=m_requestedRevision,gesture=m_brushGesture->gesture;
+    const auto ownerCurrent=[this,guard,catalog,photo,generation,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&generation==m_prepareGeneration&&revision==m_requestedRevision;};
+    const auto current=[this,&ownerCurrent,gesture]{return ownerCurrent()&&m_brushGesture&&m_brushGesture->gesture==gesture&&brushGestureCurrent();};
     try {
         BrushMaskGeometry::Dab input{{x,y},pressure};
         if(m_brushGesture->movementStabilizer) {
             const auto mapped=m_brushGesture->movementStabilizer->map(input);
-            if(!mapped) {cancelBrushStroke();setStatus(uiText("无效笔输入，已取消该笔触。","Invalid pen input; stroke cancelled."));return false;}
+            if(!mapped) {cancelBrushStroke();if(ownerCurrent()&&!m_brushGesture)setStatus(uiText("无效笔输入，已取消该笔触。","Invalid pen input; stroke cancelled."));return false;}
             input=*mapped;
         }
         // An unchanged tablet packet needs no new preview. If a preview was
@@ -299,28 +309,29 @@ bool PhotoController::appendBrushStroke(double x,double y,double pressure) {
                 })) {
                 m_brushPreviewRetries=0;requestBrushPreview();
             }
-            return true;
+            return current();
         }
         if(m_brushGesture->sample<std::numeric_limits<quint64>::max()) {
             const auto result=m_brushGesture->builder->appendForRecovery(input);
             if(result==BrushMaskGeometry::StrokeBuilder::RecoveryResult::Appended) {
                 ++m_brushGesture->sample;m_brushPreviewRetries=0;
                 m_brushGesture->capacityHadPositivePressure|=pressure>0;
-                updateBrushCapacityWarning();
+                updateBrushCapacityWarning();if(!current())return false;
                 if(!m_brushPreviewScheduleTimer.isActive())m_brushPreviewScheduleTimer.start();
                 return true;
             }
             if(result==BrushMaskGeometry::StrokeBuilder::RecoveryResult::Capacity) {
-                const bool warned=brushCapacityWarning();auto g=std::move(m_brushGesture);clearBrushPreview();
-                emit brushDrawingChanged();if(warned)emit brushCapacityWarningChanged();
+                const bool warned=brushCapacityWarning();auto g=std::move(m_brushGesture);clearBrushPreview();if(!ownerCurrent())return false;
+                emit brushDrawingChanged();if(!ownerCurrent())return false;if(warned){emit brushCapacityWarningChanged();if(!ownerCurrent())return false;}
                 offerBrushRecovery(std::move(g));
-                setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
+                if(ownerCurrent()&&!m_brushGesture)setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
             }
         }
     }catch(...){}
-    cancelBrushStroke();setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
+    if(!current())return false;cancelBrushStroke();if(ownerCurrent()&&!m_brushGesture)setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));return false;
 }
 bool PhotoController::offerBrushRecovery(std::unique_ptr<BrushGesture> g) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
     if(!g||!g->builder||!brushGestureCurrent(*g)||m_brushGesture)return false;
     try {
         if(m_photos[m_currentIndex].state.toJson()!=g->initial.toJson())return false;
@@ -335,19 +346,28 @@ bool PhotoController::offerBrushRecovery(std::unique_ptr<BrushGesture> g) {
     }catch(...){return false;}
 }
 QString PhotoController::applyBrushRecovery() {
+    if(QThread::currentThread()!=thread()||m_closing)return {};
     if(m_brushGesture)return {};
     if(!brushRecoveryAvailable()){discardBrushRecovery();return {};}
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,generation=m_prepareGeneration,revision=m_requestedRevision;
     auto g=std::move(m_brushRecovery);emit brushRecoveryChanged();
+    if(!guard||m_closing||catalog!=m_catalogEpoch||photo!=m_photoEpoch||generation!=m_prepareGeneration||revision!=m_requestedRevision||m_brushGesture)return {};
     return commitBrushGesture(std::move(g));
 }
 QString PhotoController::endBrushStroke() {
+    if(QThread::currentThread()!=thread()||m_closing)return {};
     if(!brushGestureCurrent()){if(m_brushGesture)cancelBrushStroke();return {};}
-    const bool warned=brushCapacityWarning();auto g=std::move(m_brushGesture);clearBrushPreview();emit brushDrawingChanged();
-    if(warned)emit brushCapacityWarningChanged();
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,generation=m_prepareGeneration,revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,photo,generation,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&generation==m_prepareGeneration&&revision==m_requestedRevision&&!m_brushGesture;};
+    const bool warned=brushCapacityWarning();auto g=std::move(m_brushGesture);clearBrushPreview();if(!current())return {};
+    emit brushDrawingChanged();if(!current())return {};if(warned){emit brushCapacityWarningChanged();if(!current())return {};}
     return commitBrushGesture(std::move(g));
 }
 QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
+    if(QThread::currentThread()!=thread()||m_closing)return {};
     if(!g||!brushGestureCurrent(*g))return {};
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,generation=m_prepareGeneration,revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,photo,generation,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&generation==m_prepareGeneration&&revision==m_requestedRevision;};
     AdjustmentState candidate;
     try {
         std::unique_ptr<BrushMaskGeometry::StrokeBuilder> backup;
@@ -358,7 +378,7 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
         if(!stroke){
             if(g->builder->invalid()) {
                 if(backup&&backup->restoreRecoveryPrefix()){g->builder=std::move(backup);offerBrushRecovery(std::move(g));}
-                setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));
+                if(current())setStatus(uiText("笔触超出限制，请拆成较短笔触。","Stroke limit exceeded; use shorter strokes."));
             }
             return {};
         }
@@ -372,7 +392,7 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
         const bool exceedsDocument=facts.valid&&std::size_t(facts.dabs)+stroke->dabs.size()>BrushMaskDocument::MaxTotalDabs;
         if(!brushCandidate(*g,std::move(*stroke),&candidate)){
             if(exceedsDocument&&backup&&backup->restoreRecoveryPrefix()){g->builder=std::move(backup);offerBrushRecovery(std::move(g));}
-            setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};
+            if(current())setStatus(uiText("笔刷文档已达容量上限。","Brush document capacity reached."));return {};
         }
         if(g->layer.isEmpty())g->layer=g->newLayer;
         const auto resolved=LookProfiles::resolveAsShot(candidate,m_currentMetadata,currentIsRaw());
@@ -381,9 +401,9 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
         if(!BrushRenderRequest::preflightGesture(m_fullSource.size(),plan,&error)) {
             setStatus(uiText("该笔触超出处理限制：","Stroke exceeds processing limits: ")+error);return {};
         }
-    }catch(...){setStatus(uiText("笔触未应用：内存不足或处理失败。","Stroke was not applied: allocation or processing failed."));return {};}
+    }catch(...){if(current())setStatus(uiText("笔触未应用：内存不足或处理失败。","Stroke was not applied: allocation or processing failed."));return {};}
     if(!brushGestureCurrent(*g))return {};
-    auto &photo=m_photos[m_currentIndex];photo.history.finish();photo.state=std::move(candidate);
+    auto &entry=m_photos[m_currentIndex];entry.history.finish();entry.state=std::move(candidate);
     const auto layer=g->layer;
     if(persistAndApply(g->mode==BrushMaskGeometry::StrokeMode::Erase?"brush_erase":"brush_stroke",
         {{"layer",layer},{"mode",g->mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}}))finishInteraction();return layer;

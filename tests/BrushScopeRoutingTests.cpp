@@ -14,12 +14,14 @@
 #include <QtEndian>
 #include <QRgba64>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 #include "app/PhotoController.h"
 #include "core/cache/AnalysisFrameCache.h"
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/BrushRenderRequest.h"
@@ -79,6 +81,135 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void gestureTransitionSignalsMayCloseOrDestroyOwner_data() {
+        QTest::addColumn<QString>("action");QTest::addColumn<bool>("closeOnly");
+        for(const auto &action:QStringList{"crop-begin-refine","crop-begin-flag","crop-cancel-flag","crop-apply-flag","crop-apply-commit","brush-begin","brush-end","brush-end-preview","brush-end-recovery","brush-begin-warning","brush-append-warning","brush-capacity-drawing","brush-capacity-warning","brush-capacity-recovery","brush-apply-recovery","brush-invalid-cancel","brush-discard-recovery","brush-cancel"})
+            for(bool closeOnly:{true,false})QTest::newRow(qPrintable(action+(closeOnly?"-close":"-destroy")))<<action<<closeOnly;
+    }
+    void gestureTransitionSignalsMayCloseOrDestroyOwner() {
+        QFETCH(QString,action);QFETCH(bool,closeOnly);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("gesture-owner.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);
+        QVERIFY(owner->createProject(QUrl::fromLocalFile(dir.path()),"GestureOwner"));owner->setExposure(.75);owner->finishInteraction();
+        const bool capacity=action.contains("warning")||action.contains("capacity")||action.contains("recovery");
+        if(capacity){
+            const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};auto large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+            BrushMaskDocument::Document document{{{"full",true,0,{}}}};for(std::size_t n=0;n<BrushMaskDocument::MaxTotalDabs/BrushMaskGeometry::MaxDabsPerStroke;++n)document.layers[0].strokes.push_back(large);
+            document.layers[0].strokes.back().dabs.pop_back();QJsonObject json;QVERIFY(BrushMaskDocument::toJson(document,&json));QVERIFY(owner->executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));owner->finishInteraction();
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);
+        if(action.startsWith("crop-")&&!action.startsWith("crop-begin")){QVERIFY(owner->beginCrop());QTRY_VERIFY_WITH_TIMEOUT(owner->previewReady()&&!owner->m_preparing&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);}
+        if(action.startsWith("brush-")&&action!="brush-begin"&&action!="brush-begin-warning"){
+            QVERIFY(owner->beginBrushStrokeModePressure(capacity?"full":"",.5,.5,.002,.6,1,1,"paint",action.contains("recovery")?.5:(capacity?0:1)));
+            if(capacity&&action!="brush-append-warning")QVERIFY(owner->appendBrushStroke(.5,.5,.5));
+            if(action=="brush-end-recovery")QVERIFY(owner->appendBrushStroke(.7,.5,.5));
+            if(action=="brush-apply-recovery"||action=="brush-discard-recovery"){
+                bool refused=false;for(int i=0;i<40&&!refused;++i)refused=!owner->appendBrushStroke(i%2?.1:.9,.5,1);
+                QVERIFY(refused);QVERIFY(owner->brushRecoveryAvailable());
+            }
+        }
+        if(action=="brush-end-preview")QTRY_VERIFY_WITH_TIMEOUT(!owner->m_brushPreviewId.isEmpty()&&!owner->m_brushPreviewJob->busy(),5000);
+        QVERIFY(owner->flushEdits());const auto project=owner->projectPath();const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("gesture_owner_marker",{{"id",marker}});
+        QPointer<PhotoController> alive(owner.get());bool notified=false,closed=false;AdjustmentState expected;EditHistory history;QVariantList stopped;
+        const auto workState=[&]{
+            QVariantList result{qulonglong(owner->m_requestedRevision),qulonglong(owner->m_prepareGeneration),qulonglong(owner->m_brushGestureSerial),owner->m_cropEditing,owner->m_zoom,owner->m_centerX,owner->m_centerY,owner->m_interacting,bool(owner->m_brushGesture),bool(owner->m_brushRecovery),owner->m_brushPreviewId,qulonglong(owner->m_brushPreviewSample),owner->statusMessage(),int(owner->m_dirtyEdits.size()),int(owner->m_dirtyHistories.size())};
+            for(auto value:QList<quint64>{owner->m_loader->sequence(),owner->m_prepare->sequence(),owner->m_render->sequence(),owner->m_scopeJob->sequence(),owner->m_inputScopeJob->sequence(),owner->m_fullScopeJob->sequence(),owner->m_plotJob->sequence()})result.append(qulonglong(value));
+            for(auto *timer:{&owner->m_saveTimer,&owner->m_saveMaxTimer,&owner->m_refineTimer,&owner->m_exactTimer,&owner->m_prefetchTimer,&owner->m_catalogDateTimer,&owner->m_plotTimer,&owner->m_budgetRetryTimer,&owner->m_brushPreviewRetryTimer,&owner->m_brushPreviewScheduleTimer,&owner->m_softProofDelay,&owner->m_softProofDeadline,&owner->m_diagnosticTimer})result.append(timer->isActive());
+            return result;
+        };
+        const auto terminal=[&]{if(notified||!owner)return;notified=true;expected=owner->m_photos[0].state;history=owner->m_photos[0].history;
+            if(closeOnly){closed=owner->beginClose();if(owner)stopped=workState();}else owner.reset();};
+        QMetaObject::Connection connection;
+        if(action=="crop-begin-refine")connection=QObject::connect(owner.get(),&PhotoController::libraryChanged,owner.get(),terminal);
+        else if(action=="crop-apply-commit")connection=QObject::connect(owner.get(),&PhotoController::historyChanged,owner.get(),terminal);
+        else if(action.startsWith("crop-"))connection=QObject::connect(owner.get(),&PhotoController::cropEditingChanged,owner.get(),terminal);
+        else if(action=="brush-end-preview")connection=QObject::connect(owner.get(),&PhotoController::brushPreviewChanged,owner.get(),terminal);
+        else if(action.contains("warning"))connection=QObject::connect(owner.get(),&PhotoController::brushCapacityWarningChanged,owner.get(),terminal);
+        else if(action.contains("recovery"))connection=QObject::connect(owner.get(),&PhotoController::brushRecoveryChanged,owner.get(),terminal);
+        else connection=QObject::connect(owner.get(),&PhotoController::brushDrawingChanged,owner.get(),terminal);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});bool accepted=false;QString layer;
+        if(action.startsWith("crop-begin"))accepted=owner->beginCrop();
+        else if(action=="crop-cancel-flag")owner->cancelCrop();
+        else if(action.startsWith("crop-apply"))accepted=owner->applyCrop(.2,.2,.6,.6);
+        else if(action=="brush-begin"||action=="brush-begin-warning")accepted=owner->beginBrushStrokeModePressure(capacity?"full":"",.5,.5,.002,.6,1,1,"paint",1);
+        else if(action.startsWith("brush-end"))layer=owner->endBrushStroke();
+        else if(action=="brush-apply-recovery")layer=owner->applyBrushRecovery();
+        else if(action=="brush-discard-recovery")owner->discardBrushRecovery();
+        else if(action=="brush-cancel")owner->cancelBrushStroke();
+        else if(action=="brush-invalid-cancel")accepted=owner->appendBrushStroke(std::numeric_limits<double>::quiet_NaN(),.5,1);
+        else if(action.startsWith("brush-capacity-")){
+            accepted=true;for(int i=0;i<40&&accepted;++i)accepted=owner->appendBrushStroke(i%2?.1:.9,.5,1);
+        }else accepted=owner->appendBrushStroke(.5,.5,1);
+        QVERIFY(notified);if(action=="crop-apply-commit")QVERIFY(accepted);else QVERIFY(!accepted);QVERIFY(layer.isEmpty());
+        if(closeOnly){
+            QVERIFY(closed);QVERIFY(owner&&alive&&owner->m_closing);
+            QTRY_VERIFY_WITH_TIMEOUT(!owner->m_prepare->busy()&&!owner->m_render->busy()&&!owner->m_scopeJob->busy()&&!owner->m_inputScopeJob->busy()&&!owner->m_fullScopeJob->busy()&&!owner->m_plotJob->busy()&&!owner->m_brushPreviewJob->busy(),5000);
+            QCOMPARE(workState(),stopped);
+        }else{QVERIFY(!owner);QVERIFY(!alive);}
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(project,&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.toJson(),expected.toJson());QCOMPARE(rows[0].history.toJson(),history.toJson());
+        bool after=false;int commits=0;for(const auto &value:ActionTrace::instance().snapshot()){const auto event=value.toObject();if(event["action"]=="gesture_owner_marker"&&event["id"]==marker)after=true;
+            else if(after&&(event["action"]=="geometry_crop"||event["action"]=="brush_stroke"||event["action"]=="brush_erase")){++commits;QCOMPARE(event["file"].toString(),path);}}
+        QVERIFY(after);QCOMPARE(commits,action=="crop-apply-commit"?1:0);QCOMPARE(fileHash(path),original);
+    }
+    void gestureEntryPointsRefuseForeignThreadAndClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("gesture-entry.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.m_photos[0].state.toJson(),history=c.m_photos[0].history.toJson();const auto revision=c.m_requestedRevision,serial=c.m_brushGestureSerial;
+        bool crop=true,apply=true,brush=true;QString end="unexpected",recovery="unexpected";
+        const auto attempted=[&]{crop=c.beginCrop();c.cancelCrop();apply=c.applyCrop(.2,.2,.6,.6);brush=c.beginBrushStroke("",.5,.5,.02,.6,1,1);c.appendBrushStroke(.7,.5,1);end=c.endBrushStroke();recovery=c.applyBrushRecovery();};
+        std::thread foreign(attempted);foreign.join();QVERIFY(!crop);QVERIFY(!apply);QVERIFY(!brush);QVERIFY(end.isEmpty());QVERIFY(recovery.isEmpty());
+        QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.m_brushGestureSerial,serial);QVERIFY(!c.m_cropEditing);QVERIFY(!c.brushDrawing());
+        QVERIFY(c.beginClose());attempted();QVERIFY(!crop);QVERIFY(!apply);QVERIFY(!brush);QVERIFY(end.isEmpty());QVERIFY(recovery.isEmpty());QVERIFY(!c.brushReady());QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.m_brushGestureSerial,serial);QVERIFY(!c.m_cropEditing);QVERIFY(!c.brushDrawing());
+    }
+    void endingGestureKeepsReentrantNewGestureUncommitted() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("new-gesture.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.m_photos[0].state.toJson(),history=c.m_photos[0].history.toJson();QVERIFY(c.beginBrushStroke("",.2,.5,.02,.6,1,1));
+        bool started=false,nested=false;const auto connection=QObject::connect(&c,&PhotoController::brushDrawingChanged,&c,[&]{if(started||c.brushDrawing())return;started=true;nested=c.beginBrushStroke("",.7,.5,.02,.6,1,1);});
+        const auto oldLayer=c.endBrushStroke();QObject::disconnect(connection);QVERIFY(started);QVERIFY(nested);QVERIFY(oldLayer.isEmpty());QVERIFY(c.brushDrawing());QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+        const auto newLayer=c.endBrushStroke();QVERIFY(!newLayer.isEmpty());QCOMPARE(c.m_photos[0].state.brushMasks.layers.size(),std::size_t(1));QCOMPARE(c.m_photos[0].state.brushMasks.layers[0].id,newLayer);QVERIFY(c.m_photos[0].state.brushMasks.layers[0].strokes[0].dabs[0].center.x>.6);QCOMPARE(fileHash(path),original);
+    }
+    void cropRefinementRejectsRecursiveEntry() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("recursive-crop.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        int notifications=0;bool nested=true;const auto connection=QObject::connect(&c,&PhotoController::libraryChanged,&c,[&]{if(++notifications==1)nested=c.beginCrop();});
+        const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(entered);QVERIFY(!nested);QCOMPARE(notifications,1);QVERIFY(c.m_cropEditing);QVERIFY(!c.m_finishingInteraction);
+    }
+    void cropEntryAcceptsSynchronousViewportPreparation_data() {
+        QTest::addColumn<bool>("resize");QTest::newRow("resize")<<true;QTest::newRow("pan-center")<<false;
+    }
+    void cropEntryAcceptsSynchronousViewportPreparation() {
+        QFETCH(bool,resize);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("crop-viewport.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        c.setViewport(640,480,1,2,.45,.55);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.gpuPlan(true).state.toJson(),history=c.m_photos[0].history.toJson();bool notified=false;quint64 prepared=0,submitted=0;
+        const auto connection=QObject::connect(&c,&PhotoController::cropEditingChanged,&c,[&]{if(!c.cropEditing()||notified)return;notified=true;c.setViewport(resize?641:640,resize?481:480,1,0,.49,.51);prepared=c.m_prepareGeneration;submitted=c.m_prepare->sequence();});
+        const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(notified);QVERIFY(entered);QVERIFY(c.cropEditing());
+        QCOMPARE(c.m_prepareGeneration,prepared);QCOMPARE(c.m_prepare->sequence(),submitted);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+        QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.m_preparing&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QCOMPARE(fileHash(path),original);
+    }
+    void cropEntryRefusesCancelAndReentrantRestart() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("crop-restart.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.gpuPlan(true).state.toJson(),history=c.m_photos[0].history.toJson();bool notified=false,nested=true;quint64 prepared=0;
+        const auto connection=QObject::connect(&c,&PhotoController::cropEditingChanged,&c,[&]{if(!c.cropEditing()||notified)return;notified=true;c.cancelCrop();nested=c.beginCrop();prepared=c.m_prepareGeneration;});
+        const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(notified);QVERIFY(!entered);QVERIFY(!nested);QVERIFY(!c.cropEditing());QCOMPARE(c.m_prepareGeneration,prepared);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+    }
+    void cropEntryCannotResumeAfterNotificationAcceptedClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("crop-entry-close.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"CropEntryClose"));c.setExposure(.75);c.finishInteraction();
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.flushEdits());
+        bool notified=false,closed=false;quint64 revision=0;
+        QObject::connect(&c,&PhotoController::libraryChanged,&c,[&]{if(notified)return;notified=true;closed=c.beginClose();revision=c.m_requestedRevision;});
+        const bool accepted=c.beginCrop();QVERIFY(notified);QVERIFY(closed);QVERIFY(c.m_closing);
+        QCOMPARE(c.m_cropEditing,false);QVERIFY(!accepted);QCOMPARE(c.m_requestedRevision,revision);
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.exposure,.75);QCOMPARE(fileHash(path),original);
+    }
     void editPublicationSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("action");QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
         const auto rows=[](const QString &action,const QStringList &contexts){for(const auto &context:contexts)for(bool closeOnly:{true,false})
