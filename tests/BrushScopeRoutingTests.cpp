@@ -176,6 +176,27 @@ private slots:
         int notifications=0;bool nested=true;const auto connection=QObject::connect(&c,&PhotoController::libraryChanged,&c,[&]{if(++notifications==1)nested=c.beginCrop();});
         const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(entered);QVERIFY(!nested);QCOMPARE(notifications,1);QVERIFY(c.m_cropEditing);QVERIFY(!c.m_finishingInteraction);
     }
+    void cropEntryAcceptsSynchronousViewportPreparation_data() {
+        QTest::addColumn<bool>("resize");QTest::newRow("resize")<<true;QTest::newRow("pan-center")<<false;
+    }
+    void cropEntryAcceptsSynchronousViewportPreparation() {
+        QFETCH(bool,resize);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("crop-viewport.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        c.setViewport(640,480,1,2,.45,.55);QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.gpuPlan(true).state.toJson(),history=c.m_photos[0].history.toJson();bool notified=false;quint64 prepared=0,submitted=0;
+        const auto connection=QObject::connect(&c,&PhotoController::cropEditingChanged,&c,[&]{if(!c.cropEditing()||notified)return;notified=true;c.setViewport(resize?641:640,resize?481:480,1,0,.49,.51);prepared=c.m_prepareGeneration;submitted=c.m_prepare->sequence();});
+        const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(notified);QVERIFY(entered);QVERIFY(c.cropEditing());
+        QCOMPARE(c.m_prepareGeneration,prepared);QCOMPARE(c.m_prepare->sequence(),submitted);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+        QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.m_preparing&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QCOMPARE(fileHash(path),original);
+    }
+    void cropEntryRefusesCancelAndReentrantRestart() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("crop-restart.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.gpuPlan(true).state.toJson(),history=c.m_photos[0].history.toJson();bool notified=false,nested=true;quint64 prepared=0;
+        const auto connection=QObject::connect(&c,&PhotoController::cropEditingChanged,&c,[&]{if(!c.cropEditing()||notified)return;notified=true;c.cancelCrop();nested=c.beginCrop();prepared=c.m_prepareGeneration;});
+        const bool entered=c.beginCrop();QObject::disconnect(connection);QVERIFY(notified);QVERIFY(!entered);QVERIFY(!nested);QVERIFY(!c.cropEditing());QCOMPARE(c.m_prepareGeneration,prepared);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+    }
     void cropEntryCannotResumeAfterNotificationAcceptedClose() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto path=dir.filePath("crop-entry-close.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);

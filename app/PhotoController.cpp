@@ -217,14 +217,19 @@ GeometryState PhotoController::previewGeometry() const {
     return geometry;
 }
 bool PhotoController::beginCrop() {
-    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy() || !hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
+    if (QThread::currentThread()!=thread() || m_closing || m_enteringCrop || xmpMergeBusy() || !hasImage() || !previewReady() || m_loading || m_cropEditing) return false;
     const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch;
+    m_enteringCrop=true;const auto reset=qScopeGuard([this,guard]{if(guard)m_enteringCrop=false;});
     if(!finishInteractionImpl())return false;
-    const auto revision=m_requestedRevision;m_cropEditing = true;
+    const auto generation=m_prepareGeneration;m_cropEditing = true;
     m_zoom = 0; m_centerX = m_centerY = .5;
     emit cropEditingChanged();
-    if(!guard||m_closing||catalog!=m_catalogEpoch||photo!=m_photoEpoch||revision!=m_requestedRevision||!m_cropEditing)return false;
-    return prepareCurrent();
+    const auto current=[this,guard,catalog,photo]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&m_cropEditing;};
+    if(!current())return false;
+    // The canvas can synchronously prepare its fitted viewport from the mode
+    // notification. That is the accepted crop entry, not a replacement edit.
+    if(generation==m_prepareGeneration)prepareCurrent();
+    return current();
 }
 void PhotoController::cancelCrop() {
     if (QThread::currentThread()!=thread() || m_closing || !m_cropEditing) return;

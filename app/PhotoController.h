@@ -745,7 +745,7 @@ private:
     bool m_exactScopes = false, m_scopesUpdating = true, m_viewportOnly = false;
     QJsonObject m_preparedGeometry;
     bool m_preparing = false;
-    bool m_cropEditing = false;
+    bool m_cropEditing = false, m_enteringCrop = false;
     bool m_interacting = false, m_sourceIsFull = false, m_closing = false, m_closePreparing = false, m_finishingInteraction = false;
     quint64 m_photoEpoch = 0, m_prepareGeneration = 0, m_requestedRevision = 0, m_scopesRevision = 0;
     int m_scopesRank = -1;
