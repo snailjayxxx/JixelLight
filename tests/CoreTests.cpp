@@ -232,10 +232,16 @@ private slots:
         auto strips=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Stripes128,{},&error);QVERIFY2(strips,qPrintable(error));const auto actual=ScopesEngine::analyzeWorking(*strips,{},&error);QVERIFY2(actual.error.isEmpty(),qPrintable(error));QCOMPARE(actual.pixelCount,reference.pixelCount);QCOMPARE(actual.red,reference.red);QCOMPARE(actual.green,reference.green);QCOMPARE(actual.blue,reference.blue);QCOMPARE(actual.luma,reference.luma);QCOMPARE(actual.shadowClipPercent,reference.shadowClipPercent);QCOMPARE(actual.highlightClipPercent,reference.highlightClipPercent);QCOMPARE(ScopesEngine::analyzeWorking(*strips).pixelCount,quint64(0));
     }
     void admittedWorkingBrushMatchesTheExistingPreOutputDiagnosticBoundary() {
-        const auto f=analysisIntegrationFixture();auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        auto f=analysisIntegrationFixture();auto budget=std::make_shared<BrushRenderBudget>();QString error;
+        // The existing diagnostic renderer deliberately refuses enabled brushes.
+        // Keep a real admission, with a zero-EV layer, and compare its exact
+        // pre-output boundary to the unchanged no-brush diagnostic oracle.
+        auto state=f.plan.state;state.brushMasks.layers.front().exposureEv=0;
+        f.plan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);
+        state.brushMasks={};const auto diagnosticPlan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);
         auto request=BrushAnalysisRequest::create(f.source,f.plan,f.geometry,BrushRenderRequest::Layout::Whole,{},&error,budget);QVERIFY2(request,qPrintable(error));
         const auto cost=request->reservedBytes();auto output=request->render({},&error);QVERIFY2(output,qPrintable(error));QCOMPARE(output.image().format(),QImage::Format_RGBA32FPx4);QCOMPARE(output.image().colorSpace(),QColorSpace(QColorSpace::SRgbLinear));
-        const auto corrected=f.geometry.apply(f.source);const auto original=ImagePipeline::diagnoseWithPlan(corrected,f.plan);QVERIFY(!original.image.isNull());QCOMPARE(output.image().size(),corrected.size());
+        const auto corrected=f.geometry.apply(f.source);const auto original=ImagePipeline::diagnoseWithPlan(corrected,diagnosticPlan);QVERIFY(!original.image.isNull());QCOMPARE(output.image().size(),corrected.size());
         ColorStageDiagnostics observed(output.image().width(),output.image().height(),f.plan);
         for(int y=0;y<output.image().height();++y){const auto *p=reinterpret_cast<const float *>(output.image().constScanLine(y));const auto *source=reinterpret_cast<const float *>(corrected.constScanLine(y));for(int x=0;x<output.image().width();++x){QCOMPARE(p[4*x+3],source[4*x+3]);for(int i=0;i<int(ColorStage::Count);++i)observed.observe(static_cast<ColorStage>(i),x,p[4*x],p[4*x+1],p[4*x+2]);}observed.finishRow();}
         const auto find=[](const QJsonObject &stages){for(const auto &v:stages["entries"].toArray()){const auto row=v.toObject();if(row["id"]=="perceptual_look")return row;}return QJsonObject{};};
