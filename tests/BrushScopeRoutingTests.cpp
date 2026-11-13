@@ -76,6 +76,33 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void asynchronousLinearScopeDeliveryMayDestroyOwner_data() {
+        QTest::addColumn<QString>("domain");QTest::addColumn<bool>("plot");
+        for(const auto &domain:QStringList{"source","working"}) {
+            QTest::newRow(qPrintable(domain+"-histogram"))<<domain<<false;
+            QTest::newRow(qPrintable(domain+"-plot"))<<domain<<true;
+        }
+    }
+    void asynchronousLinearScopeDeliveryMayDestroyOwner() {
+        QFETCH(QString,domain);QFETCH(bool,plot);
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("asynchronous-owner.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);
+        QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering()&&owner->scopesPixelCount()>0&&!owner->m_scopeJob->busy(),15000);
+        QVERIFY(owner->flushEdits());owner->m_saveTimer.stop();owner->m_saveMaxTimer.stop();owner->m_refineTimer.stop();owner->setExactScopes(false);
+        if(plot){owner->setScopeDomain(domain);QTRY_VERIFY_WITH_TIMEOUT(owner->scopesPixelCount()>0&&!owner->m_inputScopeJob->busy(),15000);}
+        QPointer<PhotoController> alive(owner.get());bool deleted=false;
+        const auto completed=[&]{
+            if(!owner)return;
+            const bool current=plot?owner->scopePlotCurrent():owner->scopesPixelCount()>0&&owner->scopeDomain()==domain;
+            if(current){owner.reset();deleted=true;}
+        };
+        if(plot)QObject::connect(owner.get(),&PhotoController::scopePlotChanged,owner.get(),completed);
+        else QObject::connect(owner.get(),&PhotoController::scopesChanged,owner.get(),completed);
+        if(plot)owner->setScopeMode("waveform");else owner->setScopeDomain(domain);
+        QTRY_VERIFY_WITH_TIMEOUT(deleted,15000);QVERIFY(!alive);QVERIFY(!owner);QCOMPARE(fileHash(path),original);
+    }
     void controllerFullLinearPlotsReuseCompletedFramesWhileBrushBudgetIsBusy() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("linear-frame-reuse.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
         auto budget=std::make_shared<BrushRenderBudget>(512LL*1024*1024);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();

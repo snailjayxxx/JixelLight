@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFutureWatcher>
+#include <QPointer>
 #include <QThreadPool>
 #include <QtConcurrent/QtConcurrentRun>
 #include <atomic>
@@ -23,14 +24,21 @@ public:
     using Work = std::function<Result(const Request &, const CancelToken &)>;
     using Deliver = std::function<void(const Request &, Result)>;
 
-    LatestJob(Work work, Deliver deliver) : m_work(std::move(work)), m_deliver(std::move(deliver)) {
+    LatestJob(Work work, Deliver deliver) : m_work(std::move(work)), m_deliver(std::make_shared<Deliver>(std::move(deliver))) {
         m_pool.setMaxThreadCount(1);
         QObject::connect(&m_watcher, &QFutureWatcher<Result>::finished, &m_context, [this] {
             const bool valid = m_active && m_active->sequence == m_sequence && !cancelled(m_cancel);
             auto active = std::move(m_active);
             m_active.reset();
             m_running = false;
-            if (valid) m_deliver(active->request, m_watcher.result());
+            const QPointer<QObject> alive(&m_context);
+            if (valid) {
+                // Delivery may destroy the owning controller and this queue.
+                // Keep the callable itself alive until it returns as well.
+                const auto deliver = m_deliver;
+                (*deliver)(active->request, m_watcher.result());
+            }
+            if (!alive) return;
             if (!m_running && m_pending) start();
         });
     }
@@ -72,7 +80,7 @@ private:
     QThreadPool m_pool;
     QFutureWatcher<Result> m_watcher;
     Work m_work;
-    Deliver m_deliver;
+    std::shared_ptr<Deliver> m_deliver;
     std::optional<Pending> m_active, m_pending;
     CancelToken m_cancel;
     quint64 m_sequence = 0;
