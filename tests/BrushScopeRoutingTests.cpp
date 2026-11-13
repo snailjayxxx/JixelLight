@@ -103,7 +103,10 @@ private slots:
         if(action.startsWith("brush-")&&action!="brush-begin"&&action!="brush-begin-warning"){
             QVERIFY(owner->beginBrushStrokeModePressure(capacity?"full":"",.5,.5,.002,.6,1,1,"paint",capacity?0:1));
             if(capacity&&action!="brush-append-warning")QVERIFY(owner->appendBrushStroke(.5,.5,.5));
-            if(action=="brush-apply-recovery"||action=="brush-discard-recovery"){QVERIFY(!owner->appendBrushStroke(.7,.5,1));QVERIFY(owner->brushRecoveryAvailable());}
+            if(action=="brush-apply-recovery"||action=="brush-discard-recovery"){
+                bool refused=false;for(int i=0;i<40&&!refused;++i)refused=!owner->appendBrushStroke(i%2?.1:.9,.5,1);
+                QVERIFY(refused);QVERIFY(owner->brushRecoveryAvailable());
+            }
         }
         if(action=="brush-end-preview")QTRY_VERIFY_WITH_TIMEOUT(!owner->m_brushPreviewId.isEmpty()&&!owner->m_brushPreviewJob->busy(),5000);
         QVERIFY(owner->flushEdits());const auto project=owner->projectPath();const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("gesture_owner_marker",{{"id",marker}});
@@ -134,7 +137,9 @@ private slots:
         else if(action=="brush-discard-recovery")owner->discardBrushRecovery();
         else if(action=="brush-cancel")owner->cancelBrushStroke();
         else if(action=="brush-invalid-cancel")accepted=owner->appendBrushStroke(std::numeric_limits<double>::quiet_NaN(),.5,1);
-        else accepted=owner->appendBrushStroke(action=="brush-append-warning"?.5:.7,.5,1);
+        else if(action.startsWith("brush-capacity-")){
+            accepted=true;for(int i=0;i<40&&accepted;++i)accepted=owner->appendBrushStroke(i%2?.1:.9,.5,1);
+        }else accepted=owner->appendBrushStroke(.5,.5,1);
         QVERIFY(notified);if(action=="crop-apply-commit")QVERIFY(accepted);else QVERIFY(!accepted);QVERIFY(layer.isEmpty());
         if(closeOnly){
             QVERIFY(closed);QVERIFY(owner&&alive&&owner->m_closing);
