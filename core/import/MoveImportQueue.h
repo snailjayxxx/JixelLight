@@ -17,6 +17,7 @@ public:
     void cancel();void stopAndCollect();
     bool retirementPermitted()const{return m_retirementAllowed;}
     bool busy()const{return m_phase!=Phase::Idle;}
+    QString operationId()const{return busy()?m_operationId:QString{};}
 signals:
     void progress(qint64 copied,qint64 total,int completed,int files,const QString &stage);
     void copiesReady(const MoveImportBatch &batch);
@@ -27,4 +28,5 @@ private:
     CopyImportProgress progressSink(const CancelToken &);
     QThreadPool m_pool;QFutureWatcher<MoveImportBatch> m_watcher;CancelToken m_cancel;
     MoveImportBatch m_batch;MoveImportTrash m_trash;Phase m_phase=Phase::Idle;bool m_retirementAllowed=false;
+    QString m_operationId;
 };

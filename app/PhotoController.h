@@ -189,12 +189,14 @@ class PhotoController final : public QObject {
     Q_PROPERTY(bool scopePlotCurrent READ scopePlotCurrent NOTIFY scopePlotChanged)
     Q_PROPERTY(qulonglong scopePlotPixels READ scopePlotPixels NOTIFY scopePlotChanged)
     Q_PROPERTY(bool exportBusy READ exportBusy NOTIFY exportChanged)
+    Q_PROPERTY(QString exportOperationId READ exportOperationId NOTIFY exportChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
     Q_PROPERTY(QVariantMap moveImportDiagnostics READ moveImportDiagnostics NOTIFY copyImportChanged)
     Q_PROPERTY(bool moveImportBusy READ moveImportBusy NOTIFY copyImportChanged)
     Q_PROPERTY(QVariantMap moveImportRecoveryPreview READ moveImportRecoveryPreview NOTIFY moveImportRecoveryChanged)
     Q_PROPERTY(QString moveImportJournal READ moveImportJournal NOTIFY copyImportChanged)
     Q_PROPERTY(bool copyImportBusy READ copyImportBusy NOTIFY copyImportChanged)
+    Q_PROPERTY(QString copyImportOperationId READ copyImportOperationId NOTIFY copyImportChanged)
     Q_PROPERTY(quint64 importNameRevision READ importNameRevision NOTIFY importNamePreviewChanged)
     Q_PROPERTY(double copyImportProgress READ copyImportProgress NOTIFY copyImportChanged)
     Q_PROPERTY(QString copyImportStatus READ copyImportStatus NOTIFY copyImportChanged)
@@ -249,6 +251,7 @@ public:
     bool scopePlotCurrent() const { return !m_scopePlot.image.isNull() && m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && !m_preparing && m_plotFull==m_exactScopes; }
     qulonglong scopePlotPixels() const { return m_scopePlot.pixels; }
     bool exportBusy() const { return m_exportQueue && m_exportQueue->busy(); }
+    QString exportOperationId() const { return m_exportQueue ? m_exportQueue->operationId() : QString{}; }
     double exportProgress() const { return m_exportProgress; }
     QSizeF previewDisplaySize() const { return m_displayPixels / m_devicePixelRatio; }
     QRectF previewFrameRect() const { return m_previewFrameRect; }
@@ -486,6 +489,9 @@ public:
     Q_INVOKABLE void cancelCopyImport();
     Q_INVOKABLE bool prepareToClose();
     bool copyImportBusy() const { return (m_copyImportQueue && m_copyImportQueue->busy())||moveImportBusy(); }
+    QString copyImportOperationId() const {
+        return moveImportBusy()?m_moveImportQueue->operationId():(m_copyImportQueue?m_copyImportQueue->operationId():QString{});
+    }
     double copyImportProgress() const { return m_copyImportProgress; }
     QString copyImportStatus() const { return m_copyImportStatus; }
     Q_INVOKABLE bool importFile(const QUrl &url);
@@ -548,6 +554,8 @@ public:
     // Explicit project merge: starts an asynchronous read/review. A true
     // return means queued, never saved. Legacy explicit session import stays.
     Q_INVOKABLE bool requestXmpMerge(const QUrl &source);
+    Q_PROPERTY(QString xmpMergeOperationId READ xmpMergeOperationId NOTIFY xmpMergeChanged)
+    QString xmpMergeOperationId() const;
     Q_INVOKABLE bool cancelXmpMerge();
     Q_INVOKABLE void openXmpExportDialog();
     Q_INVOKABLE void openXmpImportDialog();
@@ -844,6 +852,7 @@ private:
     bool executePhotoImport(const QJsonObject &command,bool notifyImmediately);
     bool executeCurrentExport(const QJsonObject &command,bool newFileOnly);
     bool executeBatchExport(const QJsonObject &command);
+    bool executeOperationCancel(const QJsonObject &command);
     bool executePhotoTransfer(const QJsonObject &command);
     bool executeCurationCommand(const QJsonObject &command);
     bool executeVirtualVersion(const QJsonObject &command);
@@ -906,6 +915,7 @@ private:
     struct XmpMergeSession {
         XmpCapture::Target target;
         QString originalPath;
+        QString operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);
         ProjectDatabase::OriginalIdentity original;
         XmpCapture::Captured sidecar;
         ProjectDatabase::XmpReviewRecord review;
@@ -923,6 +933,7 @@ private:
     XmpCapture::Target xmpMergeTarget() const;
     QJsonObject xmpMergeGuiSnapshot() const;
     bool xmpMergeCurrent() const;
+    bool cancelXmpMergeImpl();
     void initializeXmpMerge();
     void shutdownXmpMerge();
     void finishXmpMerge(const QString &message, bool applyDeferredMetadata = false);

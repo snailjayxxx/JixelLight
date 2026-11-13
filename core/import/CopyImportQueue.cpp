@@ -1,5 +1,6 @@
 #include "CopyImportQueue.h"
 #include <QtConcurrent/QtConcurrentRun>
+#include <QUuid>
 
 CopyImportQueue::CopyImportQueue(QObject *parent) : QObject(parent) {
     m_pool.setMaxThreadCount(1);
@@ -11,6 +12,7 @@ CopyImportQueue::~CopyImportQueue() {
 }
 bool CopyImportQueue::start(QStringList sources,QString directory,ImportNaming naming,QStringList expectedCaptureTimes) {
     if (m_busy || sources.isEmpty()) return false;
+    m_operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_busy=true; m_cancel=std::make_shared<std::atomic_bool>(false); const auto token=m_cancel;
     m_watcher.setFuture(QtConcurrent::run(&m_pool,[this,sources=std::move(sources),directory=std::move(directory),naming=std::move(naming),expectedCaptureTimes=std::move(expectedCaptureTimes),token] {
         return copyImportFiles(sources,directory,token,[this,token](qint64 copied,qint64 total,int done,int files,const QString &stage) {

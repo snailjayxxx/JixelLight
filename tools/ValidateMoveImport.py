@@ -19,7 +19,16 @@ from ValidateRawPressureQpa import png, file_sha, require
 from ValidateColorMask import integer, finite, positive_id, same_recorded_source, qt_round_positive, DEVELOP_FIELDS
 
 
+def validate_operation_identities(data):
+    ids = data['transfer_operation_ids']
+    require(type(ids) is list and len(ids) == 2 and all(type(value) is str and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value) is not None
+            and value != '00000000-0000-0000-0000-000000000000' for value in ids) and len(set(ids)) == 2, 'distinct actual move/recovery operation identities')
+    require(data['stale_transfer_cancel_refused'] is True and data['idle_transfer_operation_id'] == '', 'stale cancellation refused and completed operation idle')
+    return True
+
+
 def validate_report(data,mode,qpa,expected_commit=None):
+    validate_operation_identities(data)
     require(mode in ('cpu','gpu')and qpa in ('cocoa','windows','xcb'),'actual mode/QPA')
     require(data['passed']is True and data['error']=='' and type(data['phase'])is int and data['phase']==12,'complete actual move/recovery workflow')
     require(data['language']==('en_US'if mode=='cpu'else'zh_CN')and data['actual_qpa']==qpa and data['GPU_active']is(mode=='gpu'),'language/QPA/processor')

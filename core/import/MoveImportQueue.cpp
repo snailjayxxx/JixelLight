@@ -1,5 +1,6 @@
 #include "MoveImportQueue.h"
 #include <QtConcurrent/QtConcurrentRun>
+#include <QUuid>
 MoveImportQueue::MoveImportQueue(QObject *parent,MoveImportTrash trash):QObject(parent),m_trash(std::move(trash)){
     m_pool.setMaxThreadCount(1);connect(&m_watcher,&QFutureWatcher<MoveImportBatch>::finished,this,&MoveImportQueue::deliver);
 }
@@ -8,13 +9,13 @@ CopyImportProgress MoveImportQueue::progressSink(const CancelToken &token){retur
     QMetaObject::invokeMethod(this,[=,this]{if(busy()&&token==m_cancel)emit progress(copied,total,done,files,stage);},Qt::QueuedConnection);
 };}
 bool MoveImportQueue::start(QStringList sources,QString directory,QString project,ImportNaming naming,QStringList times){
-    if(busy()||sources.isEmpty())return false;m_phase=Phase::Copying;m_cancel=std::make_shared<std::atomic_bool>(false);const auto token=m_cancel;const auto sink=progressSink(token);
+    if(busy()||sources.isEmpty())return false;m_operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);m_phase=Phase::Copying;m_cancel=std::make_shared<std::atomic_bool>(false);const auto token=m_cancel;const auto sink=progressSink(token);
     m_watcher.setFuture(QtConcurrent::run(&m_pool,[sources=std::move(sources),directory=std::move(directory),project=std::move(project),naming=std::move(naming),times=std::move(times),token,sink]{
         try{return prepareMoveImport(sources,directory,project,token,sink,naming,times);}catch(...){MoveImportBatch batch;batch.error="Move copy worker failed; sources retained";return batch;}
     }));return true;
 }
 bool MoveImportQueue::resume(QString journal,QString expectedDigest){
-    if(busy()||expectedDigest.isEmpty())return false;m_phase=Phase::Reading;m_cancel=std::make_shared<std::atomic_bool>(false);
+    if(busy()||expectedDigest.isEmpty())return false;m_operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);m_phase=Phase::Reading;m_cancel=std::make_shared<std::atomic_bool>(false);
     m_watcher.setFuture(QtConcurrent::run(&m_pool,[journal=std::move(journal),expectedDigest=std::move(expectedDigest)]{try{QString error;auto batch=readMoveImport(journal,&error);if(!error.isEmpty()||batch.recordDigest!=expectedDigest){batch.journal.clear();batch.error="Move recovery record changed or is invalid; inspect it again";}return batch;}catch(...){MoveImportBatch batch;batch.error="Move recovery worker failed; sources retained";return batch;}}));return true;
 }
 bool MoveImportQueue::catalogReady(bool durable){

@@ -766,6 +766,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel"||object["command"]=="xmp.cancel")return executeOperationCancel(object);
     if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
@@ -1363,9 +1364,10 @@ bool PhotoController::startCopyImport(const QVariantList &urls,const QUrl &direc
     const auto expected=preview["captureTimes"].toStringList();
     const auto names=planImportNames(sources,naming,expected);
     if (!m_copyImportQueue->start(sources,directory.toLocalFile(),naming,expected)) return false;
-    m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…"); emit copyImportChanged();
+    m_copyImportProgress=0; m_copyImportStatus=uiText("检查复制计划…", "Checking copy plan…");
     ActionTrace::instance().record("copy_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},
-        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)},{"command",canonical}});
+        {"pattern",pattern},{"sequence_start",sequenceStart},{"names",QJsonArray::fromStringList(names.names)},{"command",canonical},{"operation_id",copyImportOperationId()}});
+    emit copyImportChanged();
     return true;
 }
 void PhotoController::openCopyImportDialog() {
@@ -1378,7 +1380,10 @@ void PhotoController::openCopyImportDialog() {
     QVariantList urls; for (const auto &file : files) urls.push_back(QUrl::fromLocalFile(file));
     emit copyImportRequested(urls);
 }
-void PhotoController::cancelCopyImport() { m_copyImportQueue->cancel();if(m_moveImportQueue)m_moveImportQueue->cancel(); }
+void PhotoController::cancelCopyImport() {
+    if(QThread::currentThread()!=thread()||m_closing)return;
+    executeOperationCancel({{"command","photo.transfer.cancel"},{"operation_id",copyImportOperationId()}});
+}
 bool PhotoController::prepareToClose() {
     if (m_xmpMerge) {
         if (m_xmpMerge->phase==XmpMergePhase::ReloadRequired) return m_project.flush();
@@ -1757,7 +1762,7 @@ bool PhotoController::executeCurrentExport(const QJsonObject &command,bool newFi
         QSettings().setValue("export/colorSpace", ColorManagement::key(target));
         QSettings().setValue("export/jpegQuality", quality);
         ActionTrace::instance().record("export_queued", {{"file", currentFile()}, {"destination", path}, {"quality", quality},
-            {"output_space",ColorManagement::key(target)},{"new_file_only",newFileOnly},
+            {"output_space",ColorManagement::key(target)},{"new_file_only",newFileOnly},{"operation_id",exportOperationId()},
             {"command",QJsonObject{{"command","export.run"},{"destination",path},{"space",request.space},{"quality",quality}}}});
         setStatus(uiText(QStringLiteral("导出已开始，可继续编辑。"), QStringLiteral("Export started; editing remains available.")));
         emit exportChanged();
@@ -1885,14 +1890,41 @@ bool PhotoController::executeBatchExport(const QJsonObject &command) {
             {"format",batch.format},{"pattern",batch.pattern},{"sequenceStart",batch.sequenceStart}};
         QJsonObject details{{"count",resolved.size()}};
         if(!batch.all){canonical["photos"]=QJsonArray::fromStringList(exportKeys);details["version_keys"]=QJsonArray::fromStringList(exportKeys);}
-        details["command"]=canonical;
+        details["command"]=canonical;details["operation_id"]=exportOperationId();
         ActionTrace::instance().record(batch.all?"all_export_queued":"selected_export_queued",details);
         setStatus(uiText("批量导出已开始，可继续编辑。", "Batch export started; editing remains available."));
         emit exportChanged();
     }
     return queued;
 }
-void PhotoController::cancelExport() { m_exportQueue->cancel(); }
+void PhotoController::cancelExport() {
+    if(QThread::currentThread()!=thread()||m_closing)return;
+    executeOperationCancel({{"command","export.cancel"},{"operation_id",exportOperationId()}});
+}
+bool PhotoController::executeOperationCancel(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::OperationCancel request;if(!CommandRegistry::decodeOperationCancel(command,&request))return false;
+    if(request.review) {
+        if(request.operationId!=xmpMergeOperationId())return false;
+        const QVariantMap details{{"command",command},{"kind","xmp-review"},{"completion","cancelled-before-commit"},
+            {"project",m_xmpMerge->target.projectLocator},{"version_key",m_xmpMerge->target.storageKey}};
+        const bool accepted=cancelXmpMergeImpl();
+        // Cancellation emits owner callbacks. Only frozen local facts remain safe.
+        if(accepted)ActionTrace::instance().record("operation_cancel_requested",details);
+        return accepted;
+    }
+    QString kind;
+    if(!request.transfer) {
+        if(request.operationId!=exportOperationId())return false;
+        kind="export";m_exportQueue->cancel();
+    }else if(m_copyImportQueue&&request.operationId==m_copyImportQueue->operationId()) {
+        kind="copy";m_copyImportQueue->cancel();
+    }else if(m_moveImportQueue&&request.operationId==m_moveImportQueue->operationId()) {
+        kind="move";m_moveImportQueue->cancel();
+    }else return false;
+    ActionTrace::instance().record("operation_cancel_requested",{{"command",command},{"kind",kind},{"completion","cancellation-requested"}});
+    return true;
+}
 
 PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
     BugSnapshot snapshot;

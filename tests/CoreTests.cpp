@@ -4507,6 +4507,54 @@ private slots:
         QVERIFY(canonical);
     }
 
+    void operationCancellationDecoderRejectsNoncanonicalIdsWithoutChangingOutput() {
+        const QString id="c59c39df-320d-4b8b-89ac-9307454d0208";
+        for(const auto &name:QStringList{"export.cancel","photo.transfer.cancel","xmp.cancel"}) {
+            const QJsonObject valid{{"command",name},{"operation_id",id}};CommandRegistry::OperationCancel result;
+            QVERIFY(CommandRegistry::decodeOperationCancel(valid,&result));QCOMPARE(result.operationId,id);QCOMPARE(result.transfer,name=="photo.transfer.cancel");QCOMPARE(result.review,name=="xmp.cancel");
+            const QList<QJsonValue> invalid{QJsonValue(QJsonValue::Null),1,true,QString{},id.toUpper(),"{"+id+"}"," "+id,id+" ",
+                QString("00000000-0000-0000-0000-000000000000"),QString(36,'a'),id.left(35),id+"x",QString::fromUtf8("bad\0id",6)};
+            for(const auto &value:invalid) {
+                auto bad=valid;bad["operation_id"]=value;result={"sentinel",true};QString error;
+                QVERIFY(!CommandRegistry::decodeOperationCancel(bad,&result,&error));QVERIFY(!error.isEmpty());QCOMPARE(result.operationId,QString("sentinel"));QVERIFY(result.transfer);
+            }
+            auto bad=valid;bad.remove("operation_id");QVERIFY(!CommandRegistry::decodeOperationCancel(bad,&result));bad=valid;bad["all"]=true;QVERIFY(!CommandRegistry::decodeOperationCancel(bad,&result));
+            bad=valid;bad["command"]="cancel";QVERIFY(!CommandRegistry::decodeOperationCancel(bad,&result));QVERIFY(!CommandRegistry::decodeOperationCancel(valid,nullptr));
+            AdjustmentState state;const auto before=state.toJson();QVERIFY(!CommandRegistry::executeBatch(state,{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",3}},valid}));QCOMPARE(state.toJson(),before);
+        }
+    }
+    void exportCancellationTargetsOneOperationAndForeignOrStaleRequestsCannotStopItsSuccessor() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setLookMode("off");c.setExposure(.25);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto selection=c.selectedIndices();QSignalSpy finished(&c,&PhotoController::exportFinished);
+        QVERIFY(c.exportOperationId().isEmpty());
+        const auto start=[&](const QString &path){return c.executeCommand({{"command","export.run"},{"destination",path},{"space","srgb"}});};
+        QVERIFY(start(dir.filePath("first.png")));const auto first=c.exportOperationId();QVERIFY(!first.isEmpty());QCOMPARE(c.property("exportOperationId").toString(),first);
+        QVERIFY(!c.executeCommand({{"command","photo.transfer.cancel"},{"operation_id",first}}));
+        const QVariantMap cancel{{"command","export.cancel"},{"operation_id",first}};QVERIFY(c.executeCommand(cancel));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,10000);QVERIFY(finished[0][2].toBool());
+        QVERIFY(c.exportOperationId().isEmpty());QVERIFY(!c.executeCommand(cancel));
+        const auto secondPath=dir.filePath("second.png");QVERIFY(start(secondPath));const auto second=c.exportOperationId();QVERIFY(!second.isEmpty());QVERIFY(second!=first);QVERIFY(!c.executeCommand(cancel));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand({{"command","export.cancel"},{"operation_id",second}});c.cancelExport();});worker.join();QVERIFY(foreign);QVERIFY(!accepted);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(),2,10000);QCOMPARE(finished[1][0].toInt(),1);QCOMPARE(finished[1][1].toInt(),0);QVERIFY(!finished[1][2].toBool());QVERIFY(!QImage(secondPath).isNull());
+        QVERIFY(c.exportOperationId().isEmpty());QVERIFY(QDir(dir.path()).entryList({".jixellight-export-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+        bool traced=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="operation_cancel_requested"&&row["command"].toObject()==QJsonObject::fromVariantMap(cancel)){QCOMPARE(row["kind"].toString(),QString("export"));traced=true;}}
+        QVERIFY(traced);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.selectedIndices(),selection);QCOMPARE(fixtureBytes(source),bytes);
+    }
+    void copyImportCancellationAdapterRecordsIdentityAndDoesNotCancelANewerCopy() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto firstOut=dir.filePath("first"),secondOut=dir.filePath("second");QVERIFY(QDir().mkdir(firstOut));QVERIFY(QDir().mkdir(secondOut));
+        const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.25);c.finishInteraction();const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();
+        QVERIFY(c.copyImportOperationId().isEmpty());QVERIFY(c.copyImport({QUrl::fromLocalFile(source)},QUrl::fromLocalFile(firstOut)));const auto first=c.copyImportOperationId();QVERIFY(!first.isEmpty());
+        QCOMPARE(c.property("copyImportOperationId").toString(),first);c.cancelCopyImport();QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QVERIFY(c.copyImportOperationId().isEmpty());
+        const QVariantMap stale{{"command","photo.transfer.cancel"},{"operation_id",first}};QVERIFY(!c.executeCommand(stale));
+        QVERIFY(c.copyImport({QUrl::fromLocalFile(source)},QUrl::fromLocalFile(secondOut)));const auto second=c.copyImportOperationId();QVERIFY(!second.isEmpty());QVERIFY(second!=first);QVERIFY(!c.executeCommand(stale));
+        QVERIFY(!c.executeCommand({{"command","export.cancel"},{"operation_id",second}}));
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand({{"command","photo.transfer.cancel"},{"operation_id",second}});c.cancelCopyImport();});worker.join();QVERIFY(foreign);QVERIFY(!accepted);
+        QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(fixtureBytes(QDir(secondOut).filePath("source.png")),bytes);QVERIFY(c.copyImportOperationId().isEmpty());
+        QVERIFY(QDir(secondOut).entryList({".jixellight-*"},QDir::AllEntries|QDir::Hidden|QDir::NoDotAndDotDot).isEmpty());
+        bool traced=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="operation_cancel_requested"&&row["command"].toObject()==QJsonObject::fromVariantMap(stale)){QCOMPARE(row["kind"].toString(),QString("copy"));traced=true;}}
+        QVERIFY(traced);QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(fixtureBytes(source),bytes);
+    }
     void newFileExportQueuePreservesExistingTargetsAndCleansStaging() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const auto existing=dir.filePath("existing.png"),fresh=dir.filePath("fresh.png");

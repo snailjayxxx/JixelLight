@@ -207,6 +207,15 @@ private slots:
             QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::projectSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopOperationCancellationCannotReachQueuesFromOfflineSessions(){
+        for(const auto &name:QStringList{"export.cancel","photo.transfer.cancel","xmp.cancel"}) {
+            const QJsonObject command{{"command",name},{"operation_id","c59c39df-320d-4b8b-89ac-9307454d0208"}};
+            CommandRegistry::OperationCancel request;QVERIFY(CommandRegistry::decodeOperationCancel(command,&request));
+            CommandSession result;result.photoCount=88;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,88);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::operationCancelSchema(name=="photo.transfer.cancel",name=="xmp.cancel"));
+            QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void desktopProofActionsCannotAlterEarlierExportsOrSessionEditState(){
         for(const auto &command:QList<QJsonObject>{
             {{"command","proof.enable"},{"enabled",true}},{{"command","proof.target"},{"target","custom"}},

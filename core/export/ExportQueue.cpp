@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
 #include <algorithm>
@@ -37,6 +38,7 @@ ExportQueue::~ExportQueue() {
 void ExportQueue::cancel() { if (m_cancel) m_cancel->store(true,std::memory_order_relaxed); }
 bool ExportQueue::start(QVector<ExportRequest> requests) {
     if (m_busy || requests.isEmpty()) return false;
+    m_operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_busy=true;
     m_cancel=std::make_shared<std::atomic_bool>(false);
     const auto token=m_cancel,interactive=m_interactive;

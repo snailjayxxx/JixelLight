@@ -27,6 +27,7 @@ public:
     void cancel();
     void setInteractive(bool interactive) { m_interactive->store(interactive,std::memory_order_relaxed); }
     bool busy() const { return m_busy; }
+    QString operationId() const { return m_busy ? m_operationId : QString{}; }
 signals:
     void progress(int completed,int total,int currentPercent,const QString &file);
     void fileFinished(const QString &source,const QString &destination,bool ok,const QString &error);
@@ -39,4 +40,5 @@ private:
     QFutureWatcher<QVector<ExportResult>> m_watcher;
     CancelToken m_cancel;
     bool m_busy=false;
+    QString m_operationId;
 };

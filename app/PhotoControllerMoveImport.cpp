@@ -38,8 +38,9 @@ bool PhotoController::startMoveImport(const QVariantList &urls,const QUrl &direc
     m_moveImportProject=m_project.projectPath();
     if(!m_moveImportQueue->start(sources,directory.toLocalFile(),m_moveImportProject,{pattern,sequenceStart},preview["captureTimes"].toStringList()))return false;
     m_moveImportFacts={{"phase","copying"},{"project",m_moveImportProject},{"requested",sources.size()}};
-    m_copyImportProgress=0;m_copyImportStatus=uiText("检查移动导入计划…","Checking move import plan…");emit copyImportChanged();
-    ActionTrace::instance().record("move_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},{"project",m_moveImportProject},{"command",canonical}});return true;
+    m_copyImportProgress=0;m_copyImportStatus=uiText("检查移动导入计划…","Checking move import plan…");
+    ActionTrace::instance().record("move_import_started",{{"count",sources.size()},{"directory",directory.toLocalFile()},{"project",m_moveImportProject},{"command",canonical},{"operation_id",copyImportOperationId()}});
+    emit copyImportChanged();return true;
 }
 void PhotoController::openMoveImportDialog(){
     if(copyImportBusy())return;
@@ -53,7 +54,9 @@ bool PhotoController::resumeMoveImport(const QString &journal){
     m_moveImportProject=m_project.projectPath();if(!m_moveRecoveryView["valid"].toBool()||QFileInfo(path).absoluteFilePath()!=m_moveRecoveryPath)return false;
     if(!m_moveImportQueue->resume(path,m_moveRecoveryView["recordDigest"].toString()))return false;
     m_moveImportFacts={{"phase","reviewing"},{"project",m_moveImportProject},{"journal",path}};
-    m_copyImportProgress=0;m_copyImportStatus=uiText("核对移动恢复记录…","Checking move recovery record…");emit copyImportChanged();return true;
+    m_copyImportProgress=0;m_copyImportStatus=uiText("核对移动恢复记录…","Checking move recovery record…");
+    ActionTrace::instance().record("move_import_resumed",{{"journal",path},{"project",m_moveImportProject},{"operation_id",copyImportOperationId()}});
+    emit copyImportChanged();return true;
 }
 void PhotoController::inspectMoveImportRecovery(const QString &journal){
     const QUrl url(journal);const auto path=url.isLocalFile()?url.toLocalFile():journal;

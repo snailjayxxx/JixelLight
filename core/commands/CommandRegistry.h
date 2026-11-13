@@ -92,6 +92,31 @@ struct CommandRegistry {
             {"overwrite",false},{"source_writes",false},{"completion","true means accepted; observe exportFinished"},
             {"offline_sessions","use repeated export.run commands; export.batch is not a session command"}};
     }
+    struct OperationCancel {QString operationId;bool transfer=false,review=false;};
+    static bool decodeOperationCancel(const QJsonObject &command,OperationCancel *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid operation cancellation command";return false;};
+        const auto name=command["command"].toString();
+        if(!output||(name!="export.cancel"&&name!="photo.transfer.cancel"&&name!="xmp.cancel")||!fields(command,{"operation_id"})
+            ||!command["operation_id"].isString())return fail();
+        const auto id=command["operation_id"].toString();
+        if(id.size()!=36||id=="00000000-0000-0000-0000-000000000000")return fail();
+        for(int i=0;i<id.size();++i) {
+            const auto ch=id[i].unicode();const bool hyphen=i==8||i==13||i==18||i==23;
+            if(hyphen?ch!='-':!((ch>='0'&&ch<='9')||(ch>='a'&&ch<='f')))return fail();
+        }
+        *output={id,name=="photo.transfer.cancel",name=="xmp.cancel"};return true;
+    }
+    static QJsonObject operationCancelSchema(bool transfer,bool review=false) {
+        QJsonObject result{{"name",review?"xmp.cancel":transfer?"photo.transfer.cancel":"export.cancel"},{"scope","desktop"},{"fields",QJsonArray{"operation_id"}},
+            {"type","string"},{"operation_id","current nonzero lowercase UUID without braces; exact identity required"},
+            {"status_property",review?"xmpMergeOperationId":transfer?"copyImportOperationId":"exportOperationId"},{"stale_or_idle","reject without cancelling another operation"},
+            {"completion",review?"true means the matching precommit review was cancelled; committing/reload-required refuses":"true means cancellation requested; observe existing completion signals"},
+            {"completed_files","retained; cancellation is cooperative and does not roll back completed files"},
+            {"source_bytes_written",false},{"edit_history_writes",false},{"offline_sessions","unsupported"}};
+        if(transfer)result["move_sources"]="unretired originals remain; a source retirement already in progress may finish";
+        if(review)result["catalog_writes"]=false;
+        return result;
+    }
     struct PhotoTransfer {QStringList sources;QString folder,pattern;int sequenceStart=1;bool move=false;};
     static bool decodePhotoTransfer(const QJsonObject &command,PhotoTransfer *output,QString *error=nullptr) {
         if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid copy/move import command";return false;};
@@ -1039,7 +1064,8 @@ struct CommandRegistry {
                 projectSchema("project.create"),projectSchema("project.open"),xmpSchema("xmp.export"),xmpSchema("xmp.review"),
                 relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel"),
                 proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
-                proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh")}},
+                proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh"),
+                operationCancelSchema(false),operationCancelSchema(true),operationCancelSchema(false,true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

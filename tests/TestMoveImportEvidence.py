@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from ValidateMoveImport import validate_report,validate_diagnostic,validate_catalog,validate_move_import
+from ValidateMoveImport import validate_report,validate_diagnostic,validate_catalog,validate_move_import,validate_operation_identities
 from TestSoftProofEvidence import report_fixture as parent
 
 
@@ -26,7 +26,9 @@ def report_fixture(mode='gpu',qpa='cocoa'):
            initial_source_key='50',initial_render_revision='8',final_source_key='70',final_render_revision='14',catalog_count=4,
            reopened_source_key='70',reopened_render_revision='14',reopen_settled_ms=220,reopened_owner_current=True,
            project_path=base+'case.native.json.project-root/Owned.jlp',durable_identities_verified=True,project_reopened=True,
-           export=dict(RGBA16_exact=True,ICC_srgb=True),phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(12)])
+           export=dict(RGBA16_exact=True,ICC_srgb=True),phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(12)],
+           transfer_operation_ids=['c59c39df-320d-4b8b-89ac-9307454d0208','3e3ee7a6-cc2d-439e-ae97-582f997b15bc'],
+           stale_transfer_cancel_refused=True,idle_transfer_operation_id='')
     d['records']=[dict(index=i,source=base+'JixelLight-owned-move-unit/JixelLight-owned-unit-'+str(i)+'.png',before=base+'case.native.json.source-'+str(i)+'-before.png',
                        destination=base+'case.native.json.destination/JixelLight-owned-unit-'+str(i)+'.png',sha256=str(i+1)*64,bytes=1000,state='trashed',trash_path_reported=True,
                        source_absent_after_system_trash=True,durable_identity=True,journal=base+'case.native.json.destination/.jixellight-move-'+('first'if i<2 else'recovered')+'/move.json',journal_sha256='d'*64)for i in range(3)]
@@ -62,6 +64,18 @@ def catalog_fixture(root):
 
 
 class MoveImportEvidenceTests(unittest.TestCase):
+    def test_reused_noncanonical_and_missing_operation_identities_are_refused(self):
+        original=report_fixture()['transfer_operation_ids']
+        for ids in ([],original[:1],[original[0]]*2,[original[0].upper(),original[1]],
+                    ['00000000-0000-0000-0000-000000000000',original[1]],[True,original[1]],[1,2]):
+            d=report_fixture();d['transfer_operation_ids']=ids
+            with self.assertRaises(ValueError):validate_operation_identities(d)
+
+    def test_numeric_or_false_cancellation_refusal_and_busy_completion_are_refused(self):
+        for key,value in [('stale_transfer_cancel_refused',False),('stale_transfer_cancel_refused',1),('idle_transfer_operation_id','c59c39df-320d-4b8b-89ac-9307454d0208')]:
+            d=report_fixture();d[key]=value
+            with self.assertRaises(ValueError):validate_operation_identities(d)
+
     def test_honest_modes_platforms_and_frozen_diagnostics(self):
         for mode in ('cpu','gpu'):
             for qpa in ('cocoa','windows','xcb'):self.assertTrue(validate_report(report_fixture(mode,qpa),mode,qpa,'a'*40))
