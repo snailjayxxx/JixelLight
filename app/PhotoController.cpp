@@ -1446,24 +1446,28 @@ void PhotoController::importFiles(const QVariantList &urls) {
 }
 
 void PhotoController::selectPhoto(int index) {
-    if (xmpMergeBusy()) return;
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return;
     if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch;auto epoch=m_photoEpoch;
+    const auto current=[this,guard,catalog,&epoch]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch;};
     m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
+    if(!current())return;
     if (index == m_currentIndex && (!hasImage() || m_photos[index].available==sourceReadable(m_photos[index]))) return;
-    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
-    enqueueEdits();
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged();if(!current())return; }
+    enqueueEdits();if(!current())return;
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
     if (hasImage()) m_photos[index].history.initialize(m_photos[index].state);
-    emit historyChanged();
+    emit historyChanged();if(!current())return;
     ++m_photoEpoch;
-    resetReference();
+    epoch=m_photoEpoch;
+    resetReference();if(!current())return;
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
-    emit scopePlotChanged();
+    emit scopePlotChanged();if(!current())return;
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_centerX = m_centerY = .5;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
@@ -1472,15 +1476,15 @@ void PhotoController::selectPhoto(int index) {
     m_scopesUpdating = true; m_scopesRank = -1; m_displayPixels = {};
     if(hasImage()) {
         const bool available=sourceReadable(m_photos[index]);
-        if(available!=m_photos[index].available) {m_photos[index].available=available;emit libraryChanged();}
+        if(available!=m_photos[index].available) {m_photos[index].available=available;emit libraryChanged();if(!current())return;}
     }
-    m_loading = currentSourceAvailable(); m_preparing = false; m_gpuActive = false; emit backendChanged();
+    m_loading = currentSourceAvailable(); m_preparing = false; m_gpuActive = false; emit backendChanged();if(!current())return;
     m_scopesLabel.clear();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
-    emit currentIndexChanged(); emit curationChanged(); emit adjustmentsChanged(); emit currentMetadataChanged();
-    emit previewUrlChanged(); emit gpuFrameChanged(); emit scopesChanged(); emit previewGeometryChanged();
-    emit activityChanged();
+    emit currentIndexChanged();if(!current())return;emit curationChanged();if(!current())return;emit adjustmentsChanged();if(!current())return;emit currentMetadataChanged();if(!current())return;
+    emit previewUrlChanged();if(!current())return;emit gpuFrameChanged();if(!current())return;emit scopesChanged();if(!current())return;emit previewGeometryChanged();if(!current())return;
+    emit activityChanged();if(!current())return;
     QVariantMap selectionTrace{{"index",index},{"file",currentFile()},{"raw",currentIsRaw()},{"photo_epoch",qint64(m_photoEpoch)}};
     if(hasImage()) {
         const auto key=m_photos[index].storageKey();
@@ -1490,15 +1494,17 @@ void PhotoController::selectPhoto(int index) {
     ActionTrace::instance().record("select_photo",selectionTrace);
     if (currentSourceAvailable()) loadCurrent();
     else {
-        m_scopesUpdating=false; setBusy(false);
+        m_scopesUpdating=false; setBusy(false);if(!current())return;
         if(hasImage())setStatus(uiText("源文件缺失或不可读，版本、历史和标签已保留。请重新关联源文件。", "Source is missing or unreadable. Versions, history and tags are retained. Relink the source."));
     }
 }
 
 void PhotoController::loadCurrent() {
-    if (!currentSourceAvailable()) return;
-    setBusy(true);
-    setStatus(uiText(QStringLiteral("正在后台读取：%1").arg(QFileInfo(currentFile()).fileName()), QStringLiteral("Loading in background: %1").arg(QFileInfo(currentFile()).fileName())));
+    if (m_closing || !currentSourceAvailable()) return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;const auto catalog=m_catalogEpoch;
+    const auto current=[this,guard,photo,catalog]{return guard&&!m_closing&&photo==m_photoEpoch&&catalog==m_catalogEpoch;};
+    setBusy(true);if(!current())return;
+    setStatus(uiText(QStringLiteral("正在后台读取：%1").arg(QFileInfo(currentFile()).fileName()), QStringLiteral("Loading in background: %1").arg(QFileInfo(currentFile()).fileName())));if(!current())return;
     m_loader->submit({currentFile(), m_photoEpoch});
 }
 

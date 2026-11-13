@@ -47,6 +47,30 @@ bool rewrite(const QString &path,const std::function<void(QJsonObject &)> &chang
 class MoveImportTests:public QObject {
     Q_OBJECT
 private slots:
+    void selectionNotificationsMayCloseOrDestroyOwner_data(){
+        QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
+        for(const auto &context:QStringList{"library","reference","index","metadata","preview","activity"})for(bool closeOnly:{false,true})QTest::newRow(qPrintable(context+(closeOnly?"-close":"-destroy")))<<context<<closeOnly;
+    }
+    void selectionNotificationsMayCloseOrDestroyOwner(){
+        QFETCH(QString,context);QFETCH(bool,closeOnly);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto first=dir.filePath("first.png"),second=dir.filePath("second.png");QVERIFY(image(first));QVERIFY(image(second,931));const QList<QByteArray> originals{bytes(first),bytes(second)};
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);owner->importFiles({QUrl::fromLocalFile(first),QUrl::fromLocalFile(second)});
+        QTRY_VERIFY_WITH_TIMEOUT(owner->currentIndex()==0&&owner->brushReady()&&!owner->rendering()&&owner->scopesPixelCount()>0,15000);QVERIFY(owner->flushEdits());
+        QPointer<PhotoController> alive(owner.get());bool selecting=false,terminal=false,closed=false;
+        const auto completed=[&]{if(!selecting||terminal||!owner||(context!="library"&&owner->currentIndex()!=1))return;terminal=true;if(closeOnly)closed=owner->beginClose();else owner.reset();};
+        QMetaObject::Connection connection;
+        if(context=="library")connection=connect(owner.get(),&PhotoController::libraryChanged,owner.get(),completed);
+        else if(context=="reference")connection=connect(owner.get(),&PhotoController::referenceChanged,owner.get(),completed);
+        else if(context=="index")connection=connect(owner.get(),&PhotoController::currentIndexChanged,owner.get(),completed);
+        else if(context=="metadata")connection=connect(owner.get(),&PhotoController::currentMetadataChanged,owner.get(),completed);
+        else if(context=="preview")connection=connect(owner.get(),&PhotoController::previewUrlChanged,owner.get(),completed);
+        else connection=connect(owner.get(),&PhotoController::activityChanged,owner.get(),completed);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        selecting=true;owner->selectPhoto(1);QVERIFY(terminal);
+        if(closeOnly){QVERIFY(closed);QVERIFY(owner&&alive);QVERIFY(!owner->executeCommand({{"command","scopes.domain"},{"domain","working"}}));}
+        else{QVERIFY(!owner);QVERIFY(!alive);}
+        QCOMPARE(bytes(first),originals[0]);QCOMPARE(bytes(second),originals[1]);
+    }
     void importPublicationMayCloseOrDestroyOwner_data(){
         QTest::addColumn<bool>("batch");QTest::addColumn<bool>("closeOnly");
         for(bool batch:{false,true})for(bool closeOnly:{false,true})QTest::newRow(qPrintable(QString(batch?"batch":"single")+(closeOnly?"-close":"-destroy")))<<batch<<closeOnly;
