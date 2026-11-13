@@ -216,6 +216,24 @@ qint64 analysisIntegrationStagesSince(const QString &marker,const QString &stage
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void scopeCommandsRequireExactDomainsModesAndBooleansWithoutPartialDecode() {
+        QList<QJsonObject> commands;for(const auto &domain:QStringList{"source","working","display"})commands.append({{"command","scopes.domain"},{"domain",domain}});
+        for(const auto &mode:QStringList{"histogram","waveform","parade","vectorscope"})commands.append({{"command","scopes.mode"},{"mode",mode}});
+        for(bool enabled:{false,true})commands.append({{"command","scopes.full-resolution"},{"enabled",enabled}});
+        for(const auto &command:commands) {
+            CommandRegistry::ScopePresentation parsed;QString error;QVERIFY(CommandRegistry::decodeScopePresentation(command,&parsed,&error));QVERIFY(error.isEmpty());
+            const auto field=command.contains("enabled")?"enabled":command.contains("domain")?"domain":"mode";
+            for(const auto &value:QList<QJsonValue>{QJsonValue{},QJsonArray{},QJsonObject{},17,QString{},QString("Source"),QString("waveform "),QString("true")}) {
+                auto bad=command;bad[field]=value;parsed.value="sentinel";parsed.enabled=true;parsed.operation=CommandRegistry::ScopeOperation::Mode;
+                QVERIFY(!CommandRegistry::decodeScopePresentation(bad,&parsed,&error));QCOMPARE(parsed.value,QString("sentinel"));QVERIFY(parsed.enabled);QCOMPARE(parsed.operation,CommandRegistry::ScopeOperation::Mode);QVERIFY(!error.isEmpty());
+            }
+            auto bad=command;bad["unknown"]=true;QVERIFY(!CommandRegistry::decodeScopePresentation(bad,&parsed));bad=command;bad.remove(field);QVERIFY(!CommandRegistry::decodeScopePresentation(bad,&parsed));QVERIFY(!CommandRegistry::decodeScopePresentation(command,nullptr));
+            bad=command;bad.remove("command");QVERIFY(!CommandRegistry::decodeScopePresentation(bad,&parsed));
+            if(command.contains("domain")||command.contains("mode"))for(bool value:{false,true}){bad=command;bad[field]=value;QVERIFY(!CommandRegistry::decodeScopePresentation(bad,&parsed));}
+            const auto schema=CommandRegistry::scopePresentationSchema(command["command"].toString());QVERIFY(schema["presentation_only"].toBool());for(const auto *key:{"source_writes","catalog_writes","edit_history_writes","settings_writes"})QVERIFY(schema[key].isBool()&&!schema[key].toBool());
+        }
+        CommandRegistry::ScopePresentation parsed;QVERIFY(!CommandRegistry::decodeScopePresentation({{"command","scopes.unknown"}},&parsed));
+    }
     void streamedLinearAnalysisMatchesWholeSpatialFramesAndIndependentPlotCounts() {
         const auto f=analysisIntegrationFixture();auto state=f.plan.state;state.brushMasks={};state.textureAmount=21;state.clarityAmount=17;state.denoiseLuma=18;state.denoiseChroma=11;
         const auto plan=ProcessingPlan::compile(state,f.plan.encoding,f.plan.output,false,0);const auto corrected=f.geometry.apply(f.source);

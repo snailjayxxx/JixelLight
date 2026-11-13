@@ -768,6 +768,7 @@ bool PhotoController::executeCommand(const QVariantMap &command) {
     const auto object=QJsonObject::fromVariantMap(command);
     if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel"||object["command"]=="xmp.cancel")return executeOperationCancel(object);
     if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
+    if(object["command"].toString().startsWith("scopes."))return executeScopePresentation(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
     if(object["command"].toString()=="project.create"||object["command"].toString()=="project.open")return executeProjectCommand(object);
@@ -2624,19 +2625,21 @@ QString PhotoController::scopesStatus() const {
     return label + domainLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
         + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
 }
-void PhotoController::setExactScopes(bool enabled) {
+void PhotoController::setExactScopes(bool enabled){executeScopePresentation({{"command","scopes.full-resolution"},{"enabled",enabled}});}
+void PhotoController::setExactScopesImpl(bool enabled) {
     if (m_exactScopes == enabled) return;
     m_exactScopes = enabled;
     m_inputScopeJob->cancel();m_inputScopeSubmittedRevision=0;m_deferredBudgetJobs[3]={};
     m_deferredBudgetJobs[1]={};m_deferredBudgetJobs[2]={};
     if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
-    m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();
+    const QPointer<PhotoController> guard(this);
+    m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();if(!guard)return;
     if (m_scopeMode!="histogram") m_plotTimer.start();
     m_fullScopeJob->cancel(); m_exactTimer.stop();
     m_scopesUpdating = enabled && m_scopesRank < 1;
-    emit scopesChanged();
+    emit scopesChanged();if(!guard)return;
     if (enabled) requestFullScopes();
-    else if(m_scopeDomain!=AnalysisDomain::Display){m_scopesRank=-1;requestPreviewScopes();}
+    else if(m_scopeDomain!=AnalysisDomain::Display||!m_scopes.pixelCount){m_scopesRank=-1;requestPreviewScopes();}
 }
 void PhotoController::requestPreviewScopes() {
     if(m_closing||m_exactScopes||m_preparing||m_interacting||m_rendering||m_previewSource.isNull())return;
@@ -2695,15 +2698,30 @@ QString PhotoController::scopePlotStatus() const {
     return uiText("CPU · ","CPU · ")+(m_plotFull ? uiText("全分辨率", "Full resolution") : uiText("当前视区预览", "Current viewport preview"))
         +QString(" · %1 px").arg(m_scopePlot.pixels)+(m_scopeDomain==AnalysisDomain::Display?QString{}:uiText(" · 线性 sRGB"," · linear sRGB"))+(m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString());
 }
-void PhotoController::setScopeMode(const QString &mode) {
+void PhotoController::setScopeMode(const QString &mode){executeScopePresentation({{"command","scopes.mode"},{"mode",mode}});}
+void PhotoController::setScopeModeImpl(const QString &mode) {
     if (!QStringList{"histogram","waveform","parade","vectorscope"}.contains(mode) || mode==m_scopeMode) return;
     m_deferredBudgetJobs[2]={};
     m_scopeMode=mode; m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
-    emit scopePlotChanged();
+    const QPointer<PhotoController> guard(this);emit scopePlotChanged();if(!guard)return;
     if (mode!="histogram") m_plotTimer.start();
 }
-void PhotoController::setScopeDomain(const QString &value) {
+void PhotoController::setScopeDomain(const QString &value){executeScopePresentation({{"command","scopes.domain"},{"domain",value}});}
+bool PhotoController::executeScopePresentation(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::ScopePresentation request;if(!CommandRegistry::decodeScopePresentation(command,&request))return false;
+    const QVariantMap details{{"command",command},{"presentation_only",true},{"completion","statistics-request-accepted"},
+        {"revision",QString::number(m_requestedRevision)},{"photo_epoch",QString::number(m_photoEpoch)}};
+    switch(request.operation) {
+    case CommandRegistry::ScopeOperation::Domain:setScopeDomainImpl(request.value);break;
+    case CommandRegistry::ScopeOperation::Mode:setScopeModeImpl(request.value);break;
+    case CommandRegistry::ScopeOperation::FullResolution:setExactScopesImpl(request.enabled);break;
+    }
+    // Presentation callbacks may delete the owner. Only frozen locals follow.
+    ActionTrace::instance().record("scopes_command",details);return true;
+}
+void PhotoController::setScopeDomainImpl(const QString &value) {
     if(QThread::currentThread()!=thread()||m_closing)return;
     AnalysisDomain domain;
     if(!decodeAnalysisDomain(value,&domain)||domain==m_scopeDomain)return;

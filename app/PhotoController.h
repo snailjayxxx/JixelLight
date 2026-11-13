@@ -849,6 +849,10 @@ private:
     void enqueueEdits();
     void requestFullScopes();
     void requestPreviewScopes();
+    bool executeScopePresentation(const QJsonObject &command);
+    void setScopeDomainImpl(const QString &domain);
+    void setScopeModeImpl(const QString &mode);
+    void setExactScopesImpl(bool enabled);
     void acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label,AnalysisDomain domain=AnalysisDomain::Display);
     void completeFrame(quint64 revision);
     void setBusy(bool busy);

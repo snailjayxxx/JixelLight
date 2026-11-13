@@ -8,6 +8,7 @@
 #include <QSemaphore>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QtEndian>
 #include <QRgba64>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include "core/pipeline/BrushRenderRequest.h"
 #include "core/pipeline/StageGraph.h"
 #include "diagnostics/PerformanceRecorder.h"
+#include "diagnostics/ActionTrace.h"
 
 namespace {
 QImage sourceImage(bool floating=false) {
@@ -113,9 +115,33 @@ private slots:
         c.m_scopePlot={QImage(3,3,QImage::Format_ARGB32),1,{}};c.m_plotRevision=revision;c.m_plotFull=false;c.m_plotDomain=AnalysisDomain::Working;QVERIFY(!c.scopePlotCurrent());
     }
     void domainSignalCanDestroyItsOwnerBeforeAnyNewWorkStarts() {
-        ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);
-        QObject::connect(owner,&PhotoController::scopeDomainChanged,owner,[&]{delete owner.data();});
-        owner->setScopeDomain("source");QVERIFY(owner.isNull());
+        for(const auto &command:QList<QJsonObject>{{{"command","scopes.domain"},{"domain","source"}},{{"command","scopes.mode"},{"mode","waveform"}},{{"command","scopes.full-resolution"},{"enabled",true}}}) {
+            ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);const auto name=command["command"].toString();
+            if(name=="scopes.domain")QObject::connect(owner,&PhotoController::scopeDomainChanged,owner,[&]{delete owner.data();});
+            else if(name=="scopes.mode")QObject::connect(owner,&PhotoController::scopePlotChanged,owner,[&]{delete owner.data();});
+            else QObject::connect(owner,&PhotoController::scopesChanged,owner,[&]{delete owner.data();});
+            QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(owner.isNull());const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("scopes_command"));QCOMPARE(row["command"].toObject(),command);QVERIFY(row["presentation_only"].toBool());
+        }
+    }
+    void scopePresentationCommandsAndLegacyAdaptersShareStrictAcceptedTraces() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("scope-commands.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&c.scopesPixelCount()>0,15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        const auto state=c.currentState().toJson();const auto history=c.editHistory();const auto revision=c.m_requestedRevision;const auto pixels=StageGraph::outputFingerprint(c.m_processedPreview);const auto expected=c.m_scopes;
+        const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("scopes_test_boundary",{{"marker",marker}});
+        const auto captured=[&]{QJsonArray result;bool seen=false;for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="scopes_test_boundary"&&row["marker"]==marker){seen=true;result={};}else if(seen&&row["action"]=="scopes_command")result.append(row["command"]);}return result;};
+        const QJsonArray commands{QJsonObject{{"command","scopes.domain"},{"domain","source"}},QJsonObject{{"command","scopes.domain"},{"domain","working"}},QJsonObject{{"command","scopes.domain"},{"domain","display"}},
+            QJsonObject{{"command","scopes.mode"},{"mode","waveform"}},QJsonObject{{"command","scopes.mode"},{"mode","parade"}},QJsonObject{{"command","scopes.mode"},{"mode","vectorscope"}},QJsonObject{{"command","scopes.mode"},{"mode","histogram"}},
+            QJsonObject{{"command","scopes.full-resolution"},{"enabled",false}},QJsonObject{{"command","scopes.full-resolution"},{"enabled",true}},QJsonObject{{"command","scopes.full-resolution"},{"enabled",false}}};
+        for(const auto &value:commands)QVERIFY(c.executeCommand(value.toObject().toVariantMap()));
+        // The final resolution toggle cancels both earlier producers. Even
+        // before Display's restored preview arrives, a replacement is required.
+        QTRY_VERIFY_WITH_TIMEOUT(c.scopesPixelCount()>0&&!c.m_inputScopeJob->busy(),15000);QVERIFY(sameHistogram(c.m_scopes,expected));QCOMPARE(captured(),commands);
+        const auto reject=[&](QVariantMap command){QVERIFY(!c.executeCommand(command));QCOMPARE(c.scopeDomain(),QString("display"));QCOMPARE(c.scopeMode(),QString("histogram"));QVERIFY(!c.exactScopes());QCOMPARE(captured(),commands);};
+        reject({{"command","scopes.domain"},{"domain","Source"}});reject({{"command","scopes.mode"},{"mode",true}});reject({{"command","scopes.full-resolution"},{"enabled",1}});reject({{"command","scopes.mode"},{"mode","waveform"},{"extra",true}});reject({{"command","scopes.unknown"}});
+        bool foreign=true;std::thread worker([&]{foreign=c.executeCommand({{"command","scopes.domain"},{"domain","source"}});});worker.join();QVERIFY(!foreign);QCOMPARE(captured(),commands);
+        c.m_closing=true;QVERIFY(!c.executeCommand({{"command","scopes.domain"},{"domain","source"}}));c.m_closing=false;
+        c.setScopeDomain("display");c.setScopeMode("histogram");c.setExactScopes(false);auto adapters=commands;adapters.append(QJsonObject{{"command","scopes.domain"},{"domain","display"}});adapters.append(QJsonObject{{"command","scopes.mode"},{"mode","histogram"}});adapters.append(QJsonObject{{"command","scopes.full-resolution"},{"enabled",false}});QCOMPARE(captured(),adapters);
+        QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.currentState().toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(StageGraph::outputFingerprint(c.m_processedPreview),pixels);QCOMPARE(fileHash(path),original);
     }
     void linearPreviewBudgetRefusalRetriesAndSwitchingClearsDeferredWork() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("budget-domains.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
