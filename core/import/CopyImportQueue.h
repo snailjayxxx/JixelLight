@@ -14,6 +14,7 @@ public:
     // Normal window close consumes completed copies before catalog flushing.
     void stopAndCollect();
     bool busy() const { return m_busy; }
+    QString operationId() const { return m_busy ? m_operationId : QString{}; }
 signals:
     void progress(qint64 copied,qint64 total,int completed,int files,const QString &stage);
     void finished(const CopyImportResult &result);
@@ -23,4 +24,5 @@ private:
     QFutureWatcher<CopyImportResult> m_watcher;
     CancelToken m_cancel;
     bool m_busy=false;
+    QString m_operationId;
 };

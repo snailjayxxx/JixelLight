@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
+#include <thread>
 #include "app/PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/import/MoveImport.h"
@@ -116,11 +117,12 @@ private slots:
         Fixture f;QVERIFY(f.valid);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVariantList urls;for(const auto &source:f.sources)urls.push_back(QUrl::fromLocalFile(source));
         const QJsonObject command{{"command","photo.move"},{"sources",QJsonArray::fromStringList(f.sources)},{"folder",f.destination},{"pattern",""},{"sequenceStart",1}};
         QVERIFY(!c.moveImport(urls,QUrl::fromLocalFile(f.destination)));QVERIFY(!c.executeCommand(command.toVariantMap()));
-        QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));QVERIFY(c.executeCommand(command.toVariantMap()));
+        QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));QVERIFY(c.executeCommand(command.toVariantMap()));const auto first=c.copyImportOperationId();QVERIFY(!first.isEmpty());
         QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(f.calls,2);QCOMPARE(c.library().size(),2);QVERIFY(!c.moveImportJournal().isEmpty());
         ProjectDatabase read;QVector<ProjectDatabase::SavedPhoto> photos;QVERIFY(read.readSnapshot(c.projectPath(),&photos));QCOMPARE(photos.size(),2);for(const auto &photo:photos)QVERIFY(photo.identity.isKnown());
         QVERIFY(!c.resumeMoveImport(c.moveImportJournal()));c.inspectMoveImportRecovery(c.moveImportJournal());QTRY_VERIFY_WITH_TIMEOUT(c.moveImportRecoveryPreview()["valid"].toBool(),10000);
-        QVERIFY(c.resumeMoveImport(c.moveImportJournal()));QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(f.calls,2);
+        QVERIFY(c.resumeMoveImport(c.moveImportJournal()));const auto recovery=c.copyImportOperationId();QVERIFY(!recovery.isEmpty());QVERIFY(recovery!=first);
+        QVERIFY(!c.executeCommand({{"command","photo.transfer.cancel"},{"operation_id",first}}));QTRY_VERIFY_WITH_TIMEOUT(!c.copyImportBusy(),10000);QCOMPARE(f.calls,2);QVERIFY(c.copyImportOperationId().isEmpty());QCOMPARE(c.moveImportDiagnostics()["phase"].toString(),QString("done"));
         bool canonical=false;for(const auto &entry:ActionTrace::instance().snapshot()) {
             const auto row=entry.toObject();if(row["action"].toString()=="move_import_started"&&row["command"].toObject()==command)canonical=true;
         }
@@ -129,6 +131,17 @@ private slots:
     void cancellingThenClosingControllerNeverRetiresAnOriginal(){
         Fixture f;QVERIFY(f.valid);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));
         QVariantList urls;for(const auto &source:f.sources)urls.push_back(QUrl::fromLocalFile(source));QVERIFY(c.moveImport(urls,QUrl::fromLocalFile(f.destination)));c.cancelCopyImport();QVERIFY(c.prepareToClose());QVERIFY(!c.copyImportBusy());QCOMPARE(f.calls,0);for(const auto &source:f.sources)QVERIFY(QFileInfo::exists(source));
+    }
+    void recoveryCancellationRequiresItsOwnIdAndCannotRetireSources(){
+        Fixture f;QVERIFY(f.valid);const auto batch=f.prepare();QVERIFY(batch.error.isEmpty());QVERIFY(f.save(batch));
+        ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));
+        c.inspectMoveImportRecovery(batch.journal);QTRY_VERIFY_WITH_TIMEOUT(c.moveImportRecoveryPreview()["valid"].toBool(),10000);QVERIFY(c.resumeMoveImport(batch.journal));const auto first=c.copyImportOperationId();QVERIFY(!first.isEmpty());
+        bool foreign=false,accepted=true;std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();accepted=c.executeCommand({{"command","photo.transfer.cancel"},{"operation_id",first}});c.cancelCopyImport();});worker.join();QVERIFY(foreign);QVERIFY(!accepted);
+        const QVariantMap cancel{{"command","photo.transfer.cancel"},{"operation_id",first}};QVERIFY(c.executeCommand(cancel));QVERIFY(c.prepareToClose());QCOMPARE(f.calls,0);QVERIFY(!c.copyImportBusy());QVERIFY(c.copyImportOperationId().isEmpty());
+        QVERIFY(!c.executeCommand(cancel));c.inspectMoveImportRecovery(batch.journal);QTRY_VERIFY_WITH_TIMEOUT(c.moveImportRecoveryPreview()["valid"].toBool(),10000);QVERIFY(c.resumeMoveImport(batch.journal));const auto second=c.copyImportOperationId();QVERIFY(!second.isEmpty());QVERIFY(second!=first);QVERIFY(!c.executeCommand(cancel));
+        c.cancelCopyImport();QVERIFY(c.prepareToClose());QCOMPARE(f.calls,0);QVERIFY(c.copyImportOperationId().isEmpty());
+        bool traced=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="operation_cancel_requested"&&row["command"].toObject()==QJsonObject::fromVariantMap(cancel)){QCOMPARE(row["kind"].toString(),QString("move"));traced=true;}}
+        QVERIFY(traced);for(const auto &file:batch.files){QVERIFY(QFileInfo::exists(file.copy.source));QCOMPARE(bytes(file.copy.source),bytes(file.copy.destination));}
     }
     void recoveryReviewIsRetiredWhenTheCurrentProjectChanges(){
         Fixture f;QVERIFY(f.valid);const auto batch=f.prepare();ProcessedImageProvider provider;PhotoController c(&provider,nullptr,{},f.retirement());c.setGpuEnabled(false);QVERIFY(c.openProject(QUrl::fromLocalFile(f.catalog.projectPath())));

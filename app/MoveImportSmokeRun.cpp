@@ -1,6 +1,7 @@
 #include "app/PhotoController.h"
 #include "app/SmokeRun.h"
 #include "core/import/MoveImport.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/scopes/ScopesEngine.h"
 #include "diagnostics/ActionTrace.h"
 #include <QQuickWindow>
@@ -58,7 +59,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
         QImage fixture,reference;ScopesResult scopes;QByteArray baselineHash;qint64 sourceKey=0,reopenedSourceKey=0;quint64 revision=0,reopenedRevision=0;
         QElapsedTimer reopenStableClock;int reopenSettledMs=0,scopeWaits=0;QJsonArray reopenSignature,events,scopeWaitStates;QString initialScopeStatus;
         QSize logical,physical;double dpr=0;QJsonObject initial,admission,diagnostic,exportResult,review,sharedCommand;
-        QJsonArray history,signature,pointers,captures,records,phases;
+        QJsonArray history,signature,pointers,captures,records,phases,operationIds;bool staleCancelRefused=false;
     };
     auto s=std::make_shared<State>();s->clock.start();s->owned=std::make_unique<QTemporaryDir>(QDir::tempPath()+"/JixelLight-owned-move-XXXXXX");
     s->baseline=evidence+".baseline-source.png";s->destination=evidence+".destination";s->projectRoot=evidence+".project-root";
@@ -88,7 +89,8 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;s->timer->stop();
         const bool passed=error.isEmpty()&&s->phase==12&&s->exportPassed&&s->reopened&&s->records.size()==3&&s->pointers.size()==2&&s->captures.size()==4
-            &&original(false)&&!s->sharedCommand.isEmpty()&&c->library().size()==4&&s->clock.elapsed()<60000&&qApp->property("jixellightSmokeSettingsIsolated").toBool()
+            &&original(false)&&!s->sharedCommand.isEmpty()&&s->operationIds.size()==2&&s->staleCancelRefused&&c->copyImportOperationId().isEmpty()
+            &&c->library().size()==4&&s->clock.elapsed()<60000&&qApp->property("jixellightSmokeSettingsIsolated").toBool()
             &&c->moveImportDiagnostics()["retirement_backend"].toString()=="system-trash"&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         QJsonObject r{{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",60000},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"actual_Main_App_PhotoCanvas",true},{"controller_on_actual_GUI_thread",c->thread()==QThread::currentThread()},{"language",language},{"actual_qpa",QGuiApplication::platformName()},
@@ -105,6 +107,7 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},
             {"project_path",s->project},{"durable_identities_verified",s->records.size()==3},{"project_reopened",s->reopened},{"export",s->exportResult},{"diagnostic",s->diagnostic},
             {"move",QJsonObject::fromVariantMap(c->moveImportDiagnostics())},{"shared_import_command",s->sharedCommand},
+            {"transfer_operation_ids",s->operationIds},{"stale_transfer_cancel_refused",s->staleCancelRefused},{"idle_transfer_operation_id",c->copyImportOperationId()},
             {"physical_device_verified",false},{"native_float_RAW_decoder",false},{"product_development_complete",false}};
         const bool saved=writeObject(evidence,r);
         // Restore only these verified, generated fixture files before their
@@ -137,6 +140,15 @@ void startMoveImportSmokeRun(PhotoController *c,QQuickWindow *w,const QString &r
                 {"journal",journal},{"journal_sha256",QString::fromLatin1(fileHash(journal))}});
         }s->batches.push_back(batch);return true;
     };
+    QObject::connect(c,&PhotoController::copyImportChanged,c,[=]{
+        if(s->done||!c->moveImportBusy())return;const auto id=c->copyImportOperationId();if(s->operationIds.contains(id))return;
+        CommandRegistry::OperationCancel parsed;if(!CommandRegistry::decodeOperationCancel({{"command","photo.transfer.cancel"},{"operation_id",id}},&parsed)) {finish("Actual move operation identity unavailable");return;}
+        if(!s->operationIds.isEmpty()) {
+            if(c->executeCommand({{"command","photo.transfer.cancel"},{"operation_id",s->operationIds.last().toString()}})){finish("Stale cancellation reached reviewed recovery operation");return;}
+            s->staleCancelRefused=true;
+        }
+        s->operationIds.append(id);
+    });
     QObject::connect(c,&PhotoController::exportFinished,c,[=](int succeeded,int failed,bool cancelled){if(s->done||s->phase!=9)return;
         const QImage image(evidence+".export.png");const auto actual=image.convertToFormat(QImage::Format_RGBA64);
         if(succeeded!=1||failed||cancelled||actual.size()!=s->reference.size()||visibleBytes(actual)!=visibleBytes(s->reference)||image.colorSpace()!=QColorSpace(QColorSpace::SRgb)){finish("Move changed unselected original export or export failed");return;}
