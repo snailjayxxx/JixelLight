@@ -12,6 +12,8 @@
 #include <QJsonDocument>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QPointer>
+#include <QThread>
 #include <cmath>
 
 QVariantMap PhotoController::lookState() const {
@@ -64,18 +66,22 @@ void PhotoController::cancelCalibration() {
     if(m_calibrationBusy){m_calibrationBusy=false;emit calibrationChanged();}
 }
 void PhotoController::resetReference() {
-    cancelCalibration();if(m_referenceJob)m_referenceJob->cancel();
+    const QPointer<PhotoController> guard(this);
+    cancelCalibration();if(!guard||m_closing)return;if(m_referenceJob)m_referenceJob->cancel();
     m_referenceImage={};m_referenceInfo.clear();m_referenceScopes={};m_manualReferencePath.clear();
     m_calibrationReport.clear();m_referenceBusy=false;++m_referenceRevision;
-    if(m_provider)m_provider->setReference({});emit referenceChanged();emit calibrationChanged();
+    if(m_provider)m_provider->setReference({});emit referenceChanged();if(!guard||m_closing)return;emit calibrationChanged();
 }
 void PhotoController::requestReference() {
-    if(!hasImage()||!m_referenceJob)return;
-    cancelCalibration();m_referenceBusy=true;emit referenceChanged();
+    if(m_closing||!hasImage()||!m_referenceJob)return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;
+    cancelCalibration();if(!guard||m_closing||photo!=m_photoEpoch)return;
+    m_referenceBusy=true;emit referenceChanged();if(!guard||m_closing||photo!=m_photoEpoch)return;
     m_referenceJob->submit({currentFile(),m_manualReferencePath,m_currentMetadata,m_photoEpoch});
 }
 void PhotoController::setShowCameraReference(bool show) {
-    if(m_showReference==show)return;m_showReference=show;emit referenceChanged();
+    if(QThread::currentThread()!=thread()||m_closing||m_showReference==show)return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;m_showReference=show;emit referenceChanged();if(!guard||m_closing||photo!=m_photoEpoch||m_showReference!=show)return;
     if(show&&m_referenceImage.isNull()&&!m_referenceBusy)requestReference();
 }
 bool PhotoController::applyLookEdit(const QJsonObject &command,const QString &action,const QVariantMap &details) {

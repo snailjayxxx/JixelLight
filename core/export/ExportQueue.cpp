@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QPointer>
 #include <QUuid>
 #include <QtConcurrent/QtConcurrentRun>
 #include <future>
@@ -21,11 +22,13 @@ ExportQueue::ExportQueue(std::shared_ptr<SourceCache> cache,QObject *parent,std:
     : QObject(parent),m_cache(std::move(cache)),m_brushBudget(std::move(brushBudget)) {
     m_pool.setMaxThreadCount(1);
     connect(&m_watcher,&QFutureWatcher<QVector<ExportResult>>::finished,this,[this] {
+        const QPointer<ExportQueue> guard(this);
         int succeeded=0,failed=0;
         const auto results=m_watcher.result();
         for (const auto &result:results) {
             if (result.ok) ++succeeded; else ++failed;
             emit fileFinished(result.source,result.destination,result.ok,result.error);
+            if(!guard)return;
         }
         m_busy=false;
         emit finished(succeeded,failed,cancelled(m_cancel));
