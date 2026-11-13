@@ -487,8 +487,8 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
     struct State {
         QElapsedTimer elapsed; int phase=0; bool finished=false;
         bool missing=false,cancel=false,ack=false,frozen=false,complete=false,reopened=false,exported=false,compact=false;
-        bool exportFinished=false,exportCommand=false,exportTrace=false,projectCommands=false; int succeeded=0,failed=0; bool stopped=false;
-        QString project,original,candidate,copy,request; QByteArray checksum;
+        bool exportFinished=false,exportCommand=false,exportTrace=false,projectCommands=false,relinkCommands=false; int succeeded=0,failed=0; bool stopped=false;
+        QString project,original,candidate,copy,request,firstRequest,catalogToken; QByteArray checksum;QJsonArray relinkCommandTrace;
     };
     const auto state=std::make_shared<State>();state->elapsed.start();
     const auto dir=std::make_shared<QTemporaryDir>();
@@ -498,7 +498,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
         QFile source(state->candidate);const bool unchanged=source.open(QIODevice::ReadOnly)
             && QCryptographicHash::hash(source.readAll(),QCryptographicHash::Sha256)==state->checksum;
         const bool passed=error.isEmpty()&&state->missing&&state->cancel&&state->ack&&state->frozen&&state->complete
-            &&state->reopened&&state->exported&&state->exportCommand&&state->exportTrace&&state->projectCommands&&state->compact&&unchanged;
+            &&state->reopened&&state->exported&&state->exportCommand&&state->exportTrace&&state->projectCommands&&state->relinkCommands&&state->compact&&unchanged;
         const QJsonObject report{{"passed",passed},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"elapsed_ms",state->elapsed.elapsed()},{"phase",state->phase},{"error",error},
             {"missing_placeholder_passed",state->missing},{"cancel_preserves_catalog",state->cancel},
@@ -507,6 +507,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
             {"selected_export_passed",state->exported},{"compact_dialog_passed",state->compact},{"source_unchanged",unchanged},
             {"batch_export_command_accepted",state->exportCommand},{"batch_export_trace_passed",state->exportTrace},
             {"project_lifecycle_command_trace_passed",state->projectCommands},
+            {"source_relink_command_trace_passed",state->relinkCommands},{"source_relink_commands",state->relinkCommandTrace},
             {"qpa_platform",QGuiApplication::platformName()},{"device_pixel_ratio",window->devicePixelRatio()},
             {"file_picker_automated",false}};
         QSaveFile output(reportPath);const auto data=QJsonDocument(report).toJson(QJsonDocument::Indented);
@@ -541,6 +542,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
             if(controller->relinkBusy())return;
             if(preview.value("status")!="ready"||!dialog||!dialog->property("visible").toBool()
                 ||!confirm||confirm->isEnabled()||!ack||!ack->isVisible()){finish("Unknown identity must require acknowledgement");return;}
+            state->firstRequest=preview.value("requestId").toString();
             if(!clickItem(window,cancel)){finish("Cancel is inaccessible");return;}state->phase=2;
         } else if(state->phase==2) {
             if(dialog&&dialog->property("visible").toBool())return;
@@ -601,6 +603,14 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
             for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"].toString()=="project_command")commands.append(row["command"]);}
             state->projectCommands=commands.contains(create)&&commands.contains(open);
             if(!state->projectCommands){finish("Project lifecycle canonical traces missing");return;}
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();if(row["action"]=="relink_command"&&row["project"]==state->project)state->relinkCommandTrace.append(row["command"]);
+            }
+            const QJsonObject request{{"command","photo.relink.request"},{"version",state->copy},{"candidate",state->candidate},{"catalog_token",state->catalogToken}},
+                cancel{{"command","photo.relink.cancel"},{"request_id",state->firstRequest},{"catalog_token",state->catalogToken}},
+                confirm{{"command","photo.relink.confirm"},{"request_id",state->request},{"catalog_token",state->catalogToken},{"acknowledge_unknown_identity",true}};
+            state->relinkCommands=state->relinkCommandTrace==QJsonArray({request,cancel,request,confirm});
+            if(!state->relinkCommands){finish("Source relink canonical commands missing or retargeted");return;}
             finish(state->reopened?QString():QStringLiteral("Reopened project lost version state"));
         }
     });
@@ -623,7 +633,7 @@ void startRelinkSmokeRun(PhotoController *controller,QQuickWindow *window,const 
     resizeForSmoke(window,1180,720);window->setProperty("workspaceIndex",0);controller->setGpuEnabled(false);
     if(!QFile::rename(state->original,state->candidate)||!controller->createProject(QUrl::fromLocalFile(dir->path()),"CommandBootstrap")
         ||!controller->openProject(QUrl::fromLocalFile(state->project))){finish("Cannot open missing-source fixture");return;}
-    timer->start();
+    state->catalogToken=controller->relinkCatalogToken();timer->start();
 }
 
 void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QString &reportPath, const QString &screenshotPath) {

@@ -207,6 +207,16 @@ private slots:
             QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::projectSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopRelinkActionsCannotRetargetCatalogsFromOfflineSessions(){
+        for(const auto &command:QList<QJsonObject>{
+            {{"command","photo.relink.request"},{"version","owned-version"},{"candidate","owned.bmp"},{"catalog_token","12"}},
+            {{"command","photo.relink.confirm"},{"request_id","24"},{"catalog_token","12"},{"acknowledge_unknown_identity",true}},
+            {{"command","photo.relink.cancel"},{"request_id","24"},{"catalog_token","12"}}}) {
+            CommandRegistry::Relink request;QVERIFY(CommandRegistry::decodeRelink(command,&request));
+            CommandSession result;result.photoCount=86;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,86);QVERIFY(result.exports.isEmpty());
+            const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::relinkSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void desktopXmpActionsCannotWriteSidecarsOrOpenReviewsFromOfflineSessions(){
         for(const auto &name:QStringList{"xmp.export","xmp.review"}) {
             const QJsonObject command{{"command",name},{name=="xmp.export"?"destination":"source","owned.xmp"}};

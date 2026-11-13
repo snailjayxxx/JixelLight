@@ -7,7 +7,11 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QUuid>
+#include <QPointer>
+#include <QThread>
+#include <thread>
 #include "app/PhotoController.h"
+#include "diagnostics/ActionTrace.h"
 #include "core/cache/SourceCache.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/pipeline/ImagePipeline.h"
@@ -96,11 +100,14 @@ private slots:
         {ProjectDatabase reader;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(reader.readSnapshot(project,&saved));int knownMembers=0;
          for(const auto &photo:saved)if(photo.path==original){++knownMembers;QCOMPARE(photo.identity,identity(moved));}QCOMPARE(knownMembers,2);
          QVERIFY(reader.readSnapshot(previousProject,&saved));QCOMPARE(saved[0].path,original);QCOMPARE(saved[0].identity,identity(moved));}
-        QVERIFY(controller.beginRelink(copyKey,QUrl::fromLocalFile(moved)));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
+        const auto catalogToken=controller.relinkCatalogToken();
+        const QJsonObject relink{{"command","photo.relink.request"},{"version",copyKey},{"candidate",moved},{"catalog_token",catalogToken}};
+        QVERIFY(controller.executeCommand(relink.toVariantMap()));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
         QCOMPARE(controller.relinkPreview().value("status").toString(),QString("ready"));QVERIFY(controller.relinkPreview().value("identityKnown").toBool());
         const auto requestId=controller.relinkPreview().value("requestId").toString();
         const auto rows=controller.library();int otherIndex=-1;for(const auto &row:rows)if(row.toMap().value("id")==other)otherIndex=row.toMap().value("index").toInt();QVERIFY(otherIndex>=0);
-        controller.selectPhoto(otherIndex);QVERIFY(controller.confirmRelink(requestId));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
+        const QJsonObject confirm{{"command","photo.relink.confirm"},{"request_id",requestId},{"catalog_token",catalogToken},{"acknowledge_unknown_identity",false}};
+        controller.selectPhoto(otherIndex);QVERIFY(controller.executeCommand(confirm.toVariantMap()));QTRY_VERIFY_WITH_TIMEOUT(!controller.relinkBusy(),10000);
         QCOMPARE(controller.relinkPreview().value("status").toString(),QString("complete"));QCOMPARE(controller.currentFile(),other);
         const auto after=controller.library();int members=0;for(const auto &row:after)if(row.toMap().value("path")==moved){++members;QVERIFY(row.toMap().value("available").toBool());}QCOMPARE(members,2);
         QVERIFY(!controller.executeCommand({{"command","photo.select"},{"photo",original}}));QCOMPARE(controller.currentFile(),other);
@@ -116,6 +123,49 @@ private slots:
         QVERIFY(controller.openProject(QUrl::fromLocalFile(project)));QCOMPARE(controller.library().size(),3);
         ProjectDatabase db;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(db.readSnapshot(project,&saved));
         for(const auto &photo:saved)if(photo.copyKey==copyKey){QCOMPARE(photo.tags.keywords,QStringList{"family"});QCOMPARE(photo.rating,4);QCOMPARE(photo.adjustments.toJson(),state.toJson());}
+        QJsonArray commands;for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="relink_command"&&row["project"]==project)commands.append(row["command"]);}
+        QCOMPARE(commands,QJsonArray({relink,confirm}));
+    }
+    void staleAndForeignRelinkCommandsCannotCancelOrConfirmTheCurrentReview() {
+        QTemporaryDir dir;const auto original=dir.filePath("original.bmp"),candidate=dir.filePath("candidate.bmp");QVERIFY(fixture(original));QString project;
+        {ProjectDatabase db;QVERIFY(db.create(dir.path(),"Guards"));project=db.projectPath();QVERIFY(db.updateAdjustment(original,{}));QVERIFY(db.flush());QVERIFY(db.recordOriginalIdentity(original,identity(original)));}
+        QVERIFY(QFile::rename(original,candidate));const auto before=bytes(candidate);PhotoController c(nullptr);QVERIFY(c.openProject(QUrl::fromLocalFile(project)));
+        QVERIFY(c.beginRelink(original,QUrl::fromLocalFile(candidate)));QTRY_VERIFY_WITH_TIMEOUT(!c.relinkBusy(),10000);
+        const auto preview=c.relinkPreview();const auto history=c.editHistory();const auto token=c.relinkCatalogToken(),id=preview.value("requestId").toString();QCOMPARE(preview.value("status").toString(),QString("ready"));
+        const QList<QVariantMap> commands{
+            {{"command","photo.relink.request"},{"version",original},{"candidate",candidate},{"catalog_token",token}},
+            {{"command","photo.relink.confirm"},{"request_id",id},{"catalog_token",token},{"acknowledge_unknown_identity",true}},
+            {{"command","photo.relink.cancel"},{"request_id",id},{"catalog_token",token}}};
+        bool foreign=false,accepted=false,legacyStart=true,legacyConfirm=true;
+        std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();for(const auto &command:commands)accepted=c.executeCommand(command)||accepted;
+            legacyStart=c.beginRelink(original,QUrl::fromLocalFile(candidate));legacyConfirm=c.confirmRelink(id,true);c.cancelRelink();});worker.join();
+        QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!legacyStart);QVERIFY(!legacyConfirm);QCOMPARE(c.relinkPreview(),preview);
+        for(auto command:commands){command["catalog_token"]=token+"0";QVERIFY(!c.executeCommand(command));}
+        for(int i=1;i<commands.size();++i){auto command=commands[i];command["request_id"]=id+"0";QVERIFY(!c.executeCommand(command));}
+        auto bad=commands[0];bad["overwrite"]=true;QVERIFY(!c.executeCommand(bad));QVERIFY(!c.beginRelink(original,QUrl("https://example.invalid/owned.bmp")));
+        QCOMPARE(c.relinkPreview(),preview);QVERIFY(!c.relinkBusy());QCOMPARE(c.currentFile(),original);QCOMPARE(c.editHistory(),history);QCOMPARE(bytes(candidate),before);QVERIFY(!QFileInfo::exists(original));
+        ProjectDatabase reader;QVector<ProjectDatabase::SavedPhoto> stored;QVERIFY(reader.readSnapshot(project,&stored));QCOMPARE(stored.size(),1);QCOMPARE(stored[0].path,original);QCOMPARE(stored[0].identity,identity(candidate));
+        QVERIFY(c.executeCommand(commands[2]));QVERIFY(c.relinkPreview().isEmpty());QVERIFY(!c.executeCommand(commands[1]));
+    }
+    void reentrantCatalogSwitchOrOwnerDestructionCannotPublishTheCancelledRequest() {
+        QTemporaryDir dir;const auto original=dir.filePath("original.bmp"),candidate=dir.filePath("candidate.bmp");QVERIFY(fixture(original));QString first,second;
+        for(const auto &name:QStringList{"First","Second"}){ProjectDatabase db;QVERIFY(db.create(dir.path(),name));QVERIFY(db.updateAdjustment(original,{}));QVERIFY(db.flush());if(name=="First")first=db.projectPath();else second=db.projectPath();}
+        QVERIFY(QFile::rename(original,candidate));const auto before=bytes(candidate);
+        {PhotoController c(nullptr);QVERIFY(c.openProject(QUrl::fromLocalFile(first)));bool switched=false,opened=false;
+         const auto connection=connect(&c,&PhotoController::relinkChanged,this,[&]{if(!switched){switched=true;opened=c.openProject(QUrl::fromLocalFile(second));}});
+         QVERIFY(!c.beginRelink(original,QUrl::fromLocalFile(candidate)));disconnect(connection);QVERIFY(switched);QVERIFY(opened);QCOMPARE(c.projectPath(),second);QVERIFY(!c.relinkBusy());QVERIFY(c.relinkPreview().isEmpty());QCOMPARE(c.currentFile(),original);}
+        auto c=std::make_unique<PhotoController>(nullptr);QVERIFY(c->openProject(QUrl::fromLocalFile(first)));bool destroyed=false;QPointer<PhotoController> owner(c.get());
+        connect(c.get(),&PhotoController::relinkChanged,this,[&]{if(!destroyed){destroyed=true;c.reset();}});
+        QVERIFY(!c->beginRelink(original,QUrl::fromLocalFile(candidate)));QVERIFY(destroyed);QVERIFY(!owner);QVERIFY(!c);QCOMPARE(bytes(candidate),before);QVERIFY(!QFileInfo::exists(original));
+    }
+    void reentrantReplacementRequestWinsWithoutAnOlderRequestOverwritingIt() {
+        QTemporaryDir dir;const auto original=dir.filePath("original.bmp"),candidate=dir.filePath("candidate.bmp"),replacement=dir.filePath("replacement.bmp");QVERIFY(fixture(original));QVERIFY(QFile::copy(original,replacement));QString project;
+        {ProjectDatabase db;QVERIFY(db.create(dir.path(),"Replacement"));project=db.projectPath();QVERIFY(db.updateAdjustment(original,{}));QVERIFY(db.flush());QVERIFY(db.recordOriginalIdentity(original,identity(original)));}
+        QVERIFY(QFile::rename(original,candidate));const auto before=bytes(candidate);PhotoController c(nullptr);QVERIFY(c.openProject(QUrl::fromLocalFile(project)));bool replaced=false,queued=false;
+        const auto connection=connect(&c,&PhotoController::relinkChanged,this,[&]{if(!replaced){replaced=true;queued=c.beginRelink(original,QUrl::fromLocalFile(replacement));}});
+        QVERIFY(!c.beginRelink(original,QUrl::fromLocalFile(candidate)));disconnect(connection);QVERIFY(replaced);QVERIFY(queued);QTRY_VERIFY_WITH_TIMEOUT(!c.relinkBusy(),10000);
+        QCOMPARE(c.relinkPreview().value("status").toString(),QString("ready"));QCOMPARE(c.relinkPreview().value("candidatePath").toString(),replacement);QCOMPARE(c.currentFile(),original);
+        c.cancelRelink();QVERIFY(c.relinkPreview().isEmpty());QCOMPARE(bytes(candidate),before);QCOMPARE(bytes(replacement),before);QVERIFY(!QFileInfo::exists(original));
     }
     void fullHashRejectsChangedMiddleBytesAtEqualSizeAndMtime() {
         QTemporaryDir dir;const auto original=dir.filePath("original.bmp"),candidate=dir.filePath("candidate.bmp");QVERIFY(fixture(original));
