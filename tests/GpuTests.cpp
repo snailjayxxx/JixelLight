@@ -166,7 +166,7 @@ private:
             QCOMPARE(actual[3],source[3]);
         }
         const QImage view(reinterpret_cast<const uchar *>(readback.data.constData()),image.width(),image.height(),image.width()*16,QImage::Format_RGBA32FPx4);
-        const auto actual=ImagePipeline::rgba64Source(view),expected=prepared.reference.image();int maximum=0;
+        const auto actual=ImagePipeline::rgba64Source(view);const auto &expected=prepared.reference.image();int maximum=0;
         for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
             const auto a=reinterpret_cast<const QRgba64 *>(actual.constScanLine(y))[x],b=reinterpret_cast<const QRgba64 *>(expected.constScanLine(y))[x];
             maximum=std::max({maximum,std::abs(int(a.red())-int(b.red())),std::abs(int(a.green())-int(b.green())),std::abs(int(a.blue())-int(b.blue()))});QCOMPARE(a.alpha(),b.alpha());
