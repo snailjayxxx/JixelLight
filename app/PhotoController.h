@@ -857,6 +857,14 @@ private:
     bool beginRelinkImpl(const QString &versionKey,const QUrl &candidate,const QString &catalogToken);
     bool confirmRelinkImpl(const QString &requestId,bool acknowledgeUnknownIdentity);
     void cancelRelinkImpl();
+    bool executeProofCommand(const QJsonObject &command);
+    void setSoftProofEnabledImpl(bool);
+    bool setSoftProofTargetImpl(const QString &);
+    bool loadSoftProofProfileImpl(const QUrl &);
+    bool setSoftProofIntentImpl(int);
+    void setSoftProofPaperImpl(bool);
+    void setSoftProofGamutWarningImpl(bool);
+    void setSoftProofBlackPointImpl(bool);
     bool createProjectImpl(const QUrl &folder,const QString &name);
     bool openProjectImpl(const QUrl &folder);
     void copyAdjustmentsImpl();

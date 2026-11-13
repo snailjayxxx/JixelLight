@@ -176,6 +176,19 @@ def main():
             assert form['catalog_writes'] is (name == 'photo.relink.confirm')
             assert form['requires_saved_project'] is (name != 'photo.relink.cancel')
             assert all(c['name'] != name for c in schema['session']['commands'])
+        for name, fields in (('proof.enable', ['enabled']), ('proof.target', ['target']), ('proof.profile', ['source']),
+                             ('proof.intent', ['intent']), ('proof.paper', ['enabled']), ('proof.gamut-warning', ['enabled']),
+                             ('proof.black-point', ['enabled']), ('proof.refresh', [])):
+            form = next(c for c in schema['workflow_commands'] if c['name'] == name)
+            assert form['scope'] == 'desktop' and form['fields'] == fields and form['presentation_only'] is True
+            assert all(form[field] is False for field in ('source_writes', 'catalog_writes', 'edit_history_writes'))
+            if name != 'proof.refresh':
+                assert form['type'] == ('integer' if name == 'proof.intent' else 'string' if name in ('proof.target', 'proof.profile') else 'boolean')
+            if name == 'proof.intent':
+                assert form['minimum'] == 0 and form['maximum'] == 3
+            if name == 'proof.target':
+                assert 'custom' in form['values'] and 'srgb' in form['values']
+            assert all(c['name'] != name for c in schema['session']['commands'])
         session_file = root / 'session.json'
         session_edits = [{'command': 'develop.set', 'parameter': 'exposure', 'value': 1},
                          {'command': 'curve.set', 'channel': 'blue', 'point': 2, 'value': .7},
@@ -244,7 +257,11 @@ def main():
                      {'command': 'xmp.review', 'source': str(root / 'unavailable.xmp')},
                      {'command': 'photo.relink.request', 'version': 'owned-version', 'candidate': str(source), 'catalog_token': '12'},
                      {'command': 'photo.relink.confirm', 'request_id': '24', 'catalog_token': '12', 'acknowledge_unknown_identity': True},
-                     {'command': 'photo.relink.cancel', 'request_id': '24', 'catalog_token': '12'}]:
+                     {'command': 'photo.relink.cancel', 'request_id': '24', 'catalog_token': '12'},
+                     {'command': 'proof.enable', 'enabled': True}, {'command': 'proof.target', 'target': 'custom'},
+                     {'command': 'proof.profile', 'source': str(root / 'not-loaded.icc')}, {'command': 'proof.intent', 'intent': 2},
+                     {'command': 'proof.paper', 'enabled': True}, {'command': 'proof.gamut-warning', 'enabled': True},
+                     {'command': 'proof.black-point', 'enabled': False}, {'command': 'proof.refresh'}]:
             invalid_session = copy.deepcopy(session_manifest)
             invalid_session['commands'] = [session_commands[0], {'command': 'export.run', 'destination': late_output.name}, tail]
             session_file.write_text(json.dumps(invalid_session))
@@ -1191,7 +1208,7 @@ def main():
             assert hashlib.sha256(db_path.read_bytes()).hexdigest() == current
         assert hashlib.sha256(source.read_bytes()).hexdigest() == original
         assert not list(root.rglob('.jixellight-export-*'))  # Includes catalog output directories.
-        print(json.dumps({'ok': True, 'checks': ['session-ordered-exports', 'session-per-photo-undo-redo', 'session-batch-mask-png16-ICC-oracle', 'session-late-failure-atomicity', 'session-mode-and-no-overwrite', 'schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'color-range-mask-analytic-export', 'color-mask-invert-disable-reset', 'color-mask-atomic-type-rejection', 'luminance-range-mask-analytic-export', 'luminance-mask-invert-disable-reset', 'luminance-mask-atomic-range-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection', 'xmp-desktop-schema', 'xmp-session-whole-plan-refusal', 'relink-desktop-schema', 'relink-session-whole-plan-refusal']}))
+        print(json.dumps({'ok': True, 'checks': ['session-ordered-exports', 'session-per-photo-undo-redo', 'session-batch-mask-png16-ICC-oracle', 'session-late-failure-atomicity', 'session-mode-and-no-overwrite', 'schema', 'develop.set', 'geometry-hsl-curves', 'straighten', 'manual-perspective-lens-ca', 'correction-reset', 'vignette-ev-midpoint-feather', 'vignette-pixel-export', 'vignette-isolated-reset', 'deterministic-grain-png16', 'grain-isolated-reset', 'independent-sharpen-png16', 'sharpen-isolated-reset', 'cpu-spatial-denoise-png16', 'denoise-isolated-reset', 'denoise-range-clamp-strict-types', 'point-color-working-selection', 'point-color-png16', 'point-color-disable-reset', 'point-color-atomic-type-rejection', 'color-range-mask-analytic-export', 'color-mask-invert-disable-reset', 'color-mask-atomic-type-rejection', 'luminance-range-mask-analytic-export', 'luminance-mask-invert-disable-reset', 'luminance-mask-atomic-range-rejection', 'linear-mask-export', 'linear-mask-isolated-reset', 'radial-mask-export', 'radial-mask-invert', 'radial-mask-disabled-identity', 'radial-mask-reset', 'three-way-color-grading', 'grading-isolated-reset', 'invalid-edit-commands', 'look-twelve-codes-png16-pixel-oracle', 'look-alias-and-eight-parameter-normalization', 'look-strength-clamp', 'look-off-reset-isolation', 'look-explicit-manual-jpeg', 'look-raw-only-as-shot', 'look-strict-types-injection-rejection', 'look-whole-plan-atomicity', 'look-batch-source-isolation', 'look-catalog-source-context', 'png16', 'tiff16-lzw', 'webp8', 'jpeg', 'icc-space', 'invalid-command', 'no-overwrite', 'original-read-only', 'batch-relative-paths', 'batch-state-isolation', 'batch-full-preflight', 'batch-duplicate-destinations', 'batch-partial-failure', 'staging-cleanup', 'catalog-read-only', 'catalog-history-cursor', 'catalog-virtual-copies', 'catalog-version-listing', 'catalog-offline-listing', 'catalog-selected-versions', 'catalog-selection-order', 'catalog-selection-whole-plan-rejection', 'catalog-large-selected-export', 'catalog-empty-listing', 'catalog-command-overrides', 'catalog-name-version-sequence', 'catalog-name-whole-plan-rejection', 'catalog-capture-metadata-read-only', 'catalog-recorded-wall-clock', 'catalog-unknown-history-look-rejection', 'xmp-desktop-schema', 'xmp-session-whole-plan-refusal', 'relink-desktop-schema', 'relink-session-whole-plan-refusal', 'proof-desktop-schema', 'proof-session-whole-plan-refusal']}))
 
 
 if __name__ == '__main__':

@@ -1,6 +1,10 @@
 #include "PhotoController.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/PerformanceRecorder.h"
+#include "diagnostics/ActionTrace.h"
+#include "core/commands/CommandRegistry.h"
+#include <QPointer>
+#include <QThread>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QSettings>
@@ -54,15 +58,54 @@ void PhotoController::submitSoftProof() {
     SoftProofPreviewRequest request{m_previewSource,gpuPlan(false,ColorManagement::OutputSpace::ProPhotoRgb),m_softProofProfile,m_softProofSettings,m_photoEpoch,m_prepareGeneration,m_requestedRevision,m_softProofGeneration,m_gpuSource.cacheKey()};
     m_softProofState="updating";m_softProofDeadline.start();m_softProofJob->submit(std::move(request));emit softProofChanged();
 }
-void PhotoController::setSoftProofEnabled(bool value){if(value==m_softProofEnabled)return;m_softProofEnabled=value;scheduleSoftProof(true);}
-bool PhotoController::setSoftProofTarget(const QString &key){if(key=="custom"){if(!m_softProofCustom.valid()){chooseSoftProofProfile();return m_softProofTarget=="custom";}m_softProofProfile=m_softProofCustom;}else{if(!ColorManagement::keys().contains(key))return false;QString error;const auto profile=SoftProof::Profile::fromOutputSpace(ColorManagement::fromKey(key),&error);if(!profile.valid())return false;m_softProofProfile=profile;}m_softProofTarget=key;saveSoftProofSettings();scheduleSoftProof(true);return true;}
-void PhotoController::chooseSoftProofProfile(){const auto path=QFileDialog::getOpenFileName(nullptr,uiText("选择软打样 ICC","Choose proof ICC"),QFileInfo(m_softProofPath).absolutePath(),"ICC (*.icc *.icm)");if(!path.isEmpty())loadSoftProofProfile(QUrl::fromLocalFile(path));}
-bool PhotoController::loadSoftProofProfile(const QUrl &url){if(!url.isLocalFile())return false;QString error;const auto profile=SoftProof::Profile::fromFile(url.toLocalFile(),&error);if(!profile.valid()){setStatus(uiText("无法读取所选 ICC 配置。","Cannot read the selected ICC profile."));return false;}m_softProofCustom=profile;m_softProofProfile=profile;m_softProofTarget="custom";m_softProofPath=QFileInfo(url.toLocalFile()).absoluteFilePath();saveSoftProofSettings();scheduleSoftProof(true);return true;}
-bool PhotoController::setSoftProofIntent(int value){if(value<0||value>3)return false;if(value==int(m_softProofSettings.intent))return true;m_softProofSettings.intent=SoftProof::Intent(value);saveSoftProofSettings();scheduleSoftProof(true);return true;}
-void PhotoController::setSoftProofPaper(bool value){if(value==m_softProofSettings.simulatePaper)return;m_softProofSettings.simulatePaper=value;saveSoftProofSettings();scheduleSoftProof(true);}
-void PhotoController::setSoftProofGamutWarning(bool value){if(value==m_softProofSettings.gamutWarning)return;m_softProofSettings.gamutWarning=value;saveSoftProofSettings();scheduleSoftProof(true);}
-void PhotoController::setSoftProofBlackPoint(bool value){if(value==m_softProofSettings.blackPointCompensation)return;m_softProofSettings.blackPointCompensation=value;saveSoftProofSettings();scheduleSoftProof(true);}
-void PhotoController::refreshSoftProof(){scheduleSoftProof(true);}
+void PhotoController::setSoftProofEnabled(bool value){executeProofCommand({{"command","proof.enable"},{"enabled",value}});}
+bool PhotoController::setSoftProofTarget(const QString &key){
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    // The existing UI chooser stays explicit; command dispatch never opens it.
+    if(key=="custom"&&!m_softProofCustom.valid()) {QPointer<PhotoController> owner(this);chooseSoftProofProfile();return owner&&m_softProofTarget=="custom";}
+    return executeProofCommand({{"command","proof.target"},{"target",key}});
+}
+bool PhotoController::loadSoftProofProfile(const QUrl &source){return source.isLocalFile()&&executeProofCommand({{"command","proof.profile"},{"source",source.toLocalFile()}});}
+bool PhotoController::setSoftProofIntent(int value){return executeProofCommand({{"command","proof.intent"},{"intent",value}});}
+void PhotoController::setSoftProofPaper(bool value){executeProofCommand({{"command","proof.paper"},{"enabled",value}});}
+void PhotoController::setSoftProofGamutWarning(bool value){executeProofCommand({{"command","proof.gamut-warning"},{"enabled",value}});}
+void PhotoController::setSoftProofBlackPoint(bool value){executeProofCommand({{"command","proof.black-point"},{"enabled",value}});}
+bool PhotoController::executeProofCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Proof request;
+    if(!CommandRegistry::decodeProof(command,&request)){setStatus(uiText("软打样命令参数无效", "Invalid soft proof command parameters"));return false;}
+    auto canonical=command;
+    if(request.operation==CommandRegistry::ProofOperation::Profile)canonical["source"]=QFileInfo(request.text).absoluteFilePath();
+    const QVariantMap details{{"command",canonical},{"presentation_only",true},{"completion","presentation-request-accepted"}};
+    bool accepted=true;
+    switch(request.operation) {
+    case CommandRegistry::ProofOperation::Enable:setSoftProofEnabledImpl(request.enabled);break;
+    case CommandRegistry::ProofOperation::Target:accepted=setSoftProofTargetImpl(request.text);break;
+    case CommandRegistry::ProofOperation::Profile:accepted=loadSoftProofProfileImpl(QUrl::fromLocalFile(canonical["source"].toString()));break;
+    case CommandRegistry::ProofOperation::Intent:accepted=setSoftProofIntentImpl(request.intent);break;
+    case CommandRegistry::ProofOperation::Paper:setSoftProofPaperImpl(request.enabled);break;
+    case CommandRegistry::ProofOperation::GamutWarning:setSoftProofGamutWarningImpl(request.enabled);break;
+    case CommandRegistry::ProofOperation::BlackPoint:setSoftProofBlackPointImpl(request.enabled);break;
+    case CommandRegistry::ProofOperation::Refresh:scheduleSoftProof(true);break;
+    }
+    // Presentation callbacks can destroy the owner; only frozen locals follow.
+    if(accepted)ActionTrace::instance().record("proof_command",details);
+    return accepted;
+}
+void PhotoController::setSoftProofEnabledImpl(bool value){if(value==m_softProofEnabled)return;m_softProofEnabled=value;scheduleSoftProof(true);}
+bool PhotoController::setSoftProofTargetImpl(const QString &key){if(key=="custom"){if(!m_softProofCustom.valid())return false;m_softProofProfile=m_softProofCustom;}else{if(!ColorManagement::keys().contains(key))return false;QString error;const auto profile=SoftProof::Profile::fromOutputSpace(ColorManagement::fromKey(key),&error);if(!profile.valid())return false;m_softProofProfile=profile;}m_softProofTarget=key;saveSoftProofSettings();scheduleSoftProof(true);return true;}
+void PhotoController::chooseSoftProofProfile(){
+    if(QThread::currentThread()!=thread()||m_closing)return;
+    QPointer<PhotoController> owner(this);
+    const auto path=QFileDialog::getOpenFileName(nullptr,uiText("选择软打样 ICC","Choose proof ICC"),QFileInfo(m_softProofPath).absolutePath(),"ICC (*.icc *.icm)");
+    if(owner&&!path.isEmpty())loadSoftProofProfile(QUrl::fromLocalFile(path));
+}
+bool PhotoController::loadSoftProofProfileImpl(const QUrl &url){if(!url.isLocalFile())return false;QString error;const auto profile=SoftProof::Profile::fromFile(url.toLocalFile(),&error);if(!profile.valid()){setStatus(uiText("无法读取所选 ICC 配置。","Cannot read the selected ICC profile."));return false;}m_softProofCustom=profile;m_softProofProfile=profile;m_softProofTarget="custom";m_softProofPath=QFileInfo(url.toLocalFile()).absoluteFilePath();saveSoftProofSettings();scheduleSoftProof(true);return true;}
+bool PhotoController::setSoftProofIntentImpl(int value){if(value<0||value>3)return false;if(value==int(m_softProofSettings.intent))return true;m_softProofSettings.intent=SoftProof::Intent(value);saveSoftProofSettings();scheduleSoftProof(true);return true;}
+void PhotoController::setSoftProofPaperImpl(bool value){if(value==m_softProofSettings.simulatePaper)return;m_softProofSettings.simulatePaper=value;saveSoftProofSettings();scheduleSoftProof(true);}
+void PhotoController::setSoftProofGamutWarningImpl(bool value){if(value==m_softProofSettings.gamutWarning)return;m_softProofSettings.gamutWarning=value;saveSoftProofSettings();scheduleSoftProof(true);}
+void PhotoController::setSoftProofBlackPointImpl(bool value){if(value==m_softProofSettings.blackPointCompensation)return;m_softProofSettings.blackPointCompensation=value;saveSoftProofSettings();scheduleSoftProof(true);}
+void PhotoController::refreshSoftProof(){executeProofCommand({{"command","proof.refresh"}});}
 void PhotoController::refreshSoftProofDisplay(){if(m_softProofId.isEmpty()||!m_provider)return;const auto id=QString("proof-live/%1/%2/%3").arg(m_softProofGeneration).arg(m_requestedRevision).arg(++m_softProofDisplaySerial);if(m_provider->renameProofPreview(id)){m_softProofId=id;emit softProofChanged();}}
 QString PhotoController::softProofStatus() const {
     if(m_softProofState=="off")return uiText("软打样未启用","Soft proof is off");

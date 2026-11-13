@@ -7492,6 +7492,25 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void desktopProofCommandsRequireStrictPresentationFieldsWithoutChangingDecodedOutputOnFailure() {
+        const QList<QJsonObject> commands{
+            {{"command","proof.enable"},{"enabled",true}},{{"command","proof.target"},{"target","custom"}},
+            {{"command","proof.profile"},{"source","owned.icc"}},{{"command","proof.intent"},{"intent",2}},
+            {{"command","proof.paper"},{"enabled",true}},{{"command","proof.gamut-warning"},{"enabled",true}},
+            {{"command","proof.black-point"},{"enabled",false}},{{"command","proof.refresh"}}};
+        for(const auto &command:commands) {
+            CommandRegistry::Proof parsed;QVERIFY(CommandRegistry::decodeProof(command,&parsed));
+            auto bad=command;bad["overwrite"]=true;parsed.text="sentinel";QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));QCOMPARE(parsed.text,QString("sentinel"));
+            for(auto it=command.begin();it!=command.end();++it){bad=command;bad.remove(it.key());QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));QCOMPARE(parsed.text,QString("sentinel"));}
+            if(command.contains("enabled"))for(const auto &value:QList<QJsonValue>{1,0,QString("true"),QJsonValue{},QJsonArray{true}}){bad=command;bad["enabled"]=value;QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));}
+            if(command.contains("intent"))for(const auto &value:QList<QJsonValue>{-1,4,1.5,true,QString("1"),QJsonValue{}}){bad=command;bad["intent"]=value;QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));}
+            if(command.contains("source"))for(const auto &value:QList<QJsonValue>{QString{},QString(32769,'x'),QString::fromUtf8("bad\0path",8),true,1}){bad=command;bad["source"]=value;QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));}
+            if(command.contains("target"))for(const auto &value:QList<QJsonValue>{QString("unknown"),QString{},true,1}){bad=command;bad["target"]=value;QVERIFY(!CommandRegistry::decodeProof(bad,&parsed));}
+            const auto schema=CommandRegistry::proofSchema(command["command"].toString());QCOMPARE(schema["scope"].toString(),QString("desktop"));
+            for(const auto field:{"source_writes","catalog_writes","edit_history_writes"})QVERIFY(schema[field].isBool()&&!schema[field].toBool());QVERIFY(schema["presentation_only"].toBool());
+        }
+    }
+
     void desktopRelinkSchemasRequireExactCatalogRequestAndAcknowledgementBeforeExecution() {
         const QList<QJsonObject> commands{
             {{"command","photo.relink.request"},{"version","owned-version"},{"candidate","owned.bmp"},{"catalog_token","12"}},

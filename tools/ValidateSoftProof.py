@@ -35,6 +35,13 @@ def validate_report(data, mode, qpa, expected_commit=None):
             and not any('proof'in k.lower()for k in data['initial_whole_Develop']), 'proof never becomes a Develop edit')
     require(type(data['initial_history']) is list and len(data['initial_history'])>=1 and data['initial_history']==data['final_history'], 'whole durable history unchanged')
     require(data['profile_model']=='RGB' and re.fullmatch(r'[0-9a-f]{64}',data['profile_sha256']) is not None, 'owned bounded output RGB ICC')
+    commands=data.get('proof_commands')
+    require(data.get('proof_command_trace_passed') is True and type(commands) is list and commands==[
+        {'command':'proof.profile','source':data['profile_path']},{'command':'proof.enable','enabled':True},
+        {'command':'proof.paper','enabled':True},{'command':'proof.gamut-warning','enabled':True},
+        {'command':'proof.black-point','enabled':False},{'command':'proof.refresh'},
+        {'command':'proof.enable','enabled':False},{'command':'proof.enable','enabled':True}]
+        and all(type(c.get('enabled')) is bool for c in commands if 'enabled'in c), 'exact ordered shared presentation commands')
     require(('SOFT PROOF'if mode=='cpu'else'软打样') in data['header_text'], 'actual translated panel')
     scope=data['scope'];require(scope['pixels']==307*211 and scope['bins']==1024, 'complete original scope size')
     require(scope['status']==('全分辨率统计'if data['language']=='zh_CN'else'Full-resolution statistics'),'current completed original full statistics')

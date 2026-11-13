@@ -28,6 +28,11 @@ def report_fixture(mode='gpu',qpa='cocoa'):
            physical_device_verified=False,real_printer_profile_verified=False,native_float_RAW_decoder=False,product_development_complete=False,
            export=dict(proof_enabled_during_export=True,RGBA16_exact=True,ICC_srgb=True,pixels=pixels),
            phase_checkpoints=[dict(phase=i,at_ms=i*100)for i in range(15)])
+    d['proof_command_trace_passed']=True
+    d['proof_commands']=[{'command':'proof.profile','source':d['profile_path']},{'command':'proof.enable','enabled':True},
+        {'command':'proof.paper','enabled':True},{'command':'proof.gamut-warning','enabled':True},
+        {'command':'proof.black-point','enabled':False},{'command':'proof.refresh'},
+        {'command':'proof.enable','enabled':False},{'command':'proof.enable','enabled':True}]
     d['live_invariants']=dict(source_key='70',revision='14',pixels=307*211,**{k:True for k in ('source_same','revision_same','state_same','history_same','red_same','green_same','blue_same','luma_same','shadow_same','highlight_same')})
     d['final_history']=deepcopy(d['initial_history'])
     d['scope']=dict(status='Full-resolution statistics'if mode=='cpu'else'全分辨率统计',pixels=pixels,bins=1024,**{key:[pixels]+[0]*1023 for key in ('red','green','blue','luma')})
@@ -58,6 +63,30 @@ def diagnostic_fixture(mode='gpu'):
 
 
 class SoftProofEvidenceTests(unittest.TestCase):
+    def test_shared_proof_commands_require_a_true_boolean_flag(self):
+        for value in (False,1,None,'true'):
+            d=report_fixture();d['proof_command_trace_passed']=value
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+        d=report_fixture();del d['proof_command_trace_passed']
+        with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
+    def test_missing_reordered_or_extra_presentation_commands_are_rejected(self):
+        for commands in (None,[],report_fixture()['proof_commands'][1:],list(reversed(report_fixture()['proof_commands'])),report_fixture()['proof_commands']+[{'command':'proof.refresh'}]):
+            d=report_fixture();d['proof_commands']=commands
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+        d=report_fixture();del d['proof_commands']
+        with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
+    def test_presentation_commands_bind_the_loaded_profile_and_exact_fields(self):
+        for index,key,value in ((0,'source','/different/profile.icc'),(2,'overwrite',True),(5,'enabled',True),(6,'command','develop.set')):
+            d=report_fixture();d['proof_commands'][index][key]=value
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
+    def test_presentation_boolean_numbers_cannot_impersonate_native_commands(self):
+        for index in (1,2,3,4,6,7):
+            d=report_fixture();d['proof_commands'][index]['enabled']=int(d['proof_commands'][index]['enabled'])
+            with self.assertRaises(ValueError):validate_report(d,'gpu','cocoa')
+
     def test_honest_original_cpu_gpu_reports_and_frozen_diagnostics(self):
         for mode in ('cpu','gpu'):
             for qpa in ('cocoa','windows','xcb'):self.assertTrue(validate_report(report_fixture(mode,qpa),mode,qpa,'a'*40))
