@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QScopeGuard>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QSemaphore>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -78,7 +80,7 @@ class BrushScopeRoutingTests final:public QObject {
 private slots:
     void previewCompletionSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
-        for(const auto &context:QStringList{"prepare-geometry","prepare-activity","render-preview","render-activity","render-plot","exact-request"})
+        for(const auto &context:QStringList{"source-metadata","source-activity","prepare-geometry","prepare-activity","render-preview","render-activity","render-plot","exact-request","gpu-backend"})
             for(bool closeOnly:{false,true})QTest::newRow(qPrintable(context+(closeOnly?"-close":"-destroy")))<<context<<closeOnly;
     }
     void previewCompletionSignalsMayCloseOrDestroyOwner() {
@@ -89,26 +91,31 @@ private slots:
         QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));
         QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering()&&owner->scopesPixelCount()>0&&!owner->m_prepare->busy()&&!owner->m_render->busy()&&!owner->m_scopeJob->busy(),15000);
         QVERIFY(owner->flushEdits());owner->m_saveTimer.stop();owner->m_saveMaxTimer.stop();owner->m_refineTimer.stop();owner->m_exactTimer.stop();owner->m_plotTimer.stop();owner->setExactScopes(false);
-        const auto generation=owner->m_prepareGeneration,preview=owner->m_previewRevision;
+        const auto generation=owner->m_prepareGeneration,preview=owner->m_previewRevision,load=owner->m_loader->sequence();
         QPointer<PhotoController> alive(owner.get());bool terminal=false,closed=false;QList<quint64> stopped;
-        const auto workState=[&]{return QList<quint64>{owner->m_requestedRevision,owner->m_prepare->sequence(),owner->m_render->sequence(),owner->m_scopeJob->sequence(),owner->m_inputScopeJob->sequence(),owner->m_fullScopeJob->sequence(),owner->m_plotJob->sequence(),quint64(owner->m_exactTimer.isActive())+2*quint64(owner->m_plotTimer.isActive())};};
+        const auto workState=[&]{return QList<quint64>{owner->m_requestedRevision,owner->m_loader->sequence(),owner->m_prefetch->sequence(),owner->m_prepare->sequence(),owner->m_render->sequence(),owner->m_scopeJob->sequence(),owner->m_inputScopeJob->sequence(),owner->m_fullScopeJob->sequence(),owner->m_plotJob->sequence(),owner->m_referenceJob->sequence(),quint64(owner->m_exactTimer.isActive())+2*quint64(owner->m_plotTimer.isActive())};};
         const auto completed=[&]{
             if(terminal||!owner)return;
-            const bool ready=context.startsWith("prepare-")?!owner->m_preparing&&owner->m_prepareGeneration>generation
-                :context=="exact-request"?owner->m_scopesUpdating:owner->m_previewRevision>preview&&(context=="render-preview"||!owner->rendering());
+            const bool ready=context.startsWith("source-")?owner->m_loader->sequence()>load
+                :context.startsWith("prepare-")?!owner->m_preparing&&owner->m_prepareGeneration>generation
+                :context=="gpu-backend"?owner->m_gpuActive:context=="exact-request"?owner->m_scopesUpdating:owner->m_previewRevision>preview&&(context=="render-preview"||!owner->rendering());
             if(!ready)return;
             terminal=true;
-            if(closeOnly){closed=owner->prepareToClose();if(owner)stopped=workState();}
+            if(closeOnly){closed=owner->beginClose();if(owner)stopped=workState();}
             else owner.reset();
         };
         QMetaObject::Connection connection;
-        if(context=="prepare-geometry")connection=QObject::connect(owner.get(),&PhotoController::previewGeometryChanged,owner.get(),completed);
-        else if(context=="prepare-activity"||context=="render-activity")connection=QObject::connect(owner.get(),&PhotoController::activityChanged,owner.get(),completed);
+        if(context=="source-metadata")connection=QObject::connect(owner.get(),&PhotoController::currentMetadataChanged,owner.get(),completed);
+        else if(context=="prepare-geometry")connection=QObject::connect(owner.get(),&PhotoController::previewGeometryChanged,owner.get(),completed);
+        else if(context=="source-activity"||context=="prepare-activity"||context=="render-activity")connection=QObject::connect(owner.get(),&PhotoController::activityChanged,owner.get(),completed);
+        else if(context=="gpu-backend")connection=QObject::connect(owner.get(),&PhotoController::backendChanged,owner.get(),completed);
         else if(context=="render-preview")connection=QObject::connect(owner.get(),&PhotoController::previewUrlChanged,owner.get(),completed);
         else if(context=="render-plot")connection=QObject::connect(owner.get(),&PhotoController::scopePlotChanged,owner.get(),completed);
         else connection=QObject::connect(owner.get(),&PhotoController::scopesChanged,owner.get(),completed);
         const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
-        if(context.startsWith("prepare-")){owner->m_viewport=QSize(177,123);owner->prepareCurrent();}
+        if(context.startsWith("source-")){owner->m_loadedKey.clear();owner->loadCurrent();}
+        else if(context.startsWith("prepare-")){owner->m_viewport=QSize(177,123);owner->prepareCurrent();}
+        else if(context=="gpu-backend"){owner->m_gpuEnabled=true;owner->m_gpuActive=false;owner->m_gpuSource=owner->m_previewSource;owner->gpuPresented(owner->m_requestedRevision,"controlled-lifetime-backend");}
         else if(context=="exact-request"){owner->m_exactScopes=true;owner->requestFullScopes();}
         else owner->scheduleRender(false);
         QTRY_VERIFY_WITH_TIMEOUT(terminal,15000);
@@ -118,6 +125,29 @@ private slots:
             QCOMPARE(workState(),stopped);
         }else{QVERIFY(!owner);QVERIFY(!alive);}
         QCOMPARE(fileHash(path),original);
+    }
+    void windowCloseIsTerminalWhilePreflightRemainsReusable() {
+        QStandardPaths::setTestModeEnabled(true);ProcessedImageProvider provider;PhotoController c(&provider);
+        bool foreign=true;std::thread worker([&]{foreign=c.beginClose();});worker.join();QVERIFY(!foreign);QVERIFY(!c.m_closing);
+        QVERIFY(c.prepareToClose());QVERIFY(!c.m_closing);QVERIFY(c.executeCommand({{"command","scopes.domain"},{"domain","source"}}));
+        QVERIFY(c.beginClose());QVERIFY(c.m_closing);QVERIFY(!c.m_closePreparing);
+        const auto sequence=c.m_fullScopeJob->sequence();QVERIFY(c.beginClose());QCOMPARE(c.m_fullScopeJob->sequence(),sequence);
+        QVERIFY(!c.executeCommand({{"command","scopes.domain"},{"domain","working"}}));QCOMPARE(c.scopeDomain(),QString("source"));
+    }
+    void failedWindowCloseRetainsWriterAndCanRetry() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("close-retry.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"WindowClose"));QVERIFY(c.flushEdits());
+        const auto connection=QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const auto trigger=[&](bool enabled){
+            {auto db=QSqlDatabase::addDatabase("QSQLITE",connection);db.setDatabaseName(QDir(c.projectPath()).filePath("Project.db"));QVERIFY(db.open());QSqlQuery query(db);QVERIFY(query.exec(enabled?"CREATE TRIGGER block_window_close BEFORE UPDATE ON photos BEGIN SELECT RAISE(ABORT,'blocked close'); END":"DROP TRIGGER block_window_close"));db.close();}
+            QSqlDatabase::removeDatabase(connection);
+        };
+        trigger(true);auto restore=qScopeGuard([&]{trigger(false);});
+        c.setExposure(.75);c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        QVERIFY(!c.beginClose());QVERIFY(!c.m_closing);QVERIFY(!c.m_closePreparing);QCOMPARE(c.exposure(),.75);
+        QVERIFY(c.executeCommand({{"command","scopes.domain"},{"domain","working"}}));QCoreApplication::processEvents();trigger(false);restore.dismiss();
+        QVERIFY(c.beginClose());QVERIFY(c.m_closing);ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.exposure,.75);QCOMPARE(fileHash(path),original);
     }
     void asynchronousLinearScopeDeliveryMayDestroyOwner_data() {
         QTest::addColumn<QString>("domain");QTest::addColumn<bool>("plot");

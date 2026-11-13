@@ -21,7 +21,7 @@ ApplicationWindow {
     palette.highlight: "#507aa5"
     palette.highlightedText: "#ffffff"
     palette.placeholderText: "#8b98a6"
-    onClosing: function(close) { if (!photoController.prepareToClose()) close.accepted=false }
+    onClosing: function(close) { if (!photoController.beginClose()) close.accepted=false }
 
     // "Develop" remains the default to keep existing GPU/RAW smoke behavior.
     property int workspaceIndex: 1 // 0 Library, 1 Develop
