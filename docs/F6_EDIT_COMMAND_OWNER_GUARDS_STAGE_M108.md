@@ -1,0 +1,9 @@
+# M108: Guard direct desktop edit-command entry points
+
+The unified desktop `executeCommand` entry checks the controller's owning thread and lifecycle before accessing state. The older public `executeEditCommand` and `executeEditCommands` methods did not perform that check themselves. Recipe application and existing brush adapters still call those methods directly, so a foreign-thread caller could bypass the unified entry's refusal and reach mutable state, history and controller queues.
+
+Both direct entry points now apply the same early owning-thread/closing refusal before source access, JSON conversion, batch inspection or history mutation. Calls from the controller's thread retain their original validation, single-step batch undo, rendering and persistence behavior. This does not make simultaneous object destruction and arbitrary external calls a supported lifetime contract.
+
+A Core regression uses an actual dedicated thread for valid single and two-edit batch requests, plus the empty-batch fast path. Every call must refuse while complete state, history, selection and source bytes remain unchanged. On the owning thread, a successful close preflight still permits an empty batch and ordinary edits; single and batch changes retain independent Undo/Redo boundaries and exact state restoration.
+
+This is a private implementation pending compilation. Expected Core248/session18; the parent7def770 must finish its independent frozen full102/all29/eight-binary qualification before a build starts. This candidate then requires its own targeted/full/native/real-RAW acceptance and unchanged platform/package gates. No image arithmetic, RAW configuration, scheduling budget, engine, memory limit or deadline changes. Main and protected PR15 remain unmerged; overall F0–F6 completion remains unclaimed.

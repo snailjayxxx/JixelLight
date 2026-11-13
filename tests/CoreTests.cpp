@@ -7492,6 +7492,28 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void directEditCommandEntriesRejectForeignThreadsWithoutChangingStateOrHistory() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");
+        QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setExposure(.25);c.finishInteraction();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto selection=c.selectedIndices();
+        const QVariantMap single{{"command","develop.set"},{"parameter","exposure"},{"value",.75}};
+        const QVariantList batch{QVariantMap{{"command","develop.set"},{"parameter","exposure"},{"value",1.25}},
+            QVariantMap{{"command","develop.set"},{"parameter","contrast"},{"value",17}}};
+        bool foreign=false,singleAccepted=true,batchAccepted=true,emptyAccepted=true;
+        std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();singleAccepted=c.executeEditCommand(single);
+            batchAccepted=c.executeEditCommands(batch);emptyAccepted=c.executeEditCommands({});});worker.join();
+        QVERIFY(foreign);QVERIFY(!singleAccepted);QVERIFY(!batchAccepted);QVERIFY(!emptyAccepted);
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.selectedIndices(),selection);QCOMPARE(fixtureBytes(source),bytes);
+        // A successfully saved close preflight can still be vetoed by the UI.
+        QVERIFY(c.prepareToClose());QVERIFY(c.executeEditCommands({}));QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);
+        QVERIFY(c.executeEditCommand(single));const auto afterSingle=c.gpuPlan(true).state.toJson();QCOMPARE(c.exposure(),.75);
+        QVERIFY(c.executeEditCommands(batch));const auto afterBatch=c.gpuPlan(true).state.toJson();QCOMPARE(c.exposure(),1.25);QCOMPARE(c.contrast(),17.0);
+        c.undo();QCOMPARE(c.gpuPlan(true).state.toJson(),afterSingle);c.undo();QCOMPARE(c.gpuPlan(true).state.toJson(),state);
+        c.redo();QCOMPARE(c.gpuPlan(true).state.toJson(),afterSingle);c.redo();QCOMPARE(c.gpuPlan(true).state.toJson(),afterBatch);
+        QCOMPARE(c.selectedIndices(),selection);QCOMPARE(fixtureBytes(source),bytes);
+    }
+
     void automaticCpuBudgetKeepsUiCapacityWithoutSerializingThreeCoreHosts() {
         QCOMPARE(ParallelRows::automaticThreadBudget(std::numeric_limits<int>::min()),1);
         for(int cores=-1;cores<=2;++cores)QCOMPARE(ParallelRows::automaticThreadBudget(cores),1);

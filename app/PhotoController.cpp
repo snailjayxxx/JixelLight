@@ -778,6 +778,7 @@ bool PhotoController::executeCommand(const QVariantMap &command) {
 }
 
 bool PhotoController::executeEditCommand(const QVariantMap &command) {
+    if(QThread::currentThread()!=thread() || m_closing)return false;
     if (!currentSourceAvailable()) return false;
     QString error; auto staged = m_photos[m_currentIndex].state;
     const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
@@ -802,6 +803,7 @@ QVariantMap PhotoController::currentEditRecipe() const {
 }
 
 bool PhotoController::executeEditCommands(const QVariantList &commands) {
+    if(QThread::currentThread()!=thread() || m_closing)return false;
     if (!currentSourceAvailable()) return false;
     if (commands.isEmpty()) return true;
     if (commands.size()>10000) {
