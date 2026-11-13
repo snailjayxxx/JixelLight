@@ -793,6 +793,7 @@ private:
     void deferBudgetJob(int job,quint64 revision);
     void retryBudgetJobs(bool afterExport=false);
     friend class BrushScopeRoutingTests;
+    friend class CatalogNotificationTests;
     friend class BrushLivePreviewTests;
     friend class BrushPreviewAdmissionWorkerTests;
     friend class RawPressureEventProbe;
