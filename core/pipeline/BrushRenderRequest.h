@@ -106,7 +106,10 @@ private:
     friend class SoftProofPreviewRenderer;
     static std::unique_ptr<BrushRenderRequest> createImpl(const QImage &source,const AdjustmentState &state,
         const Spec &spec,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,
-        const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure);
+        const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure,bool workingAnalysis=false);
+    static std::unique_ptr<BrushRenderRequest> createOriginalDomain(const QImage &,const ProcessingPlan &,
+        const GeometryState &,Layout,const CancelToken &,QString *,std::shared_ptr<BrushRenderBudget>,BrushAdmissionFailure *,bool);
+    friend class BrushAnalysisRequest;
     QImage prepare(const CancelToken &cancel,QString *error) const;
     QImage retainFloatUpload(QImage image);
     friend class GpuEngine;
@@ -122,5 +125,23 @@ private:
     QRect m_region;
     qint64 m_reservedBytes=0;
     std::atomic_bool m_used{false};
-    bool m_renderCompleted=false,m_uploadRetained=false;
+    bool m_renderCompleted=false,m_uploadRetained=false,m_workingAnalysis=false;
+};
+
+// A separate type prevents feeding linear analysis pixels to display/export
+// consumers. The owned request retains the same immutable, one-use admission.
+class BrushAnalysisRequest final {
+public:
+    BrushAnalysisRequest(const BrushAnalysisRequest &)=delete;
+    BrushAnalysisRequest &operator=(const BrushAnalysisRequest &)=delete;
+    static std::unique_ptr<BrushAnalysisRequest> create(const QImage &,const ProcessingPlan &,const GeometryState &,
+        BrushRenderRequest::Layout=BrushRenderRequest::Layout::Stripes128,const CancelToken &cancel={},QString *error=nullptr,
+        std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
+    QSize size()const{return m_request->size();}
+    qint64 reservedBytes()const{return m_request->reservedBytes();}
+    BrushImageLease render(const CancelToken &cancel={},QString *error=nullptr){return m_request->render(cancel,error);}
+    bool visitStrips(const BrushRenderRequest::StripConsumer &consumer,const CancelToken &cancel={},QString *error=nullptr){return m_request->visitStrips(consumer,cancel,error);}
+private:
+    BrushAnalysisRequest()=default;
+    std::unique_ptr<BrushRenderRequest> m_request;
 };

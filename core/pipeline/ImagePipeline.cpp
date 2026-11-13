@@ -1480,3 +1480,12 @@ QImage ImagePipeline::renderAdmittedBrush(const QImage &source,const ProcessingP
     const auto rendered=processColorFrame(source.copy(expanded),plan,token,parallel,source.size(),expanded.topLeft(),std::size_t(BrushRenderRequest::MaxSourcePixels));
     return rendered.isNull()?QImage{}:rendered.copy(QRect(region.topLeft()-expanded.topLeft(),region.size()));
 }
+QImage ImagePipeline::renderAdmittedWorking(const QImage &source,const ProcessingPlan &requestedPlan,const QRect &region,
+                                           const CancelToken &token,bool parallel) {
+    auto plan=requestedPlan;if(!resolveDehazeAirlight(source,plan,token))return {};
+    if(region==source.rect())return processColorFrame<AnalysisDomain::Working>(source,plan,token,parallel,source.size(),{},std::size_t(BrushRenderRequest::MaxSourcePixels));
+    if(region.isEmpty()||!source.rect().contains(region))return {};
+    const auto expanded=expandedColorRegion(source.size(),plan,region);if(expanded.isEmpty())return {};
+    const auto frame=processColorFrame<AnalysisDomain::Working>(source.copy(expanded),plan,token,parallel,source.size(),expanded.topLeft(),std::size_t(BrushRenderRequest::MaxSourcePixels));
+    return frame.isNull()?QImage{}:frame.copy(QRect(region.topLeft()-expanded.topLeft(),region.size()));
+}

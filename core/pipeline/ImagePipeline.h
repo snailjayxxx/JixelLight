@@ -69,4 +69,6 @@ private:
                                       int stripeHeight,const CancelToken &cancel,QString *error);
     static QImage renderAdmittedBrush(const QImage &source,const ProcessingPlan &plan,const QRect &region,
                                      const CancelToken &cancel,bool parallel);
+    static QImage renderAdmittedWorking(const QImage &source,const ProcessingPlan &plan,const QRect &region,
+                                       const CancelToken &cancel,bool parallel);
 };

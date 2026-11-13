@@ -3,16 +3,44 @@
 #include "core/async/ParallelRows.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QRgba64>
+#include <QColorSpace>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include <atomic>
+#include <limits>
 
 void HistogramCounts::add(const HistogramCounts &other) {
     for (size_t i=0; i<bins.size(); ++i) bins[i]+=other.bins[i];
     shadows+=other.shadows; highlights+=other.highlights; pixels+=other.pixels;
 }
 namespace {
+bool countLinearFrame(const QImage &image,HistogramCounts *output,const CancelToken &token) {
+    if(!output||image.isNull()||cancelled(token)||image.format()!=QImage::Format_RGBA32FPx4
+        ||image.colorSpace()!=QColorSpace(QColorSpace::SRgbLinear))return false;
+    const int tasks=std::max(1,std::min(ParallelRows::threadBudget(),int((qint64(image.height())+63)/64)));
+    std::vector<HistogramCounts> partials(std::size_t(tasks),HistogramCounts{});std::atomic_bool invalid{false};
+    const auto rows=(qint64(image.height())+tasks-1)/tasks;
+    const auto work=int(std::min(qint64(std::numeric_limits<int>::max()),qint64(image.width())*rows));
+    ParallelRows::run(tasks,work,token,[&](int task) {
+        auto &counts=partials[std::size_t(task)];
+        const int first=int(qint64(task)*image.height()/tasks),last=int(qint64(task+1)*image.height()/tasks);
+        for(int y=first;y<last&&!cancelled(token)&&!invalid.load(std::memory_order_relaxed);++y) {
+            const auto *row=reinterpret_cast<const float *>(image.constScanLine(y));
+            for(int x=0;x<image.width();++x) {
+                const auto *p=row+qsizetype(4)*x;
+                if(!std::isfinite(p[0])||!std::isfinite(p[1])||!std::isfinite(p[2])||!std::isfinite(p[3])||p[3]<0||p[3]>1){invalid.store(true,std::memory_order_relaxed);return;}
+                const double r=p[0],g=p[1],b=p[2];const std::array<double,4> channels{r,g,b,(2126*r+7152*g+722*b)/10000};
+                for(int c=0;c<4;++c){const auto value=std::clamp(channels[std::size_t(c)],0.,1.);const int bin=std::min(1023,int(value*1024));++counts.bins[std::size_t(c*1024+bin)];}
+                counts.shadows+=r<=0&&g<=0&&b<=0;counts.highlights+=r>=1||g>=1||b>=1;++counts.pixels;
+            }
+        }
+    });
+    if(cancelled(token)||invalid.load(std::memory_order_relaxed))return false;
+    HistogramCounts complete;for(const auto &part:partials)complete.add(part);if(complete.pixels!=quint64(image.width())*image.height())return false;
+    *output=std::move(complete);return true;
+}
 void countRows(const QImage &image, int start, int end, HistogramCounts &counts, const CancelToken &token) {
     for (int y=start; y<end && !cancelled(token); ++y) {
         const auto *line = reinterpret_cast<const QRgba64 *>(image.constScanLine(y));
@@ -27,6 +55,16 @@ void countRows(const QImage &image, int start, int end, HistogramCounts &counts,
         }
     }
 }
+}
+ScopesResult ScopesEngine::analyzeLinear(const QImage &image,int bins,const CancelToken &token) {
+    HistogramCounts counts;if(countLinearFrame(image,&counts,token))return result(counts,bins);
+    ScopesResult failed;failed.error=cancelled(token)?QString("Linear analysis cancelled"):QString("Linear analysis requires a complete finite unassociated linear-sRGB FP32 frame");return failed;
+}
+ScopesResult ScopesEngine::analyzeWorking(BrushAnalysisRequest &request,const CancelToken &token,QString *error) {
+    HistogramCounts total;
+    const bool complete=request.visitStrips([&](const BrushImageLease &lease,int){HistogramCounts part;if(!countLinearFrame(lease.image(),&part,token))return false;total.add(part);return true;},token,error);
+    if(complete&&!cancelled(token)&&total.pixels==quint64(request.size().width())*request.size().height())return result(total);
+    ScopesResult failed;failed.error=error&&!error->isEmpty()?*error:QString("Working analysis did not complete");return failed;
 }
 ScopesResult ScopesEngine::result(const HistogramCounts &counts, int bins) {
     ScopesResult result;

@@ -15,6 +15,7 @@ struct ScopesResult {
     bool retryableBudget=false;
 };
 class BrushRenderRequest;
+class BrushAnalysisRequest;
 struct HistogramCounts {
     static constexpr int Bins = 1024;
     static constexpr int GpuWords = 4*Bins+4;
@@ -25,6 +26,10 @@ struct HistogramCounts {
 class ScopesEngine {
 public:
     static ScopesResult analyze(const QImage &image, int bins = 1024, const CancelToken &cancel = {});
+    // Linear sRGB/D65 FP32 only. Histogram ink clamps to [0,1]; range counters
+    // use all RGB<=0 / any RGB>=1, not the legacy encoded near-black/white test.
+    static ScopesResult analyzeLinear(const QImage &,int bins=1024,const CancelToken &cancel={});
+    static ScopesResult analyzeWorking(BrushAnalysisRequest &,const CancelToken &cancel={},QString *error=nullptr);
     // An optional collector sees completed center strips after detail halos
     // have been removed. It must not alter the pixels or histogram result.
     using RenderedStripObserver = std::function<void(const QImage &, int)>;
