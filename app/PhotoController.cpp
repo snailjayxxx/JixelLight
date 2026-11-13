@@ -509,6 +509,25 @@ void PhotoController::openPresetImportDialog(const QString &replacementName) {
 }
 
 bool PhotoController::exportXmp(const QUrl &destination) {
+    return destination.isLocalFile()&&executeXmpCommand({{"command","xmp.export"},{"destination",destination.toLocalFile()}});
+}
+bool PhotoController::executeXmpCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Xmp request;
+    if(!CommandRegistry::decodeXmp(command,&request)){setStatus(uiText("XMP 命令参数无效", "Invalid XMP command parameters"));return false;}
+    const bool review=request.operation==CommandRegistry::XmpOperation::Review;
+    // Freeze relative native paths before asynchronous work or Qt callbacks.
+    const auto path=QFileInfo(request.path).absoluteFilePath();
+    const QJsonObject canonical{{"command",review?"xmp.review":"xmp.export"},{review?"source":"destination",path}};
+    const QVariantMap details{{"command",canonical},{"project",m_project.projectPath()},
+        {"photo_key",hasImage()?m_photos[m_currentIndex].storageKey():QString{}},
+        {"completion",review?"queued-for-review":"written-new-sidecar"}};
+    const bool accepted=review?requestXmpMergeImpl(QUrl::fromLocalFile(path)):exportXmpImpl(QUrl::fromLocalFile(path));
+    // Acceptance can emit callbacks. Only frozen locals are used afterwards.
+    if(accepted)ActionTrace::instance().record("xmp_command",details);
+    return accepted;
+}
+bool PhotoController::exportXmpImpl(const QUrl &destination) {
     if (!hasImage() || !destination.isLocalFile()) return false;
     const auto &photo = m_photos[m_currentIndex]; QString error;
     if (!XmpSidecar::writeNew(destination.toLocalFile(),photo.state,photo.tags,photo.rating,photo.flag,&error)) {
@@ -517,6 +536,7 @@ bool PhotoController::exportXmp(const QUrl &destination) {
     setStatus(uiText("XMP 已导出：", "XMP exported: ")+destination.toLocalFile()); return true;
 }
 bool PhotoController::importXmp(const QUrl &source) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
     if (xmpMergeBusy()) return false;
     if (!hasImage() || !source.isLocalFile()) return false;
     XmpSidecar::Document document; QString error;
@@ -746,6 +766,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
     if(object["command"].toString()=="project.create"||object["command"].toString()=="project.open")return executeProjectCommand(object);
     if(QStringList{"edit.copy","edit.paste","edit.sync"}.contains(object["command"].toString()))return executeAdjustmentTransfer(object)>=0;
     if(object["command"].toString().startsWith("preset."))return executePresetCommand(object);

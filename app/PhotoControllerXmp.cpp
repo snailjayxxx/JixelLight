@@ -160,6 +160,9 @@ void PhotoController::initializeXmpMerge() {
         });
 }
 bool PhotoController::requestXmpMerge(const QUrl &source) {
+    return source.isLocalFile()&&executeXmpCommand({{"command","xmp.review"},{"source",source.toLocalFile()}});
+}
+bool PhotoController::requestXmpMergeImpl(const QUrl &source) {
     if(QThread::currentThread()!=thread()||m_closing||xmpMergeBusy()||!hasImage()||!source.isLocalFile()||!m_project.isOpen())return false;
     if(m_brushGesture||m_brushRecovery||m_cropEditing||m_loading||m_preparing||m_calibrationBusy||m_relinkBusy||copyImportBusy()) {
         setStatus(uiText("请先完成当前操作，再检查 XMP。","Finish the current operation before reviewing XMP."));return false;

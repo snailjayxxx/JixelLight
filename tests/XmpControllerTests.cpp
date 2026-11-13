@@ -55,11 +55,13 @@ void apply(QDialog *dialog) {auto *box=dialog->findChild<QDialogButtonBox*>();re
 // can accept the owned selection. Observe actual acceptance with a deadline.
 struct XmpFilePicker {
  QTimer timer;QElapsedTimer clock,visibleClock;QPointer<QFileDialog> observed;QString path;
- bool accepted=false,expired=false,select=true;int attempts=0,visibleTicks=0,deadlineMs=10000,minVisibleTicks=1;
+ bool accepted=false,expired=false,select=true;int attempts=0,visibleTicks=0,deadlineMs=10000,minVisibleTicks=1,timerTicks=0;
+ qint64 firstTimerMs=-1,firstVisibleMs=-1;
  explicit XmpFilePicker(QString value,int deadline=10000,int holdTicks=1,bool selectFile=true)
   :path(std::move(value)),select(selectFile),deadlineMs(deadline),minVisibleTicks(holdTicks) {
   timer.setInterval(5);
   QObject::connect(&timer,&QTimer::timeout,&timer,[this] {
+   ++timerTicks;if(firstTimerMs<0)firstTimerMs=clock.elapsed();
    // For the unanswered-dialog check, construction/readiness is distinct from
    // the unchanged 150ms visible response window. A dialog that never becomes
    // visible still fails within the existing 10s picker readiness allowance.
@@ -68,11 +70,12 @@ struct XmpFilePicker {
    if(timedOut) {
     expired=true;timer.stop();
     for(auto *w:QApplication::topLevelWidgets())if(auto *d=qobject_cast<QFileDialog*>(w))d->reject();
-    qInfo()<<"XMP_FILE_PICKER_V1 expired=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;return;
+    qInfo()<<"XMP_FILE_PICKER_V1 expired=true attempts="<<attempts<<"visible_ticks="<<visibleTicks<<"elapsed_ms="<<clock.elapsed()<<"timer_ticks="<<timerTicks<<"first_tick_ms="<<firstTimerMs<<"first_visible_ms="<<firstVisibleMs;return;
    }
    for(auto *w:QApplication::topLevelWidgets())if(auto *d=qobject_cast<QFileDialog*>(w);d&&d->isVisible()) {
+    if(firstVisibleMs<0)firstVisibleMs=clock.elapsed();
     if(observed!=d) {observed=d;QObject::connect(d,&QDialog::accepted,&timer,[this] {
-      accepted=true;timer.stop();qInfo()<<"XMP_FILE_PICKER_V1 accepted=true attempts="<<attempts<<"visible_ticks="<<visibleTicks;
+      accepted=true;timer.stop();qInfo()<<"XMP_FILE_PICKER_V1 accepted=true attempts="<<attempts<<"visible_ticks="<<visibleTicks<<"elapsed_ms="<<clock.elapsed()<<"timer_ticks="<<timerTicks<<"first_tick_ms="<<firstTimerMs<<"first_visible_ms="<<firstVisibleMs;
     });}
     ++visibleTicks;
     if(!select){if(!visibleClock.isValid())visibleClock.start();return;}
@@ -140,6 +143,13 @@ private slots:
   XmpFilePicker picker(f.sidecar);picker.start();qInfo()<<"XMP_NORMAL_REVIEW_PHASE picker-start";
   f.c->openXmpImportDialog();picker.stop();QVERIFY2(picker.accepted&&!picker.expired,"Actual file picker acceptance required within the owned deadline");
   qInfo()<<"XMP_NORMAL_REVIEW_PHASE picker-accepted";QVERIFY(spin([&]{return reviewDialog()!=nullptr;}));auto *dialog=reviewDialog();
+  bool commandTraced=false;for(const auto &value:ActionTrace::instance().snapshot()) {
+   const auto row=value.toObject(),command=row["command"].toObject();
+   if(row["action"]=="xmp_command"&&command["command"]=="xmp.review"&&command["source"].toString()==f.sidecar) {
+    QCOMPARE(row["project"].toString(),f.project);QCOMPARE(row["completion"].toString(),QString("queued-for-review"));commandTraced=true;
+   }
+  }
+  QVERIFY(commandTraced);
   QCOMPARE(dialog->windowTitle(),language=="en_US"?QString("Review XMP import fields"):QString::fromUtf8("逐项检查 XMP 导入"));
   chooseIncoming(dialog,true);QVERIFY(dialog->grab().save(qEnvironmentVariable("JIXEL_XMP_EVIDENCE_DIR")+"/normal-review-"+language+".png"));apply(dialog);f.done();
   QCOMPARE(f.c->exposure(),1.25);QCOMPARE(f.c->currentRating(),4);QCOMPARE(f.c->currentFlag(),QString("pick"));QCOMPARE(f.c->currentKeywords(),QStringList{"incoming"});

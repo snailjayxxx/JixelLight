@@ -207,6 +207,14 @@ private slots:
             QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::projectSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopXmpActionsCannotWriteSidecarsOrOpenReviewsFromOfflineSessions(){
+        for(const auto &name:QStringList{"xmp.export","xmp.review"}) {
+            const QJsonObject command{{"command",name},{name=="xmp.export"?"destination":"source","owned.xmp"}};
+            CommandRegistry::Xmp request;QVERIFY(CommandRegistry::decodeXmp(command,&request));QCOMPARE(request.path,QString("owned.xmp"));
+            CommandSession result;result.photoCount=85;QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,85);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::xmpSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void nestedCommandsAndRetainedPayloadHaveIndependentBounds(){
         QJsonArray edits;for(int i=0;i<9999;++i)edits.append(ev(i%2));CommandSession result;QString error;
         QVERIFY(!CommandSession::compile(manifest({photoImport(),QJsonObject{{"command","edit.batch"},{"commands",edits}},save()}),base(),source(),&result,&error));QVERIFY(error.contains("command limit"));
