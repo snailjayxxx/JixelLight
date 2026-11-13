@@ -224,6 +224,8 @@ add_test(NAME brush-scopes-scheduling COMMAND JixelLightBrushScopeRoutingTests c
 set_tests_properties(brush-scopes-cache brush-scopes-cancel brush-scopes-native brush-scopes-controller brush-scopes-scheduling PROPERTIES TIMEOUT 120)
 add_test(NAME gesture-owner-lifetime COMMAND JixelLightBrushScopeRoutingTests gestureTransitionSignalsMayCloseOrDestroyOwner gestureEntryPointsRefuseForeignThreadAndClose endingGestureKeepsReentrantNewGestureUncommitted cropRefinementRejectsRecursiveEntry cropEntryAcceptsSynchronousViewportPreparation cropEntryRefusesCancelAndReentrantRestart -o gesture-owner-results.txt,txt -o -,txt)
 set_tests_properties(gesture-owner-lifetime PROPERTIES TIMEOUT 120)
+add_test(NAME queued-brush-recovery-owner COMMAND JixelLightBrushScopeRoutingTests queuedRecoveryExpiryPreservesClosedOwner recoveryDiscardRefusesForeignThreadAndAcceptedClose -o brush-recovery-owner-results.txt,txt -o -,txt)
+set_tests_properties(queued-brush-recovery-owner PROPERTIES TIMEOUT 120)
 qt_add_executable(JixelLightCatalogNotificationTests tests/CatalogNotificationTests.cpp)
 target_link_libraries(JixelLightCatalogNotificationTests PRIVATE JixelLightCore Qt6::Test)
 set_target_properties(JixelLightCatalogNotificationTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
