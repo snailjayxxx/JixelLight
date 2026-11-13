@@ -80,7 +80,48 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 }
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
+private:
+    void prepareCloseRecovery(PhotoController &c,const QString &path,const QString &directory) {
+        c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(directory),"QueuedRecovery"));c.setExposure(.75);c.finishInteraction();
+        const BrushMaskGeometry::Stroke one{{.002,.6,1},{{{.5,.5},1}}};auto large=one;large.dabs.resize(BrushMaskGeometry::MaxDabsPerStroke,one.dabs[0]);
+        BrushMaskDocument::Document document{{{"full",true,0,{}}}};
+        for(std::size_t n=0;n<BrushMaskDocument::MaxTotalDabs/BrushMaskGeometry::MaxDabsPerStroke;++n)document.layers[0].strokes.push_back(large);
+        document.layers[0].strokes.back().dabs.pop_back();QJsonObject json;QVERIFY(BrushMaskDocument::toJson(document,&json));
+        QVERIFY(c.executeEditCommand({{"command","mask.brush.replace"},{"document",json}}));c.finishInteraction();
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        QVERIFY(c.beginBrushStrokeModePressure("full",.5,.5,.002,.6,1,1,"paint",.5));
+        QVERIFY(c.appendBrushStroke(.5,.5,.5));QVERIFY(c.appendBrushStroke(.7,.5,.5));QVERIFY(c.endBrushStroke().isEmpty());
+        QVERIFY(c.m_brushRecovery);QVERIFY(c.brushRecoveryAvailable());QVERIFY(!c.m_brushGesture);QVERIFY(c.flushEdits());
+    }
 private slots:
+    void queuedRecoveryExpiryPreservesClosedOwner_data() {
+        QTest::addColumn<QString>("signal");QTest::addColumn<bool>("queueBeforeClose");
+        for(const auto &signal:QStringList{"backendChanged","activityChanged","previewGeometryChanged"})
+            for(bool before:{true,false})QTest::newRow(qPrintable(signal+(before?"-before-close":"-after-close")))<<signal<<before;
+    }
+    void queuedRecoveryExpiryPreservesClosedOwner() {
+        QFETCH(QString,signal);QFETCH(bool,queueBeforeClose);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("queued-recovery.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);prepareCloseRecovery(c,path,dir.path());if(QTest::currentTestFailed())return;
+        const auto state=c.m_photos[0].state.toJson(),history=c.m_photos[0].history.toJson();const auto project=c.projectPath();
+        QSignalSpy recovery(&c,&PhotoController::brushRecoveryChanged);QVERIFY(recovery.isValid());
+        if(queueBeforeClose)QVERIFY(QMetaObject::invokeMethod(&c,signal.toLatin1().constData(),Qt::DirectConnection));
+        QVERIFY(c.beginClose());QVERIFY(c.m_closing);QVERIFY(c.m_brushRecovery);const auto revision=c.m_requestedRevision,serial=c.m_brushGestureSerial;const auto status=c.statusMessage();
+        if(!queueBeforeClose)QVERIFY(QMetaObject::invokeMethod(&c,signal.toLatin1().constData(),Qt::DirectConnection));
+        QCoreApplication::sendPostedEvents(&c,QEvent::MetaCall);QCoreApplication::sendPostedEvents(&c,QEvent::MetaCall);
+        QVERIFY(c.m_brushRecovery);QCOMPARE(recovery.size(),0);QVERIFY(!c.m_brushGesture);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.m_brushGestureSerial,serial);QCOMPARE(c.statusMessage(),status);
+        QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(project,&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.toJson(),state);QCOMPARE(rows[0].history.toJson(),history);QCOMPARE(fileHash(path),original);
+    }
+    void recoveryDiscardRefusesForeignThreadAndAcceptedClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("discard-recovery.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);prepareCloseRecovery(c,path,dir.path());if(QTest::currentTestFailed())return;
+        QSignalSpy recovery(&c,&PhotoController::brushRecoveryChanged);const auto revision=c.m_requestedRevision;
+        std::thread foreign([&]{c.discardBrushRecovery();});foreign.join();QVERIFY(c.m_brushRecovery);QCOMPARE(recovery.size(),0);QCOMPARE(c.m_requestedRevision,revision);
+        QVERIFY(c.beginClose());QVERIFY(c.m_brushRecovery);c.discardBrushRecovery();QVERIFY(c.m_brushRecovery);QCOMPARE(recovery.size(),0);QCOMPARE(c.m_requestedRevision,revision);
+    }
     void gestureTransitionSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("action");QTest::addColumn<bool>("closeOnly");
         for(const auto &action:QStringList{"crop-begin-refine","crop-begin-flag","crop-cancel-flag","crop-apply-flag","crop-apply-commit","brush-begin","brush-end","brush-end-preview","brush-end-recovery","brush-begin-warning","brush-append-warning","brush-capacity-drawing","brush-capacity-warning","brush-capacity-recovery","brush-apply-recovery","brush-invalid-cancel","brush-discard-recovery","brush-cancel"})

@@ -127,6 +127,7 @@ bool PhotoController::brushRecoveryAvailable() const {
     catch(...){return false;}
 }
 void PhotoController::discardBrushRecovery() {
+    if(QThread::currentThread()!=thread()||m_closing)return;
     if(m_brushRecovery){m_brushRecovery.reset();emit brushRecoveryChanged();}
 }
 void PhotoController::cancelBrushStroke() {
