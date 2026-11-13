@@ -403,7 +403,7 @@ QString PhotoController::commitBrushGesture(std::unique_ptr<BrushGesture> g) {
         }
     }catch(...){if(current())setStatus(uiText("笔触未应用：内存不足或处理失败。","Stroke was not applied: allocation or processing failed."));return {};}
     if(!brushGestureCurrent(*g))return {};
-    auto &photo=m_photos[m_currentIndex];photo.history.finish();photo.state=std::move(candidate);
+    auto &entry=m_photos[m_currentIndex];entry.history.finish();entry.state=std::move(candidate);
     const auto layer=g->layer;
     if(persistAndApply(g->mode==BrushMaskGeometry::StrokeMode::Erase?"brush_erase":"brush_stroke",
         {{"layer",layer},{"mode",g->mode==BrushMaskGeometry::StrokeMode::Erase?"erase":"paint"}}))finishInteraction();return layer;

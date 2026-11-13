@@ -2,6 +2,8 @@
 
 Status: implementation and regressions, before fresh compilation/full/platform qualification. Parent585a56b independently completes local102/966.21s, all96 Qt groups/all33 contexts/fifteen unchanged runtimes and is draftPR83/CI439. Stable root37c2e4f remains all-three CI438/installed88/strict accepted and clean.
 
+First repairdf9c7c9 passes Python283/configure but its fresh second Release build fails after11.271009s: `commitBrushGesture` uses `photo` both for the frozen epoch and the final photo reference. Its original20 files/3,392,799 bytes, Git-verified source copies, build graph and compiler log SHA256f307a273d16f23e43dc852f5494e29f58fab17edbb051658315ad92244568471 remain failed in `failed-development-df9c7c9-second`. No App/scope-test executable or GPU/native/full result was produced. The local photo reference is renamed `entry`; a fresh physical third build is required. Neither failed physical directory will be rebuilt.
+
 ## Retained baseline
 
 Test-only2c49658ce8175f3e9916486c88cd56dd047dedcb leaves production identical to585a56b. Its fresh focused Release build41.913193s passes. The real-project crop-entry regression fails in0.817871s (Qt165ms): refinement's library notification accepts `beginClose()`, yet crop entry then sets `m_cropEditing=true`, expectedfalse. Totals2 passed/1 failed/0 skipped/0 blacklisted. Original log SHA256fa924ee4d8375a44d56fe1a25730feacdd60bba447855715203cfd348ce6a042. All22 files/14,398,576 bytes, exact Git-verified source copies, binary and original build graph/logs remain failed in `failed-development-2c49658-first`. The first physical build is never rebuilt. This focused CPU/offscreen regression is not native/physical-device acceptance.
