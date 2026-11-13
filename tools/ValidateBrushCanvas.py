@@ -11,7 +11,7 @@ import tempfile
 
 
 def _pan_checks(data: dict, report: Path) -> dict[str, bool]:
-    checks = dict.fromkeys(("protocol", "guards", "basic_mapping", "view_mapping",
+    checks = dict.fromkeys(("protocol", "guards", "basic_mapping", "view_mapping", "release_submission",
                            "pointer_ownership", "hint_policy", "bilingual_hints",
                            "focus_transition", "captures"), False)
     def number(value):
@@ -23,7 +23,7 @@ def _pan_checks(data: dict, report: Path) -> dict[str, bool]:
     def same(actual, expected):
         assert all(abs(a-b) < 1e-9 for a, b in zip(point(actual), point(expected)))
     try:
-        assert type(data["pan_protocol_version"]) is int and data["pan_protocol_version"] == 1
+        assert type(data["pan_protocol_version"]) is int and data["pan_protocol_version"] == 2
         assert all(data[key] is True for key in ("pan_checked", "pan_readonly", "pan_mapping", "pan_guards_checked", "pan_geometry_checked"))
         assert data["pan_started_brush"] is False and data["physical_OS_activation_verified"] is False
         assert data["window_focus_injection"] == "Qt-QPA-controlled-window-focus"
@@ -55,7 +55,16 @@ def _pan_checks(data: dict, report: Path) -> dict[str, bool]:
             size = row["output_size"]; zoom = number(row["zoom"])
             expected_center = [start[i] - delta[i]*dpr/(size[i]*zoom) if frame[i+2] < 1 else start[i] for i in (0,1)]
             same(row["actual_center"], expected_center); same(row["expected_center"], expected_center)
+            assert row["release_viewport_submitted"] is True
+            revisions = (row["revision_before_input"], row["revision_after_release"])
+            assert all(type(v) is str and 0 < len(v) <= 20 and v.isascii() and v.isdecimal() and str(int(v)) == v and 0 < int(v) < (1 << 64) for v in revisions)
+            assert int(revisions[1]) > int(revisions[0])
+            after = row["frame_after"]
+            assert type(after) is list and len(after) == 4 and all(0 <= number(v) <= 1 for v in after)
+            assert after[2:] == frame[2:] and after[0]+after[2] <= 1+1e-9 and after[1]+after[3] <= 1+1e-9
+            assert after != frame
         checks["view_mapping"] = True
+        checks["release_submission"] = True
         assert all(r["pointer_owned_closed_hand"] is True for r in views)
         checks["pointer_ownership"] = True
         assert [r["mask_tool"] for r in views] == ["brush", "brush", ""]
