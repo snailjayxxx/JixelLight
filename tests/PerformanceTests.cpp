@@ -24,6 +24,7 @@
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/async/LatestJob.h"
+#include "core/async/LatestFrameJob.h"
 #include "core/async/ParallelRows.h"
 #include "core/cache/SourceCache.h"
 #include "core/cache/RenderedPreviewCache.h"
@@ -54,6 +55,58 @@ ProcessingPlan nonRawLinearPlan(const AdjustmentState &state={},ColorManagement:
 bool sameExposureBits(const std::vector<float> &a,const std::vector<float> &b) {
     return a.size()==b.size()
         && (a.empty() || std::memcmp(a.data(),b.data(),a.size()*sizeof(float))==0);
+}
+template<template<class,class> class Queue>
+void deliveryCanDestroyQueue(bool pendingFrame) {
+    struct Lifetime {
+        int *destructions;
+        explicit Lifetime(int *count):destructions(count) {}
+        ~Lifetime(){++*destructions;}
+    };
+    int destructions=0,requestAfterDeletion=0,resultAfterDeletion=0;
+    bool finished=false,callableSurvived=false;
+    std::atomic_int calls{0};QSemaphore entered,release;
+    auto lifetime=std::make_shared<Lifetime>(&destructions);
+    const std::weak_ptr<Lifetime> weak=lifetime;
+    std::unique_ptr<Queue<int,int>> queue;
+    queue=std::make_unique<Queue<int,int>>(
+        [&](const int &request,const CancelToken &){++calls;entered.release();release.acquire();return request+1;},
+        [&,lifetime](const int &request,int result){
+            queue.reset();
+            callableSurvived=bool(lifetime)&&!weak.expired();
+            requestAfterDeletion=request;resultAfterDeletion=result;finished=true;
+        });
+    lifetime.reset();
+    const auto cleanup=qScopeGuard([&]{release.release(2);});
+    queue->submit(41);
+    QTRY_VERIFY_WITH_TIMEOUT(entered.available()>0,3000);entered.acquire();
+    if(pendingFrame)queue->submit(99);
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(finished,3000);
+    QVERIFY(!queue);QVERIFY(callableSurvived);QVERIFY(weak.expired());
+    QCOMPARE(destructions,1);QCOMPARE(requestAfterDeletion,41);QCOMPARE(resultAfterDeletion,42);
+    QCOMPARE(calls.load(),1);
+}
+template<template<class,class> class Queue>
+void deliveryCanReplaceAndCancelQueue(bool liveFrame) {
+    QVector<int> delivered,callbackCounts;QSemaphore entered,release;
+    std::unique_ptr<Queue<int,int>> queue;
+    queue=std::make_unique<Queue<int,int>>(
+        [&](const int &request,const CancelToken &){if(request==2){entered.release();release.acquire();}return request;},
+        [&,count=0](const int &,int result)mutable{
+            callbackCounts.append(++count);
+            delivered.append(result);
+            if(result==1){queue->submit(2);queue->submit(3);}
+            if(result==3){queue->submit(4);queue->cancel();}
+        });
+    const auto cleanup=qScopeGuard([&]{release.release();});
+    queue->submit(1);
+    QTRY_VERIFY_WITH_TIMEOUT(entered.available()>0,3000);entered.acquire();
+    QCOMPARE(delivered,QVector<int>{1});QVERIFY(queue->busy());release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(!queue->busy(),3000);
+    const QVector<int> expected=liveFrame?QVector<int>{1,2,3}:QVector<int>{1,3};
+    QCOMPARE(delivered,expected);
+    QCOMPARE(callbackCounts,liveFrame?QVector<int>({1,2,3}):QVector<int>({1,2}));
 }
 }
 class PerformanceTests:public QObject {
@@ -648,6 +701,24 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(delivered.size(),1,3000);
         QCOMPARE(delivered.first(),99);
         QVERIFY(calls.load()<=2);
+    }
+    void queueDeliveryCanDestroyOwner_data() {
+        QTest::addColumn<bool>("liveFrame");
+        QTest::newRow("latest-only")<<false;
+        QTest::newRow("live-frame-with-pending")<<true;
+    }
+    void queueDeliveryCanDestroyOwner() {
+        QFETCH(bool,liveFrame);
+        if(liveFrame)deliveryCanDestroyQueue<LatestFrameJob>(true);
+        else deliveryCanDestroyQueue<LatestJob>(false);
+    }
+    void queueDeliveryPreservesReentrantSubmissionAndCancellation_data() {
+        queueDeliveryCanDestroyOwner_data();
+    }
+    void queueDeliveryPreservesReentrantSubmissionAndCancellation() {
+        QFETCH(bool,liveFrame);
+        if(liveFrame)deliveryCanReplaceAndCancelQueue<LatestFrameJob>(true);
+        else deliveryCanReplaceAndCancelQueue<LatestJob>(false);
     }
     void fp32SourceCacheSharesLruBudgetAndConcurrentReaders() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
