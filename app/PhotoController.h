@@ -844,7 +844,7 @@ private:
     bool isProtectedPhoto(const QString &path) const;
     void initializeJobs();
     void acceptSource(quint64 photo, SourceData data);
-    void prepareCurrent();
+    bool prepareCurrent();
     void scheduleRender(bool fast);
     void markDirty();
     void enqueueEdits();
@@ -907,7 +907,7 @@ private:
     bool startCopyImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     bool startMoveImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     void finishImportBatch(int added, int rawAdded);
-    void applyCurrent();
+    bool applyCurrent();
     void loadCurrent();
     // A dialog previews the exact parsed XMP snapshot which is later applied.
     // Never re-read an external file after the user has confirmed its impact.
@@ -957,7 +957,8 @@ private:
     bool pickWorkingColor(double x,double y,double width,double height,bool inputMask);
     bool applyColorMaskCommand(const QJsonObject &,const QString &,bool finish);
     bool applyLuminanceMaskCommand(const QJsonObject &,const QString &,bool finish);
-    void persistAndApply(const QString &action, const QVariantMap &details = {});
+    // True only while the committed edit's owner/context survives publication.
+    bool persistAndApply(const QString &action, const QVariantMap &details = {});
     void setStatus(const QString &message);
     QString uiText(const QString &zh, const QString &en) const;
     void setAdjustment(const char *name, double v, double AdjustmentState::*member);

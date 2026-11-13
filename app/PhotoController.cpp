@@ -151,7 +151,7 @@ QString PhotoController::pipelineDescription() const {
 
 AdjustmentState PhotoController::currentState() const { return hasImage() ? LookProfiles::resolveAsShot(m_photos[m_currentIndex].state, m_currentMetadata, currentIsRaw()) : AdjustmentState{}; }
 AdjustmentState *PhotoController::mutableCurrentState() {
-    if (xmpMergeBusy() || !currentSourceAvailable()) return nullptr;
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy() || !currentSourceAvailable()) return nullptr;
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state);
     return &photo.state;
@@ -448,17 +448,17 @@ bool PhotoController::saveNamedPresetImpl(const QString &name) {
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
 bool PhotoController::applyNamedPresetImpl(const QString &name) {
-    if (xmpMergeBusy()) return false;
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return false;
     if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
     if (!presets.load(&error) || !presets.get(name, &state)) {
         setStatus(uiText("无法读取预设：", "Cannot read preset: ") + (error.isEmpty() ? name : error)); return false;
     }
     state.geometry = currentState().geometry;
-    m_photos[m_currentIndex].history.finish();
-    *mutableCurrentState() = state;
-    persistAndApply(QStringLiteral("named_preset"));
-    setStatus(uiText("已应用预设：", "Preset applied: ") + name); return true;
+    auto *target=mutableCurrentState();if(!target)return false;
+    m_photos[m_currentIndex].history.finish();*target=state;
+    if(persistAndApply(QStringLiteral("named_preset")))setStatus(uiText("已应用预设：", "Preset applied: ") + name);
+    return true;
 }
 bool PhotoController::removeNamedPresetImpl(const QString &name) {
     NamedPresets presets(presetFile()); QString error;
@@ -546,8 +546,10 @@ bool PhotoController::importXmp(const QUrl &source) {
     return applyParsedXmp(document);
 }
 bool PhotoController::applyParsedXmp(const XmpSidecar::Document &document) {
-    if (xmpMergeBusy()) return false;
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return false;
     if (!hasImage() || (document.hasAdjustments && !currentSourceAvailable())) return false;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch;
+    const auto current=[this,guard,catalog,epoch]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch;};
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state); photo.history.finish();
     if (document.hasRating) photo.rating = document.rating;
@@ -559,8 +561,8 @@ bool PhotoController::applyParsedXmp(const XmpSidecar::Document &document) {
         m_dirtyCuration.insert(photo.storageKey(),{photo.rating,photo.flag});
         m_dirtyTags.insert(photo.storageKey(),photo.tags);
     }
-    if (document.hasAdjustments) { photo.state = document.adjustments; persistAndApply("xmp_import"); }
-    enqueueEdits(); emit libraryChanged(); emit curationChanged();
+    if (document.hasAdjustments) { photo.state = document.adjustments;if(!persistAndApply("xmp_import"))return true; }
+    enqueueEdits();emit libraryChanged();if(!current())return true;emit curationChanged();if(!current())return true;
     setStatus(document.warnings.isEmpty() ? uiText("XMP 已应用到当前版本", "XMP applied to current version")
         : uiText("XMP 已应用；部分外部属性未映射：", "XMP applied; some external properties were not mapped: ")+document.warnings.join("; "));
     return true;
@@ -647,8 +649,8 @@ void PhotoController::openXmpImportDialog() {
     applyParsedXmp(parsed);
 }
 
-bool PhotoController::canUndo() const { return !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canUndo(); }
-bool PhotoController::canRedo() const { return !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canRedo(); }
+bool PhotoController::canUndo() const { return !m_closing && !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canUndo(); }
+bool PhotoController::canRedo() const { return !m_closing && !xmpMergeBusy() && currentSourceAvailable() && m_photos[m_currentIndex].history.canRedo(); }
 QVariantList PhotoController::editHistory() const {
     QVariantList out;
     if (!hasImage()) return out;
@@ -658,23 +660,29 @@ QVariantList PhotoController::editHistory() const {
     return out;
 }
 void PhotoController::undo() {
-    if (!canUndo()) return;
+    if (QThread::currentThread()!=thread() || m_closing || !canUndo()) return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch,revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,epoch,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
+    const QJsonObject payload{{"file",currentFile()},{"command",QJsonObject{{"command","history.undo"}}}};
     auto &photo = m_photos[m_currentIndex];
     photo.state = photo.history.undo();
-    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
-    markDirty();
-    ActionTrace::instance().record("edit_undo", {{"file", currentFile()},{"command",QJsonObject{{"command","history.undo"}}}});
-    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();markDirty();
+    ActionTrace::instance().record("edit_undo",payload);
+    emit libraryChanged();if(!current())return;
+    emit adjustmentsChanged();if(!current())return;emit lookChanged();if(!current())return;emit historyChanged();if(!current())return;
     applyCurrent();
 }
 void PhotoController::redo() {
-    if (!canRedo()) return;
+    if (QThread::currentThread()!=thread() || m_closing || !canRedo()) return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch,revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,epoch,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
+    const QJsonObject payload{{"file",currentFile()},{"command",QJsonObject{{"command","history.redo"}}}};
     auto &photo = m_photos[m_currentIndex];
     photo.state = photo.history.redo();
-    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch(); emit libraryChanged();
-    markDirty();
-    ActionTrace::instance().record("edit_redo", {{"file", currentFile()},{"command",QJsonObject{{"command","history.redo"}}}});
-    emit adjustmentsChanged(); emit lookChanged(); emit historyChanged();
+    photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();markDirty();
+    ActionTrace::instance().record("edit_redo",payload);
+    emit libraryChanged();if(!current())return;
+    emit adjustmentsChanged();if(!current())return;emit lookChanged();if(!current())return;emit historyChanged();if(!current())return;
     applyCurrent();
 }
 
@@ -739,8 +747,10 @@ QVariantList PhotoController::redCurve() const { return toVariantList(currentSta
 QVariantList PhotoController::greenCurve() const { return toVariantList(currentState().greenCurve); }
 QVariantList PhotoController::blueCurve() const { return toVariantList(currentState().blueCurve); }
 
-void PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
-    if (!hasImage()) return;
+bool PhotoController::persistAndApply(const QString &action, const QVariantMap &details) {
+    if (QThread::currentThread()!=thread() || m_closing || !hasImage()) return false;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch,revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,epoch,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
     QString mergeKey;
     if (action == "adjustment" || action == "brush_layer_exposure" || action == "vignette_adjustment" || action == "grain_adjustment" || action == "sharpen_adjustment" || action == "point_color_adjustment" || action == "dehaze_adjustment" || action == "texture_adjustment" || action == "clarity_adjustment" || action == "denoise_adjustment" || action == "color_mask_adjustment" || action == "luminance_mask_adjustment" || action == "linear_mask_adjustment" || action == "radial_mask_adjustment" || action == "radial_mask_canvas_center" || action == "color_mixer" || action == "black_white_mix" || action == "color_grading_control" || action == "color_grading_wheel" || action == "color_grading_balance" || action == "curve_point" || action == "look_parameter" || action == "look_strength" || action == "geometry_straighten" || action == "geometry_correction") {
         QVariantMap keyDetails = details;
@@ -749,18 +759,23 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
         mergeKey = action + QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(keyDetails)).toJson(QJsonDocument::Compact));
     }
     auto &photo = m_photos[m_currentIndex];
-    if (photo.history.record(photo.state, action, mergeKey)) {
+    const bool recorded=photo.history.record(photo.state,action,mergeKey);
+    if (recorded) {
         photo.timeline.editedAt = QDateTime::currentMSecsSinceEpoch();
-        if (mergeKey.isEmpty()) emit libraryChanged();
     }
-    emit historyChanged();
     QVariantMap payload = details;
     payload["file"] = currentFile();
-    payload["photo_key"] = m_photos[m_currentIndex].storageKey();
-    ActionTrace::instance().record(action, payload);
+    payload["photo_key"] = photo.storageKey();
+    // A notification can synchronously accept window close. Its flush must
+    // already see this edit and the exact history, including Undo/Redo cursor.
     markDirty();
-    emit adjustmentsChanged();
-    applyCurrent();
+    // Record the frozen target before observers can commit a second edit.
+    // This also preserves replay order when a notification reenters editing.
+    ActionTrace::instance().record(action,payload);
+    if(recorded&&mergeKey.isEmpty()){emit libraryChanged();if(!current())return false;}
+    emit historyChanged();if(!current())return false;
+    emit adjustmentsChanged();if(!current())return false;
+    return applyCurrent();
 }
 
 bool PhotoController::executeCommand(const QVariantMap &command) {
@@ -1508,20 +1523,23 @@ void PhotoController::loadCurrent() {
     m_loader->submit({currentFile(), m_photoEpoch});
 }
 
-void PhotoController::applyCurrent() {
+bool PhotoController::applyCurrent() {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch;auto revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,epoch,&revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
     // Another Develop action, including Undo/Redo, abandons an uncommitted box.
-    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged(); }
-    cancelCalibration();
-    ++m_requestedRevision;
-    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
+    if (m_cropEditing) { m_cropEditing = false;emit cropEditingChanged();if(!current())return false; }
+    cancelCalibration();if(!current())return false;
+    revision=++m_requestedRevision;
+    m_plotTimer.stop();m_plotJob->cancel();m_plotSubmittedRevision=0;emit scopePlotChanged();if(!current())return false;
     m_scopesUpdating = true; m_scopesRank = -1;
     m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_exactTimer.stop();
     m_interacting = true;
     m_refineTimer.start();
-    emit scopesChanged();
-    if (m_preparedGeometry != previewGeometry().toJson()) prepareCurrent();
-    else scheduleRender(true);
+    emit scopesChanged();if(!current())return false;
+    if (m_preparedGeometry != previewGeometry().toJson()) return prepareCurrent();
+    scheduleRender(true);return current();
 }
 
 bool PhotoController::createProject(const QUrl &folder, const QString &name) {
@@ -1673,8 +1691,7 @@ void PhotoController::setFlag(const QString &flag) {
 void PhotoController::resetAdjustments() {
     if (auto *state = mutableCurrentState()) {
         CommandRegistry::execute(*state,{{"command","develop.reset"}});
-        persistAndApply(QStringLiteral("reset_adjustments"));
-        setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
+        if(persistAndApply(QStringLiteral("reset_adjustments")))setStatus(uiText(QStringLiteral("调整已重置"), QStringLiteral("Adjustments reset")));
     }
 }
 
@@ -1715,11 +1732,12 @@ bool PhotoController::pasteAdjustmentGroupsImpl(const QStringList &groups) {
     if (xmpMergeBusy()) return false;
     if (!currentSourceAvailable() || !m_hasClipboard || !AdjustmentTransfer::validGroups(groups)) return false;
     auto *state=mutableCurrentState();
+    if(!state)return false;
     AdjustmentTransfer::apply(*state,m_clipboard,groups);
     m_photos[m_currentIndex].history.finish();
-    persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName},
-        {"command",QJsonObject{{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}}}});
-    setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
+    if(persistAndApply(QStringLiteral("paste_adjustments"),{{"groups",groups},{"source_name",m_clipboardName},
+        {"command",QJsonObject{{"command","edit.paste"},{"groups",QJsonArray::fromStringList(groups)}}}}))
+        setStatus(uiText(QStringLiteral("已粘贴调整参数"), QStringLiteral("Adjustments pasted")));
     return true;
 }
 
@@ -2466,23 +2484,23 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
     prepareCurrent();
 }
 
-void PhotoController::prepareCurrent() {
-    if(m_closing)return;
-    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;auto generation=m_prepareGeneration;
-    const auto current=[this,guard,photo,&generation]{return guard&&!m_closing&&photo==m_photoEpoch&&generation==m_prepareGeneration;};
-    cancelBrushStroke();if(!current())return;
-    if (m_loadedPreview.isNull()) return;
+bool PhotoController::prepareCurrent() {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch,catalog=m_catalogEpoch;auto generation=m_prepareGeneration,revision=m_requestedRevision;
+    const auto current=[this,guard,photo,catalog,&generation,&revision]{return guard&&!m_closing&&photo==m_photoEpoch&&catalog==m_catalogEpoch&&generation==m_prepareGeneration&&revision==m_requestedRevision;};
+    cancelBrushStroke();if(!current())return false;
+    if (m_loadedPreview.isNull()) return true;
     m_preparing = true;
-    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();if(!current())return;
-    ++m_requestedRevision;
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();if(!current())return false;
+    revision=++m_requestedRevision;
     m_render->cancel(); m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
     generation=m_prepareGeneration;
     m_preparedGeometry = previewGeometry().toJson();
     m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_cropEditing ? 0 : m_zoom, m_centerX, m_centerY, m_sourceIsFull, previewGeometry()});
-    emit gpuFrameChanged();if(!current())return;
-    setBusy(true);
+    emit gpuFrameChanged();if(!current())return false;
+    setBusy(true);return current();
 }
 
 void PhotoController::scheduleRender(bool fast) {
@@ -2498,10 +2516,12 @@ void PhotoController::scheduleRender(bool fast) {
 }
 
 void PhotoController::finishInteraction() {
-    if (m_closing || xmpMergeBusy()) return;
-    cancelBrushStroke();
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,epoch=m_photoEpoch;auto revision=m_requestedRevision;
+    const auto current=[this,guard,catalog,epoch,&revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
+    cancelBrushStroke();if(!current())return;
     if (hasImage()) m_photos[m_currentIndex].history.finish();
-    emit libraryChanged();
+    emit libraryChanged();if(!current())return;
     m_refineTimer.stop();
     const bool wasInteracting=m_interacting;
     m_interacting = false;
@@ -2510,9 +2530,9 @@ void PhotoController::finishInteraction() {
     if (!m_previewSource.isNull() && !(m_gpuEnabled && m_gpuActive)) {
         // A distinct revision prevents an unfinished low-resolution frame from
         // replacing the final quality frame after the mouse has been released.
-        ++m_requestedRevision;
+        revision=++m_requestedRevision;
         m_scopesUpdating = true; m_scopesRank = -1;
-        scheduleRender(false);
+        scheduleRender(false);if(!current())return;
     }
     if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
     // A GPU frame may already have finished before the refinement timer.

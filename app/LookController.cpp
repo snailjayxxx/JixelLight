@@ -39,26 +39,29 @@ void PhotoController::initializeLookJobs() {
     m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>(
         CameraReference::load,[this](const CameraReferenceRequest &request,CameraReferenceResult result){
             if(m_closing||request.photo!=m_photoEpoch)return;
+            const QPointer<PhotoController> guard(this);
             m_referenceBusy=false;m_referenceImage=result.image;m_referenceInfo=result.info;m_referenceScopes=result.scopes;
             m_referenceInfo["error"]=result.error;
             if(!result.info.value("file").toString().isEmpty()) m_referenceFiles.insert(QFileInfo(result.info["file"].toString()).absoluteFilePath());
             if(m_provider)m_provider->setReference(m_referenceImage);
-            ++m_referenceRevision;emit referenceChanged();
+            const auto revision=++m_referenceRevision;emit referenceChanged();if(!guard||m_closing||request.photo!=m_photoEpoch||revision!=m_referenceRevision)return;
             if(!result.error.isEmpty())setStatus(uiText("参考图：", "Reference: ")+result.error);
         });
     m_calibrationJob=std::make_unique<LatestJob<LookCalibrationRequest,LookCalibrationResult>>(
         calibrateLook,[this](const LookCalibrationRequest &request,LookCalibrationResult result){
             if(m_closing)return;
+            const QPointer<PhotoController> guard(this);
+            const auto current=[this,guard,&request]{return guard&&!m_closing&&request.photo==m_photoEpoch&&request.revision==m_requestedRevision;};
             m_calibrationBusy=false;
             if(request.photo!=m_photoEpoch||request.revision!=m_requestedRevision){emit calibrationChanged();return;}
             m_calibrationReport=result.report;m_calibrationReport["error"]=result.error;
-            emit calibrationChanged();
+            emit calibrationChanged();if(!current())return;
             if(!result.lut){setStatus(uiText("外观拟合未应用：", "Match not applied: ")+result.error);return;}
             auto *state=mutableCurrentState();if(!state)return;
             LookState look;look.mode="calibrated";look.code=sonyLook().value("code").toString();look.lut=result.lut;
             state->look=look;
-            persistAndApply("reference_look_applied",{{"sha256",result.lut->digest},{"scope","this-image-only"}});
-            setStatus(uiText("已应用本照片参考拟合，可继续编辑；不是索尼官方显影或通用相机配置。", "Applied image-specific reference match; editable, not Sony rendering or a universal camera profile."));
+            if(persistAndApply("reference_look_applied",{{"sha256",result.lut->digest},{"scope","this-image-only"}}))
+                setStatus(uiText("已应用本照片参考拟合，可继续编辑；不是索尼官方显影或通用相机配置。", "Applied image-specific reference match; editable, not Sony rendering or a universal camera profile."));
         });
 }
 void PhotoController::cancelCalibration() {
@@ -85,7 +88,7 @@ void PhotoController::setShowCameraReference(bool show) {
     if(show&&m_referenceImage.isNull()&&!m_referenceBusy)requestReference();
 }
 bool PhotoController::applyLookEdit(const QJsonObject &command,const QString &action,const QVariantMap &details) {
-    if(!currentSourceAvailable())return false;
+    if(QThread::currentThread()!=thread()||m_closing||!currentSourceAvailable())return false;
     auto staged=m_photos[m_currentIndex].state; QString error;
     const CommandRegistry::LookContext context{currentIsRaw(),m_currentMetadata};
     if(!CommandRegistry::execute(staged,command,&error,&context)) {
@@ -139,7 +142,7 @@ bool PhotoController::isProtectedPhoto(const QString &path) const {
     return false;
 }
 bool PhotoController::loadLookProfile(const QUrl &url) {
-    if (xmpMergeBusy()) return false;
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return false;
     if(!currentSourceAvailable()||!url.isLocalFile())return false;
     QFile file(url.toLocalFile());if(!file.open(QIODevice::ReadOnly)||file.size()>4*1024*1024||file.size()<=0){setStatus(uiText("外观文件不可读或超过 4 MB。", "Look file is unreadable or exceeds 4 MB."));return false;}
     const QByteArray bytes=file.readAll();LookState look;QString error;
@@ -154,7 +157,7 @@ bool PhotoController::loadLookProfile(const QUrl &url) {
         error="This fitted look was created for a different RAW rendering engine; refit or regenerate it.";
     if(error.isEmpty()&&!LookProfiles::active(look))error="Profile has no supported active look";
     if(!error.isEmpty()){setStatus(uiText("外观未导入：", "Look not imported: ")+error);return false;}
-    mutableCurrentState()->look=std::move(look);persistAndApply("look_profile_imported");return true;
+    auto *state=mutableCurrentState();if(!state)return false;state->look=std::move(look);persistAndApply("look_profile_imported");return true;
 }
 bool PhotoController::saveLookProfile(const QUrl &url) {
     if(!hasImage()||!url.isLocalFile())return false;

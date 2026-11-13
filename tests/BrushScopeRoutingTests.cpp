@@ -21,6 +21,7 @@
 #include "core/cache/FullScopesCache.h"
 #include "core/cache/ScopePlotCache.h"
 #include "core/image/ProcessedImageProvider.h"
+#include "core/metadata/XmpSidecar.h"
 #include "core/pipeline/BrushRenderRequest.h"
 #include "core/pipeline/StageGraph.h"
 #include "diagnostics/PerformanceRecorder.h"
@@ -78,6 +79,117 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void editPublicationSignalsMayCloseOrDestroyOwner_data() {
+        QTest::addColumn<QString>("action");QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
+        const auto rows=[](const QString &action,const QStringList &contexts){for(const auto &context:contexts)for(bool closeOnly:{true,false})
+            QTest::newRow(qPrintable(action+"-"+context+(closeOnly?"-close":"-destroy")))<<action<<context<<closeOnly;};
+        rows("scalar",{"history","adjustments"});rows("reset",{"library","history","adjustments"});
+        rows("undo",{"library","adjustments","look","history"});rows("redo",{"library","adjustments","look","history"});
+        rows("paste",{"history"});rows("xmp",{"history"});rows("brush-remove",{"history"});
+        rows("apply",{"crop","calibration","plot","scopes"});rows("finish",{"library","activity"});
+    }
+    void editPublicationSignalsMayCloseOrDestroyOwner() {
+        QFETCH(QString,action);QFETCH(QString,context);QFETCH(bool,closeOnly);
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("edit-owner.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);
+        QVERIFY(owner->createProject(QUrl::fromLocalFile(dir.path()),"EditOwner"));owner->setExposure(.75);owner->finishInteraction();
+        if(action=="redo"){owner->undo();owner->finishInteraction();}
+        if(action=="paste"){owner->copyAdjustments();owner->setExposure(.25);owner->finishInteraction();}
+        if(action=="brush-remove"){owner->mutableCurrentState()->brushMasks=painted().brushMasks;QVERIFY(owner->persistAndApply("fixture_brush"));owner->finishInteraction();}
+        const auto xmp=dir.filePath("edit-owner.xmp");
+        if(action=="xmp"){
+            auto state=owner->m_photos[0].state;state.exposure=.5;QString error;
+            QVERIFY2(XmpSidecar::writeNew(xmp,state,{},4,"none",&error),qPrintable(error));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);
+        QVERIFY(owner->flushEdits());owner->m_refineTimer.stop();owner->m_exactTimer.stop();owner->m_plotTimer.stop();
+        if(action=="apply"&&context=="crop")owner->m_cropEditing=true;
+        if(action=="apply"&&context=="calibration")owner->m_calibrationBusy=true;
+        if(action=="finish")owner->m_interacting=true;
+        const auto project=owner->projectPath(),key=owner->m_photos[0].storageKey();
+        const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("edit_owner_marker",{{"id",marker}});
+        QPointer<PhotoController> alive(owner.get());bool notified=false,closed=false;AdjustmentState expected;EditHistory history;int rating=0;QString flag;CatalogTags tags;QList<quint64> stopped;
+        const auto workState=[&]{
+            QList<quint64> result{owner->m_requestedRevision,owner->m_prepareGeneration,owner->m_loader->sequence(),owner->m_prefetch->sequence(),owner->m_prepare->sequence(),owner->m_render->sequence(),owner->m_scopeJob->sequence(),owner->m_inputScopeJob->sequence(),owner->m_fullScopeJob->sequence(),owner->m_plotJob->sequence(),owner->m_referenceJob->sequence(),owner->m_calibrationJob->sequence(),quint64(owner->m_interacting)};
+            for(auto *timer:{&owner->m_saveTimer,&owner->m_saveMaxTimer,&owner->m_refineTimer,&owner->m_exactTimer,&owner->m_prefetchTimer,&owner->m_catalogDateTimer,&owner->m_plotTimer,&owner->m_budgetRetryTimer,&owner->m_brushPreviewRetryTimer,&owner->m_brushPreviewScheduleTimer,&owner->m_softProofDelay,&owner->m_softProofDeadline,&owner->m_diagnosticTimer})result.append(timer->isActive());
+            return result;
+        };
+        const auto terminal=[&]{
+            if(notified||!owner)return;notified=true;const auto &photo=owner->m_photos[0];expected=photo.state;history=photo.history;rating=photo.rating;flag=photo.flag;tags=photo.tags;
+            if(closeOnly){closed=owner->beginClose();if(owner)stopped=workState();}else owner.reset();
+        };
+        QMetaObject::Connection connection;
+        if(context=="history")connection=QObject::connect(owner.get(),&PhotoController::historyChanged,owner.get(),terminal);
+        else if(context=="library")connection=QObject::connect(owner.get(),&PhotoController::libraryChanged,owner.get(),terminal);
+        else if(context=="adjustments")connection=QObject::connect(owner.get(),&PhotoController::adjustmentsChanged,owner.get(),terminal);
+        else if(context=="look")connection=QObject::connect(owner.get(),&PhotoController::lookChanged,owner.get(),terminal);
+        else if(context=="crop")connection=QObject::connect(owner.get(),&PhotoController::cropEditingChanged,owner.get(),terminal);
+        else if(context=="calibration")connection=QObject::connect(owner.get(),&PhotoController::calibrationChanged,owner.get(),terminal);
+        else if(context=="plot")connection=QObject::connect(owner.get(),&PhotoController::scopePlotChanged,owner.get(),terminal);
+        else if(context=="scopes")connection=QObject::connect(owner.get(),&PhotoController::scopesChanged,owner.get(),terminal);
+        else connection=QObject::connect(owner.get(),&PhotoController::activityChanged,owner.get(),terminal);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        if(action=="scalar")owner->setExposure(.5);
+        else if(action=="reset")owner->resetAdjustments();
+        else if(action=="undo")owner->undo();
+        else if(action=="redo")owner->redo();
+        else if(action=="paste")owner->pasteAdjustments();
+        else if(action=="xmp")QVERIFY(owner->importXmp(QUrl::fromLocalFile(xmp)));
+        else if(action=="brush-remove")QVERIFY(owner->removeBrushLayer("scope"));
+        else if(action=="apply")owner->applyCurrent();
+        else owner->finishInteraction();
+        QVERIFY(notified);
+        if(closeOnly){
+            QVERIFY(closed);QVERIFY(owner&&alive&&owner->m_closing);
+            QTRY_VERIFY_WITH_TIMEOUT(!owner->m_prepare->busy()&&!owner->m_render->busy()&&!owner->m_scopeJob->busy()&&!owner->m_inputScopeJob->busy()&&!owner->m_fullScopeJob->busy()&&!owner->m_plotJob->busy(),5000);
+            QCOMPARE(workState(),stopped);
+        }else{QVERIFY(!owner);QVERIFY(!alive);}
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(project,&rows));QCOMPARE(rows.size(),1);
+        QCOMPARE(rows[0].adjustments.toJson(),expected.toJson());QCOMPARE(rows[0].history.toJson(),history.toJson());QCOMPARE(rows[0].rating,rating);QCOMPARE(rows[0].flag,flag);QCOMPARE(rows[0].tags.toJson(),tags.toJson());
+        const QString traceAction=action=="scalar"?"adjustment":action=="reset"?"reset_adjustments":action=="undo"?"edit_undo":action=="redo"?"edit_redo":action=="paste"?"paste_adjustments":action=="xmp"?"xmp_import":action=="brush-remove"?"brush_layer_remove":QString{};
+        if(!traceAction.isEmpty()){
+            const auto trace=ActionTrace::instance().snapshot();bool after=false;int count=0;
+            for(const auto &value:trace){const auto event=value.toObject();if(event["action"]=="edit_owner_marker"&&event["id"]==marker)after=true;
+                else if(after&&event["action"]==traceAction){++count;QCOMPARE(event["file"].toString(),path);if(event.contains("photo_key"))QCOMPARE(event["photo_key"].toString(),key);}}
+            QVERIFY(after);QCOMPARE(count,1);
+        }
+        QCOMPARE(fileHash(path),original);
+    }
+    void editEntryPointsRefuseForeignThreadAndAcceptedClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("edit-entry.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        c.setExposure(.75);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        const auto state=c.m_photos[0].state.toJson(),history=c.m_photos[0].history.toJson();const auto revision=c.m_requestedRevision;
+        const auto attempted=[&]{c.setExposure(2);c.resetAdjustments();c.undo();c.redo();c.applyCurrent();c.finishInteraction();};
+        std::thread foreign(attempted);foreign.join();QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);QCOMPARE(c.m_requestedRevision,revision);
+        QVERIFY(c.beginClose());const auto closedRevision=c.m_requestedRevision;attempted();QCOMPARE(c.m_photos[0].state.toJson(),state);QCOMPARE(c.m_photos[0].history.toJson(),history);QCOMPARE(c.m_requestedRevision,closedRevision);
+        QVERIFY(!c.canUndo());QVERIFY(!c.canRedo());QVERIFY(!c.m_saveTimer.isActive());QVERIFY(!c.m_saveMaxTimer.isActive());QVERIFY(!c.m_refineTimer.isActive());
+    }
+    void editNotificationPhotoSwitchKeepsOriginalTargetAndPersistence() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto first=dir.filePath("first.png"),second=dir.filePath("second.png");QVERIFY(sourceImage().scaled(321,197).save(first));QVERIFY(sourceImage().scaled(197,321).save(second));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);c.importFiles({QUrl::fromLocalFile(first),QUrl::fromLocalFile(second)});
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Switch"));QVERIFY(c.flushEdits());
+        bool switched=false;quint64 revision=0;QObject::connect(&c,&PhotoController::historyChanged,&c,[&]{if(switched)return;switched=true;c.selectPhoto(1);revision=c.m_requestedRevision;});
+        c.setExposure(.75);QVERIFY(switched);QCOMPARE(c.currentIndex(),1);QCOMPARE(c.m_requestedRevision,revision);
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.flushEdits());
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),2);
+        for(const auto &photo:rows)QCOMPARE(photo.adjustments.exposure,photo.path==first?.75:0.);
+        const auto trace=ActionTrace::instance().snapshot();bool found=false;for(auto i=trace.size();i-->0;){const auto event=trace[i].toObject();if(event["action"]=="adjustment"&&event["file"]==first){QCOMPARE(event["photo_key"].toString(),first);found=true;break;}}QVERIFY(found);
+    }
+    void reentrantEditRecordsMutationOrderAndSchedulesLatestOnce() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("reentrant.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Reentrant"));QVERIFY(c.flushEdits());
+        const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("edit_order_marker",{{"id",marker}});const auto revision=c.m_requestedRevision;
+        bool nested=false;QObject::connect(&c,&PhotoController::historyChanged,&c,[&]{if(nested)return;nested=true;c.setExposure(.5);});
+        c.setExposure(.75);QVERIFY(nested);QCOMPARE(c.exposure(),.5);QCOMPARE(c.m_requestedRevision,revision+1);QVERIFY(c.flushEdits());
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),1);QCOMPARE(rows[0].adjustments.exposure,.5);QCOMPARE(rows[0].history.toJson(),c.m_photos[0].history.toJson());
+        QList<double> values;bool after=false;for(const auto &value:ActionTrace::instance().snapshot()){const auto event=value.toObject();if(event["action"]=="edit_order_marker"&&event["id"]==marker)after=true;else if(after&&event["action"]=="adjustment"&&event["file"]==path)values.append(event["value"].toDouble());}
+        QVERIFY(after);QCOMPARE(values,(QList<double>{.75,.5}));
+    }
     void closeFromEditHistoryNotificationSavesLastEdit() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto path=dir.filePath("history-close.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
