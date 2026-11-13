@@ -41,3 +41,5 @@ std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request, 
 // frame lease alive through this call; no geometry or color rendering occurs.
 ScopePlotResult renderEncodedScopePlot(const QImage &encoded,const QString &mode,const CancelToken &cancel = {});
 std::array<ScopePlotResult,3> renderEncodedScopePlots(const QImage &encoded,const CancelToken &cancel = {});
+ScopePlotResult renderLinearScopePlot(const QImage &linear,const QString &mode,const CancelToken &cancel={});
+std::array<ScopePlotResult,3> renderLinearScopePlots(const QImage &linear,const CancelToken &cancel={});

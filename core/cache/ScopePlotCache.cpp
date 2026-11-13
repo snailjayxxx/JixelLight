@@ -60,15 +60,19 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
     // not delay this independent plot request or share its cancellation token.
     const auto completed=m_analysisFrames && !analysisKey.isEmpty()
         ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
+    const auto linearKey=m_analysisFrames&&request.fullResolution&&linear
+        ?StageGraph::linearAnalysisFrameKey(request.source,request.plan,request.geometry,request.domain):QString{};
+    const auto linearFrame=m_analysisFrames&&!linearKey.isEmpty()
+        ?m_analysisFrames->findLinear(linearKey,request.domain,cancel):AnalysisFrameCache::LinearLease{};
     std::unique_ptr<BrushRenderRequest> admitted;
     std::unique_ptr<BrushAnalysisRequest> working;
-    if(brush&&linear) {
+    if(brush&&linear&&!linearFrame) {
         BrushAdmissionFailure reason;
         working=request.fullResolution?BrushAnalysisRequest::create(request.source,request.plan,request.geometry,
             BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason)
             :BrushAnalysisRequest::createPrepared(request.source,request.plan,BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
         if(!working)return cancelled(cancel)?ScopePlotResult{}:ScopePlotResult{{},0,error,reason==BrushAdmissionFailure::BudgetUnavailable};
-    } else if(brush&&!completed) {
+    } else if(brush&&!linear&&!completed) {
         BrushAdmissionFailure reason;
         admitted=BrushRenderRequest::createOriginal(request.source,request.plan,request.geometry,
             BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
@@ -78,18 +82,19 @@ ScopePlotResult ScopePlotCache::render(const ScopePlotRequest &request,const Can
     // bounded tiles and avoiding speculative work that cannot be reused.
     if (!cacheable) {
         auto result=completed ? renderEncodedScopePlot(completed.image(),request.mode,cancel)
-            :working?renderScopePlot(*working,request.mode,cancel):admitted?renderScopePlot(*admitted,request.mode,cancel):renderScopePlot(request,cancel);
+            :linearFrame?renderLinearScopePlot(linearFrame.image(),request.mode,cancel):working?renderScopePlot(*working,request.mode,cancel):admitted?renderScopePlot(*admitted,request.mode,cancel):renderScopePlot(request,cancel);
         if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
         return result;
     }
     // A large completed analysis frame already supplies every encoded sample.
     // Deliver the requested full-resolution plot without first counting two
     // unrequested modes. Small/missing frames keep the shared three-mode pass.
-    const bool requestedOnly=completed && completed.image().sizeInBytes()>=64*1024*1024;
+    const bool requestedOnly=(completed&&completed.image().sizeInBytes()>=64*1024*1024)
+        ||(linearFrame&&linearFrame.image().sizeInBytes()>=64*1024*1024);
     std::array<ScopePlotResult,3> results;
-    if (requestedOnly) results[index]=renderEncodedScopePlot(completed.image(),request.mode,cancel);
+    if (requestedOnly) results[index]=linearFrame?renderLinearScopePlot(linearFrame.image(),request.mode,cancel):renderEncodedScopePlot(completed.image(),request.mode,cancel);
     else results=completed ? renderEncodedScopePlots(completed.image(),cancel)
-        :working?renderScopePlots(*working,cancel):admitted?renderScopePlots(*admitted,cancel):renderScopePlots(request,cancel);
+        :linearFrame?renderLinearScopePlots(linearFrame.image(),cancel):working?renderScopePlots(*working,cancel):admitted?renderScopePlots(*admitted,cancel):renderScopePlots(request,cancel);
     QMutexLocker lock(&m_mutex);
     if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
     const auto valid=[](const ScopePlotResult &r) { return !r.image.isNull() && r.pixels && r.error.isEmpty(); };

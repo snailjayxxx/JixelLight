@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <cmath>
 #include <limits>
 
 struct AnalysisFrameCache::State {
@@ -47,7 +48,8 @@ struct AnalysisFrameCache::State {
     std::shared_ptr<Accounting> accounting;
     std::shared_ptr<const Entry> latest;
     QString latestKey;
-    QHash<QString,quint64> pending;
+    AnalysisDomain latestDomain=AnalysisDomain::Display;
+    QHash<QPair<int,QString>,quint64> pending;
     quint64 generation=0;
     bool closed=false;
     qint64 hits=0, misses=0, bypasses=0, evictions=0, cancelledRequests=0,
@@ -67,13 +69,14 @@ struct AnalysisFrameCache::Build {
     ~Build() {
         if (!pending) return;
         QMutexLocker lock(&state->mutex);
-        const auto it=state->pending.find(key);
+        const auto it=state->pending.find(QPair<int,QString>{int(domain),key});
         if (it!=state->pending.end() && it.value()==generation) state->pending.erase(it);
         // Entry's charge only updates atomics, never the cache mutex.
     }
     std::shared_ptr<State> state;
     std::shared_ptr<Entry> entry;
     QString key;
+    AnalysisDomain domain=AnalysisDomain::Display;
     quint64 generation=0;
     int nextY=0;
     bool pending=false, metadataCopied=false;
@@ -107,8 +110,10 @@ bool AnalysisFrameCache::Writer::append(const QImage &tile,int y,const CancelTok
     if (cancelled(cancel)) { fail(true); return false; }
     auto &build=*m_build;
     auto &frame=build.entry->image;
-    if (tile.isNull() || tile.format()!=QImage::Format_RGBA64 || tile.width()!=frame.width() ||
+    const bool linear=build.domain!=AnalysisDomain::Display;
+    if (tile.isNull() || tile.format()!=frame.format() || tile.width()!=frame.width() ||
         y!=build.nextY || tile.height()>frame.height()-build.nextY ||
+        (linear&&tile.colorSpace()!=QColorSpace(QColorSpace::SRgbLinear))||
         (build.metadataCopied && tile.colorSpace()!=frame.colorSpace())) {
         fail(false,true); return false;
     }
@@ -121,9 +126,16 @@ bool AnalysisFrameCache::Writer::append(const QImage &tile,int y,const CancelTok
             for (const auto &key:tile.textKeys()) frame.setText(key,tile.text(key));
             build.metadataCopied=true;
         }
-        const auto bytes=size_t(frame.width())*8;
+        const auto bytes=size_t(frame.width())*(linear?16:8);
         for (int row=0;row<tile.height();++row) {
             if (cancelled(cancel)) { fail(true); return false; }
+            if(linear) {
+                const auto *pixels=reinterpret_cast<const float *>(tile.constScanLine(row));
+                for(int x=0;x<tile.width();++x) {
+                    const auto *p=pixels+qsizetype(4)*x;
+                    if(!std::isfinite(p[0])||!std::isfinite(p[1])||!std::isfinite(p[2])||!std::isfinite(p[3])||p[3]<0||p[3]>1){fail(false,true);return false;}
+                }
+            }
             auto *destination=frame.scanLine(y+row);
             if (!destination) { fail(false,false,true); return false; }
             std::memcpy(destination,tile.constScanLine(row),bytes);
@@ -149,6 +161,7 @@ bool AnalysisFrameCache::Writer::publish(const CancelToken &cancel) {
         else {
             // Assign potentially allocating metadata before replacing the entry.
             build.state->latestKey=build.key;
+            build.state->latestDomain=build.domain;
             retired=std::move(build.state->latest);
             if (retired) ++build.state->evictions;
             build.entry->charge->published();
@@ -170,9 +183,16 @@ AnalysisFrameCache::~AnalysisFrameCache() {
     retired=std::move(m_state->latest);
 }
 AnalysisFrameCache::Lease AnalysisFrameCache::find(const QString &key,const CancelToken &cancel) {
+    return findDomain(key,AnalysisDomain::Display,cancel);
+}
+AnalysisFrameCache::LinearLease AnalysisFrameCache::findLinear(const QString &key,AnalysisDomain domain,const CancelToken &cancel) {
+    if(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)return {};
+    return LinearLease(findDomain(key,domain,cancel));
+}
+AnalysisFrameCache::Lease AnalysisFrameCache::findDomain(const QString &key,AnalysisDomain domain,const CancelToken &cancel) {
     QMutexLocker lock(&m_state->mutex);
     if (cancelled(cancel)) { ++m_state->cancelledRequests; return {}; }
-    if (!key.isEmpty() && m_state->latest && m_state->latestKey==key) {
+    if (!key.isEmpty() && m_state->latest && m_state->latestKey==key&&m_state->latestDomain==domain) {
         ++m_state->hits;
         return Lease(m_state->latest);
     }
@@ -181,22 +201,34 @@ AnalysisFrameCache::Lease AnalysisFrameCache::find(const QString &key,const Canc
 }
 AnalysisFrameCache::Writer AnalysisFrameCache::begin(const QString &key,const QSize &size,
         const std::shared_ptr<const LookLut> &lut,const CancelToken &cancel) {
+    return beginDomain(key,size,AnalysisDomain::Display,lut,cancel);
+}
+AnalysisFrameCache::LinearWriter AnalysisFrameCache::beginLinear(const QString &key,const QSize &size,AnalysisDomain domain,
+        const std::shared_ptr<const LookLut> &lut,const CancelToken &cancel) {
+    if(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)return {};
+    return LinearWriter(beginDomain(key,size,domain,lut,cancel));
+}
+AnalysisFrameCache::Writer AnalysisFrameCache::beginDomain(const QString &key,const QSize &size,AnalysisDomain domain,
+        const std::shared_ptr<const LookLut> &lut,const CancelToken &cancel) {
     std::unique_ptr<Build> build;
     std::shared_ptr<const Entry> retired;
     try {
         build=std::make_unique<Build>();
         build->state=m_state;
         build->key=key;
+        build->domain=domain;
+        const qint64 bytesPerPixel=domain==AnalysisDomain::Display?8:16;
+        const QPair<int,QString> pendingKey{int(domain),key};
         {
             QMutexLocker lock(&m_state->mutex);
             if (cancelled(cancel)) { ++m_state->cancelledRequests; return {}; }
             if (key.isEmpty() || size.width()<=0 || size.height()<=0 || m_state->closed) {
                 ++m_state->invalidRequests; ++m_state->bypasses; return {};
             }
-            if (m_state->pending.contains(key)) {
+            if (m_state->pending.contains(pendingKey)) {
                 ++m_state->inflightBypasses; ++m_state->bypasses; return {};
             }
-            if (m_state->latest && m_state->latestKey==key) {
+            if (m_state->latest && m_state->latestKey==key&&m_state->latestDomain==domain) {
                 ++m_state->completedBypasses; ++m_state->bypasses; return {};
             }
             build->generation=++m_state->generation;
@@ -205,7 +237,7 @@ AnalysisFrameCache::Writer AnalysisFrameCache::begin(const QString &key,const QS
             }
             // Checked arithmetic precedes any QImage allocation.
             const qint64 maximum=std::numeric_limits<qint64>::max();
-            const qint64 rowBytes=qint64(size.width())*8;
+            const qint64 rowBytes=qint64(size.width())*bytesPerPixel;
             const qint64 lutSize=lut ? lut->rgb.capacity():0;
             const qint64 overhead=sizeof(Entry)+(lut ? sizeof(LookLut):0);
             if (lutSize>(maximum-overhead)/qint64(sizeof(float)) ||
@@ -216,7 +248,7 @@ AnalysisFrameCache::Writer AnalysisFrameCache::begin(const QString &key,const QS
             if (cost>m_state->accounting->budget) {
                 ++m_state->oversizeBypasses; ++m_state->bypasses; return {};
             }
-            m_state->pending.insert(key,build->generation);
+            m_state->pending.insert(pendingKey,build->generation);
             build->pending=true;
             // Reclaim our completed ownership before reserving the next frame.
             // Outstanding leases continue to charge the retired entry.
@@ -225,7 +257,7 @@ AnalysisFrameCache::Writer AnalysisFrameCache::begin(const QString &key,const QS
             if (retired) ++m_state->evictions;
         }
         retired.reset();
-        const qint64 cost=qint64(size.width())*8*size.height()+sizeof(Entry)+
+        const qint64 cost=qint64(size.width())*bytesPerPixel*size.height()+sizeof(Entry)+
             (lut ? qint64(sizeof(LookLut))+qint64(lut->rgb.capacity())*sizeof(float):0);
         auto charge=std::make_unique<State::Charge>(m_state->accounting,cost);
         if (!charge->reserved) {
@@ -236,8 +268,8 @@ AnalysisFrameCache::Writer AnalysisFrameCache::begin(const QString &key,const QS
         build->entry=std::make_shared<Entry>();
         build->entry->charge=std::move(charge);
         build->entry->lut=lut;
-        build->entry->image=QImage(size,QImage::Format_RGBA64);
-        if (build->entry->image.isNull() || build->entry->image.sizeInBytes()!=qint64(size.width())*8*size.height()) {
+        build->entry->image=QImage(size,domain==AnalysisDomain::Display?QImage::Format_RGBA64:QImage::Format_RGBA32FPx4);
+        if (build->entry->image.isNull() || build->entry->image.sizeInBytes()!=qint64(size.width())*bytesPerPixel*size.height()) {
             QMutexLocker lock(&m_state->mutex);
             ++m_state->allocationFailures; ++m_state->bypasses;
             return {};
@@ -270,5 +302,6 @@ QJsonObject AnalysisFrameCache::snapshot() const {
         {"disabled_bypasses",m_state->disabledBypasses},{"invalid_requests",m_state->invalidRequests},
         {"completed_bypasses",m_state->completedBypasses},
         {"stale_publications",m_state->stalePublications},{"allocation_failures",m_state->allocationFailures},
-        {"accounting","RGBA64 payload, Entry, retained LUT object/numeric allocated capacity; reservations and evicted leases remain charged; allocator/key/metadata/source/geometry excluded; leased estimate overlaps cached bytes when borrowed"}};
+        {"cached_domain",m_state->latest?analysisDomainKey(m_state->latestDomain):QString{}},
+        {"accounting","RGBA64 or linear FP32 payload, Entry, retained LUT object/numeric allocated capacity; reservations and evicted leases remain charged; allocator/key/metadata/source/geometry excluded; leased estimate overlaps cached bytes when borrowed"}};
 }

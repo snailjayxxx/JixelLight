@@ -59,18 +59,29 @@ ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelT
         ? StageGraph::analysisFrameKey(request.image,request.plan,request.geometry):QString{};
     const auto completed=m_analysisFrames && !analysisKey.isEmpty()
         ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
+    const auto linearKey=m_analysisFrames&&linear&&request.fullResolution
+        ?StageGraph::linearAnalysisFrameKey(request.image,request.plan,request.geometry,request.domain):QString{};
+    const auto linearFrame=m_analysisFrames&&!linearKey.isEmpty()
+        ?m_analysisFrames->findLinear(linearKey,request.domain,cancel):AnalysisFrameCache::LinearLease{};
     ScopesResult result;
     if(linear) {
-        if(brush) {
+        if(linearFrame) {
+            result=ScopesEngine::analyzeLinear(linearFrame.image(),1024,cancel);
+            PerformanceRecorder::count("full_scopes_linear_frame_hits");
+        } else if(brush) {
             BrushAdmissionFailure reason;
             auto admitted=request.fullResolution?BrushAnalysisRequest::create(request.image,request.plan,request.geometry,
                 BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason)
                 :BrushAnalysisRequest::createPrepared(request.image,request.plan,BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
             if(!admitted)return cancelled(cancel)?ScopesResult{}:failed(error,reason==BrushAdmissionFailure::BudgetUnavailable);
-            result=ScopesEngine::analyzeWorking(*admitted,cancel,&error);
+            auto writer=m_analysisFrames&&!linearKey.isEmpty()?m_analysisFrames->beginLinear(linearKey,admitted->size(),request.domain,lut,cancel):AnalysisFrameCache::LinearWriter{};
+            result=ScopesEngine::analyzeWorking(*admitted,cancel,&error,[&](const QImage &strip,int y){if(writer&&!writer.append(strip,y,cancel))writer={};});
+            if(writer&&result.pixelCount&&!cancelled(cancel))writer.publish(cancel);
         } else {
             const auto image=request.geometry.apply(request.image,cancel);
-            result=ScopesEngine::analyzeDomain(image,request.plan,request.domain,cancel);
+            auto writer=m_analysisFrames&&!linearKey.isEmpty()?m_analysisFrames->beginLinear(linearKey,image.size(),request.domain,lut,cancel):AnalysisFrameCache::LinearWriter{};
+            result=ScopesEngine::analyzeDomain(image,request.plan,request.domain,cancel,[&](const QImage &strip,int y){if(writer&&!writer.append(strip,y,cancel))writer={};});
+            if(writer&&result.pixelCount&&!cancelled(cancel))writer.publish(cancel);
         }
         if(!cancelled(cancel)&&!result.pixelCount&&result.error.isEmpty())result.error="Linear histogram rendering failed";
     } else if (completed) {
