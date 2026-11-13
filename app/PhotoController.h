@@ -14,6 +14,7 @@ class QQuickWindow;
 #include <QCache>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include "core/preview/PreviewTasks.h"
 #include "app/NativeBrushController.h"
 #include "core/async/LatestFrameJob.h"
@@ -889,21 +890,25 @@ private:
     void setSoftProofPaperImpl(bool);
     void setSoftProofGamutWarningImpl(bool);
     void setSoftProofBlackPointImpl(bool);
-    bool createProjectImpl(const QUrl &folder,const QString &name);
-    bool openProjectImpl(const QUrl &folder);
+    using ProjectCommit=std::function<void(const QString &,const QString &)>;
+    bool createProjectImpl(const QUrl &folder,const QString &name,const ProjectCommit &committed);
+    bool openProjectImpl(const QUrl &folder,const ProjectCommit &committed);
     void copyAdjustmentsImpl();
     bool pasteAdjustmentGroupsImpl(const QStringList &groups);
     int syncAdjustmentGroupsImpl(const QStringList &groups,bool selectedOnly);
-    bool saveNamedPresetImpl(const QString &name);
-    bool applyNamedPresetImpl(const QString &name);
-    bool removeNamedPresetImpl(const QString &name);
-    bool renameNamedPresetImpl(const QString &name,const QString &replacement);
-    bool replaceNamedPresetImpl(const QString &name);
-    bool exportNamedPresetImpl(const QString &name,const QUrl &destination);
-    bool importNamedPresetImpl(const QUrl &source,const QString &replacementName);
+    using PresetCommit=std::function<void()>;
+    bool saveNamedPresetImpl(const QString &name,const PresetCommit &committed);
+    bool applyNamedPresetImpl(const QString &name,const PresetCommit &committed);
+    bool removeNamedPresetImpl(const QString &name,const PresetCommit &committed);
+    bool renameNamedPresetImpl(const QString &name,const QString &replacement,const PresetCommit &committed);
+    bool replaceNamedPresetImpl(const QString &name,const PresetCommit &committed);
+    bool exportNamedPresetImpl(const QString &name,const QUrl &destination,const PresetCommit &committed);
+    bool importNamedPresetImpl(const QUrl &source,const QString &replacementName,const PresetCommit &committed);
     bool createVirtualCopyImpl(const QString &name);
     bool renameCurrentVirtualCopyImpl(const QString &name);
     bool removeCurrentVirtualCopyImpl();
+    std::function<bool()> notificationGuard();
+    bool selectPhotoImpl(int index);
     bool transferImportFromUrls(const QVariantList &,const QUrl &,const QString &,int,bool move);
     bool startCopyImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
     bool startMoveImport(const QVariantList &,const QUrl &,const QString &,int,const QJsonObject &canonical);
