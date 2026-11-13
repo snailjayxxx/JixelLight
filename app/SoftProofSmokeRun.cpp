@@ -5,6 +5,7 @@
 #include "core/color/MonitorColorTransform.h"
 #include "core/scopes/ScopesEngine.h"
 #include "core/project/ProjectDatabase.h"
+#include "diagnostics/ActionTrace.h"
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QGuiApplication>
@@ -105,9 +106,16 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
     const auto checkpoint=[=]{writeObject(report+".progress.json",{{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"proof",QJsonObject::fromVariantMap(c->softProofDiagnostics())},{"pointers",s->pointers},{"captures",s->captures}},true);};
     const auto finish=[=](const QString &error){
         if(s->done)return;s->done=true;s->timer->stop();
+        QJsonArray commands;for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="proof_command")commands.append(row["command"]);}
+        const QJsonArray expectedCommands{
+            QJsonObject{{"command","proof.profile"},{"source",s->profile}},QJsonObject{{"command","proof.enable"},{"enabled",true}},
+            QJsonObject{{"command","proof.paper"},{"enabled",true}},QJsonObject{{"command","proof.gamut-warning"},{"enabled",true}},
+            QJsonObject{{"command","proof.black-point"},{"enabled",false}},QJsonObject{{"command","proof.refresh"}},
+            QJsonObject{{"command","proof.enable"},{"enabled",false}},QJsonObject{{"command","proof.enable"},{"enabled",true}}};
+        const bool commandsPassed=commands==expectedCommands;
         const bool passed=error.isEmpty()&&s->phase==15&&s->exportPassed&&s->projectPassed&&s->proofs.size()==5&&s->captures.size()==4
             &&s->pointers.size()==8&&s->composition["passed"].toBool()&&fileHash(s->source)==s->sourceSha&&s->clock.elapsed()<60000
-            &&qApp->property("jixellightSmokeSettingsIsolated").toBool()&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+            &&commandsPassed&&qApp->property("jixellightSmokeSettingsIsolated").toBool()&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         QJsonObject r{{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",60000},
             {"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"actual_Main_App_PhotoCanvas",true},{"controller_on_actual_GUI_thread",c->thread()==QThread::currentThread()},
             {"language",language},{"actual_qpa",QGuiApplication::platformName()},{"actual_backend",c->processingBackend()},{"GPU_active",c->gpuActive()},
@@ -117,6 +125,7 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
             {"profile_path",s->profile},{"profile_sha256",QString::fromLatin1(fileHash(s->profile))},{"profile_model",s->target.colorModel()},
             {"header_text",item("softProofPanelToggle")?item("softProofPanelToggle")->property("text").toString():QString{}},
             {"presentation_only",true},{"proof_independent_CPU_reference",true},{"exact_scopes_preserved",true},{"original_GPU_parity_covered_by_separate_suite",true},
+            {"proof_command_trace_passed",commandsPassed},{"proof_commands",commands},
             {"scope_wait_observations",s->scopeWaits},{"scope_wait_states",s->scopeWaitStates},
             {"scope",QJsonObject{{"status",s->initialScopeStatus},{"pixels",qint64(s->scopes.pixelCount)},{"bins",1024},{"red",QJsonArray::fromVariantList(s->scopes.red)},
                 {"green",QJsonArray::fromVariantList(s->scopes.green)},{"blue",QJsonArray::fromVariantList(s->scopes.blue)},{"luma",QJsonArray::fromVariantList(s->scopes.luma)}}},

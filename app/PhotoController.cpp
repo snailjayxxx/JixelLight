@@ -766,6 +766,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
     if(object["command"].toString()=="project.create"||object["command"].toString()=="project.open")return executeProjectCommand(object);

@@ -4,7 +4,7 @@
 
 Independent dehaze now has a QRhi follow-up with resident full-frame context. Local GPU/native evidence and remaining clean/platform/package gates are recorded in [M62](docs/F4_QRHI_DEHAZE_CACHE_STAGE_M62.md). The [CPU parent](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md) separately passes clean90/90; whole fusion development remains incomplete.
 
-> **开发验证快照（2026-11-13，M112 编译前）：** `52b16ef` 的本地 102 项、29 个场景、三平台 CI426 及两平台安装包验收已完成。XMP 候选 `3b59dee` 本地全通过，但 CI427 macOS 在完整 102 项通过后出现平移视口检查失败；原始证据保留，尚未取得三平台验收。重链接候选 `14c5b93` 本地完整 102 项通过，场景及 CI428 仍在验证。当前优先修正松手时提交最终平移视口；软打样命令工作已保存。整体 F0–F6 继续开发，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
+> **开发验证快照（2026-11-13，软打样命令编译前）：** 平移修正版 `ff5377e` 已通过本地完整 102 项（926.04 秒）、33 个场景、真实 RAW／CLI 对照及 11 个二进制校验；三平台 CI429 仍在进行。此前 CI427 macOS 的平移失败原始记录保留，未以新结果覆盖。当前继续验证软打样的统一命令、显示隔离和线程保护；整体 F0–F6 仍在开发，A7R VI 实拍核验仍缺样本路径，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with

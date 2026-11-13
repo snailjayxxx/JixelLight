@@ -3,6 +3,7 @@
 #include <QColorSpace>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QJsonArray>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
@@ -11,12 +12,16 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QPointer>
+#include <QThread>
+#include <thread>
 #include "app/PhotoController.h"
 #include "core/cache/RenderedPreviewCache.h"
 #include "core/color/MonitorColorTransform.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "core/preview/SoftProofPreview.h"
 #include "diagnostics/PerformanceRecorder.h"
+#include "diagnostics/ActionTrace.h"
 
 class SoftProofWorkflowTests:public QObject {
     Q_OBJECT
@@ -66,6 +71,49 @@ private slots:
         auto budget=std::make_shared<BrushRenderBudget>(128*1024*1024);SoftProofPreviewRenderer renderer(budget,{});SoftProofPreviewRequest request{scene(),plan({}),SoftProof::Profile::fromOutputSpace(ColorManagement::OutputSpace::SRgb),{}};
         QString error;QVERIFY(!BrushRenderRequest::validPreparedPlan(request.plan,&error));QVERIFY(!BrushRenderRequest::createPrepared(request.source,request.plan,BrushRenderRequest::Layout::Whole,{},&error,budget));
         request.plan.data[0].x+=.1f;const auto invalid=renderer.render(request,{});QVERIFY(invalid.image.isNull());QVERIFY(!invalid.retryableBudget);QCOMPARE(budget->snapshot().charged,qint64(0));
+    }
+    void sharedCommandsPreserveAllPhotoStateAndNeverOpenAnUnloadedCustomProfile(){
+        {QSettings saved;saved.remove("softProof/profilePath");saved.remove("softProof/profileKey");}
+        QTemporaryDir dir;const auto source=fixture(dir),profile=dir.filePath("owned.icc");QVERIFY(!source.isEmpty());
+        const auto icc=QColorSpace(QColorSpace::SRgb).iccProfile();QFile file(profile);QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));QCOMPARE(file.write(icc),icc.size());file.close();
+        ProcessedImageProvider provider;PhotoController c(&provider);defaults(c);
+        const auto settingsBefore=c.softProofDiagnostics();QVERIFY(!c.executeCommand({{"command","proof.target"},{"target","custom"}}));QCOMPARE(c.softProofDiagnostics(),settingsBefore);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(source)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering()&&c.scopesPixelCount()==307*211,10000);
+        c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);
+        QFile original(source);QVERIFY(original.open(QIODevice::ReadOnly));const auto originalBytes=original.readAll();original.close();
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto revision=c.renderRevision();
+        const auto red=c.redHistogram(),green=c.greenHistogram(),blue=c.blueHistogram(),luma=c.lumaHistogram();
+        for(const auto &command:QList<QVariantMap>{
+            {{"command","proof.profile"},{"source",profile}},{{"command","proof.target"},{"target","adobe-rgb"}},{{"command","proof.target"},{"target","custom"}},
+            {{"command","proof.intent"},{"intent",3}},{{"command","proof.intent"},{"intent",0}},{{"command","proof.intent"},{"intent",1}},
+            {{"command","proof.enable"},{"enabled",true}},{{"command","proof.paper"},{"enabled",true}},{{"command","proof.gamut-warning"},{"enabled",true}},
+            {{"command","proof.black-point"},{"enabled",false}},{{"command","proof.refresh"}}})QVERIFY(c.executeCommand(command));
+        QTRY_VERIFY_WITH_TIMEOUT(c.softProofReady(),10000);QVERIFY(!provided(provider,c.softProofUrl()).isNull());
+        const auto url=c.softProofUrl();QVERIFY(!c.executeCommand({{"command","proof.enable"},{"enabled",1}}));
+        QVERIFY(!c.executeCommand({{"command","proof.profile"},{"source",profile},{"overwrite",true}}));
+        QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",2}},QJsonObject{{"command","proof.paper"},{"enabled",false}}}}}));
+        QCOMPARE(c.softProofUrl(),url);QVERIFY(c.softProofPaper());QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.renderRevision(),revision);
+        QCOMPARE(c.redHistogram(),red);QCOMPARE(c.greenHistogram(),green);QCOMPARE(c.blueHistogram(),blue);QCOMPARE(c.lumaHistogram(),luma);
+        QVERIFY(c.executeCommand({{"command","proof.enable"},{"enabled",false}}));QVERIFY(c.softProofUrl().isEmpty());QVERIFY(provided(provider,url).isNull());QVERIFY(c.projectPath().isEmpty());
+        QVERIFY(original.open(QIODevice::ReadOnly));QCOMPARE(original.readAll(),originalBytes);QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),icc);
+    }
+    void foreignProofEntriesPreservePreferencesAndAcceptedCallbacksCanDestroyTheOwner(){
+        QTemporaryDir dir;const auto profile=dir.filePath("owned.icc");const auto icc=QColorSpace(QColorSpace::SRgb).iccProfile();QFile file(profile);QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));QCOMPARE(file.write(icc),icc.size());file.close();
+        PhotoController c(nullptr);const auto before=c.softProofDiagnostics();const auto preferences=[] {QSettings saved;QVariantMap result;for(const auto &key:saved.allKeys())result.insert(key,saved.value(key));return result;};const auto stored=preferences();QSignalSpy changed(&c,&PhotoController::softProofChanged);
+        const QList<QVariantMap> commands{
+            {{"command","proof.profile"},{"source",profile}},{{"command","proof.target"},{"target","adobe-rgb"}},{{"command","proof.intent"},{"intent",2}},
+            {{"command","proof.enable"},{"enabled",true}},{{"command","proof.paper"},{"enabled",false}},{{"command","proof.gamut-warning"},{"enabled",false}},
+            {{"command","proof.black-point"},{"enabled",true}},{{"command","proof.refresh"}}};
+        bool foreign=false,accepted=false,loaded=true,targeted=true,intent=true;
+        std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();for(const auto &command:commands)accepted=c.executeCommand(command)||accepted;
+            c.setSoftProofEnabled(true);targeted=c.setSoftProofTarget("custom");loaded=c.loadSoftProofProfile(QUrl::fromLocalFile(profile));intent=c.setSoftProofIntent(2);
+            c.setSoftProofPaper(false);c.setSoftProofGamutWarning(false);c.setSoftProofBlackPoint(true);c.refreshSoftProof();c.chooseSoftProofProfile();});worker.join();
+        QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!loaded);QVERIFY(!targeted);QVERIFY(!intent);QCOMPARE(changed.count(),0);QCOMPARE(c.softProofDiagnostics(),before);QCOMPARE(preferences(),stored);
+        QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),icc);
+        auto owner=std::make_unique<PhotoController>(nullptr);QPointer<PhotoController> live(owner.get());bool destroyed=false;
+        connect(owner.get(),&PhotoController::softProofChanged,this,[&]{if(!destroyed){destroyed=true;owner.reset();}});
+        QVERIFY(owner->executeCommand({{"command","proof.enable"},{"enabled",true}}));QVERIFY(destroyed);QVERIFY(!owner);QVERIFY(!live);
+        const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("proof_command"));QVERIFY(row["presentation_only"].toBool());QCOMPARE(row["completion"].toString(),QString("presentation-request-accepted"));
     }
     void controllerProofDoesNotChangeEditsHistoryRevisionScopesOrSource(){
         QTemporaryDir dir;const auto path=fixture(dir);QVERIFY(!path.isEmpty());QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));const auto original=file.readAll();file.close();ProcessedImageProvider provider;PhotoController c(&provider);defaults(c);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.previewReady()&&!c.rendering(),10000);

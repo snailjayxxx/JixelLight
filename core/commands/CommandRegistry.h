@@ -271,6 +271,42 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    enum class ProofOperation { Enable, Target, Profile, Intent, Paper, GamutWarning, BlackPoint, Refresh };
+    struct Proof {ProofOperation operation=ProofOperation::Refresh;bool enabled=false;int intent=1;QString text;};
+    static bool decodeProof(const QJsonObject &command,Proof *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid soft proof command";return false;};
+        if(!output)return fail();Proof staged;const auto name=command["command"].toString();
+        if(name=="proof.refresh") {if(!fields(command,{}))return fail();}
+        else if(name=="proof.intent") {
+            if(!fields(command,{"intent"})||!integer(command,"intent",0,3))return fail();staged.operation=ProofOperation::Intent;staged.intent=command["intent"].toInt();
+        } else if(name=="proof.target"||name=="proof.profile") {
+            const bool profile=name=="proof.profile";const auto field=profile?"source":"target";
+            if(!fields(command,{field})||!command[field].isString())return fail();staged.text=command[field].toString();
+            if(profile) {if(staged.text.isEmpty()||staged.text.size()>32768||staged.text.contains(QChar(u'\0')))return fail();staged.operation=ProofOperation::Profile;}
+            else {if(staged.text!="custom"&&!ColorManagement::keys().contains(staged.text))return fail();staged.operation=ProofOperation::Target;}
+        } else {
+            if(name=="proof.enable")staged.operation=ProofOperation::Enable;
+            else if(name=="proof.paper")staged.operation=ProofOperation::Paper;
+            else if(name=="proof.gamut-warning")staged.operation=ProofOperation::GamutWarning;
+            else if(name=="proof.black-point")staged.operation=ProofOperation::BlackPoint;
+            else return fail();
+            if(!fields(command,{"enabled"})||!command["enabled"].isBool())return fail();staged.enabled=command["enabled"].toBool();
+        }
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject proofSchema(const QString &name) {
+        const bool profile=name=="proof.profile",target=name=="proof.target",intent=name=="proof.intent",refresh=name=="proof.refresh";
+        QJsonObject result{{"name",name},{"scope","desktop"},{"fields",refresh?QJsonArray{}:profile?QJsonArray{"source"}:target?QJsonArray{"target"}:intent?QJsonArray{"intent"}:QJsonArray{"enabled"}},
+            {"presentation_only",true},{"source_writes",false},{"catalog_writes",false},{"edit_history_writes",false},
+            {"settings_writes",!refresh&&name!="proof.enable"},{"maximum_path_utf16_units",32768},
+            {"custom_target","requires an already loaded valid profile; commands never open a file chooser"},
+            {"completion","true means presentation settings or refresh accepted; proof pixels may still be pending"},
+            {"offline_sessions","unsupported; presentation controls cannot alter edit/export plans"}};
+        if(!refresh)result["type"]=intent?"integer":profile||target?"string":"boolean";
+        if(target){auto values=ColorManagement::keys();values.append("custom");result["values"]=QJsonArray::fromStringList(values);}
+        if(intent){result["minimum"]=0;result["maximum"]=3;}
+        return result;
+    }
     enum class RelinkOperation { Request, Confirm, Cancel };
     struct Relink {RelinkOperation operation=RelinkOperation::Request;QString version,candidate,catalogToken,requestId;bool acknowledgeUnknownIdentity=false;};
     static bool decodeRelink(const QJsonObject &command,Relink *output,QString *error=nullptr) {
@@ -1001,7 +1037,9 @@ struct CommandRegistry {
                 presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import"),
                 adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync"),
                 projectSchema("project.create"),projectSchema("project.open"),xmpSchema("xmp.export"),xmpSchema("xmp.review"),
-                relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel")}},
+                relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel"),
+                proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
+                proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};
