@@ -25,17 +25,19 @@ struct HistogramCounts {
 };
 class ScopesEngine {
 public:
+    using RenderedStripObserver = std::function<void(const QImage &, int)>;
     static ScopesResult analyze(const QImage &image, int bins = 1024, const CancelToken &cancel = {});
     // Linear sRGB/D65 FP32 only. Histogram ink clamps to [0,1]; range counters
     // use all RGB<=0 / any RGB>=1, not the legacy encoded near-black/white test.
     static ScopesResult analyzeLinear(const QImage &,int bins=1024,const CancelToken &cancel={});
-    static ScopesResult analyzeWorking(BrushAnalysisRequest &,const CancelToken &cancel={},QString *error=nullptr);
+    static ScopesResult analyzeWorking(BrushAnalysisRequest &,const CancelToken &cancel={},QString *error=nullptr,
+                                      const RenderedStripObserver &completedStrip={});
     // Bounded linear strips from a post-geometry source. Active Working brushes
     // require the separate typed admission above; Source ignores edit intent.
-    static ScopesResult analyzeDomain(const QImage &,const ProcessingPlan &,AnalysisDomain,const CancelToken &cancel={});
+    static ScopesResult analyzeDomain(const QImage &,const ProcessingPlan &,AnalysisDomain,const CancelToken &cancel={},
+                                     const RenderedStripObserver &completedStrip={});
     // An optional collector sees completed center strips after detail halos
     // have been removed. It must not alter the pixels or histogram result.
-    using RenderedStripObserver = std::function<void(const QImage &, int)>;
     static ScopesResult analyzeFull(const QImage &source, const ProcessingPlan &plan, const CancelToken &cancel = {},
                                    const RenderedStripObserver &completedStrip = {});
     // Optional plots are explicitly requested and share the same admitted

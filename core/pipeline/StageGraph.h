@@ -253,6 +253,12 @@ struct StageGraph {
                << QJsonDocument(request.geometry.toJson()).toJson(QJsonDocument::Compact);
         return digest(bytes);
     }
+    static QString linearAnalysisFrameKey(const QImage &source,const ProcessingPlan &plan,const GeometryState &geometry,AnalysisDomain domain) {
+        const auto frame=plan.data[ProcessingPlan::FrameRect];
+        if(frame.x!=0||frame.y!=0||frame.z!=1||frame.w!=1)return {};
+        const auto input=linearAnalysisKey(source,plan,geometry,domain);
+        return input.isEmpty()?QString{}:digest(QByteArray("linear-analysis-frame-v1:RGBA32FPx4:stream128:pre-output:pre-monitor:")+input.toUtf8());
+    }
     static QString scopePlotsKey(const ScopePlotRequest &request) {
         if(request.domain!=AnalysisDomain::Display) {
             const auto input=linearAnalysisKey(request.source,request.plan,request.geometry,request.domain);

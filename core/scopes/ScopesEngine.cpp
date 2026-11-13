@@ -61,14 +61,18 @@ ScopesResult ScopesEngine::analyzeLinear(const QImage &image,int bins,const Canc
     HistogramCounts counts;if(countLinearFrame(image,&counts,token))return result(counts,bins);
     ScopesResult failed;failed.error=cancelled(token)?QString("Linear analysis cancelled"):QString("Linear analysis requires a complete finite unassociated linear-sRGB FP32 frame");return failed;
 }
-ScopesResult ScopesEngine::analyzeWorking(BrushAnalysisRequest &request,const CancelToken &token,QString *error) {
-    HistogramCounts total;
-    const bool complete=request.visitStrips([&](const BrushImageLease &lease,int){HistogramCounts part;if(!countLinearFrame(lease.image(),&part,token))return false;total.add(part);return true;},token,error);
+ScopesResult ScopesEngine::analyzeWorking(BrushAnalysisRequest &request,const CancelToken &token,QString *error,const RenderedStripObserver &completedStrip) {
+    HistogramCounts total;bool collecting=bool(completedStrip);
+    const bool complete=request.visitStrips([&](const BrushImageLease &lease,int y){
+        HistogramCounts part;if(!countLinearFrame(lease.image(),&part,token))return false;total.add(part);
+        if(collecting&&!cancelled(token))try{completedStrip(lease.image(),y);}catch(...){collecting=false;PerformanceRecorder::count("linear_scopes_collector_failures");}
+        return true;
+    },token,error);
     if(complete&&!cancelled(token)&&total.pixels==quint64(request.size().width())*request.size().height())return result(total);
     ScopesResult failed;failed.error=error&&!error->isEmpty()?*error:QString("Working analysis did not complete");return failed;
 }
-ScopesResult ScopesEngine::analyzeDomain(const QImage &source,const ProcessingPlan &requestedPlan,AnalysisDomain domain,const CancelToken &token) {
-    if(domain==AnalysisDomain::Display)return analyzeFull(source,requestedPlan,token);
+ScopesResult ScopesEngine::analyzeDomain(const QImage &source,const ProcessingPlan &requestedPlan,AnalysisDomain domain,const CancelToken &token,const RenderedStripObserver &completedStrip) {
+    if(domain==AnalysisDomain::Display)return analyzeFull(source,requestedPlan,token,completedStrip);
     const auto fail=[](const QString &message){ScopesResult result;result.error=message;return result;};
     if(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)return fail("Invalid analysis domain");
     if(source.isNull()||cancelled(token))return {};
@@ -77,13 +81,14 @@ ScopesResult ScopesEngine::analyzeDomain(const QImage &source,const ProcessingPl
         if(BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return fail("Working brush statistics require float-output admission");
         if(!ImagePipeline::resolveDehazeAirlight(source,plan,token))return fail("Analysis airlight resolution failed");
     }
-    HistogramCounts total;
+    HistogramCounts total;bool collecting=bool(completedStrip);
     for(int y=0;y<source.height();y+=128) {
         if(cancelled(token))return {};
         QString error;const auto strip=ImagePipeline::analysisRegion(source,plan,{0,y,source.width(),std::min(128,source.height()-y)},domain,token,&error);
         HistogramCounts part;
         if(!countLinearFrame(strip,&part,token))return cancelled(token)?ScopesResult{}:fail(error.isEmpty()?QString("Linear histogram rendering failed"):error);
         total.add(part);
+        if(collecting&&!cancelled(token))try{completedStrip(strip,y);}catch(...){collecting=false;PerformanceRecorder::count("linear_scopes_collector_failures");}
     }
     if(cancelled(token)||total.pixels!=quint64(source.width())*source.height())return {};
     return result(total);

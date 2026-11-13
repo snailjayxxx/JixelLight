@@ -229,6 +229,26 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
       catch (...) { result.error="Scope plot allocation or rendering failed"; }
     return result;
 }
+ScopePlotResult renderLinearScopePlot(const QImage &linear,const QString &mode,const CancelToken &cancel) {
+    ScopePlotResult result;
+    try {
+        ScopePlotCounts counts(mode);
+        if(!counts.addLinear(linear,cancel)){if(!cancelled(cancel))result.error="Invalid linear scope plot frame";return result;}
+        if(cancelled(cancel))return {};
+        result={counts.image(),counts.pixels,{}};if(result.image.isNull())result.error="Linear scope plot allocation failed";
+    }catch(...){result={};result.error="Linear scope plot counting failed";}
+    return cancelled(cancel)?ScopePlotResult{}:result;
+}
+std::array<ScopePlotResult,3> renderLinearScopePlots(const QImage &linear,const CancelToken &cancel) {
+    std::array<ScopePlotResult,3> results;
+    const auto fail=[&](const QString &error){for(auto &r:results)r={{},0,error};return results;};
+    try {
+        const QStringList modes{"waveform","parade","vectorscope"};
+        for(int i=0;i<3;++i){results[i]=renderLinearScopePlot(linear,modes[i],cancel);if(cancelled(cancel))return {};if(results[i].image.isNull())return fail(results[i].error);}
+        PerformanceRecorder::count("scope_plot_linear_frame_passes");
+    }catch(...){return cancelled(cancel)?std::array<ScopePlotResult,3>{}:fail("Linear scope plot counting failed");}
+    return results;
+}
 std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request,const CancelToken &cancel) {
     std::array<ScopePlotResult,3> results;
     auto fail=[&](const QString &error) {
