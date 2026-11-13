@@ -4509,9 +4509,9 @@ private slots:
 
     void operationCancellationDecoderRejectsNoncanonicalIdsWithoutChangingOutput() {
         const QString id="c59c39df-320d-4b8b-89ac-9307454d0208";
-        for(const auto &name:QStringList{"export.cancel","photo.transfer.cancel"}) {
+        for(const auto &name:QStringList{"export.cancel","photo.transfer.cancel","xmp.cancel"}) {
             const QJsonObject valid{{"command",name},{"operation_id",id}};CommandRegistry::OperationCancel result;
-            QVERIFY(CommandRegistry::decodeOperationCancel(valid,&result));QCOMPARE(result.operationId,id);QCOMPARE(result.transfer,name=="photo.transfer.cancel");
+            QVERIFY(CommandRegistry::decodeOperationCancel(valid,&result));QCOMPARE(result.operationId,id);QCOMPARE(result.transfer,name=="photo.transfer.cancel");QCOMPARE(result.review,name=="xmp.cancel");
             const QList<QJsonValue> invalid{QJsonValue(QJsonValue::Null),1,true,QString{},id.toUpper(),"{"+id+"}"," "+id,id+" ",
                 QString("00000000-0000-0000-0000-000000000000"),QString(36,'a'),id.left(35),id+"x",QString::fromUtf8("bad\0id",6)};
             for(const auto &value:invalid) {

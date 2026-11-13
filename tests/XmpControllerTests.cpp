@@ -25,6 +25,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QPointer>
+#include <thread>
 #include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrentRun>
 #include <functional>
@@ -157,7 +158,22 @@ private slots:
   QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);QVERIFY(f.c->canUndo());f.c->undo();QCOMPARE(f.c->exposure(),0.0);QCOMPARE(f.c->currentRating(),4);QVERIFY(f.c->prepareToClose());
   stored=f.stored();QCOMPARE(stored.adjustments.exposure,0.0);QVERIFY(stored.history.canRedo());QCOMPARE(stored.tags.keywords,QStringList{"incoming"});
  }
- void cancelReviewPreservesRecordAndBothFiles() {Fixture f;const auto before=f.rows();auto *d=f.start();auto *box=d->findChild<QDialogButtonBox*>();QTest::mouseClick(box->button(QDialogButtonBox::Cancel),Qt::LeftButton);f.done();QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);}
+ void cancelReviewPreservesRecordAndBothFiles() {Fixture f;const auto before=f.rows();auto *d=f.start();const auto id=f.c->xmpMergeOperationId();QVERIFY(!id.isEmpty());auto *box=d->findChild<QDialogButtonBox*>();QTest::mouseClick(box->button(QDialogButtonBox::Cancel),Qt::LeftButton);f.done();QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  bool traced=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject(),command=row["command"].toObject();if(row["action"]=="operation_cancel_requested"&&command["command"]=="xmp.cancel"&&command["operation_id"]==id){QCOMPARE(row["kind"].toString(),QString("xmp-review"));traced=true;}}QVERIFY(traced);QVERIFY(f.c->xmpMergeOperationId().isEmpty());}
+ void cancellationCommandsCannotReachAnotherReviewOrRunFromForeignThreads() {
+  Fixture f;const auto before=f.rows();f.start();const auto first=f.c->xmpMergeOperationId();QVERIFY(!first.isEmpty());QCOMPARE(f.c->property("xmpMergeOperationId").toString(),first);
+  const QVariantMap cancel{{"command","xmp.cancel"},{"operation_id",first}};
+  bool foreign=false,accepted=true,legacy=true;std::thread worker([&]{foreign=QThread::currentThread()!=f.c->thread();accepted=f.c->executeCommand(cancel);legacy=f.c->cancelXmpMerge();});worker.join();QVERIFY(foreign);QVERIFY(!accepted);QVERIFY(!legacy);QVERIFY(f.c->xmpMergeBusy());QCOMPARE(f.rows(),before);
+  auto malformed=cancel;malformed["all"]=true;QVERIFY(!f.c->executeCommand(malformed));QVERIFY(f.c->xmpMergeBusy());QVERIFY(f.c->executeCommand(cancel));f.done();QVERIFY(f.c->xmpMergeOperationId().isEmpty());QVERIFY(!f.c->executeCommand(cancel));QVERIFY(f.c->cancelXmpMerge());
+  auto *d=f.start();const auto second=f.c->xmpMergeOperationId();QVERIFY(!second.isEmpty());QVERIFY(second!=first);QVERIFY(!f.c->executeCommand(cancel));QCOMPARE(f.c->xmpMergeOperationId(),second);QVERIFY(f.c->xmpMergeBusy());
+  chooseIncoming(d);apply(d);f.done();QCOMPARE(f.c->exposure(),1.25);QCOMPARE(f.c->currentRating(),4);QCOMPARE(f.c->currentFlag(),QString("pick"));QVERIFY(f.c->xmpMergeOperationId().isEmpty());QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+ }
+ void cancellationTraceSurvivesOwnerDestructionDuringItsCompletionSignal() {
+  Fixture f;const auto before=f.rows();f.start();const auto id=f.c->xmpMergeOperationId();const QVariantMap command{{"command","xmp.cancel"},{"operation_id",id}};
+  QObject observer;connect(f.c.get(),&PhotoController::xmpMergeChanged,&observer,[&]{if(f.c&&!f.c->xmpMergeBusy())f.c.reset();});
+  auto *owner=f.c.get();QVERIFY(owner->executeCommand(command));QVERIFY(!f.c);QCOMPARE(f.rows(),before);QCOMPARE(hash(f.original),f.originalHash);QCOMPARE(hash(f.sidecar),f.sidecarHash);
+  bool traced=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="operation_cancel_requested"&&row["command"].toObject()==QJsonObject::fromVariantMap(command)){QCOMPARE(row["completion"].toString(),QString("cancelled-before-commit"));QCOMPARE(row["project"].toString(),f.project);traced=true;}}QVERIFY(traced);
+ }
  void durableBarrierRejectsEditsVersionsSelectionAndBrush() {
   Fixture f;const auto before=f.rows();f.start();const int index=f.c->currentIndex();f.c->setExposure(9);f.c->setRating(5);f.c->setFlag("reject");f.c->undo();f.c->redo();f.c->selectPhoto(1);QCOMPARE(f.c->currentIndex(),index);
   QVERIFY(!f.c->setSelectionRating(5));QVERIFY(!f.c->setSelectionFlag("reject"));QVERIFY(!f.c->setSelectionKeywords("forbidden"));QVERIFY(!f.c->setSelectionLabel("blue"));QVERIFY(!f.c->beginCrop());

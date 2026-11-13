@@ -766,7 +766,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
-    if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel")return executeOperationCancel(object);
+    if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel"||object["command"]=="xmp.cancel")return executeOperationCancel(object);
     if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
@@ -1904,6 +1904,15 @@ void PhotoController::cancelExport() {
 bool PhotoController::executeOperationCancel(const QJsonObject &command) {
     if(QThread::currentThread()!=thread()||m_closing)return false;
     CommandRegistry::OperationCancel request;if(!CommandRegistry::decodeOperationCancel(command,&request))return false;
+    if(request.review) {
+        if(request.operationId!=xmpMergeOperationId())return false;
+        const QVariantMap details{{"command",command},{"kind","xmp-review"},{"completion","cancelled-before-commit"},
+            {"project",m_xmpMerge->target.projectLocator},{"version_key",m_xmpMerge->target.storageKey}};
+        const bool accepted=cancelXmpMergeImpl();
+        // Cancellation emits owner callbacks. Only frozen local facts remain safe.
+        if(accepted)ActionTrace::instance().record("operation_cancel_requested",details);
+        return accepted;
+    }
     QString kind;
     if(!request.transfer) {
         if(request.operationId!=exportOperationId())return false;

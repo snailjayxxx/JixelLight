@@ -36,6 +36,7 @@ ProjectDatabase::OriginalIdentity verifiedOriginal(const QString &path,const Can
 }
 
 bool PhotoController::xmpMergeBusy() const {return bool(m_xmpMerge);}
+QString PhotoController::xmpMergeOperationId() const {return m_xmpMerge?m_xmpMerge->operationId:QString{};}
 XmpCapture::Target PhotoController::xmpMergeTarget() const {
     if(!hasImage()||!m_project.isOpen())return {};
     const auto &photo=m_photos[m_currentIndex];
@@ -99,6 +100,11 @@ void PhotoController::finishXmpMerge(const QString &message,bool applyDeferredMe
         for(auto i=deferred.constBegin();i!=deferred.constEnd();++i)updateCaptureTime(i.key(),i.value());
 }
 bool PhotoController::cancelXmpMerge() {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    if(!m_xmpMerge)return true;
+    return executeOperationCancel({{"command","xmp.cancel"},{"operation_id",xmpMergeOperationId()}});
+}
+bool PhotoController::cancelXmpMergeImpl() {
     if(!m_xmpMerge)return true;
     if(m_xmpMerge->phase==XmpMergePhase::Committing||m_xmpMerge->phase==XmpMergePhase::ReloadRequired)return false;
     finishXmpMerge(uiText("XMP 导入已取消，未应用所选字段。","XMP import cancelled; selected fields were not applied."));return true;
@@ -186,6 +192,7 @@ bool PhotoController::requestXmpMergeImpl(const QUrl &source) {
     session->original=m_photos[m_currentIndex].identity;session->guiBefore=xmpMergeGuiSnapshot();
     const XmpSourceRequest request{{target,source.toLocalFile(),session->originalPath},session->original,{},thread(),false};
     m_xmpMerge=std::move(session);
+    ActionTrace::instance().record("xmp_review_started",{{"operation_id",xmpMergeOperationId()},{"project",target.projectLocator},{"version_key",target.storageKey}});
     const auto current=[owner,target] {return owner&&owner->m_xmpMerge&&owner->m_xmpMerge->target==target
         &&owner->m_xmpMerge->phase==XmpMergePhase::Reading&&owner->xmpMergeCurrent();};
     emit xmpMergeChanged();if(!current())return false;

@@ -554,6 +554,8 @@ public:
     // Explicit project merge: starts an asynchronous read/review. A true
     // return means queued, never saved. Legacy explicit session import stays.
     Q_INVOKABLE bool requestXmpMerge(const QUrl &source);
+    Q_PROPERTY(QString xmpMergeOperationId READ xmpMergeOperationId NOTIFY xmpMergeChanged)
+    QString xmpMergeOperationId() const;
     Q_INVOKABLE bool cancelXmpMerge();
     Q_INVOKABLE void openXmpExportDialog();
     Q_INVOKABLE void openXmpImportDialog();
@@ -913,6 +915,7 @@ private:
     struct XmpMergeSession {
         XmpCapture::Target target;
         QString originalPath;
+        QString operationId=QUuid::createUuid().toString(QUuid::WithoutBraces);
         ProjectDatabase::OriginalIdentity original;
         XmpCapture::Captured sidecar;
         ProjectDatabase::XmpReviewRecord review;
@@ -930,6 +933,7 @@ private:
     XmpCapture::Target xmpMergeTarget() const;
     QJsonObject xmpMergeGuiSnapshot() const;
     bool xmpMergeCurrent() const;
+    bool cancelXmpMergeImpl();
     void initializeXmpMerge();
     void shutdownXmpMerge();
     void finishXmpMerge(const QString &message, bool applyDeferredMetadata = false);
