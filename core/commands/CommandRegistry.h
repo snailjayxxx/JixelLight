@@ -271,6 +271,26 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    enum class XmpOperation { Export, Review };
+    struct Xmp {XmpOperation operation=XmpOperation::Export;QString path;};
+    static bool decodeXmp(const QJsonObject &command,Xmp *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid XMP command";return false;};
+        if(!output)return fail();Xmp staged;const auto name=command["command"].toString();
+        if(name=="xmp.review")staged.operation=XmpOperation::Review;
+        else if(name!="xmp.export")return fail();
+        const auto field=staged.operation==XmpOperation::Review?"source":"destination";
+        if(!fields(command,{field})||!command[field].isString())return fail();staged.path=command[field].toString();
+        if(staged.path.isEmpty()||staged.path.size()>32768||staged.path.contains(QChar(u'\0')))return fail();
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject xmpSchema(const QString &name) {
+        const bool review=name=="xmp.review";
+        return {{"name",name},{"scope","desktop"},{"fields",review?QJsonArray{"source"}:QJsonArray{"destination"}},
+            {"maximum_path_utf16_units",32768},{"source_writes",false},{"overwrite",false},
+            {"requires_saved_project",review},{"sidecar_writes",!review},{"catalog_writes",review},
+            {"completion",review?"true means queued for existing original verification and per-field review; only explicit Apply can commit":"true means the existing new-file sidecar writer completed"},
+            {"offline_sessions","unsupported; no sidecar write or catalog review may enter an offline edit/export plan"}};
+    }
     enum class ProjectKind { Create, Open };
     struct Project {ProjectKind kind=ProjectKind::Create;QString path,name;};
     static bool decodeProject(const QJsonObject &command,Project *output,QString *error=nullptr) {
@@ -951,7 +971,7 @@ struct CommandRegistry {
                 presetSchema("preset.save"),presetSchema("preset.apply"),presetSchema("preset.remove"),presetSchema("preset.rename"),
                 presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import"),
                 adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync"),
-                projectSchema("project.create"),projectSchema("project.open")}},
+                projectSchema("project.create"),projectSchema("project.open"),xmpSchema("xmp.export"),xmpSchema("xmp.review")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

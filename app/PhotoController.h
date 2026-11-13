@@ -850,6 +850,9 @@ private:
     bool executePresetCommand(const QJsonObject &command);
     int executeAdjustmentTransfer(const QJsonObject &command);
     bool executeProjectCommand(const QJsonObject &command);
+    bool executeXmpCommand(const QJsonObject &command);
+    bool exportXmpImpl(const QUrl &destination);
+    bool requestXmpMergeImpl(const QUrl &source);
     bool createProjectImpl(const QUrl &folder,const QString &name);
     bool openProjectImpl(const QUrl &folder);
     void copyAdjustmentsImpl();

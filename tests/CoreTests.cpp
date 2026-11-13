@@ -7492,6 +7492,51 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void desktopXmpExportCommandsPreserveStoredStateCurationAndOriginalsWithoutReplacement() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setLookMode("off");c.setExposure(1.25);c.finishInteraction();c.setRating(4);c.setFlag("pick");
+        QVERIFY(c.setSelectionKeywords("retained"));QVERIFY(c.setSelectionLabel("blue"));QVERIFY(c.addSelectionToAlbum("Owned"));
+        const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();const auto selection=c.selectedIndices();
+        const auto cwd=QDir::currentPath();const auto restore=qScopeGuard([&]{QDir::setCurrent(cwd);});QVERIFY(QDir::setCurrent(dir.path()));
+        const auto output=dir.filePath("command.xmp"),legacy=dir.filePath("legacy.xmp");
+        QVERIFY(c.executeCommand({{"command","xmp.export"},{"destination","command.xmp"}}));QVERIFY(c.exportXmp(QUrl::fromLocalFile(legacy)));
+        for(const auto &path:QStringList{output,legacy}) {
+            XmpSidecar::Document doc;QString error;QVERIFY2(XmpSidecar::read(path,&doc,&error),qPrintable(error));
+            QVERIFY(doc.hasAdjustments);QCOMPARE(doc.adjustments.toJson(),state);QCOMPARE(doc.rating,4);QCOMPARE(doc.flag,QString("pick"));
+            QCOMPARE(doc.tags.keywords,QStringList{"retained"});QCOMPARE(doc.tags.label,QString("blue"));QCOMPARE(doc.tags.albums,QStringList{"Owned"});
+        }
+        const auto sidecar=fixtureBytes(output);QVERIFY(!c.executeCommand({{"command","xmp.export"},{"destination",output}}));
+        QVERIFY(!c.executeCommand({{"command","xmp.export"},{"destination",source}}));QCOMPARE(fixtureBytes(output),sidecar);
+        QSet<QString> traced;for(const auto &v:ActionTrace::instance().snapshot()) {
+            const auto row=v.toObject(),command=row["command"].toObject();if(row["action"]!="xmp_command"||command["command"]!="xmp.export")continue;
+            const auto path=command["destination"].toString();if(path!=output&&path!=legacy)continue;
+            QCOMPARE(row["completion"].toString(),QString("written-new-sidecar"));traced.insert(path);
+        }
+        QCOMPARE(traced,QSet<QString>({output,legacy}));QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.selectedIndices(),selection);QCOMPARE(fixtureBytes(source),bytes);
+    }
+
+    void desktopXmpCommandsRejectMalformedNestedAndForeignCallsBeforeFilesOrStateChange() {
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png"),incoming=dir.filePath("incoming.xmp");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
+        AdjustmentState imported;imported.exposure=2;QString error;QVERIFY(XmpSidecar::writeNew(incoming,imported,{},5,"pick",&error));const auto sidecar=fixtureBytes(incoming);
+        PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setLookMode("off");c.setExposure(.25);c.finishInteraction();const auto state=c.gpuPlan(true).state.toJson();const auto history=c.editHistory();
+        for(const auto &name:QStringList{"xmp.export","xmp.review"}) {
+            const auto field=name=="xmp.export"?"destination":"source";const QJsonObject valid{{"command",name},{field,name=="xmp.export"?dir.filePath("new.xmp"):incoming}};
+            CommandRegistry::Xmp request;QVERIFY(CommandRegistry::decodeXmp(valid,&request));
+            for(const auto &value:QList<QJsonValue>{QString{},true,1,QJsonValue{},QString(32769,'x'),QString::fromUtf8("bad\0path",8)}) {
+                auto bad=valid;bad[field]=value;request.path="sentinel";QVERIFY(!CommandRegistry::decodeXmp(bad,&request));QCOMPARE(request.path,QString("sentinel"));QVERIFY(!c.executeCommand(bad.toVariantMap()));
+            }
+            auto bad=valid;bad["overwrite"]=true;QVERIFY(!c.executeCommand(bad.toVariantMap()));
+            QVERIFY(!c.executeCommand({{"command","edit.batch"},{"commands",QJsonArray{QJsonObject{{"command","develop.set"},{"parameter","exposure"},{"value",3}},valid}}}));
+        }
+        QVERIFY(!c.executeCommand({{"command","xmp.review"},{"source",incoming}}));QVERIFY(!c.xmpMergeBusy());
+        bool foreign=false,commandAccepted=true,legacyExport=true,legacyImport=true,review=true;
+        std::thread worker([&]{foreign=QThread::currentThread()!=c.thread();commandAccepted=c.executeCommand({{"command","xmp.export"},{"destination",dir.filePath("thread.xmp")}});
+            legacyExport=c.exportXmp(QUrl::fromLocalFile(dir.filePath("legacy-thread.xmp")));legacyImport=c.importXmp(QUrl::fromLocalFile(incoming));review=c.requestXmpMerge(QUrl::fromLocalFile(incoming));});worker.join();
+        QVERIFY(foreign);QVERIFY(!commandAccepted);QVERIFY(!legacyExport);QVERIFY(!legacyImport);QVERIFY(!review);
+        for(const auto &name:QStringList{"new.xmp","thread.xmp","legacy-thread.xmp"})QVERIFY(!QFileInfo::exists(dir.filePath(name)));
+        QCOMPARE(c.gpuPlan(true).state.toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(fixtureBytes(source),bytes);QCOMPARE(fixtureBytes(incoming),sidecar);
+    }
+
     void directEditCommandEntriesRejectForeignThreadsWithoutChangingStateOrHistory() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");
         QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
