@@ -78,6 +78,18 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void closeFromEditHistoryNotificationSavesLastEdit() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("history-close.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);
+        QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"HistoryClose"));QVERIFY(c.flushEdits());
+        bool notified=false,closed=false;EditHistory expected;
+        QObject::connect(&c,&PhotoController::historyChanged,&c,[&]{if(notified)return;notified=true;expected=c.m_photos[c.m_currentIndex].history;closed=c.beginClose();});
+        c.setExposure(.75);QVERIFY(notified);QVERIFY(closed);QVERIFY(c.m_closing);
+        ProjectDatabase saved;QVector<ProjectDatabase::SavedPhoto> rows;QVERIFY(saved.readSnapshot(c.projectPath(),&rows));QCOMPARE(rows.size(),1);
+        QCOMPARE(rows[0].adjustments.exposure,.75);QCOMPARE(rows[0].history.toJson(),expected.toJson());QCOMPARE(fileHash(path),original);
+    }
     void previewCompletionSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
         for(const auto &context:QStringList{"source-metadata","source-activity","prepare-geometry","prepare-activity","render-preview","render-activity","render-plot","exact-request","gpu-backend"})
