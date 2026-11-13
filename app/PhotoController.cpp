@@ -2249,10 +2249,12 @@ void PhotoController::initializeJobs() {
         [](const LoadRequest &, SourceData) {});
     m_prepare = std::make_unique<LatestJob<PrepareRequest, PreparedPreview>>(preparePreview,
         [this](const PrepareRequest &request, PreparedPreview result) {
-            if (request.photo != m_photoEpoch || request.generation != m_prepareGeneration) return;
+            const QPointer<PhotoController> guard(this);
+            const auto current=[this,guard,&request]{return guard&&!m_closing&&request.photo==m_photoEpoch&&request.generation==m_prepareGeneration;};
+            if (!current()) return;
             m_preparing = false;
             if (result.normal.isNull()) {
-                setBusy(false);
+                setBusy(false);if(!current())return;
                 if (!result.error.isEmpty()) setStatus(result.error);
                 return;
             }
@@ -2261,11 +2263,12 @@ void PhotoController::initializeJobs() {
             m_previewReferenceFrameSize=result.referenceFrameSize;
             m_previewDehazeAirlight=result.dehazeAirlight;
             m_displayPixels = result.displayPixels; m_viewportOnly = result.viewportOnly;
-            emit previewGeometryChanged(); emit activityChanged();
+            emit previewGeometryChanged();if(!current())return;
+            emit activityChanged();if(!current())return;
             ++m_requestedRevision;
             m_scopesUpdating = true; m_scopesRank = -1;
             m_interacting = false;
-            scheduleRender(false);
+            scheduleRender(false);if(!current())return;
             if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
         });
     const auto renderCache = m_renderCache;
@@ -2276,27 +2279,29 @@ void PhotoController::initializeJobs() {
             catch (...) {result.error="Preview rendering failed";}
             result.retryableBudget=reason==BrushAdmissionFailure::BudgetUnavailable;return result;
         }, [this](const RenderRequest &request, RenderedFrame result) {
-            if (request.revision != m_requestedRevision || m_gpuActive) {
+            const QPointer<PhotoController> guard(this);
+            const auto current=[this,guard,&request]{return guard&&!m_closing&&request.revision==m_requestedRevision&&!m_gpuActive;};
+            if (!current()) {
                 PerformanceRecorder::count("preview_results_discarded");
                 return;
             }
             if (result.image.isNull()) {
-                setBusy(false);
+                setBusy(false);if(!current())return;
                 if(result.error.isEmpty())result.error="Preview rendering failed";
                 setStatus(result.retryableBudget?uiText("图像内存正被其他任务使用，暂时保留旧预览。","Image memory is busy; retaining the previous preview."):
-                    uiText("预览处理失败：","Preview processing failed: ")+result.error);
+                    uiText("预览处理失败：","Preview processing failed: ")+result.error);if(!current())return;
                 ScopesResult failed;failed.error=result.error.isEmpty()?QString("Preview rendering failed"):result.error;
                 if(result.retryableBudget)deferBudgetJob(0,request.revision);else m_deferredBudgetJobs[0]={};
-                const QPointer<PhotoController> guard(this);failed.retryableBudget=result.retryableBudget;acceptScopes(request.revision,failed,0,{});
-                if(guard&&m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
+                failed.retryableBudget=result.retryableBudget;acceptScopes(request.revision,failed,0,{});
+                if(current()&&m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
                 return;
             }
             m_deferredBudgetJobs[0]={};auto image=std::move(result.image);
             m_processedPreview = image;
             if (m_provider) m_provider->setImage(image);
             ++m_previewRevision;
-            emit previewUrlChanged();
-            completeFrame(request.revision);
+            emit previewUrlChanged();if(!current())return;
+            completeFrame(request.revision);if(!current())return;
             // Publishing pixels never waits for histogram computation.
             if(m_scopeDomain==AnalysisDomain::Display)m_scopeJob->submit({image, request.plan, request.revision, false});
         });
@@ -2421,26 +2426,32 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
 }
 
 void PhotoController::prepareCurrent() {
-    cancelBrushStroke();
+    if(m_closing)return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;auto generation=m_prepareGeneration;
+    const auto current=[this,guard,photo,&generation]{return guard&&!m_closing&&photo==m_photoEpoch&&generation==m_prepareGeneration;};
+    cancelBrushStroke();if(!current())return;
     if (m_loadedPreview.isNull()) return;
     m_preparing = true;
-    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
+    m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();if(!current())return;
     ++m_requestedRevision;
     m_render->cancel(); m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
+    generation=m_prepareGeneration;
     m_preparedGeometry = previewGeometry().toJson();
     m_prepare->submit({m_loadedPreview, m_photoEpoch, m_prepareGeneration, m_viewport, m_cropEditing ? 0 : m_zoom, m_centerX, m_centerY, m_sourceIsFull, previewGeometry()});
-    emit gpuFrameChanged();
+    emit gpuFrameChanged();if(!current())return;
     setBusy(true);
 }
 
 void PhotoController::scheduleRender(bool fast) {
-    if (m_previewSource.isNull() || m_preparing) return;
-    setBusy(true);
-    emit scopePlotChanged();
+    if (m_closing || m_previewSource.isNull() || m_preparing) return;
+    const QPointer<PhotoController> guard(this);const auto revision=m_requestedRevision;
+    const auto current=[this,guard,revision]{return guard&&!m_closing&&revision==m_requestedRevision;};
+    setBusy(true);if(!current())return;
+    emit scopePlotChanged();if(!current())return;
     m_renderClock.restart();
-    emit gpuFrameChanged();
+    emit gpuFrameChanged();if(!current())return;
     if (m_gpuEnabled && m_gpuActive) { m_render->cancel(); return; }
     m_render->submit({fast ? m_fastSource : m_previewSource, gpuPlan(), m_requestedRevision, fast});
 }
@@ -2470,16 +2481,18 @@ void PhotoController::finishInteraction() {
 }
 
 void PhotoController::completeFrame(quint64 revision) {
-    if (revision != m_requestedRevision) return;
+    const QPointer<PhotoController> guard(this);
+    const auto current=[this,guard,revision]{return guard&&!m_closing&&revision==m_requestedRevision;};
+    if (!current()) return;
     if (m_renderClock.isValid()) PerformanceRecorder::sample("request_to_result_ms", m_renderClock.nsecsElapsed()/1e6, {{"backend", processingBackend()}, {"revision", qint64(revision)}});
-    setBusy(false);
+    setBusy(false);if(!current())return;
     if(m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
     // The final current preview has completed. Start its pending exact
     // statistics now; interactive frames keep their ordinary debounce.
     if (!m_preparing && !m_interacting && m_exactScopes && m_exactTimer.isActive()) {
         m_exactTimer.stop();
         PerformanceRecorder::count("full_scopes_started_after_final_preview");
-        requestFullScopes();
+        requestFullScopes();if(!current())return;
     }
     if (m_scopeMode!="histogram" && m_plotSubmittedRevision!=m_requestedRevision && !m_plotTimer.isActive()) m_plotTimer.start();
     emit scopePlotChanged();
@@ -2648,7 +2661,7 @@ void PhotoController::requestPreviewScopes() {
     m_inputScopeJob->submit({m_previewSource,gpuPlan(),m_requestedRevision,false,{},m_scopeDomain});
 }
 void PhotoController::requestFullScopes() {
-    if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
+    if (m_closing || !m_exactScopes || m_fullSource.isNull() || m_interacting) return;
     // Preparation publishes a new revision and restarts the exact timer.
     // Starting now would compute geometry/statistics for an obsolete revision,
     // then cancel and repeat them as soon as the prepared preview arrives.
@@ -2657,7 +2670,9 @@ void PhotoController::requestFullScopes() {
         return;
     }
     if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
-    m_scopesUpdating=true;const QPointer<PhotoController> guard(this);emit scopesChanged();if(!guard)return;
+    const auto revision=m_requestedRevision;const auto domain=m_scopeDomain;
+    m_scopesUpdating=true;const QPointer<PhotoController> guard(this);emit scopesChanged();
+    if(!guard||m_closing||!m_exactScopes||revision!=m_requestedRevision||domain!=m_scopeDomain)return;
     m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry(),m_scopeDomain});
 }
 void PhotoController::deferBudgetJob(int job,quint64 revision) {

@@ -76,6 +76,49 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void previewCompletionSignalsMayCloseOrDestroyOwner_data() {
+        QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
+        for(const auto &context:QStringList{"prepare-geometry","prepare-activity","render-preview","render-activity","render-plot","exact-request"})
+            for(bool closeOnly:{false,true})QTest::newRow(qPrintable(context+(closeOnly?"-close":"-destroy")))<<context<<closeOnly;
+    }
+    void previewCompletionSignalsMayCloseOrDestroyOwner() {
+        QFETCH(QString,context);QFETCH(bool,closeOnly);
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("preview-owner.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);
+        QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering()&&owner->scopesPixelCount()>0&&!owner->m_prepare->busy()&&!owner->m_render->busy()&&!owner->m_scopeJob->busy(),15000);
+        QVERIFY(owner->flushEdits());owner->m_saveTimer.stop();owner->m_saveMaxTimer.stop();owner->m_refineTimer.stop();owner->m_exactTimer.stop();owner->m_plotTimer.stop();owner->setExactScopes(false);
+        const auto generation=owner->m_prepareGeneration,preview=owner->m_previewRevision;
+        QPointer<PhotoController> alive(owner.get());bool terminal=false,closed=false;QList<quint64> stopped;
+        const auto workState=[&]{return QList<quint64>{owner->m_requestedRevision,owner->m_prepare->sequence(),owner->m_render->sequence(),owner->m_scopeJob->sequence(),owner->m_inputScopeJob->sequence(),owner->m_fullScopeJob->sequence(),owner->m_plotJob->sequence(),quint64(owner->m_exactTimer.isActive())+2*quint64(owner->m_plotTimer.isActive())};};
+        const auto completed=[&]{
+            if(terminal||!owner)return;
+            const bool ready=context.startsWith("prepare-")?!owner->m_preparing&&owner->m_prepareGeneration>generation
+                :context=="exact-request"?owner->m_scopesUpdating:owner->m_previewRevision>preview&&(context=="render-preview"||!owner->rendering());
+            if(!ready)return;
+            terminal=true;
+            if(closeOnly){closed=owner->prepareToClose();if(owner)stopped=workState();}
+            else owner.reset();
+        };
+        QMetaObject::Connection connection;
+        if(context=="prepare-geometry")connection=QObject::connect(owner.get(),&PhotoController::previewGeometryChanged,owner.get(),completed);
+        else if(context=="prepare-activity"||context=="render-activity")connection=QObject::connect(owner.get(),&PhotoController::activityChanged,owner.get(),completed);
+        else if(context=="render-preview")connection=QObject::connect(owner.get(),&PhotoController::previewUrlChanged,owner.get(),completed);
+        else if(context=="render-plot")connection=QObject::connect(owner.get(),&PhotoController::scopePlotChanged,owner.get(),completed);
+        else connection=QObject::connect(owner.get(),&PhotoController::scopesChanged,owner.get(),completed);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        if(context.startsWith("prepare-")){owner->m_viewport=QSize(177,123);owner->prepareCurrent();}
+        else if(context=="exact-request"){owner->m_exactScopes=true;owner->requestFullScopes();}
+        else owner->scheduleRender(false);
+        QTRY_VERIFY_WITH_TIMEOUT(terminal,15000);
+        if(closeOnly){
+            QVERIFY(closed);QVERIFY(owner&&alive);QVERIFY(owner->m_closing);
+            QTRY_VERIFY_WITH_TIMEOUT(!owner->m_prepare->busy()&&!owner->m_render->busy()&&!owner->m_scopeJob->busy()&&!owner->m_inputScopeJob->busy()&&!owner->m_fullScopeJob->busy()&&!owner->m_plotJob->busy(),5000);
+            QCOMPARE(workState(),stopped);
+        }else{QVERIFY(!owner);QVERIFY(!alive);}
+        QCOMPARE(fileHash(path),original);
+    }
     void asynchronousLinearScopeDeliveryMayDestroyOwner_data() {
         QTest::addColumn<QString>("domain");QTest::addColumn<bool>("plot");
         for(const auto &domain:QStringList{"source","working"}) {
