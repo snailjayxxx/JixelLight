@@ -175,6 +175,20 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
                     ComboBox {
+                        id: scopeDomainChoice
+                        objectName: "scopeDomainChoice"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                        model: ["source","working","display"]
+                        function domainText(index) { return [root.t("源 RGB", "Source RGB"),root.t("工作 RGB", "Working RGB"),root.t("显示编码", "Display")][index] || "" }
+                        displayText: domainText(currentIndex)
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: scopeDomainChoice.width; text: scopeDomainChoice.domainText(index)
+                            highlighted: scopeDomainChoice.highlightedIndex===index
+                        }
+                        currentIndex: model.indexOf(root.controller.scopeDomain)
+                        onActivated: root.controller.scopeDomain=model[currentIndex]
+                    }
+                    ComboBox {
                         id: scopeModeChoice
                         objectName: "scopeModeChoice"; Layout.fillWidth: true
                         model: ["histogram","waveform","parade","vectorscope"]
@@ -190,6 +204,11 @@ Rectangle {
                         currentIndex: model.indexOf(root.controller.scopeMode)
                         onActivated: root.controller.scopeMode=model[currentIndex]
                     }
+                }
+                Label {
+                    visible: root.controller.scopeDomain!=="display"; Layout.fillWidth: true
+                    text: root.controller.scopeDomain==="source" ? root.t("编辑前已解码 RGB · 线性 sRGB（非传感器数据）", "Decoded RGB before edits · linear sRGB (not sensor data)") : root.t("输出变换前 RGB · 线性 sRGB", "RGB before output transforms · linear sRGB")
+                    wrapMode: Text.WordWrap; color: "#738293"; font.pixelSize: 10
                 }
                 RowLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0; visible: root.controller.scopeMode==="histogram"
@@ -217,14 +236,14 @@ Rectangle {
                 }
                 Label {
                     visible: root.controller.scopeMode!=="histogram"; Layout.fillWidth: true
-                    text: root.controller.scopeMode==="vectorscope" ? root.t("sRGB 编码 · Cb/Cr · 100% 色标", "Encoded sRGB · Cb/Cr · 100% targets") : root.t("sRGB 编码 · 1024 级 · 水平位置", "Encoded sRGB · 1024 levels · horizontal position")
+                    text: root.controller.scopeDomain!=="display" ? (root.controller.scopeMode==="vectorscope" ? root.t("线性 Y / 色差 · 100% 色标", "Linear Y / color differences · 100% targets") : root.t("线性 sRGB · 1024 级 · 水平位置", "Linear sRGB · 1024 levels · horizontal position")) : root.controller.scopeMode==="vectorscope" ? root.t("sRGB 编码 · Cb/Cr · 100% 色标", "Encoded sRGB · Cb/Cr · 100% targets") : root.t("sRGB 编码 · 1024 级 · 水平位置", "Encoded sRGB · 1024 levels · horizontal position")
                     color: "#738293"; font.pixelSize: 10
                 }
                 RowLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
-                    Label { text: root.t("阴影裁切  ", "Shadows clipped  ") + root.controller.shadowClipPercent.toFixed(3) + "%"; color: root.controller.shadowClipPercent > 0.1 ? "#ffb066" : "#8b98a6"; font.pixelSize: 10 }
+                    Label { text: (root.controller.scopeDomain==="display" ? root.t("阴影裁切  ", "Shadows clipped  ") : root.t("RGB 全部 ≤0  ", "All RGB ≤0  ")) + root.controller.shadowClipPercent.toFixed(3) + "%"; color: root.controller.shadowClipPercent > 0.1 ? "#ffb066" : "#8b98a6"; font.pixelSize: 10 }
                     Item { Layout.fillWidth: true }
-                    Label { text: root.t("高光裁切  ", "Highlights  ") + root.controller.highlightClipPercent.toFixed(3) + "%"; color: root.controller.highlightClipPercent > 0.1 ? "#ff8e8e" : "#8b98a6"; font.pixelSize: 10 }
+                    Label { text: (root.controller.scopeDomain==="display" ? root.t("高光裁切  ", "Highlights  ") : root.t("RGB 任一 ≥1  ", "Any RGB ≥1  ")) + root.controller.highlightClipPercent.toFixed(3) + "%"; color: root.controller.highlightClipPercent > 0.1 ? "#ff8e8e" : "#8b98a6"; font.pixelSize: 10 }
                 }
 
         }

@@ -12,6 +12,7 @@
 #include <QRgba64>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 #include "app/PhotoController.h"
 #include "core/cache/AnalysisFrameCache.h"
 #include "core/cache/FullScopesCache.h"
@@ -73,6 +74,63 @@ QByteArray storedZipEntry(const QString &path,const QByteArray &entry) {
 class BrushScopeRoutingTests final:public QObject {
     Q_OBJECT
 private slots:
+    void domainSelectionKeepsPixelsHistoryAndRevisionsAndRefusesStaleDomains() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("domains.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));
+        QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&c.scopesPixelCount()>0,15000);
+        c.setExposure(1);c.finishInteraction();QTRY_VERIFY_WITH_TIMEOUT(!c.rendering()&&c.m_scopesRevision==c.m_requestedRevision&&c.scopesPixelCount()>0,15000);
+        QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        const auto original=fileHash(path);const auto state=c.currentState().toJson();const auto history=c.editHistory();const auto revision=c.m_requestedRevision,photo=c.m_photoEpoch,prepare=c.m_prepareGeneration;const auto frame=StageGraph::outputFingerprint(c.m_processedPreview);
+        QSignalSpy changed(&c,&PhotoController::scopeDomainChanged);QCOMPARE(c.scopeDomain(),QString("display"));c.setScopeDomain("Source");QCOMPARE(changed.count(),0);
+        std::thread foreign([&]{c.setScopeDomain("source");});foreign.join();QCOMPARE(changed.count(),0);QCOMPARE(c.scopeDomain(),QString("display"));
+        for(const auto domain:{AnalysisDomain::Working,AnalysisDomain::Source,AnalysisDomain::Display}) {
+            c.setScopeDomain(analysisDomainKey(domain));QCOMPARE(c.scopesPixelCount(),qulonglong(0));QVERIFY(!c.scopePlotCurrent());
+            QTRY_VERIFY_WITH_TIMEOUT(c.m_scopesDomain==domain&&c.scopesPixelCount()>0&&!c.m_inputScopeJob->busy(),15000);
+            const auto expected=domain==AnalysisDomain::Display?ScopesEngine::analyze(c.m_processedPreview):ScopesEngine::analyzeDomain(c.m_previewSource,c.gpuPlan(),domain);
+            QVERIFY(sameHistogram(c.m_scopes,expected));const auto current=c.m_scopes;
+            c.acceptScopes(revision,expected,1,"stale",domain==AnalysisDomain::Display?AnalysisDomain::Working:AnalysisDomain::Display);QVERIFY(sameHistogram(c.m_scopes,current));QCOMPARE(c.m_scopesRank,0);
+            if(domain!=AnalysisDomain::Display) {
+                std::array<quint32,HistogramCounts::GpuWords> words{};for(int i=0;i<4;++i)words[i*1024]=1;words[4098]=1;
+                const QByteArray packet(reinterpret_cast<const char *>(words.data()),sizeof(words));const bool enabled=c.m_gpuEnabled;c.m_gpuEnabled=true;c.gpuScopes(revision,packet,1);c.m_gpuEnabled=enabled;QVERIFY(sameHistogram(c.m_scopes,current));
+            }
+            for(const auto &mode:QStringList{"waveform","vectorscope"}) {c.setScopeMode(mode);QTRY_VERIFY_WITH_TIMEOUT(c.scopePlotCurrent(),15000);QCOMPARE(c.m_plotDomain,domain);QCOMPARE(c.scopePlotPixels(),c.scopesPixelCount());}
+            c.setScopeMode("histogram");QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.m_photoEpoch,photo);QCOMPARE(c.m_prepareGeneration,prepare);QCOMPARE(c.currentState().toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(StageGraph::outputFingerprint(c.m_processedPreview),frame);QCOMPARE(fileHash(path),original);
+        }
+        QCOMPARE(changed.count(),3);c.m_closing=true;c.setScopeDomain("source");QCOMPARE(changed.count(),3);QCOMPARE(c.scopeDomain(),QString("display"));c.m_closing=false;
+    }
+    void domainChangesCancelBlockedExactWorkWithoutPublishingOldCounts() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("blocked-domains.png");QVERIFY(sourceImage().scaled(321,197).save(path));
+        QSemaphore entered,release;ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        const auto revision=c.m_requestedRevision;const auto history=c.editHistory();auto cache=std::make_shared<FullScopesCache>();std::atomic_int calls{0};
+        const auto cleanup=qScopeGuard([&]{release.release();c.m_exactTimer.stop();c.m_plotTimer.stop();});
+        c.m_fullScopeJob=std::make_unique<LatestJob<ScopeRequest,ScopesResult>>([&](const ScopeRequest &r,const CancelToken &){if(calls.fetch_add(1)==0){entered.release();release.acquire();}return cache->analyze(r,{});},[&](const ScopeRequest &r,ScopesResult result){c.acceptScopes(r.revision,result,1,"Full-resolution statistics",r.domain);});
+        c.m_exactScopes=true;c.setScopeDomain("working");QTRY_VERIFY_WITH_TIMEOUT(entered.available()>0,5000);entered.acquire();QVERIFY(c.m_fullScopeJob->busy());
+        c.setScopeDomain("source");QCOMPARE(c.scopesPixelCount(),qulonglong(0));ScopesResult stale;stale.pixelCount=1;c.acceptScopes(revision,stale,1,"old working",AnalysisDomain::Working);QCOMPARE(c.scopesPixelCount(),qulonglong(0));
+        bool responsive=false;QTimer::singleShot(0,&c,[&]{responsive=true;});QTRY_VERIFY_WITH_TIMEOUT(responsive,1000);release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(!c.m_fullScopeJob->busy()&&c.scopesPixelCount()>0,15000);QCOMPARE(c.m_scopesDomain,AnalysisDomain::Source);QCOMPARE(c.m_scopesRank,1);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.editHistory(),history);
+        const auto corrected=c.previewGeometry().apply(c.m_fullSource);QVERIFY(sameHistogram(c.m_scopes,ScopesEngine::analyzeDomain(corrected,c.gpuPlan(true),AnalysisDomain::Source)));
+        c.setExactScopes(false);QTRY_VERIFY_WITH_TIMEOUT(c.m_scopesRank==0&&c.scopesPixelCount()>0,15000);QCOMPARE(c.m_scopesDomain,AnalysisDomain::Source);
+        c.m_scopePlot={QImage(3,3,QImage::Format_ARGB32),1,{}};c.m_plotRevision=revision;c.m_plotFull=false;c.m_plotDomain=AnalysisDomain::Working;QVERIFY(!c.scopePlotCurrent());
+    }
+    void domainSignalCanDestroyItsOwnerBeforeAnyNewWorkStarts() {
+        ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);
+        QObject::connect(owner,&PhotoController::scopeDomainChanged,owner,[&]{delete owner.data();});
+        owner->setScopeDomain("source");QVERIFY(owner.isNull());
+    }
+    void linearPreviewBudgetRefusalRetriesAndSwitchingClearsDeferredWork() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("budget-domains.png");QVERIFY(sourceImage().scaled(321,197).save(path));const auto original=fileHash(path);
+        auto budget=std::make_shared<BrushRenderBudget>(512LL*1024*1024);ProcessedImageProvider provider;PhotoController c(&provider,nullptr,budget);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        const auto saved=c.m_photos[c.m_currentIndex].state;const auto restore=qScopeGuard([&]{c.m_photos[c.m_currentIndex].state=saved;c.m_saveTimer.stop();c.m_saveMaxTimer.stop();});c.m_photos[c.m_currentIndex].state=painted();++c.m_requestedRevision;c.m_scopesRank=-1;
+        std::vector<std::unique_ptr<BrushAnalysisRequest>> held;QString error;BrushAdmissionFailure reason=BrushAdmissionFailure::None;
+        const auto fill=[&]{for(int i=0;i<64;++i){auto request=BrushAnalysisRequest::createPrepared(c.m_previewSource,c.gpuPlan(),BrushRenderRequest::Layout::Stripes128,{},&error,budget,&reason);if(!request)break;held.push_back(std::move(request));}};
+        fill();QVERIFY(!held.empty());QCOMPARE(reason,BrushAdmissionFailure::BudgetUnavailable);c.setScopeDomain("working");QTRY_VERIFY_WITH_TIMEOUT(c.m_deferredBudgetJobs[3].pending,5000);QCOMPARE(c.scopesPixelCount(),qulonglong(0));QVERIFY(c.scopesStatus().contains("memory")||c.scopesStatus().contains("内存"));
+        held.clear();c.retryBudgetJobs(true);QTRY_VERIFY_WITH_TIMEOUT(c.scopesPixelCount()>0&&!c.m_deferredBudgetJobs[3].pending,15000);QCOMPARE(c.m_scopesDomain,AnalysisDomain::Working);QCOMPARE(budget->snapshot().charged,qint64(0));
+        c.setScopeDomain("source");QTRY_VERIFY_WITH_TIMEOUT(c.scopesPixelCount()>0,15000);fill();c.setScopeDomain("working");
+        // The completed result cache may satisfy the same Working intent. Use
+        // a different exposure so this second request must be admitted again.
+        c.m_photos[c.m_currentIndex].state.exposure=.7;++c.m_requestedRevision;c.m_inputScopeSubmittedRevision=0;c.requestPreviewScopes();QTRY_VERIFY_WITH_TIMEOUT(c.m_deferredBudgetJobs[3].pending,5000);
+        c.setScopeDomain("source");QVERIFY(!c.m_deferredBudgetJobs[3].pending);QTRY_VERIFY_WITH_TIMEOUT(c.scopesPixelCount()>0,15000);QCOMPARE(c.m_scopesDomain,AnalysisDomain::Source);QCOMPARE(fileHash(path),original);held.clear();
+    }
     void controllerStartsPendingExactAfterFinalFrame_data() {
         QTest::addColumn<QString>("context");
         for (const auto *name : {"final-current", "stale-frame", "interactive-frame",

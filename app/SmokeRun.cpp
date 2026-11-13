@@ -4,6 +4,7 @@
 #include "diagnostics/PerformanceRecorder.h"
 #include "diagnostics/LoggingEngine.h"
 #include "diagnostics/ActionTrace.h"
+#include "core/pipeline/StageGraph.h"
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QQuickWindow>
@@ -14,6 +15,7 @@
 #include <QJsonArray>
 #include <QJSValue>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
@@ -660,6 +662,29 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto phaseMilestones=std::make_shared<QJsonArray>();
     auto cropTrace=std::make_shared<QJsonObject>();
     auto scopePlots=std::make_shared<QJsonObject>();
+    auto scopeDomains=std::make_shared<QJsonObject>();
+    const auto selectScopeDomain=[=](int index) {
+        auto *choice=visualChild(window->contentItem(),"scopeDomainChoice");
+        if(!clickItem(window,choice))return false;
+        const auto key=[=](int code){QKeyEvent down(QEvent::KeyPress,code,Qt::NoModifier),up(QEvent::KeyRelease,code,Qt::NoModifier);QCoreApplication::sendEvent(window,&down);QCoreApplication::sendEvent(window,&up);};
+        key(Qt::Key_Home);for(int i=0;i<index;++i)key(Qt::Key_Down);key(Qt::Key_Return);
+        return choice->property("currentIndex").toInt()==index;
+    };
+    const auto domainInvariant=[=] {
+        return QString::number(controller->renderRevision())==scopeDomains->value("revision").toString()
+            &&controller->gpuPlan().state.toJson()==scopeDomains->value("whole_develop").toObject()
+            &&historyCursor(controller)==scopeDomains->value("history_cursor").toInt()
+            &&StageGraph::outputFingerprint(controller->gpuSource())==scopeDomains->value("prepared_pixels").toObject();
+    };
+    const auto linearDomainExact=[=](AnalysisDomain domain) {
+        const auto source=controller->gpuSource();QString error;
+        const auto frame=ImagePipeline::analysisRegion(source,controller->gpuPlan(),source.rect(),domain,{},&error);
+        const auto expected=ScopesEngine::analyzeLinear(frame);
+        return expected.pixelCount&&controller->scopesPixelCount()==expected.pixelCount
+            &&controller->redHistogram()==expected.red&&controller->greenHistogram()==expected.green
+            &&controller->blueHistogram()==expected.blue&&controller->lumaHistogram()==expected.luma
+            &&controller->shadowClipPercent()==expected.shadowClipPercent&&controller->highlightClipPercent()==expected.highlightClipPercent;
+    };
     auto copyTrace=std::make_shared<QJsonObject>();
     auto transferTrace=std::make_shared<QJsonObject>();
     auto correctionTrace=std::make_shared<QJsonObject>();
@@ -1002,8 +1027,30 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             if (!screenshotPath.isEmpty()) saveScreenshot(screenshotPath+"."+mode+".png");
             if (state->phase==41) controller->setScopeMode("parade");
             else if (state->phase==42) controller->setScopeMode("vectorscope");
-            else controller->setScopeMode("histogram");
+            else {controller->setScopeMode("histogram");state->phase=440;return;}
             ++state->phase;
+        } else if(state->phase==440&&ready) {
+            scopeDomains->insert("revision",QString::number(controller->renderRevision()));
+            scopeDomains->insert("whole_develop",controller->gpuPlan().state.toJson());scopeDomains->insert("history_cursor",historyCursor(controller));
+            scopeDomains->insert("prepared_pixels",StageGraph::outputFingerprint(controller->gpuSource()));
+            controller->setExactScopes(false);
+            scopeDomains->insert("source_pointer",selectScopeDomain(0)&&controller->scopeDomain()=="source"&&controller->scopesPixelCount()==0);
+            state->phase=441;
+        } else if(state->phase==441&&ready&&controller->scopeDomain()=="source"&&controller->scopesPixelCount()>0) {
+            scopeDomains->insert("source_histograms_exact",linearDomainExact(AnalysisDomain::Source));scopeDomains->insert("source_invariants",domainInvariant());
+            controller->setScopeMode("waveform");state->phase=442;
+        } else if(state->phase==442&&ready&&controller->scopePlotCurrent()) {
+            scopeDomains->insert("source_plot",controller->scopePlotPixels()==controller->scopesPixelCount()&&!controller->scopePlotUrl().isEmpty());
+            if(!screenshotPath.isEmpty())saveScreenshot(screenshotPath+".source-domain.png");
+            scopeDomains->insert("working_pointer",selectScopeDomain(1)&&controller->scopeDomain()=="working"&&controller->scopesPixelCount()==0&&!controller->scopePlotCurrent());state->phase=443;
+        } else if(state->phase==443&&ready&&controller->scopeDomain()=="working"&&controller->scopesPixelCount()>0&&controller->scopePlotCurrent()) {
+            scopeDomains->insert("working_histograms_exact",linearDomainExact(AnalysisDomain::Working));scopeDomains->insert("working_invariants",domainInvariant());
+            scopeDomains->insert("working_plot",controller->scopePlotPixels()==controller->scopesPixelCount()&&!controller->scopePlotUrl().isEmpty());
+            if(!screenshotPath.isEmpty())saveScreenshot(screenshotPath+".working-domain.png");
+            controller->setScopeMode("histogram");scopeDomains->insert("display_pointer",selectScopeDomain(2)&&controller->scopeDomain()=="display"&&controller->scopesPixelCount()==0);state->phase=444;
+        } else if(state->phase==444&&ready&&controller->scopeDomain()=="display"&&controller->scopesPixelCount()>0) {
+            const auto source=controller->gpuSource();scopeDomains->insert("display_restored",domainInvariant()&&controller->scopesPixelCount()==quint64(source.width())*source.height());
+            controller->setExactScopes(true);state->phase=44;
         } else if (state->phase==44 && ready) {
             auto *menu=window->findChild<QObject *>(QStringLiteral("importActionsMenu"));
             copyTrace->insert("menu_opened",menu && QMetaObject::invokeMethod(menu,"open"));
@@ -1490,7 +1537,8 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         for(const auto *key:{"grid_pointer","grid_control_selection","grid_shift_selection","grid_single_selection","sidebar_pointer","filmstrip_pointer",
                             "other_intent_history_unchanged","copy_intent_history_unchanged","canonical_trace"})
             photoSelectionOk=photoSelectionOk&&photoSelectionTrace->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && (!gpuRequired || controller->gpuActive());
+        bool scopeDomainsOk=true;for(const auto *key:{"source_pointer","source_histograms_exact","source_invariants","source_plot","working_pointer","working_histograms_exact","working_invariants","working_plot","display_pointer","display_restored"})scopeDomainsOk=scopeDomainsOk&&scopeDomains->value(key).toBool();
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_library_visited"]=state->gridVisited;
@@ -1509,6 +1557,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         report["ui_interactive_crop_passed"]=state->interactiveCropPassed;
         report["ui_interactive_crop_trace"]=*cropTrace;
         report["ui_scope_plots"]=*scopePlots;
+        report["ui_scope_domains_passed"]=scopeDomainsOk;report["ui_scope_domains"]=*scopeDomains;
         report["ui_copy_import_passed"]=copyOk;
         report["ui_copy_import_trace"]=*copyTrace;
         report["ui_selective_sync_passed"]=transferOk;

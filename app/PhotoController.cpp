@@ -1433,7 +1433,7 @@ void PhotoController::selectPhoto(int index) {
     resetReference();
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
-    m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
     emit scopePlotChanged();
@@ -1482,7 +1482,7 @@ void PhotoController::applyCurrent() {
     ++m_requestedRevision;
     m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     m_scopesUpdating = true; m_scopesRank = -1;
-    m_scopeJob->cancel(); m_fullScopeJob->cancel();
+    m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_exactTimer.stop();
     m_interacting = true;
     m_refineTimer.start();
@@ -1573,7 +1573,7 @@ bool PhotoController::openProjectImpl(const QUrl &url) {
     ++m_requestedRevision;
     ++m_catalogEpoch; m_catalogDatesJob->cancel(); m_catalogDateTimer.stop();
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
-    m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
+    m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_saveTimer.stop(); m_saveMaxTimer.stop();
     m_dirtyEdits.clear(); m_dirtyHistories.clear();
@@ -1942,7 +1942,9 @@ PhotoController::BugSnapshot PhotoController::freezeBugSnapshot() const {
     snapshot.shadowClip = m_scopes.shadowClipPercent; snapshot.highlightClip = m_scopes.highlightClipPercent;
     snapshot.scopeContext = {{"mode", scopesStatus()}, {"pixel_count", qint64(m_scopes.pixelCount)},
         {"parameter_revision", qint64(snapshot.revision)}, {"statistics_revision", qint64(m_scopesRevision)},
-        {"is_current", m_scopesRevision == snapshot.revision}, {"viewport_preparing", m_preparing}};
+        {"is_current", m_scopesRevision == snapshot.revision&&m_scopesDomain==m_scopeDomain&&m_scopes.pixelCount>0}, {"viewport_preparing", m_preparing},
+        {"input_domain",scopeDomain()},{"statistics_domain",analysisDomainKey(m_scopesDomain)},
+        {"range_semantics",m_scopeDomain==AnalysisDomain::Display?"encoded near-black/near-white":"linear all RGB<=0 / any RGB>=1; not sensor clipping"}};
     auto &values = snapshot.performanceValues;
     values["move_import"] = QJsonObject::fromVariantMap(moveImportDiagnostics());
     values["soft_proof"] = QJsonObject::fromVariantMap(softProofDiagnostics());
@@ -2119,7 +2121,7 @@ PhotoController::~PhotoController() {
     m_catalogDateTimer.stop(); m_catalogDatesJob.reset();
     m_referenceJob.reset(); m_calibrationJob.reset();
     m_saveTimer.stop(); m_saveMaxTimer.stop(); m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
-    m_pointColorJob.reset(); m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_fullScopeJob.reset();
+    m_pointColorJob.reset(); m_loader.reset(); m_prefetch.reset(); m_prepare.reset(); m_render.reset(); m_scopeJob.reset(); m_inputScopeJob.reset(); m_fullScopeJob.reset();
     m_exportQueue.reset();
     flushEdits();
 }
@@ -2185,12 +2187,12 @@ void PhotoController::initializeJobs() {
     m_plotJob=std::make_unique<LatestJob<ScopePlotRequest,ScopePlotResult>>(
         [plotCache](const ScopePlotRequest &request,const CancelToken &cancel) { return plotCache->render(request,cancel); },
         [this](const ScopePlotRequest &request,ScopePlotResult result) {
-            if (m_closing || request.revision!=m_requestedRevision || request.mode!=m_scopeMode || request.fullResolution!=m_exactScopes || m_preparing) return;
+            if (m_closing || request.revision!=m_requestedRevision || request.mode!=m_scopeMode || request.fullResolution!=m_exactScopes || request.domain!=m_scopeDomain || m_preparing) return;
             if (result.image.isNull() && result.error.isEmpty()) result.error="Scope plot rendering failed";
             if(result.retryableBudget)deferBudgetJob(2,request.revision);
             else m_deferredBudgetJobs[2]={};
             if(result.image.isNull()&&!result.error.isEmpty()) {result.image=m_scopePlot.image;result.pixels=m_scopePlot.pixels;}
-            m_scopePlot=std::move(result); m_plotRevision=request.revision; m_plotFull=request.fullResolution; ++m_plotImageId;
+            m_scopePlot=std::move(result); m_plotRevision=request.revision; m_plotFull=request.fullResolution; m_plotDomain=request.domain; ++m_plotImageId;
             if (m_provider) m_provider->setScopePlot(m_scopePlot.image);
             emit scopePlotChanged();
         });
@@ -2284,7 +2286,8 @@ void PhotoController::initializeJobs() {
                     uiText("预览处理失败：","Preview processing failed: ")+result.error);
                 ScopesResult failed;failed.error=result.error.isEmpty()?QString("Preview rendering failed"):result.error;
                 if(result.retryableBudget)deferBudgetJob(0,request.revision);else m_deferredBudgetJobs[0]={};
-                failed.retryableBudget=result.retryableBudget;acceptScopes(request.revision,failed,0,{});
+                const QPointer<PhotoController> guard(this);failed.retryableBudget=result.retryableBudget;acceptScopes(request.revision,failed,0,{});
+                if(guard&&m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
                 return;
             }
             m_deferredBudgetJobs[0]={};auto image=std::move(result.image);
@@ -2294,7 +2297,7 @@ void PhotoController::initializeJobs() {
             emit previewUrlChanged();
             completeFrame(request.revision);
             // Publishing pixels never waits for histogram computation.
-            m_scopeJob->submit({image, request.plan, request.revision, false});
+            if(m_scopeDomain==AnalysisDomain::Display)m_scopeJob->submit({image, request.plan, request.revision, false});
         });
     m_scopeJob = std::make_unique<LatestJob<ScopeRequest, ScopesResult>>(
         [](const ScopeRequest &request, const CancelToken &cancel) { return ScopesEngine::analyze(request.image, 1024, cancel); },
@@ -2302,13 +2305,28 @@ void PhotoController::initializeJobs() {
             acceptScopes(request.revision, scopes, 0, m_viewportOnly ? uiText(QStringLiteral("视区预览统计"), QStringLiteral("Viewport preview")) : uiText(QStringLiteral("预览统计"), QStringLiteral("Preview statistics")));
         });
     const auto fullScopesCache=m_fullScopesCache;
+    m_inputScopeJob=std::make_unique<LatestJob<ScopeRequest,ScopesResult>>(
+        [fullScopesCache,renderCache](const ScopeRequest &request,const CancelToken &cancel) {
+            try {
+                if(request.domain!=AnalysisDomain::Display)return fullScopesCache->analyze(request,cancel);
+                QString error;BrushAdmissionFailure reason=BrushAdmissionFailure::None;
+                const auto image=renderCache->render(request.image,request.plan,cancel,&error,&reason);
+                if(!image.isNull())return ScopesEngine::analyze(image,1024,cancel);
+                ScopesResult failed;failed.error=error.isEmpty()?QString("Preview statistics rendering failed"):error;
+                failed.retryableBudget=reason==BrushAdmissionFailure::BudgetUnavailable;return failed;
+            }catch(...){ScopesResult failed;failed.error="Preview statistics failed";return failed;}
+        },[this](const ScopeRequest &request,ScopesResult result) {
+            if(m_closing||request.revision!=m_requestedRevision||request.domain!=m_scopeDomain||m_exactScopes||m_preparing)return;
+            if(result.retryableBudget){m_inputScopeSubmittedRevision=0;deferBudgetJob(3,request.revision);}else m_deferredBudgetJobs[3]={};
+            acceptScopes(request.revision,result,0,m_viewportOnly?uiText("视区预览统计","Viewport preview"):uiText("预览统计","Preview statistics"),request.domain);
+        });
     m_fullScopeJob = std::make_unique<LatestJob<ScopeRequest, ScopesResult>>(
         [fullScopesCache](const ScopeRequest &request, const CancelToken &cancel) {
             try { return fullScopesCache->analyze(request, cancel); }
             catch (...) { return ScopesResult{}; }
         }, [this](const ScopeRequest &request, ScopesResult scopes) {
             if(!scopes.pixelCount&&scopes.error.isEmpty())scopes.error="Full-resolution statistics failed";
-            acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")));
+            acceptScopes(request.revision, scopes, 1, uiText(QStringLiteral("全分辨率统计"), QStringLiteral("Full-resolution statistics")),request.domain);
         });
     for (QTimer *timer : {&m_saveTimer, &m_saveMaxTimer, &m_refineTimer, &m_exactTimer, &m_prefetchTimer}) timer->setSingleShot(true);
     m_saveTimer.setInterval(300); m_saveMaxTimer.setInterval(1000);
@@ -2358,7 +2376,7 @@ void PhotoController::acceptSource(quint64 photo, SourceData data) {
             m_photos[m_currentIndex].available=false;
             ++m_photoEpoch; ++m_requestedRevision;
             m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
-            m_scopeJob->cancel(); m_fullScopeJob->cancel(); m_plotJob->cancel();
+            m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_plotJob->cancel();
             m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop(); m_plotTimer.stop();
             m_fullSource={};m_loadedPreview={};m_previewSource={};m_processedPreview={};m_gpuSource={};m_fastSource={};
             m_scopes={};m_scopesLabel.clear();m_scopePlot={};m_preparing=false;m_gpuActive=false;m_sourceIsFull=false;m_currentMetadata.clear();
@@ -2407,7 +2425,7 @@ void PhotoController::prepareCurrent() {
     m_preparing = true;
     m_plotTimer.stop(); m_plotJob->cancel(); m_plotSubmittedRevision=0; emit scopePlotChanged();
     ++m_requestedRevision;
-    m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
+    m_render->cancel(); m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     ++m_prepareGeneration;
     m_preparedGeometry = previewGeometry().toJson();
@@ -2445,6 +2463,7 @@ void PhotoController::finishInteraction() {
     }
     if (m_exactScopes && !m_fullSource.isNull()) m_exactTimer.start();
     // A GPU frame may already have finished before the refinement timer.
+    if(m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
     // Notify availability even when no new render changes the busy flag.
     if(wasInteracting)emit activityChanged();
 }
@@ -2453,6 +2472,7 @@ void PhotoController::completeFrame(quint64 revision) {
     if (revision != m_requestedRevision) return;
     if (m_renderClock.isValid()) PerformanceRecorder::sample("request_to_result_ms", m_renderClock.nsecsElapsed()/1e6, {{"backend", processingBackend()}, {"revision", qint64(revision)}});
     setBusy(false);
+    if(m_scopeDomain!=AnalysisDomain::Display&&!m_exactScopes)requestPreviewScopes();
     // The final current preview has completed. Start its pending exact
     // statistics now; interactive frames keep their ordinary debounce.
     if (!m_preparing && !m_interacting && m_exactScopes && m_exactTimer.isActive()) {
@@ -2478,7 +2498,7 @@ void PhotoController::setViewport(double width, double height, double dpr, doubl
     m_viewport = size; m_devicePixelRatio = dpr; m_zoom = zoom; m_centerX = centerX; m_centerY = centerY;
     // Invalidate old viewport results immediately, before preparation finishes.
     ++m_requestedRevision;
-    m_render->cancel(); m_scopeJob->cancel(); m_fullScopeJob->cancel();
+    m_render->cancel(); m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel();
     m_scopesUpdating = true; m_scopesRank = -1;
     prepareCurrent();
     emit scopesChanged();
@@ -2555,12 +2575,12 @@ void PhotoController::gpuFailed(const QString &message) {
     scheduleRender(false);
 }
 void PhotoController::gpuScopes(quint64 revision, const QByteArray &counts, quint64 pixels) {
-    if (!m_gpuEnabled || revision != m_requestedRevision) return;
+    if (!m_gpuEnabled || revision != m_requestedRevision || m_scopeDomain!=AnalysisDomain::Display) return;
     const auto scopes = ScopesEngine::fromGpu(counts, pixels);
     acceptScopes(revision, scopes, 0, m_viewportOnly ? uiText(QStringLiteral("GPU 视区预览"), QStringLiteral("GPU viewport preview")) : uiText(QStringLiteral("GPU 预览统计"), QStringLiteral("GPU preview statistics")));
 }
-void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label) {
-    if (revision != m_requestedRevision) return;
+void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes, int rank, const QString &label,AnalysisDomain domain) {
+    if (m_closing || revision != m_requestedRevision || domain!=m_scopeDomain) return;
     if(!scopes.pixelCount) {
         if(scopes.error.isEmpty())return;
         if(m_scopesErrorRevision!=revision||rank>=m_scopesErrorRank) {
@@ -2575,7 +2595,7 @@ void PhotoController::acceptScopes(quint64 revision, const ScopesResult &scopes,
     const bool keepError=m_scopesErrorRevision==revision&&!m_scopesError.isEmpty()&&rank<m_scopesErrorRank;
     if(!keepError){m_scopesError.clear();m_scopesErrorRank=-1;}
     if(rank==1)m_deferredBudgetJobs[1]={};
-    m_scopes = scopes; m_scopesRevision = revision; m_scopesRank = rank; m_scopesLabel = label;
+    m_scopes = scopes; m_scopesRevision = revision; m_scopesRank = rank; m_scopesLabel = label; m_scopesDomain=domain;
     m_scopesUpdating = m_exactScopes && rank < 1&&!keepError;
     emit scopesChanged();
 }
@@ -2595,17 +2615,19 @@ QString PhotoController::scopesStatus() const {
         return m_scopesLabel;
     }();
     if(m_scopesErrorRevision==m_requestedRevision&&!m_scopesError.isEmpty())
-        return m_deferredBudgetJobs[std::size_t(m_scopesErrorRank==1?1:0)].pending
+        return (m_deferredBudgetJobs[std::size_t(m_scopesErrorRank==1?1:0)].pending||(m_scopesErrorRank==0&&m_deferredBudgetJobs[3].pending))
             ?uiText("统计暂不可用：图像内存正被其他任务使用。","Statistics unavailable: image memory is busy.")
             :uiText("统计计算失败：","Statistics failed: ")+m_scopesError;
     if (m_previewSource.isNull()) return label.isEmpty() ? uiText(QStringLiteral("尚无统计"), QStringLiteral("No statistics")) : label;
-    if (m_scopesRevision != m_requestedRevision) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
-    return label + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
+    if (m_scopesRevision != m_requestedRevision || m_scopesDomain!=m_scopeDomain || !m_scopes.pixelCount) return uiText(QStringLiteral("更新中（旧统计）"), QStringLiteral("Updating (previous statistics)"));
+    const auto domainLabel=m_scopeDomain==AnalysisDomain::Display?QString{}:m_scopeDomain==AnalysisDomain::Source?uiText(" · 源 RGB · 线性 sRGB · CPU"," · Source RGB · linear sRGB · CPU"):uiText(" · 工作 RGB · 线性 sRGB · CPU"," · Working RGB · linear sRGB · CPU");
+    return label + domainLabel + (m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString())
         + (m_scopesUpdating ? uiText(QStringLiteral(" · 全分辨率更新中"), QStringLiteral(" · full resolution updating")) : QString());
 }
 void PhotoController::setExactScopes(bool enabled) {
     if (m_exactScopes == enabled) return;
     m_exactScopes = enabled;
+    m_inputScopeJob->cancel();m_inputScopeSubmittedRevision=0;m_deferredBudgetJobs[3]={};
     m_deferredBudgetJobs[1]={};m_deferredBudgetJobs[2]={};
     if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
     m_plotJob->cancel(); m_scopePlot={}; m_plotSubmittedRevision=0; emit scopePlotChanged();
@@ -2614,6 +2636,13 @@ void PhotoController::setExactScopes(bool enabled) {
     m_scopesUpdating = enabled && m_scopesRank < 1;
     emit scopesChanged();
     if (enabled) requestFullScopes();
+    else if(m_scopeDomain!=AnalysisDomain::Display){m_scopesRank=-1;requestPreviewScopes();}
+}
+void PhotoController::requestPreviewScopes() {
+    if(m_closing||m_exactScopes||m_preparing||m_interacting||m_rendering||m_previewSource.isNull())return;
+    if(m_inputScopeSubmittedRevision==m_requestedRevision&&m_inputScopeSubmittedDomain==m_scopeDomain)return;
+    m_inputScopeSubmittedRevision=m_requestedRevision;m_inputScopeSubmittedDomain=m_scopeDomain;
+    m_inputScopeJob->submit({m_previewSource,gpuPlan(),m_requestedRevision,false,{},m_scopeDomain});
 }
 void PhotoController::requestFullScopes() {
     if (!m_exactScopes || m_fullSource.isNull() || m_interacting) return;
@@ -2625,8 +2654,8 @@ void PhotoController::requestFullScopes() {
         return;
     }
     if(m_scopesErrorRank==1){m_scopesError.clear();m_scopesErrorRank=-1;}
-    m_scopesUpdating=true;emit scopesChanged();
-    m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry()});
+    m_scopesUpdating=true;const QPointer<PhotoController> guard(this);emit scopesChanged();if(!guard)return;
+    m_fullScopeJob->submit({m_fullSource, gpuPlan(true), m_requestedRevision, true, previewGeometry(),m_scopeDomain});
 }
 void PhotoController::deferBudgetJob(int job,quint64 revision) {
     auto &state=m_deferredBudgetJobs[std::size_t(job)];
@@ -2637,7 +2666,7 @@ void PhotoController::deferBudgetJob(int job,quint64 revision) {
 void PhotoController::retryBudgetJobs(bool afterExport) {
     m_budgetRetryTimer.stop();if(m_closing)return;
     bool later=false;
-    for(int i=0;i<3;++i) {
+    for(int i=0;i<int(m_deferredBudgetJobs.size());++i) {
         auto &state=m_deferredBudgetJobs[std::size_t(i)];
         if(!state.pending)continue;
         if(state.revision!=m_requestedRevision){state={};continue;}
@@ -2647,7 +2676,8 @@ void PhotoController::retryBudgetJobs(bool afterExport) {
         state.pending=false;++state.attempts;
         if(i==0){if(!m_gpuActive&&!m_previewSource.isNull())scheduleRender(false);}
         else if(i==1){if(m_exactScopes)requestFullScopes();}
-        else if(m_scopeMode!="histogram")requestScopePlot();
+        else if(i==2){if(m_scopeMode!="histogram")requestScopePlot();}
+        else if(!m_exactScopes){m_inputScopeSubmittedRevision=0;requestPreviewScopes();}
     }
     if(later)m_budgetRetryTimer.start();
 }
@@ -2656,14 +2686,14 @@ QString PhotoController::scopePlotUrl() const {
 }
 QString PhotoController::scopePlotStatus() const {
     if (!hasImage()) return uiText("尚无统计", "No statistics");
-    if(m_scopePlot.retryableBudget&&m_plotRevision==m_requestedRevision&&m_plotFull==m_exactScopes)
+    if(m_scopePlot.retryableBudget&&m_plotRevision==m_requestedRevision&&m_plotFull==m_exactScopes&&m_plotDomain==m_scopeDomain)
         return uiText("示波器暂不可用：图像内存正被其他任务使用。","Scope unavailable: image memory is busy.");
-    if (!m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && m_plotFull==m_exactScopes)
+    if (!m_scopePlot.error.isEmpty() && m_plotRevision==m_requestedRevision && m_plotFull==m_exactScopes&&m_plotDomain==m_scopeDomain)
         return uiText("CPU 示波器失败：", "CPU scope failed: ")+m_scopePlot.error;
     if (m_scopeMode=="histogram") return {};
     if (!scopePlotCurrent()) return uiText("CPU 示波器更新中（旧结果）", "CPU scope updating (previous result)");
     return uiText("CPU · ","CPU · ")+(m_plotFull ? uiText("全分辨率", "Full resolution") : uiText("当前视区预览", "Current viewport preview"))
-        +QString(" · %1 px").arg(m_scopePlot.pixels)+(m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString());
+        +QString(" · %1 px").arg(m_scopePlot.pixels)+(m_scopeDomain==AnalysisDomain::Display?QString{}:uiText(" · 线性 sRGB"," · linear sRGB"))+(m_cropEditing ? uiText(" · 裁剪编辑全图", " · uncropped crop preview") : QString());
 }
 void PhotoController::setScopeMode(const QString &mode) {
     if (!QStringList{"histogram","waveform","parade","vectorscope"}.contains(mode) || mode==m_scopeMode) return;
@@ -2672,6 +2702,25 @@ void PhotoController::setScopeMode(const QString &mode) {
     if (m_provider) m_provider->setScopePlot({});
     emit scopePlotChanged();
     if (mode!="histogram") m_plotTimer.start();
+}
+void PhotoController::setScopeDomain(const QString &value) {
+    if(QThread::currentThread()!=thread()||m_closing)return;
+    AnalysisDomain domain;
+    if(!decodeAnalysisDomain(value,&domain)||domain==m_scopeDomain)return;
+    m_scopeJob->cancel(); m_inputScopeJob->cancel();m_fullScopeJob->cancel();m_plotJob->cancel();
+    m_exactTimer.stop();m_plotTimer.stop();m_inputScopeSubmittedRevision=0;m_plotSubmittedRevision=0;
+    for(int i=1;i<int(m_deferredBudgetJobs.size());++i)m_deferredBudgetJobs[std::size_t(i)]={};
+    m_scopeDomain=domain;m_scopesDomain=domain;m_scopes={};m_scopesRevision=0;m_scopesRank=-1;
+    m_scopesLabel.clear();m_scopesError.clear();m_scopesErrorRank=-1;m_scopesErrorRevision=0;m_scopesUpdating=!m_previewSource.isNull();
+    m_scopePlot={};m_plotDomain=domain;m_plotRevision=0;++m_plotImageId;
+    if(m_provider)m_provider->setScopePlot({});
+    const QPointer<PhotoController> guard(this);
+    emit scopeDomainChanged();if(!guard)return;
+    emit scopesChanged();if(!guard)return;
+    emit scopePlotChanged();if(!guard)return;
+    if(m_exactScopes)requestFullScopes();else requestPreviewScopes();
+    if(!guard)return;
+    if(m_scopeMode!="histogram")m_plotTimer.start();
 }
 void PhotoController::requestScopePlot() {
     if (m_closing || m_scopeMode=="histogram" || !hasImage() || m_preparing || m_rendering) return;
@@ -2690,6 +2739,7 @@ void PhotoController::requestScopePlot() {
     if (request.source.isNull()) return;
     request.geometry=m_exactScopes ? previewGeometry() : GeometryState{};
     request.plan=gpuPlan(m_exactScopes); request.mode=m_scopeMode; request.revision=m_requestedRevision; request.fullResolution=m_exactScopes;
+    request.domain=m_scopeDomain;
     m_plotSubmittedRevision=request.revision;
     m_plotJob->submit(std::move(request));
 }
