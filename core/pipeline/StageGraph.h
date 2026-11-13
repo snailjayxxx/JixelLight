@@ -242,6 +242,10 @@ struct StageGraph {
         return digest(bytes);
     }
     static QString fullScopesKey(const ScopeRequest &request) {
+        if(request.domain!=AnalysisDomain::Display) {
+            const auto input=linearAnalysisKey(request.image,request.plan,request.geometry,request.domain);
+            return input.isEmpty()?QString{}:digest(QByteArray("full-linear-scopes-v1:1024:rgb-y:range0-1:")+input.toUtf8()+QByteArray::number(request.fullResolution));
+        }
         QByteArray bytes;
         QDataStream stream(&bytes,QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
         stream << QStringLiteral("full-scopes-v1:1024:rgb-luma:pre-monitor")
@@ -250,9 +254,33 @@ struct StageGraph {
         return digest(bytes);
     }
     static QString scopePlotsKey(const ScopePlotRequest &request) {
+        if(request.domain!=AnalysisDomain::Display) {
+            const auto input=linearAnalysisKey(request.source,request.plan,request.geometry,request.domain);
+            return input.isEmpty()?QString{}:digest(QByteArray("linear-scope-plots-v1:wave256x1024:parade768x1024:chroma512:")+input.toUtf8()+QByteArray::number(request.fullResolution));
+        }
         QByteArray bytes; QDataStream stream(&bytes,QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_8);
         stream << QStringLiteral("scope-plots-v1:wave256x1024:parade768x1024:chroma512x512:pre-monitor")
             << renderKey(request.source,request.plan) << QJsonDocument(request.geometry.toJson()).toJson(QJsonDocument::Compact) << request.fullResolution;
         return digest(bytes); // Mode selects ink from the same completed batch; revisions are delivery-only.
+    }
+    static QString linearAnalysisKey(const QImage &source,const ProcessingPlan &plan,const GeometryState &geometry,AnalysisDomain domain) {
+        if(source.isNull()||(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)
+            ||!GeometryState::validJson(geometry.toJson()))return {};
+        QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);stream.setVersion(QDataStream::Qt_6_8);
+        stream<<QStringLiteral("linear-analysis-v1:RGBA32FPx4:srgb-d65:pre-monitor")
+              <<QString::fromLatin1(ProcessingPlan::EngineVersion)<<analysisDomainKey(domain)
+              <<source.cacheKey()<<source.size()<<int(source.format())<<digest(source.colorSpace().iccProfile())
+              <<QJsonDocument(geometry.toJson()).toJson(QJsonDocument::Compact)<<int(plan.encoding);
+        if(domain==AnalysisDomain::Working) {
+            const auto rendered=renderKey(source,plan);if(rendered.isEmpty())return {};
+            stream<<rendered;
+        } else {
+            // Source is decoded RGB before edits. Only the actual input/primary
+            // matrices matter; exposure, brushes, output curves and LUTs do not.
+            for(int first:{ProcessingPlan::Input0,ProcessingPlan::Working0})for(int i=0;i<3;++i) {
+                const auto row=plan.data[std::size_t(first+i)];stream<<row.x<<row.y<<row.z<<row.w;
+            }
+        }
+        return digest(bytes);
     }
 };

@@ -66,6 +66,27 @@ ScopesResult ScopesEngine::analyzeWorking(BrushAnalysisRequest &request,const Ca
     if(complete&&!cancelled(token)&&total.pixels==quint64(request.size().width())*request.size().height())return result(total);
     ScopesResult failed;failed.error=error&&!error->isEmpty()?*error:QString("Working analysis did not complete");return failed;
 }
+ScopesResult ScopesEngine::analyzeDomain(const QImage &source,const ProcessingPlan &requestedPlan,AnalysisDomain domain,const CancelToken &token) {
+    if(domain==AnalysisDomain::Display)return analyzeFull(source,requestedPlan,token);
+    const auto fail=[](const QString &message){ScopesResult result;result.error=message;return result;};
+    if(domain!=AnalysisDomain::Source&&domain!=AnalysisDomain::Working)return fail("Invalid analysis domain");
+    if(source.isNull()||cancelled(token))return {};
+    auto plan=requestedPlan;
+    if(domain==AnalysisDomain::Working) {
+        if(BrushMaskTileRaster::anyEnabled(plan.state.brushMasks))return fail("Working brush statistics require float-output admission");
+        if(!ImagePipeline::resolveDehazeAirlight(source,plan,token))return fail("Analysis airlight resolution failed");
+    }
+    HistogramCounts total;
+    for(int y=0;y<source.height();y+=128) {
+        if(cancelled(token))return {};
+        QString error;const auto strip=ImagePipeline::analysisRegion(source,plan,{0,y,source.width(),std::min(128,source.height()-y)},domain,token,&error);
+        HistogramCounts part;
+        if(!countLinearFrame(strip,&part,token))return cancelled(token)?ScopesResult{}:fail(error.isEmpty()?QString("Linear histogram rendering failed"):error);
+        total.add(part);
+    }
+    if(cancelled(token)||total.pixels!=quint64(source.width())*source.height())return {};
+    return result(total);
+}
 ScopesResult ScopesEngine::result(const HistogramCounts &counts, int bins) {
     ScopesResult result;
     bins = bins <= 256 ? 256 : bins <= 512 ? 512 : 1024;

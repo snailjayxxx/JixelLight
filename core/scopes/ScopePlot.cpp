@@ -2,6 +2,7 @@
 #include "core/pipeline/BrushRenderRequest.h"
 #include "diagnostics/PerformanceRecorder.h"
 #include <QRgba64>
+#include <QColorSpace>
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -38,6 +39,36 @@ bool ScopePlotCounts::add(const QImage &encoded, const CancelToken &cancel) {
         }
     }
     return true;
+}
+bool ScopePlotCounts::addLinear(const QImage &source,const CancelToken &cancel) {
+    const auto fail=[&]{bins.fill(0);pixels=0;return false;};
+    if(bins.isEmpty()||source.isNull()||cancelled(cancel)||source.format()!=QImage::Format_RGBA32FPx4
+        ||source.colorSpace()!=QColorSpace(QColorSpace::SRgbLinear))return fail();
+    const auto level=[](double v){return std::min(Levels-1,int(std::clamp(v,0.,1.)*Levels));};
+    for(int y=0;y<source.height();++y) {
+        if(cancelled(cancel))return fail();
+        const auto *row=reinterpret_cast<const float *>(source.constScanLine(y));
+        for(int x=0;x<source.width();++x) {
+            const auto *p=row+qsizetype(4)*x;
+            if(!std::isfinite(p[0])||!std::isfinite(p[1])||!std::isfinite(p[2])||!std::isfinite(p[3])||p[3]<0||p[3]>1)return fail();
+            const double r=p[0],g=p[1],b=p[2],luma=(2126*r+7152*g+722*b)/10000;
+            const int column=source.width()>1?int(qint64(x)*(Columns-1)/(source.width()-1)):Columns/2;
+            if(mode=="waveform")++bins[(Levels-1-level(luma))*width+column];
+            else if(mode=="parade") {
+                ++bins[(Levels-1-level(r))*width+column];
+                ++bins[(Levels-1-level(g))*width+Columns+column];
+                ++bins[(Levels-1-level(b))*width+2*Columns+column];
+            } else {
+                // Linear Y/color-difference coordinates. Preserve signed/HDR
+                // RGB through the calculation, clamping only the graph index.
+                const int cx=int(std::lround(std::clamp(.5+(b-luma)/1.8556,0.,1.)*(ChromaSize-1)));
+                const int cy=int(std::lround(std::clamp(.5-(r-luma)/1.5748,0.,1.)*(ChromaSize-1)));
+                ++bins[cy*width+cx];
+            }
+            ++pixels;
+        }
+    }
+    return cancelled(cancel)?fail():true;
 }
 QImage ScopePlotCounts::image() const {
     if (bins.isEmpty() || !pixels) return {};
@@ -174,17 +205,22 @@ ScopePlotResult renderScopePlot(const ScopePlotRequest &request, const CancelTok
     try {
         ScopePlotCounts counts(request.mode);
         if (request.source.isNull() || counts.bins.isEmpty() || cancelled(cancel)) return result;
+        if(analysisDomainKey(request.domain).isEmpty()){result.error="Invalid analysis domain";return result;}
         PerformanceSpan timing("cpu_scope_plot",{{"mode",request.mode},{"full",request.fullResolution}});
         const auto source=request.geometry.apply(request.source,cancel);
         if (source.isNull() || cancelled(cancel)) return result;
-        if (!ImagePipeline::preflightTiledResearchRequest(source.size(),request.plan,128,cancel,&result.error))
+        auto plan=request.plan;
+        if(request.domain==AnalysisDomain::Working&&!ImagePipeline::resolveDehazeAirlight(source,plan,cancel)){result.error="Analysis airlight resolution failed";return result;}
+        if (request.domain==AnalysisDomain::Display&&!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,cancel,&result.error))
             return cancelled(cancel) ? ScopePlotResult{} : result;
         // The same processRegion path and halos as exact histogram/JPEG; bounded
         // rendered rows instead of an additional full-size output allocation.
         for (int y=0;y<source.height();y+=128) {
             if (cancelled(cancel)) return {};
-            const auto region=ImagePipeline::processRegion(source,request.plan,{0,y,source.width(),std::min(128,source.height()-y)},cancel);
-            if (!counts.add(region,cancel)) { result.error="Scope plot rendering failed"; return result; }
+            const auto roi=QRect(0,y,source.width(),std::min(128,source.height()-y));
+            const auto region=request.domain==AnalysisDomain::Display?ImagePipeline::processRegion(source,plan,roi,cancel)
+                :ImagePipeline::analysisRegion(source,plan,roi,request.domain,cancel,&result.error);
+            if (!(request.domain==AnalysisDomain::Display?counts.add(region,cancel):counts.addLinear(region,cancel))) { if(result.error.isEmpty())result.error="Scope plot rendering failed"; return cancelled(cancel)?ScopePlotResult{}:result; }
         }
         if (cancelled(cancel)) return {};
         result.image=counts.image(); result.pixels=counts.pixels;
@@ -201,18 +237,23 @@ std::array<ScopePlotResult,3> renderScopePlots(const ScopePlotRequest &request,c
     };
     try {
         if (request.source.isNull() || cancelled(cancel)) return {};
+        if(analysisDomainKey(request.domain).isEmpty())return fail("Invalid analysis domain");
         PerformanceSpan timing("cpu_scope_plots_shared",{{"full",request.fullResolution},{"modes",3}});
         std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
         const auto source=request.geometry.apply(request.source,cancel);
         if (source.isNull() || cancelled(cancel)) return {};
         QString preflightError;
-        if (!ImagePipeline::preflightTiledResearchRequest(source.size(),request.plan,128,cancel,&preflightError))
+        auto plan=request.plan;
+        if(request.domain==AnalysisDomain::Working&&!ImagePipeline::resolveDehazeAirlight(source,plan,cancel))return fail("Analysis airlight resolution failed");
+        if (request.domain==AnalysisDomain::Display&&!ImagePipeline::preflightTiledResearchRequest(source.size(),plan,128,cancel,&preflightError))
             return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(preflightError);
         for (int y=0;y<source.height();y+=128) {
             if (cancelled(cancel)) return {};
-            const auto tile=ImagePipeline::processRegion(source,request.plan,{0,y,source.width(),std::min(128,source.height()-y)},cancel);
-            for (auto &count : counts) if (!count.add(tile,cancel))
-                return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail("Scope plot rendering failed");
+            const auto roi=QRect(0,y,source.width(),std::min(128,source.height()-y));
+            const auto tile=request.domain==AnalysisDomain::Display?ImagePipeline::processRegion(source,plan,roi,cancel)
+                :ImagePipeline::analysisRegion(source,plan,roi,request.domain,cancel,&preflightError);
+            for (auto &count : counts) if (!(request.domain==AnalysisDomain::Display?count.add(tile,cancel):count.addLinear(tile,cancel)))
+                return cancelled(cancel) ? std::array<ScopePlotResult,3>{} : fail(preflightError.isEmpty()?QString("Scope plot rendering failed"):preflightError);
             PerformanceRecorder::count("scope_plot_shared_tiles");
         }
         for (int i=0;i<3;++i) {
@@ -256,5 +297,39 @@ std::array<ScopePlotResult,3> renderScopePlots(BrushRenderRequest &request,const
         }
         PerformanceRecorder::count("scope_plot_shared_passes");
     }catch(...){return cancelled(cancel)?std::array<ScopePlotResult,3>{}:failed("Admitted scope plots failed");}
+    return results;
+}
+ScopePlotResult renderScopePlot(BrushAnalysisRequest &request,const QString &mode,const CancelToken &cancel) {
+    ScopePlotResult result;
+    try {
+        ScopePlotCounts counts(mode);
+        if(counts.bins.isEmpty()){result.error="Unknown scope plot mode";return result;}
+        if(!request.visitStrips([&](const BrushImageLease &lease,int){return counts.addLinear(lease.image(),cancel);},cancel,&result.error))
+            return cancelled(cancel)?ScopePlotResult{}:result;
+        if(cancelled(cancel))return {};
+        if(counts.pixels!=quint64(request.size().width())*request.size().height()){result.error="Incomplete working scope plot";return result;}
+        result={counts.image(),counts.pixels,{}};
+        if(result.image.isNull())result.error="Working scope plot allocation failed";
+    }catch(...){result={};result.error="Admitted working scope plot failed";}
+    return result;
+}
+std::array<ScopePlotResult,3> renderScopePlots(BrushAnalysisRequest &request,const CancelToken &cancel) {
+    std::array<ScopePlotResult,3> results;
+    const auto fail=[&](const QString &error){for(auto &r:results)r={{},0,error};return results;};
+    try {
+        std::array<ScopePlotCounts,3> counts{ScopePlotCounts("waveform"),ScopePlotCounts("parade"),ScopePlotCounts("vectorscope")};
+        QString error;
+        if(!request.visitStrips([&](const BrushImageLease &lease,int){
+            for(auto &count:counts)if(!count.addLinear(lease.image(),cancel))return false;
+            return true;
+        },cancel,&error))return cancelled(cancel)?std::array<ScopePlotResult,3>{}:fail(error.isEmpty()?QString("Working scope plot rendering failed"):error);
+        for(int i=0;i<3;++i) {
+            if(cancelled(cancel))return {};
+            if(counts[i].pixels!=quint64(request.size().width())*request.size().height())return fail("Incomplete working scope plots");
+            results[i]={counts[i].image(),counts[i].pixels,{}};
+            if(results[i].image.isNull())return fail("Working scope plot allocation failed");
+        }
+        PerformanceRecorder::count("scope_plot_working_shared_passes");
+    }catch(...){return cancelled(cancel)?std::array<ScopePlotResult,3>{}:fail("Admitted working scope plots failed");}
     return results;
 }

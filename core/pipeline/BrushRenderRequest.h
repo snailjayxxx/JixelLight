@@ -109,6 +109,8 @@ private:
         const ProcessingPlan *expectedPlan,BrushAdmissionFailure *failure,bool workingAnalysis=false);
     static std::unique_ptr<BrushRenderRequest> createOriginalDomain(const QImage &,const ProcessingPlan &,
         const GeometryState &,Layout,const CancelToken &,QString *,std::shared_ptr<BrushRenderBudget>,BrushAdmissionFailure *,bool);
+    static std::unique_ptr<BrushRenderRequest> createPreparedDomain(const QImage &,const ProcessingPlan &,Layout,
+        const CancelToken &,QString *,std::shared_ptr<BrushRenderBudget>,BrushAdmissionFailure *,bool);
     friend class BrushAnalysisRequest;
     QImage prepare(const CancelToken &cancel,QString *error) const;
     QImage retainFloatUpload(QImage image);
@@ -138,6 +140,9 @@ public:
         BrushRenderRequest::Layout=BrushRenderRequest::Layout::Stripes128,const CancelToken &cancel={},QString *error=nullptr,
         std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
     QSize size()const{return m_request->size();}
+    static std::unique_ptr<BrushAnalysisRequest> createPrepared(const QImage &,const ProcessingPlan &,
+        BrushRenderRequest::Layout=BrushRenderRequest::Layout::Stripes128,const CancelToken &cancel={},QString *error=nullptr,
+        std::shared_ptr<BrushRenderBudget> budget={},BrushAdmissionFailure *failure=nullptr);
     qint64 reservedBytes()const{return m_request->reservedBytes();}
     BrushImageLease render(const CancelToken &cancel={},QString *error=nullptr){return m_request->render(cancel,error);}
     bool visitStrips(const BrushRenderRequest::StripConsumer &consumer,const CancelToken &cancel={},QString *error=nullptr){return m_request->visitStrips(consumer,cancel,error);}

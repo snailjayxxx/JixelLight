@@ -32,14 +32,17 @@ ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelT
     if (cancelled(cancel)) { QMutexLocker lock(&m_mutex); ++m_cancelled; recordLocked(); return {}; }
     if (request.image.isNull()) return {};
     const auto failed=[](const QString &message,bool retry=false){ScopesResult r;r.error=message;r.retryableBudget=retry;return r;};
-    const bool brush=BrushMaskTileRaster::anyEnabled(request.plan.state.brushMasks);
+    if(analysisDomainKey(request.domain).isEmpty())return failed("Invalid analysis domain");
+    const bool linear=request.domain!=AnalysisDomain::Display;
+    const bool brush=request.domain!=AnalysisDomain::Source&&BrushMaskTileRaster::anyEnabled(request.plan.state.brushMasks);
     QString error;
     if(brush&&!BrushRenderRequest::validPreparedPlan(request.plan,&error))return failed(error);
-    const auto lut=request.plan.data[ProcessingPlan::LookStyle].w>0 ? request.plan.state.look.lut : nullptr;
+    const auto lut=request.domain!=AnalysisDomain::Source&&request.plan.data[ProcessingPlan::LookStyle].w>0 ? request.plan.state.look.lut : nullptr;
     const qint64 bytes=sizeof(Entry)+4*1024*sizeof(QVariant)+(lut ? qint64(lut->rgb.capacity())*sizeof(float) : 0);
     const qint64 cost=(bytes+1023)/1024;
     const bool cacheable=m_entries.maxCost()>0 && cost<=m_entries.maxCost();
     const auto key=cacheable ? StageGraph::fullScopesKey(request) : QString{};
+    if(linear&&StageGraph::linearAnalysisKey(request.image,request.plan,request.geometry,request.domain).isEmpty())return failed("Invalid linear analysis request");
     {
         QMutexLocker lock(&m_mutex);
         if (cancelled(cancel)) { ++m_cancelled; recordLocked(); return {}; }
@@ -52,12 +55,25 @@ ScopesResult FullScopesCache::analyze(const ScopeRequest &request, const CancelT
         } else { ++m_bypasses; PerformanceRecorder::count("full_scopes_cache_bypass"); }
         recordLocked();
     }
-    const auto analysisKey=m_analysisFrames
+    const auto analysisKey=m_analysisFrames&&!linear
         ? StageGraph::analysisFrameKey(request.image,request.plan,request.geometry):QString{};
     const auto completed=m_analysisFrames && !analysisKey.isEmpty()
         ? m_analysisFrames->find(analysisKey,cancel):AnalysisFrameCache::Lease{};
     ScopesResult result;
-    if (completed) {
+    if(linear) {
+        if(brush) {
+            BrushAdmissionFailure reason;
+            auto admitted=request.fullResolution?BrushAnalysisRequest::create(request.image,request.plan,request.geometry,
+                BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason)
+                :BrushAnalysisRequest::createPrepared(request.image,request.plan,BrushRenderRequest::Layout::Stripes128,cancel,&error,m_brushBudget,&reason);
+            if(!admitted)return cancelled(cancel)?ScopesResult{}:failed(error,reason==BrushAdmissionFailure::BudgetUnavailable);
+            result=ScopesEngine::analyzeWorking(*admitted,cancel,&error);
+        } else {
+            const auto image=request.geometry.apply(request.image,cancel);
+            result=ScopesEngine::analyzeDomain(image,request.plan,request.domain,cancel);
+        }
+        if(!cancelled(cancel)&&!result.pixelCount&&result.error.isEmpty())result.error="Linear histogram rendering failed";
+    } else if (completed) {
         result=ScopesEngine::analyze(completed.image(),1024,cancel);
         PerformanceRecorder::count("full_scopes_encoded_frame_hits");
     } else if(brush) {

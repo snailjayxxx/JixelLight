@@ -248,6 +248,10 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::create(const QImage &sou
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
     Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    return createPreparedDomain(source,plan,layout,cancel,error,std::move(budget),failure,false);
+}
+std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPreparedDomain(const QImage &source,const ProcessingPlan &plan,
+    Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure,bool workingAnalysis) {
     if(error)error->clear();
     if(failure)*failure=BrushAdmissionFailure::Invalid;
     if(cancelled(cancel)){if(failure)*failure=BrushAdmissionFailure::Cancelled;fail(error,"Cancelled");return {};}
@@ -255,7 +259,7 @@ std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createPrepared(const QIm
     Spec spec;spec.sourceStage=SourceStage::Prepared;spec.layout=layout;
     spec.encoding=plan.encoding;spec.output=plan.output;spec.rawSource=plan.rawSource;spec.rawBaseExposureStops=plan.baseExposureStops;
     const auto frame=plan.data[ProcessingPlan::FrameRect];spec.normalizedFrame={frame.x,frame.y,frame.z,frame.w};
-    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan,failure);
+    return createImpl(source,*plan.m_brushIntent,spec,cancel,error,std::move(budget),&plan,failure,workingAnalysis);
 }
 std::unique_ptr<BrushRenderRequest> BrushRenderRequest::createOriginal(const QImage &source,const ProcessingPlan &plan,
     const GeometryState &geometry,Layout layout,const CancelToken &cancel,QString *error,
@@ -430,4 +434,11 @@ std::unique_ptr<BrushAnalysisRequest> BrushAnalysisRequest::create(const QImage 
         if(failure)*failure=BrushAdmissionFailure::Invalid;
         fail(error,"Cannot allocate working analysis request");return {};
     }
+}
+std::unique_ptr<BrushAnalysisRequest> BrushAnalysisRequest::createPrepared(const QImage &source,const ProcessingPlan &plan,
+    BrushRenderRequest::Layout layout,const CancelToken &cancel,QString *error,std::shared_ptr<BrushRenderBudget> budget,BrushAdmissionFailure *failure) {
+    auto owned=BrushRenderRequest::createPreparedDomain(source,plan,layout,cancel,error,std::move(budget),failure,true);
+    if(!owned)return {};
+    try {auto result=std::unique_ptr<BrushAnalysisRequest>(new BrushAnalysisRequest);result->m_request=std::move(owned);return result;}
+    catch(...){if(failure)*failure=BrushAdmissionFailure::Invalid;fail(error,"Cannot allocate prepared working analysis request");return {};}
 }
