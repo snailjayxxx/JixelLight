@@ -766,6 +766,7 @@ void PhotoController::persistAndApply(const QString &action, const QVariantMap &
 bool PhotoController::executeCommand(const QVariantMap &command) {
     if(QThread::currentThread()!=thread() || m_closing)return false;
     const auto object=QJsonObject::fromVariantMap(command);
+    if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
     if(object["command"].toString()=="project.create"||object["command"].toString()=="project.open")return executeProjectCommand(object);
     if(QStringList{"edit.copy","edit.paste","edit.sync"}.contains(object["command"].toString()))return executeAdjustmentTransfer(object)>=0;
@@ -1510,7 +1511,7 @@ bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name)
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
     if (ok) {
-        cancelRelink(); ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+        cancelRelinkImpl(); ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
         m_catalogDatesJob->cancel(); m_catalogDateTimer.start();
         // A new catalog stores absolute source keys; an opened legacy catalog
         // keeps its original relative keys until it is explicitly copied here.
@@ -1559,7 +1560,7 @@ bool PhotoController::openProjectImpl(const QUrl &url) {
 
     // All callbacks are generation-guarded: no in-flight task from the old
     // project may publish a preview or scopes for this project's first photo.
-    cancelRelink(); m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+    cancelRelinkImpl(); m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
     ++m_photoEpoch;

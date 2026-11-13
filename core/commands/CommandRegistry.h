@@ -271,6 +271,35 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    enum class RelinkOperation { Request, Confirm, Cancel };
+    struct Relink {RelinkOperation operation=RelinkOperation::Request;QString version,candidate,catalogToken,requestId;bool acknowledgeUnknownIdentity=false;};
+    static bool decodeRelink(const QJsonObject &command,Relink *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid source relink command";return false;};
+        if(!output)return fail();Relink staged;const auto name=command["command"].toString();
+        const auto identifier=[](const QJsonValue &value,bool empty=false) {
+            if(!value.isString())return false;const auto text=value.toString();if(text.isEmpty())return empty;
+            if(text.size()>20)return false;bool ok=false;const auto number=text.toULongLong(&ok);return ok&&text==QString::number(number);
+        };
+        const auto nativeText=[](const QJsonValue &value){return value.isString()&&!value.toString().isEmpty()&&value.toString().size()<=32768&&!value.toString().contains(QChar(u'\0'));};
+        if(!identifier(command["catalog_token"]))return fail();staged.catalogToken=command["catalog_token"].toString();
+        if(name=="photo.relink.request") {
+            if(!fields(command,{"version","candidate","catalog_token"})||!nativeText(command["version"])||!nativeText(command["candidate"]))return fail();
+            staged.version=command["version"].toString();staged.candidate=command["candidate"].toString();
+        } else if(name=="photo.relink.confirm"||name=="photo.relink.cancel") {
+            const bool confirm=name=="photo.relink.confirm";staged.operation=confirm?RelinkOperation::Confirm:RelinkOperation::Cancel;
+            if(!fields(command,confirm?QStringList{"request_id","catalog_token","acknowledge_unknown_identity"}:QStringList{"request_id","catalog_token"})
+                ||!identifier(command["request_id"],!confirm)||(confirm&&(!command["acknowledge_unknown_identity"].isBool()||command["request_id"].toString()=="0")))return fail();
+            staged.requestId=command["request_id"].toString();staged.acknowledgeUnknownIdentity=command["acknowledge_unknown_identity"].toBool();
+        } else return fail();
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject relinkSchema(const QString &name) {
+        const bool request=name=="photo.relink.request",confirm=name=="photo.relink.confirm";
+        return {{"name",name},{"scope","desktop"},{"fields",request?QJsonArray{"version","candidate","catalog_token"}:confirm?QJsonArray{"request_id","catalog_token","acknowledge_unknown_identity"}:QJsonArray{"request_id","catalog_token"}},
+            {"maximum_path_utf16_units",32768},{"catalog_token","exact current decimal token; stale catalogs refuse"},{"request_id","exact current decimal request; cancel may use empty only when no request or preview exists"},
+            {"source_writes",false},{"catalog_writes",confirm},{"requires_saved_project",request||confirm},{"completion",request?"true means queued for existing full hash and fresh decode; does not relink":confirm?"true means queued for revalidation; only the existing verified transaction can commit":"true means the matching request or preview was cancelled"},
+            {"offline_sessions","unsupported; catalog identities and confirmation do not cross session boundaries"}};
+    }
     enum class XmpOperation { Export, Review };
     struct Xmp {XmpOperation operation=XmpOperation::Export;QString path;};
     static bool decodeXmp(const QJsonObject &command,Xmp *output,QString *error=nullptr) {
@@ -971,7 +1000,8 @@ struct CommandRegistry {
                 presetSchema("preset.save"),presetSchema("preset.apply"),presetSchema("preset.remove"),presetSchema("preset.rename"),
                 presetSchema("preset.replace"),presetSchema("preset.export"),presetSchema("preset.import"),
                 adjustmentTransferSchema("edit.copy"),adjustmentTransferSchema("edit.paste"),adjustmentTransferSchema("edit.sync"),
-                projectSchema("project.create"),projectSchema("project.open"),xmpSchema("xmp.export"),xmpSchema("xmp.review")}},
+                projectSchema("project.create"),projectSchema("project.open"),xmpSchema("xmp.export"),xmpSchema("xmp.review"),
+                relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel")}},
             {"unknown_fields","reject"},{"range_policy","clamp"},
             {"command_batch",QJsonObject{{"maximum_commands",10000},{"state_commit","atomic after every command validates"},
                 {"look_lut_payloads","unsupported; use explicit validated profile import/calibration"}}}};

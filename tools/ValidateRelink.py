@@ -40,6 +40,7 @@ def validate_relink(binary: Path, environment: dict[str, str], home: Path,
                 "unknown_identity_acknowledgement", "captured_family_passed",
                 "relink_complete", "reopen_preserves_versions",
                 "selected_export_passed", "batch_export_command_accepted", "batch_export_trace_passed",
+                "project_lifecycle_command_trace_passed", "source_relink_command_trace_passed",
                 "compact_dialog_passed", "source_unchanged")
     screenshots = all(Path(str(report) + suffix).is_file()
                       for suffix in (".missing.png", ".confirm.png", ".restored.png"))

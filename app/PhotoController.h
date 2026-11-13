@@ -853,6 +853,10 @@ private:
     bool executeXmpCommand(const QJsonObject &command);
     bool exportXmpImpl(const QUrl &destination);
     bool requestXmpMergeImpl(const QUrl &source);
+    bool executeRelinkCommand(const QJsonObject &command);
+    bool beginRelinkImpl(const QString &versionKey,const QUrl &candidate,const QString &catalogToken);
+    bool confirmRelinkImpl(const QString &requestId,bool acknowledgeUnknownIdentity);
+    void cancelRelinkImpl();
     bool createProjectImpl(const QUrl &folder,const QString &name);
     bool openProjectImpl(const QUrl &folder);
     void copyAdjustmentsImpl();

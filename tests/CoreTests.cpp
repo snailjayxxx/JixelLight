@@ -7492,6 +7492,31 @@ private slots:
         QCOMPARE(cases,quint64(2293766));QVERIFY(equal);qInfo()<<"U16_BOUNDED_EXACT_CASES"<<cases;
     }
 
+    void desktopRelinkSchemasRequireExactCatalogRequestAndAcknowledgementBeforeExecution() {
+        const QList<QJsonObject> commands{
+            {{"command","photo.relink.request"},{"version","owned-version"},{"candidate","owned.bmp"},{"catalog_token","12"}},
+            {{"command","photo.relink.confirm"},{"request_id","24"},{"catalog_token","12"},{"acknowledge_unknown_identity",true}},
+            {{"command","photo.relink.cancel"},{"request_id","24"},{"catalog_token","12"}}};
+        for(const auto &command:commands) {
+            CommandRegistry::Relink parsed;QVERIFY(CommandRegistry::decodeRelink(command,&parsed));QCOMPARE(parsed.catalogToken,QString("12"));
+            for(auto it=command.begin();it!=command.end();++it) {
+                auto bad=command;bad.remove(it.key());parsed.version="sentinel";QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));QCOMPARE(parsed.version,QString("sentinel"));
+                bad=command;bad[it.key()]=QJsonValue{};QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));QCOMPARE(parsed.version,QString("sentinel"));
+            }
+            auto bad=command;bad["overwrite"]=true;QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));
+            for(const auto &token:QList<QJsonValue>{1,true,QString{},QString("01"),QString("+12"),QString(" 12"),QString("-1"),QString("18446744073709551616"),QString::fromUtf8("12\0",3)}) {
+                bad=command;bad["catalog_token"]=token;QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));
+                if(command.contains("request_id")&&!(command["command"]=="photo.relink.cancel"&&token.isString()&&token.toString().isEmpty())){bad=command;bad["request_id"]=token;QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));}
+            }
+        }
+        auto request=commands[0];CommandRegistry::Relink parsed;
+        for(const auto &field:QStringList{"version","candidate"})for(const auto &value:QList<QJsonValue>{QString{},QString(32769,'x'),QString::fromUtf8("bad\0path",8),1,true}) {
+            auto bad=request;bad[field]=value;QVERIFY(!CommandRegistry::decodeRelink(bad,&parsed));
+        }
+        auto confirm=commands[1];confirm["acknowledge_unknown_identity"]=1;QVERIFY(!CommandRegistry::decodeRelink(confirm,&parsed));confirm=commands[1];confirm["request_id"]="0";QVERIFY(!CommandRegistry::decodeRelink(confirm,&parsed));
+        auto cancel=commands[2];cancel["request_id"]="";QVERIFY(CommandRegistry::decodeRelink(cancel,&parsed));QCOMPARE(parsed.operation,CommandRegistry::RelinkOperation::Cancel);
+    }
+
     void desktopXmpExportCommandsPreserveStoredStateCurationAndOriginalsWithoutReplacement() {
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto source=dir.filePath("source.png");QVERIFY(selectedExportPngFixture(source,4));const auto bytes=fixtureBytes(source);
         PhotoController c(nullptr);QVERIFY(c.importFile(QUrl::fromLocalFile(source)));c.setLookMode("off");c.setExposure(1.25);c.finishInteraction();c.setRating(4);c.setFlag("pick");

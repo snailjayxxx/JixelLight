@@ -2,6 +2,7 @@
 #include "core/cache/SourceCache.h"
 #include "core/files/FileNames.h"
 #include "core/raw/RawDecoder.h"
+#include "core/commands/CommandRegistry.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/ActionTrace.h"
 #include <QCryptographicHash>
@@ -9,6 +10,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
+#include <QThread>
 
 namespace {
 ProjectDatabase::OriginalIdentity hashSource(const QString &path,const CancelToken &cancel,QString *error) {
@@ -185,10 +188,46 @@ void PhotoController::startSourceIdentities() {
     auto paths=m_identityPending.values(); paths.sort(); m_identityJob->submit({m_catalogEpoch,paths});
 }
 void PhotoController::cancelRelink() {
+    if(QThread::currentThread()!=thread()||m_closing)return;
+    executeRelinkCommand({{"command","photo.relink.cancel"},{"catalog_token",relinkCatalogToken()},
+        {"request_id",m_relinkRequest?QString::number(m_relinkRequest->id):m_relinkPreview.value("requestId").toString()}});
+}
+bool PhotoController::beginRelink(const QString &versionKey,const QUrl &candidate,const QString &catalogToken) {
+    if(QThread::currentThread()!=thread()||m_closing||!candidate.isLocalFile())return false;
+    return executeRelinkCommand({{"command","photo.relink.request"},{"version",versionKey},{"candidate",candidate.toLocalFile()},
+        {"catalog_token",catalogToken.isEmpty()?relinkCatalogToken():catalogToken}});
+}
+bool PhotoController::confirmRelink(const QString &requestId,bool acknowledgeUnknownIdentity) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    return executeRelinkCommand({{"command","photo.relink.confirm"},{"request_id",requestId},{"catalog_token",relinkCatalogToken()},
+        {"acknowledge_unknown_identity",acknowledgeUnknownIdentity}});
+}
+bool PhotoController::executeRelinkCommand(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::Relink request;
+    if(!CommandRegistry::decodeRelink(command,&request)){setStatus(uiText("重新关联命令参数无效", "Invalid source relink command parameters"));return false;}
+    if(request.catalogToken!=relinkCatalogToken())return false;
+    const bool start=request.operation==CommandRegistry::RelinkOperation::Request,confirm=request.operation==CommandRegistry::RelinkOperation::Confirm;
+    auto canonical=command;if(start)canonical["candidate"]=QFileInfo(request.candidate).absoluteFilePath();
+    const QVariantMap details{{"command",canonical},{"project",m_project.projectPath()},
+        {"completion",start?"queued-for-validation":confirm?"queued-for-revalidation":"cancelled"}};
+    bool accepted=false;
+    if(start)accepted=beginRelinkImpl(request.version,QUrl::fromLocalFile(canonical["candidate"].toString()),request.catalogToken);
+    else if(confirm)accepted=confirmRelinkImpl(request.requestId,request.acknowledgeUnknownIdentity);
+    else {
+        const auto current=m_relinkRequest?QString::number(m_relinkRequest->id):m_relinkPreview.value("requestId").toString();
+        if(request.requestId!=current)return false;
+        cancelRelinkImpl();accepted=true;
+    }
+    // Signals can change the catalog, start another request or destroy this owner.
+    if(accepted)ActionTrace::instance().record("relink_command",details);
+    return accepted;
+}
+void PhotoController::cancelRelinkImpl() {
     if(m_relinkJob)m_relinkJob->cancel();
     ++m_nextRelinkId; m_relinkRequest.reset(); m_relinkBusy=false; m_relinkPreview.clear(); emit relinkChanged();
 }
-bool PhotoController::beginRelink(const QString &versionKey,const QUrl &candidate,const QString &catalogToken) {
+bool PhotoController::beginRelinkImpl(const QString &versionKey,const QUrl &candidate,const QString &catalogToken) {
     if (xmpMergeBusy()) return false;
     if(!catalogToken.isEmpty() && catalogToken!=relinkCatalogToken())return false;
     if(!m_project.isOpen() || !candidate.isLocalFile() || exportBusy() || copyImportBusy())return false;
@@ -196,26 +235,35 @@ bool PhotoController::beginRelink(const QString &versionKey,const QUrl &candidat
     if(entry==m_photos.cend())return false;
     const QFileInfo info(candidate.toLocalFile());
     if(!info.isFile() || !info.isReadable() || info.canonicalFilePath().isEmpty())return false;
-    cancelRelink();
     auto request=std::make_unique<RelinkRequest>();
-    request->id=++m_nextRelinkId; request->epoch=m_catalogEpoch;
+    request->epoch=m_catalogEpoch;
     request->sourceKey=entry->sourceKey.isEmpty()?entry->path:entry->sourceKey;
     request->sourcePath=sourceFamily(*entry); request->candidatePath=info.canonicalFilePath();
     request->versionKeys=familyVersionKeys(request->sourcePath);
     if(!m_project.originalIdentity(request->sourceKey,&request->expected))return false;
-    m_relinkPreview={{"requestId",QString::number(request->id)},{"status","validating"},{"oldPath",entry->path},
+    const auto oldPath=entry->path;const auto before=m_nextRelinkId;QPointer<PhotoController> owner(this);
+    cancelRelinkImpl();
+    if(!owner||m_closing||request->epoch!=m_catalogEpoch||m_nextRelinkId!=before+1||m_relinkRequest||m_relinkBusy
+        ||xmpMergeBusy()||exportBusy()||copyImportBusy()||familyVersionKeys(request->sourcePath)!=request->versionKeys)return false;
+    request->id=++m_nextRelinkId;
+    m_relinkPreview={{"requestId",QString::number(request->id)},{"status","validating"},{"oldPath",oldPath},
                      {"candidatePath",request->candidatePath},{"versionCount",request->versionKeys.size()},
                      {"identityKnown",request->expected.isKnown()},{"error",QString()}};
     m_relinkBusy=true; m_relinkRequest=std::move(request);
     m_relinkJob->submit(*m_relinkRequest); emit relinkChanged(); return true;
 }
-bool PhotoController::confirmRelink(const QString &requestId,bool acknowledgeUnknownIdentity) {
+bool PhotoController::confirmRelinkImpl(const QString &requestId,bool acknowledgeUnknownIdentity) {
     if (xmpMergeBusy()) return false;
     if(!m_relinkRequest || m_relinkBusy || requestId!=QString::number(m_relinkRequest->id)
         || m_relinkPreview.value("status").toString()!="ready" || m_relinkRequest->epoch!=m_catalogEpoch
         || familyVersionKeys(m_relinkRequest->sourcePath)!=m_relinkRequest->versionKeys
         || (!m_relinkRequest->expected.isKnown() && !acknowledgeUnknownIdentity)
-        || exportBusy() || copyImportBusy() || !flushEdits())return false;
+        || exportBusy() || copyImportBusy())return false;
+    const auto captured=*m_relinkRequest;const auto generation=m_nextRelinkId;QPointer<PhotoController> owner(this);
+    if(!flushEdits())return false;
+    if(!owner||m_closing||!m_relinkRequest||m_relinkBusy||m_nextRelinkId!=generation||m_relinkRequest->id!=captured.id
+        ||m_catalogEpoch!=captured.epoch||m_relinkPreview.value("status")!="ready"||xmpMergeBusy()||exportBusy()||copyImportBusy()
+        ||familyVersionKeys(captured.sourcePath)!=captured.versionKeys)return false;
     m_relinkRequest->confirming=true; m_relinkRequest->acknowledgeUnknown=acknowledgeUnknownIdentity;
     m_relinkBusy=true; m_relinkPreview["status"]="confirming";
     m_relinkJob->submit(*m_relinkRequest); emit relinkChanged(); return true;

@@ -4,7 +4,7 @@
 
 Independent dehaze now has a QRhi follow-up with resident full-frame context. Local GPU/native evidence and remaining clean/platform/package gates are recorded in [M62](docs/F4_QRHI_DEHAZE_CACHE_STAGE_M62.md). The [CPU parent](docs/F4_SPATIAL_DEHAZE_STAGE_M61.md) separately passes clean90/90; whole fusion development remains incomplete.
 
-> **开发验证快照（2026-11-13，M109 编译前）：** 上一个完整验收版本 `52b16ef` 已通过本地完整 102 项测试（905.21 秒）、96 组 Qt 结果、29 个场景及真实 RAW／CLI 对照；三平台 CI426、Windows/macOS 各 88 个安装包场景和严格交付检查全部通过。三核心自动双线程调度与编辑命令线程保护已纳入该版本。当前继续补齐 XMP 导出和项目导入审阅的统一命令入口，整体 F0–F6 仍在开发；A7R VI 实拍核验仍缺样本路径，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
+> **开发验证快照（2026-11-13，M110 编译前）：** 上一个完整验收版本 `52b16ef` 已通过本地完整 102 项测试、29 个场景、真实 RAW／CLI 对照、三平台 CI426、Windows/macOS 各 88 个安装包场景及严格交付。XMP 统一命令候选 `3b59dee` 已完成构建、8 组针对性和常规界面检查，全量及 CI427 仍在进行；首次文件选择器超时保留为待解释问题。当前继续接入源文件重链接命令及回调保护，整体 F0–F6 仍在开发；A7R VI 实拍核验仍缺样本路径，main／PR15 保持独立。详见[实际进度](docs/LIGHTCRAFT_FUSION_PROGRESS.md)。
 
 > **Development branch status (2026-10-14):** `design/lightcraft-fusion-20261008`,
 > PR #16 (Draft). The current `main` baseline is **0.1.0-alpha.11** with
