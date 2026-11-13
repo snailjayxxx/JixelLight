@@ -82,14 +82,16 @@ QString PhotoController::uiText(const QString &zh, const QString &en) const {
 }
 
 void PhotoController::setLanguage(const QString &language) {
+    if(QThread::currentThread()!=thread()||m_closing)return;
     const QString normalized = language == QStringLiteral("en_US") ? QStringLiteral("en_US") : QStringLiteral("zh_CN");
     if (m_language == normalized) return;
     m_language = normalized;
     QSettings().setValue(QStringLiteral("ui/language"), m_language);
-    emit languageChanged();
-    emit activityChanged(); // The brush availability message is localized.
+    const auto current=notificationGuard();
+    ActionTrace::instance().record("language_changed", {{"language", normalized}});
+    emit languageChanged();if(!current())return;
+    emit activityChanged();if(!current())return; // The brush availability message is localized.
     setStatus(uiText(QStringLiteral("界面语言已切换为中文"), QStringLiteral("Interface language changed to English")));
-    ActionTrace::instance().record("language_changed", {{"language", m_language}});
 }
 
 QVariantList PhotoController::library() const {
@@ -155,6 +157,10 @@ AdjustmentState *PhotoController::mutableCurrentState() {
     auto &photo = m_photos[m_currentIndex];
     photo.history.initialize(photo.state);
     return &photo.state;
+}
+std::function<bool()> PhotoController::notificationGuard() {
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch,photo=m_photoEpoch,revision=m_requestedRevision;
+    return [this,guard,catalog,photo,revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch&&revision==m_requestedRevision;};
 }
 
 void PhotoController::rotatePhoto(int turns) {
@@ -296,9 +302,11 @@ bool PhotoController::createVirtualCopyImpl(const QString &name) {
     if (m_project.isOpen() && !m_project.addVirtualCopy(copy.copyKey,copy.path,title,copy.state,copy.history,copy.tags,{copy.rating,copy.flag},copy.timeline)) {
         setStatus(uiText("无法创建虚拟副本：", "Cannot create virtual copy: ") + m_project.lastError()); return false;
     }
-    m_photos.append(copy); emit libraryChanged(); selectPhoto(m_photos.size()-1);
+    m_photos.append(copy);const int index=m_photos.size()-1;const auto current=notificationGuard();
     ActionTrace::instance().record("virtual_copy_created", {{"file",copy.path},{"photo_key",copy.copyKey},{"version",title},
         {"command",QJsonObject{{"command","version.create"},{"name",title}}}});
+    emit libraryChanged();if(!current())return true;
+    if(!selectPhotoImpl(index))return true;
     setStatus(uiText("已创建虚拟副本：", "Virtual copy created: ") + title); return true;
 }
 
@@ -312,9 +320,9 @@ bool PhotoController::renameCurrentVirtualCopyImpl(const QString &name) {
         setStatus(uiText("副本重命名失败：", "Copy rename failed: ") + m_project.lastError()); return false;
     }
     photo.versionName = title; photo.name = QFileInfo(photo.path).fileName() + " · " + title;
-    emit libraryChanged();
     ActionTrace::instance().record("virtual_copy_renamed",{{"photo_key",photo.copyKey},{"version",title},
         {"command",QJsonObject{{"command","version.rename"},{"name",title}}}});
+    emit libraryChanged();
     return true;
 }
 bool PhotoController::removeCurrentVirtualCopyImpl() {
@@ -333,15 +341,16 @@ bool PhotoController::removeCurrentVirtualCopyImpl() {
     for (const auto &item : m_photos) m_importedPaths.insert(QFileInfo(item.path).canonicalFilePath());
     // The following version may occupy the same index: force a new epoch.
     m_currentIndex = -2;
-    selectPhoto(std::min(removed,int(m_photos.size())-1));
-    if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged(); }
     ActionTrace::instance().record("virtual_copy_removed",{{"photo_key",photo.copyKey},{"file",photo.path},{"command",QJsonObject{{"command","version.remove"}}}});
+    if(!selectPhotoImpl(std::min(removed,int(m_photos.size())-1)))return true;
+    const auto current=notificationGuard();
+    if (!selection.isEmpty()) { m_selectedPhotos = selection; emit libraryChanged();if(!current())return true; }
     setStatus(uiText("已删除虚拟副本：", "Virtual copy deleted: ") + photo.versionName);
     return true;
 }
 
 bool PhotoController::setPhotoSelection(const QVariantList &indices) {
-    if (xmpMergeBusy()) return false;
+    if (QThread::currentThread()!=thread()||m_closing||xmpMergeBusy()) return false;
     QSet<int> selected;
     for (const auto &value : indices) {
         bool valid = false; const int index = value.toInt(&valid);
@@ -389,7 +398,7 @@ bool PhotoController::executeCurationCommand(const QJsonObject &command) {
     if(!request.selection){const auto &photo=m_photos[*indices.constBegin()];details["file"]=photo.path;details["photo_key"]=photo.storageKey();}
     if(curation)details[request.field]=value;
     ActionTrace::instance().record((request.selection?"selection_":"photo_")+request.field,details);
-    emit libraryChanged();if(curation)emit curationChanged();return true;
+    const auto current=notificationGuard();emit libraryChanged();if(!current())return true;if(curation)emit curationChanged();return true;
 }
 bool PhotoController::setSelectionRating(int rating) {
     return executeCurationCommand({{"command","catalog.curate"},{"target","selection"},{"field","rating"},{"value",rating}});
@@ -438,32 +447,30 @@ bool PhotoController::importNamedPreset(const QUrl &source,const QString &replac
 bool PhotoController::executePresetCommand(const QJsonObject &command) {
     if(QThread::currentThread()!=thread()||m_closing)return false;
     CommandRegistry::Preset request;if(!CommandRegistry::decodePreset(command,&request))return false;
-    bool accepted=false;
+    auto canonical=command;if(request.kind==CommandRegistry::PresetKind::Import&&request.name.isEmpty())canonical.remove("name");
+    const auto key=hasImage()?m_photos[m_currentIndex].storageKey():QString();
+    const PresetCommit committed=[canonical,key]{ActionTrace::instance().record("preset_command",{{"command",canonical},{"photo_key",key}});};
     switch(request.kind) {
-        case CommandRegistry::PresetKind::Save:accepted=saveNamedPresetImpl(request.name);break;
-        case CommandRegistry::PresetKind::Apply:accepted=applyNamedPresetImpl(request.name);break;
-        case CommandRegistry::PresetKind::Remove:accepted=removeNamedPresetImpl(request.name);break;
-        case CommandRegistry::PresetKind::Rename:accepted=renameNamedPresetImpl(request.name,request.replacement);break;
-        case CommandRegistry::PresetKind::Replace:accepted=replaceNamedPresetImpl(request.name);break;
-        case CommandRegistry::PresetKind::Export:accepted=exportNamedPresetImpl(request.name,QUrl::fromLocalFile(request.path));break;
-        case CommandRegistry::PresetKind::Import:accepted=importNamedPresetImpl(QUrl::fromLocalFile(request.path),request.name);break;
+        case CommandRegistry::PresetKind::Save:return saveNamedPresetImpl(request.name,committed);
+        case CommandRegistry::PresetKind::Apply:return applyNamedPresetImpl(request.name,committed);
+        case CommandRegistry::PresetKind::Remove:return removeNamedPresetImpl(request.name,committed);
+        case CommandRegistry::PresetKind::Rename:return renameNamedPresetImpl(request.name,request.replacement,committed);
+        case CommandRegistry::PresetKind::Replace:return replaceNamedPresetImpl(request.name,committed);
+        case CommandRegistry::PresetKind::Export:return exportNamedPresetImpl(request.name,QUrl::fromLocalFile(request.path),committed);
+        case CommandRegistry::PresetKind::Import:return importNamedPresetImpl(QUrl::fromLocalFile(request.path),request.name,committed);
     }
-    if(accepted) {
-        auto canonical=command;if(request.kind==CommandRegistry::PresetKind::Import&&request.name.isEmpty())canonical.remove("name");
-        ActionTrace::instance().record("preset_command",{{"command",canonical},{"photo_key",hasImage()?m_photos[m_currentIndex].storageKey():QString()}});
-    }
-    return accepted;
+    return false;
 }
-bool PhotoController::saveNamedPresetImpl(const QString &name) {
+bool PhotoController::saveNamedPresetImpl(const QString &name,const PresetCommit &committed) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.save(name.trimmed(), m_photos[m_currentIndex].state, &error)) {
         setStatus(uiText("预设保存失败：", "Preset save failed: ") + error); return false;
     }
-    emit presetsChanged();
+    committed();const auto current=notificationGuard();emit presetsChanged();if(!current())return true;
     setStatus(uiText("已保存预设：", "Preset saved: ") + name.trimmed()); return true;
 }
-bool PhotoController::applyNamedPresetImpl(const QString &name) {
+bool PhotoController::applyNamedPresetImpl(const QString &name,const PresetCommit &committed) {
     if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return false;
     if (!currentSourceAvailable()) return false;
     NamedPresets presets(presetFile()); QString error; AdjustmentState state;
@@ -473,46 +480,47 @@ bool PhotoController::applyNamedPresetImpl(const QString &name) {
     state.geometry = currentState().geometry;
     auto *target=mutableCurrentState();if(!target)return false;
     m_photos[m_currentIndex].history.finish();*target=state;
+    committed();
     if(persistAndApply(QStringLiteral("named_preset")))setStatus(uiText("已应用预设：", "Preset applied: ") + name);
     return true;
 }
-bool PhotoController::removeNamedPresetImpl(const QString &name) {
+bool PhotoController::removeNamedPresetImpl(const QString &name,const PresetCommit &committed) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.remove(name, &error)) {
         setStatus(uiText("预设删除失败：", "Preset removal failed: ") + error); return false;
     }
-    emit presetsChanged(); return true;
+    committed();emit presetsChanged(); return true;
 }
-bool PhotoController::renameNamedPresetImpl(const QString &name, const QString &replacement) {
+bool PhotoController::renameNamedPresetImpl(const QString &name, const QString &replacement,const PresetCommit &committed) {
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.rename(name,replacement.trimmed(),&error)) {
         setStatus(uiText("预设重命名失败：", "Preset rename failed: ")+error); return false;
     }
-    emit presetsChanged(); return true;
+    committed();emit presetsChanged(); return true;
 }
-bool PhotoController::replaceNamedPresetImpl(const QString &name) {
+bool PhotoController::replaceNamedPresetImpl(const QString &name,const PresetCommit &committed) {
     if (!hasImage()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.replace(name,m_photos[m_currentIndex].state,&error)) {
         setStatus(uiText("预设更新失败：", "Preset update failed: ")+error); return false;
     }
-    emit presetsChanged(); setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
+    committed();const auto current=notificationGuard();emit presetsChanged();if(!current())return true;setStatus(uiText("已更新预设：", "Preset updated: ")+name); return true;
 }
-bool PhotoController::exportNamedPresetImpl(const QString &name, const QUrl &destination) {
+bool PhotoController::exportNamedPresetImpl(const QString &name, const QUrl &destination,const PresetCommit &committed) {
     if (!destination.isLocalFile() || isProtectedPhoto(destination.toLocalFile())) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.exportFile(name,destination.toLocalFile(),&error)) {
         setStatus(uiText("预设导出失败：", "Preset export failed: ")+error); return false;
     }
-    setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
+    committed();setStatus(uiText("已导出预设：", "Preset exported: ")+name); return true;
 }
-bool PhotoController::importNamedPresetImpl(const QUrl &source, const QString &replacementName) {
+bool PhotoController::importNamedPresetImpl(const QUrl &source, const QString &replacementName,const PresetCommit &committed) {
     if (!source.isLocalFile()) return false;
     NamedPresets presets(presetFile()); QString error;
     if (!presets.load(&error) || !presets.importFile(source.toLocalFile(),replacementName.trimmed(),&error)) {
         setStatus(uiText("预设导入失败：", "Preset import failed: ")+error); return false;
     }
-    emit presetsChanged(); setStatus(uiText("预设已导入", "Preset imported")); return true;
+    committed();const auto current=notificationGuard();emit presetsChanged();if(!current())return true;setStatus(uiText("预设已导入", "Preset imported")); return true;
 }
 void PhotoController::openPresetExportDialog(const QString &name) {
     const auto path=QFileDialog::getSaveFileName(nullptr,uiText("导出 JixelLight 预设", "Export JixelLight preset"),
@@ -1476,29 +1484,30 @@ void PhotoController::importFiles(const QVariantList &urls) {
     finishImportBatch(added, rawAdded);
 }
 
-void PhotoController::selectPhoto(int index) {
-    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return;
-    if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return;
+void PhotoController::selectPhoto(int index) {selectPhotoImpl(index);}
+bool PhotoController::selectPhotoImpl(int index) {
+    if (QThread::currentThread()!=thread() || m_closing || xmpMergeBusy()) return false;
+    if (index < -1 || index >= m_photos.size() || (index == -1 && !m_photos.isEmpty())) return false;
     const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch;auto epoch=m_photoEpoch;
     const auto current=[this,guard,catalog,&epoch]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch;};
     m_selectedPhotos = index < 0 ? QSet<int>{} : QSet<int>{index}; emit libraryChanged();
-    if(!current())return;
-    if (index == m_currentIndex && (!hasImage() || m_photos[index].available==sourceReadable(m_photos[index]))) return;
-    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged();if(!current())return; }
-    enqueueEdits();if(!current())return;
+    if(!current())return false;
+    if (index == m_currentIndex && (!hasImage() || m_photos[index].available==sourceReadable(m_photos[index]))) return true;
+    if (m_cropEditing) { m_cropEditing = false; emit cropEditingChanged();if(!current())return false; }
+    enqueueEdits();if(!current())return false;
     if (hasImage()) m_photos[m_currentIndex].history.finish();
     m_currentIndex = index;
     if (hasImage()) m_photos[index].history.initialize(m_photos[index].state);
-    emit historyChanged();if(!current())return;
+    emit historyChanged();if(!current())return false;
     ++m_photoEpoch;
     epoch=m_photoEpoch;
-    resetReference();if(!current())return;
+    resetReference();if(!current())return false;
     ++m_requestedRevision;
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
-    emit scopePlotChanged();if(!current())return;
+    emit scopePlotChanged();if(!current())return false;
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
     m_centerX = m_centerY = .5;
     m_fullSource = {}; m_previewSource = {}; m_processedPreview = {};
@@ -1507,15 +1516,15 @@ void PhotoController::selectPhoto(int index) {
     m_scopesUpdating = true; m_scopesRank = -1; m_displayPixels = {};
     if(hasImage()) {
         const bool available=sourceReadable(m_photos[index]);
-        if(available!=m_photos[index].available) {m_photos[index].available=available;emit libraryChanged();if(!current())return;}
+        if(available!=m_photos[index].available) {m_photos[index].available=available;emit libraryChanged();if(!current())return false;}
     }
-    m_loading = currentSourceAvailable(); m_preparing = false; m_gpuActive = false; emit backendChanged();if(!current())return;
+    m_loading = currentSourceAvailable(); m_preparing = false; m_gpuActive = false; emit backendChanged();if(!current())return false;
     m_scopesLabel.clear();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
-    emit currentIndexChanged();if(!current())return;emit curationChanged();if(!current())return;emit adjustmentsChanged();if(!current())return;emit currentMetadataChanged();if(!current())return;
-    emit previewUrlChanged();if(!current())return;emit gpuFrameChanged();if(!current())return;emit scopesChanged();if(!current())return;emit previewGeometryChanged();if(!current())return;
-    emit activityChanged();if(!current())return;
+    emit currentIndexChanged();if(!current())return false;emit curationChanged();if(!current())return false;emit adjustmentsChanged();if(!current())return false;emit currentMetadataChanged();if(!current())return false;
+    emit previewUrlChanged();if(!current())return false;emit gpuFrameChanged();if(!current())return false;emit scopesChanged();if(!current())return false;emit previewGeometryChanged();if(!current())return false;
+    emit activityChanged();if(!current())return false;
     QVariantMap selectionTrace{{"index",index},{"file",currentFile()},{"raw",currentIsRaw()},{"photo_epoch",qint64(m_photoEpoch)}};
     if(hasImage()) {
         const auto key=m_photos[index].storageKey();
@@ -1525,9 +1534,10 @@ void PhotoController::selectPhoto(int index) {
     ActionTrace::instance().record("select_photo",selectionTrace);
     if (currentSourceAvailable()) loadCurrent();
     else {
-        m_scopesUpdating=false; setBusy(false);if(!current())return;
+        m_scopesUpdating=false; setBusy(false);if(!current())return false;
         if(hasImage())setStatus(uiText("源文件缺失或不可读，版本、历史和标签已保留。请重新关联源文件。", "Source is missing or unreadable. Versions, history and tags are retained. Relink the source."));
     }
+    return current();
 }
 
 void PhotoController::loadCurrent() {
@@ -1569,22 +1579,26 @@ bool PhotoController::executeProjectCommand(const QJsonObject &command) {
     CommandRegistry::Project request;
     if(!CommandRegistry::decodeProject(command,&request)){setStatus(uiText("项目参数无效", "Invalid project parameters"));return false;}
     const bool created=request.kind==CommandRegistry::ProjectKind::Create;
-    const bool accepted=created?createProjectImpl(QUrl::fromLocalFile(request.path),request.name):openProjectImpl(QUrl::fromLocalFile(request.path));
-    if(accepted) {
-        const QJsonObject canonical=created?QJsonObject{{"command","project.create"},{"folder",QFileInfo(m_project.projectPath()).absolutePath()},{"name",m_project.projectName()}}
-            :QJsonObject{{"command","project.open"},{"path",m_project.projectPath()}};
-        ActionTrace::instance().record("project_command",{{"command",canonical},{"project",m_project.projectPath()}});
-    }
-    return accepted;
+    const ProjectCommit committed=[created](const QString &path,const QString &name){
+        const QJsonObject canonical=created?QJsonObject{{"command","project.create"},{"folder",QFileInfo(path).absolutePath()},{"name",name}}
+            :QJsonObject{{"command","project.open"},{"path",path}};
+        ActionTrace::instance().record("project_command",{{"command",canonical},{"project",path}});
+    };
+    return created?createProjectImpl(QUrl::fromLocalFile(request.path),request.name,committed):openProjectImpl(QUrl::fromLocalFile(request.path),committed);
 }
-bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name) {
+bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name,const ProjectCommit &committed) {
+    const QPointer<PhotoController> guard(this);
     if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     const QString path = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
     if (!flushEdits()) return false;
+    if(!guard||m_closing)return false;
     const bool ok = m_project.create(path, name);
     ActionTrace::instance().record("create_project", {{"ok", ok}, {"path", path}, {"name", name}});
+    if(!guard||m_closing)return false;
     if (ok) {
-        cancelRelinkImpl(); ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+        ++m_catalogEpoch; m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+        const auto catalog=m_catalogEpoch,photo=m_photoEpoch;
+        const auto current=[this,guard,catalog,photo]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch;};
         m_catalogDatesJob->cancel(); m_catalogDateTimer.start();
         // A new catalog stores absolute source keys; an opened legacy catalog
         // keeps its original relative keys until it is explicitly copied here.
@@ -1593,8 +1607,10 @@ bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name)
             if (photo.copyKey.isEmpty()) photo.originalKey = photo.path;
         }
         for (const auto &p : m_photos) {
-            if (!p.copyKey.isEmpty() && !m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag},p.timeline)) {
-                setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError()); return false;
+            if (!p.copyKey.isEmpty()) {
+                const bool saved=m_project.addVirtualCopy(p.copyKey,p.path,p.versionName,p.state,p.history,p.tags,{p.rating,p.flag},p.timeline);
+                if(!current())return false;
+                if(!saved){setStatus(uiText("虚拟副本未能保存：", "Virtual copy save failed: ") + m_project.lastError());return false;}
             }
             m_dirtyEdits.insert(p.storageKey(), p.state);
             auto history = p.history; history.initialize(p.state);
@@ -1604,14 +1620,19 @@ bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name)
             m_dirtyDates.insert(p.storageKey(),p.timeline);
         }
         enqueueEdits();
+        if(!current())return false;
         for(const auto &photo:m_photos)if(photo.identity.isKnown() && !m_identityEstablished.contains(photo.path)) {
-            if(!m_project.recordOriginalIdentity(photo.path,photo.identity)) {
+            const bool recorded=m_project.recordOriginalIdentity(photo.path,photo.identity);
+            if(!current())return false;
+            if(!recorded) {
                 setStatus(uiText("原片内容身份未能复制：", "Source identity could not be copied: ")+m_project.lastError());return false;
             }
             m_identityEstablished.insert(photo.path);
         }
         for(const auto &photo:m_photos)if(sourceReadable(photo))queueSourceIdentity(photo.path);
-        emit projectChanged();
+        committed(m_project.projectPath(),m_project.projectName());
+        cancelRelinkImpl();if(!current())return true;
+        emit projectChanged();if(!current())return true;
         setStatus(uiText(QStringLiteral("项目已创建：") + m_project.projectName(), QStringLiteral("Project created: ") + m_project.projectName()));
     } else {
         setStatus(uiText(QStringLiteral("项目创建失败"), QStringLiteral("Project creation failed")));
@@ -1619,12 +1640,15 @@ bool PhotoController::createProjectImpl(const QUrl &folder, const QString &name)
     return ok;
 }
 
-bool PhotoController::openProjectImpl(const QUrl &url) {
+bool PhotoController::openProjectImpl(const QUrl &url,const ProjectCommit &committed) {
+    const QPointer<PhotoController> guard(this);
     if (copyImportBusy()) { setStatus(uiText("请等待复制导入完成，或先取消复制", "Wait for copy import to finish, or cancel it first")); return false; }
     if (!url.isLocalFile() || !flushEdits()) return false;
+    if(!guard||m_closing)return false;
     QVector<ProjectDatabase::SavedPhoto> saved;
     const QString path = url.toLocalFile();
-    if (!m_project.open(path, &saved)) {
+    const bool opened=m_project.open(path,&saved);if(!guard||m_closing)return false;
+    if (!opened) {
         const QString error = m_project.lastError();
         setStatus(uiText(QStringLiteral("无法打开项目：") + error, QStringLiteral("Cannot open project: ") + error));
         ActionTrace::instance().record("project_open_failed", {{"path", path}, {"error", error}});
@@ -1633,12 +1657,14 @@ bool PhotoController::openProjectImpl(const QUrl &url) {
 
     // All callbacks are generation-guarded: no in-flight task from the old
     // project may publish a preview or scopes for this project's first photo.
-    cancelRelinkImpl(); m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
+    m_identityJob->cancel(); m_identityPending.clear(); m_identityEstablished.clear();
     m_plotTimer.stop(); m_plotJob->cancel(); m_scopePlot={}; ++m_plotImageId; m_plotSubmittedRevision=0;
     if (m_provider) m_provider->setScopePlot({});
     ++m_photoEpoch;
     ++m_requestedRevision;
     ++m_catalogEpoch; m_catalogDatesJob->cancel(); m_catalogDateTimer.stop();
+    const auto catalog=m_catalogEpoch,photo=m_photoEpoch;
+    const auto current=[this,guard,catalog,photo]{return guard&&!m_closing&&catalog==m_catalogEpoch&&photo==m_photoEpoch;};
     m_loader->cancel(); m_prepare->cancel(); m_render->cancel();
     m_scopeJob->cancel(); m_inputScopeJob->cancel(); m_fullScopeJob->cancel(); m_prefetch->cancel();
     m_refineTimer.stop(); m_exactTimer.stop(); m_prefetchTimer.stop();
@@ -1652,11 +1678,9 @@ bool PhotoController::openProjectImpl(const QUrl &url) {
     m_sourceIsFull = false; m_loading = false; m_rendering = false; m_gpuActive = false;
     m_scopesUpdating = true; m_displayPixels = {};
     m_referenceFiles.clear();
-    resetReference();
     if (m_provider) m_provider->setImage({});
     ++m_previewRevision;
     m_photos.clear();
-    emit historyChanged();
     m_importedPaths.clear();
 
     int missing = 0;
@@ -1681,19 +1705,22 @@ bool PhotoController::openProjectImpl(const QUrl &url) {
     }
     m_catalogDateTimer.start();
     QSettings().setValue(QStringLiteral("ui/lastProjectDir"), path);
-    emit projectChanged(); emit libraryChanged(); emit currentIndexChanged(); emit curationChanged();
-    emit currentMetadataChanged(); emit previewUrlChanged(); emit gpuFrameChanged();
-    emit scopesChanged(); emit adjustmentsChanged(); emit backendChanged();
-    emit scopePlotChanged();
-    emit previewGeometryChanged(); emit activityChanged();
-    if (!m_photos.isEmpty()) selectPhoto(0);
+    committed(m_project.projectPath(),m_project.projectName());
+    ActionTrace::instance().record("project_opened",{{"project",path},{"available",m_photos.size()-missing},{"missing",missing}});
+    cancelRelinkImpl();if(!current())return true;
+    resetReference();if(!current())return true;
+    emit historyChanged();if(!current())return true;
+    emit projectChanged();if(!current())return true;emit libraryChanged();if(!current())return true;emit currentIndexChanged();if(!current())return true;emit curationChanged();if(!current())return true;
+    emit currentMetadataChanged();if(!current())return true;emit previewUrlChanged();if(!current())return true;emit gpuFrameChanged();if(!current())return true;
+    emit scopesChanged();if(!current())return true;emit adjustmentsChanged();if(!current())return true;emit backendChanged();if(!current())return true;
+    emit scopePlotChanged();if(!current())return true;
+    emit previewGeometryChanged();if(!current())return true;emit activityChanged();if(!current())return true;
+    if (!m_photos.isEmpty()&&!selectPhotoImpl(0))return true;
 
     setStatus(uiText(QStringLiteral("已打开项目：%1 · %2 个照片/版本 · %3 个版本的源文件缺失")
                           .arg(m_project.projectName()).arg(m_photos.size()).arg(missing),
                      QStringLiteral("Opened project: %1 · %2 photos/versions · %3 versions with missing sources")
                           .arg(m_project.projectName()).arg(m_photos.size()).arg(missing)));
-    ActionTrace::instance().record("project_opened",
-        {{"project", path}, {"available", m_photos.size()-missing}, {"missing", missing}});
     return true;
 }
 
@@ -1735,8 +1762,8 @@ void PhotoController::copyAdjustmentsImpl() {
     m_clipboard = m_photos[m_currentIndex].state;
     m_clipboardName = m_photos[m_currentIndex].name;
     m_hasClipboard = true;
-    emit adjustmentClipboardChanged();
     ActionTrace::instance().record("copy_adjustments", {{"file", currentFile()},{"photo_key",m_photos[m_currentIndex].storageKey()},{"command",QJsonObject{{"command","edit.copy"}}}});
+    const auto current=notificationGuard();emit adjustmentClipboardChanged();if(!current())return;
     setStatus(uiText(QStringLiteral("已复制调整参数"), QStringLiteral("Adjustments copied")));
 }
 
@@ -1783,8 +1810,10 @@ int PhotoController::syncAdjustmentGroupsImpl(const QStringList &groups,bool sel
     ActionTrace::instance().record("sync_adjustments",QVariantMap{{"source_key",sourceKey},{"groups",groups},
         {"selected_only",selectedOnly},{"targets",targets},{"changed_keys",changedKeys},{"count",changedKeys.size()},
         {"command",QJsonObject{{"command","edit.sync"},{"groups",QJsonArray::fromStringList(groups)},{"target",selectedOnly?"selection":"all"}}}});
-    if (!changedKeys.isEmpty()) emit libraryChanged();
+    const auto current=notificationGuard();const int changed=changedKeys.size();
+    if (!changedKeys.isEmpty()){emit libraryChanged();if(!current())return changed;}
     setStatus(uiText("同步完成：更新 %1 / %2 个目标版本", "Sync complete: updated %1 / %2 target version(s)").arg(changedKeys.size()).arg(targets));
+    if(!current())return changed;
     // A failed write remains pending via the existing per-photo retry path.
     // Keep its save-error status visible instead of replacing it with success.
     if (m_project.isOpen()) flushEdits();
