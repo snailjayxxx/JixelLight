@@ -55,14 +55,16 @@ private:
         struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;N::FrameFailure why=N::FrameFailure::None;};
         Prepared prepared;
         {
-            QFutureWatcher<Prepared> watcher;watcher.setFuture(QtConcurrent::run([=] {
+            QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
+            QVERIFY(finished.isValid());watcher.setFuture(QtConcurrent::run([=] {
                 Prepared result;result.source=N::CanonicalSource::capture(image,{"range-owned",encoding,raw,raw?.35f:0.f,frame},caps.threads(),budget);
                 if(!result.source)return result;
                 result.upload=N::UploadAdmission::prepare(result.source,caps);
                 result.frame=N::FrameAdmission::prepare(result.source,caps,plan,{"range-catalog","range-input","range-version",1},1,&result.why);
                 const auto request=result.source->exactRequest(plan);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);prepared=watcher.result();
+            if(!watcher.isFinished())QVERIFY(finished.wait(10000));
+            QVERIFY(watcher.isFinished());prepared=watcher.result();
         }
         const auto context=QString("native luminance: format=%1 encoding=%2 output=%3 RAW=%4 EV=%5 invert=%6 refusal=%7")
             .arg(int(image.format())).arg(int(encoding)).arg(int(output)).arg(raw).arg(state.luminanceMaskExposure).arg(state.luminanceMaskInverted).arg(int(prepared.why));
