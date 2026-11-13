@@ -140,6 +140,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         int panOriginalIndex=-1;
         QJsonObject panViewState,panWindowCheck;int panViewHistory=0;QPointF panViewStart,panViewExpected,panAfterBasic;QRectF panViewFrame;
         QSize panViewSize;double panViewZoom=0;QString panViewTag,panViewMask;bool panViewOwnership=false;ulong panStamp=1000;int focusBootstrapCount=0;
+        quint64 panViewRevisionBefore=0,panViewRevisionAfterRelease=0;bool panViewReleaseSubmitted=false;
         std::shared_ptr<QPointingDevice> panPen;
         QElapsedTimer clock;int phase=0,settle=0,history=0,delta=0,scopeInk=0;bool finished=false;
         int observedPhase=-1;QJsonArray phaseTimes;
@@ -177,7 +178,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             &&s->capacityPreviewStatistics&&s->capacityExactStatistics&&s->scopeControlsReadonly&&s->photoReady&&s->pointerReady&&s->selected&&s->evDrag&&s->toggle&&s->lastStroke&&s->prune&&s->deleteUndo&&s->english
             &&s->disabledZh&&s->disabledEn&&s->selectedDelete&&s->revealed&&s->manualLocale&&s->localeRequest&&s->capacity&&s->capacityRecovery&&s->capacityTargets&&s->scopeInk>=64&&unchanged&&(!gpu||c->gpuActive());
         if(!error.isEmpty())save(grab(),reportPath+".failure.png");
-        const QJsonObject report{{"phase_times",s->phaseTimes},{"pan_protocol_version",1},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
+        const QJsonObject report{{"phase_times",s->phaseTimes},{"pan_protocol_version",2},{"logical_window_size",QJsonArray{window->width(),window->height()}},{"pan_hint_records",s->panHints},{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"focus_bootstrap_count",s->focusBootstrapCount},{"physical_OS_activation_verified",false},{"pan_window_check",s->panWindowCheck},{"pan_guards_checked",s->panGuardsChecked},{"pan_geometry_checked",s->panGeometryChecked},{"pan_guard_records",s->panGuards},{"pan_view_records",s->panViews},{"pan_checked",s->panChecked},{"pan_readonly",s->panReadonly},{"pan_mapping",s->panMapping},{"pan_started_brush",s->panStartedBrush},{"pan_record",s->panRecord},{"product_UI_acceptance",false},{"passed",ok},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"elapsed_ms",s->clock.elapsed()},
             {"capture_png_compression",1},{"capture_encode_calls",s->captureEncodeCalls},{"capture_encode_total_ms",s->captureEncodeNs/1e6},
             {"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},
             {"capacity_preview_statistics",s->capacityPreviewStatistics},{"capacity_exact_statistics_restored",s->capacityExactStatistics},{"scope_controls_readonly",s->scopeControlsReadonly},
@@ -239,6 +240,7 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
         };
         const auto beginViewPan=[&](QString tag,QPointF delta,bool brush=true) {
             s->panViewTag=tag;s->panViewState=c->gpuPlan(true).state.toJson();s->panViewHistory=cursor(c);
+            s->panViewRevisionBefore=c->renderRevision();s->panViewReleaseSubmitted=false;
             s->panViewMask=brush?"brush":"";s->panViewOwnership=false;
             s->panViewStart={canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble()};
             s->panViewFrame=c->previewFrameRect();s->panViewSize=c->brushFrameSize();s->panViewZoom=canvas->property("zoom").toDouble();
@@ -250,7 +252,9 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             s->panViewOwnership=pan&&pan->isEnabled()&&pan->property("pressed").toBool()&&pan->property("cursorShape").toInt()==int(Qt::ClosedHandCursor)
                 &&canvas->property("maskTool").toString()==s->panViewMask&&!c->brushDrawing()&&navigation()==brush;
             mouse(window,QEvent::MouseMove,from+delta,Qt::NoButton,Qt::LeftButton);
-            mouse(window,QEvent::MouseButtonRelease,from+delta,Qt::LeftButton,Qt::NoButton);if(brush)space(QEvent::KeyRelease);
+            mouse(window,QEvent::MouseButtonRelease,from+delta,Qt::LeftButton,Qt::NoButton);
+            s->panViewRevisionAfterRelease=c->renderRevision();s->panViewReleaseSubmitted=s->panViewRevisionAfterRelease>s->panViewRevisionBefore;
+            if(brush)space(QEvent::KeyRelease);
         };
         const auto completeViewPan=[&] {
             const QPointF actual(canvas->property("centerX").toDouble(),canvas->property("centerY").toDouble());
@@ -260,7 +264,11 @@ void startBrushCanvasSmokeRun(PhotoController *c,QQuickWindow *window,const QStr
             const bool visibleCaption=hint&&exposed(window,hint)&&hint->property("text").toString().startsWith(expected)&&hint->width()<=canvas->width()-15;
             const bool caption=s->panViewMask=="brush"?visibleCaption:(hint&&!hint->isVisible());
             s->panViews.append(QJsonObject{{"case",s->panViewTag},{"mask_tool",s->panViewMask},{"pointer_owned_closed_hand",s->panViewOwnership},{"document_history_unchanged",same},{"mapping_exact",mapping},{"center_before",QJsonArray{s->panViewStart.x(),s->panViewStart.y()}},{"frame_before",QJsonArray{s->panViewFrame.x(),s->panViewFrame.y(),s->panViewFrame.width(),s->panViewFrame.height()}},{"actual_center",QJsonArray{actual.x(),actual.y()}},{"expected_center",QJsonArray{s->panViewExpected.x(),s->panViewExpected.y()}},{"output_size",QJsonArray{s->panViewSize.width(),s->panViewSize.height()}},{"zoom",s->panViewZoom},{"dpr",window->effectiveDevicePixelRatio()},{"hint_visible_bounded",visibleCaption},{"hint_policy_correct",caption},{"hint",hint?hint->property("text").toString():QString{}}});
-            return same&&mapping&&caption&&s->panViewOwnership&&save(grab(),reportPath+".pan-"+s->panViewTag+".png");
+            auto row=s->panViews.last().toObject();const auto after=c->previewFrameRect();
+            row.insert("frame_after",QJsonArray{after.x(),after.y(),after.width(),after.height()});
+            row.insert("release_viewport_submitted",s->panViewReleaseSubmitted);row.insert("revision_before_input",QString::number(s->panViewRevisionBefore));row.insert("revision_after_release",QString::number(s->panViewRevisionAfterRelease));
+            s->panViews[s->panViews.size()-1]=row;
+            return same&&mapping&&caption&&s->panViewOwnership&&s->panViewReleaseSubmitted&&save(grab(),reportPath+".pan-"+s->panViewTag+".png");
         };
         const auto disabledGuard=[&] {
             auto *hint=child(window->contentItem(),"maskToolHint"),*pointer=child(window->contentItem(),"brushPointerArea");

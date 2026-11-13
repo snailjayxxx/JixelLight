@@ -228,6 +228,10 @@ Item {
         onReleased: {
             if (brushNavigation) brushOverlay.navigationDragging = false
             brushNavigation = false
+            // Submit the final center before ending interaction, even when
+            // the debounced drag refresh has not run yet.
+            geometryTimer.stop()
+            root.refresh()
             controller.finishInteraction()
         }
         onCanceled: {
