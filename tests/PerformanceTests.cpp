@@ -36,6 +36,7 @@
 #include "core/pipeline/FloatSceneResampler.h"
 #include "core/project/ProjectDatabase.h"
 #include "core/export/JpegExporter.h"
+#include "core/export/ExportQueue.h"
 #include "core/scopes/ScopesEngine.h"
 QImage legacyProcess(const QImage &,const AdjustmentState &,ImagePipeline::InputEncoding);
 QImage correctedReferenceProcess(const QImage &,const AdjustmentState &,ImagePipeline::InputEncoding);
@@ -112,6 +113,18 @@ void deliveryCanReplaceAndCancelQueue(bool liveFrame) {
 class PerformanceTests:public QObject {
     Q_OBJECT
 private slots:
+    void exportFileNotificationMayDestroyQueueWithoutFurtherSignals() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto original=dir.filePath("source.png");
+        const auto source=fixture(37,29);QVERIFY(source.save(original));QFile input(original);QVERIFY(input.open(QIODevice::ReadOnly));const auto bytes=input.readAll();input.close();
+        auto queue=std::make_unique<ExportQueue>(std::make_shared<SourceCache>());
+        QSignalSpy files(queue.get(),&ExportQueue::fileFinished),finished(queue.get(),&ExportQueue::finished);bool destroyed=false;
+        connect(queue.get(),&ExportQueue::fileFinished,this,[&]{queue.reset();destroyed=true;});
+        QVector<ExportRequest> requests;
+        for(int i=0;i<2;++i){ExportRequest request;request.sourcePath=original;request.source=source;request.destination=dir.filePath(QString("output-%1.png").arg(i));request.newFileOnly=true;requests.append(request);}
+        QVERIFY(queue->start(requests));QTRY_VERIFY_WITH_TIMEOUT(destroyed,5000);QVERIFY(!queue);QCOMPARE(files.count(),1);QCOMPARE(finished.count(),0);
+        for(const auto &request:requests){QImageReader reader(request.destination);const auto output=reader.read();QVERIFY(!output.isNull());QCOMPARE(output.size(),source.size());QVERIFY(output.colorSpace().isValid());}
+        QVERIFY(input.open(QIODevice::ReadOnly));QCOMPARE(input.readAll(),bytes);
+    }
     void brushFrameRequestCancelsWithoutPublishingPartialImage() {
         namespace BM=BrushMaskGeometry; namespace BD=BrushMaskDocument;
         BM::Stroke stroke{BM::Style{.25,.4,.7},{}};

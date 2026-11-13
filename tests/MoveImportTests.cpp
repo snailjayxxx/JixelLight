@@ -10,6 +10,10 @@
 #include <QLockFile>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QScopeGuard>
+#include <QImageReader>
+#include <QPointer>
+#include <QUuid>
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QQuickItem>
@@ -43,6 +47,65 @@ bool rewrite(const QString &path,const std::function<void(QJsonObject &)> &chang
 class MoveImportTests:public QObject {
     Q_OBJECT
 private slots:
+    void importPublicationMayCloseOrDestroyOwner_data(){
+        QTest::addColumn<bool>("batch");QTest::addColumn<bool>("closeOnly");
+        for(bool batch:{false,true})for(bool closeOnly:{false,true})QTest::newRow(qPrintable(QString(batch?"batch":"single")+(closeOnly?"-close":"-destroy")))<<batch<<closeOnly;
+    }
+    void importPublicationMayCloseOrDestroyOwner(){
+        QFETCH(bool,batch);QFETCH(bool,closeOnly);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto first=dir.filePath("first.png"),second=dir.filePath("second.png");QVERIFY(image(first));QVERIFY(image(second,811));const QList<QByteArray> originals{bytes(first),bytes(second)};
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);QPointer<PhotoController> alive(owner.get());bool terminal=false,closed=false;
+        const auto connection=connect(owner.get(),&PhotoController::libraryChanged,owner.get(),[&]{if(terminal||!owner||owner->library().isEmpty())return;terminal=true;if(closeOnly)closed=owner->beginClose();else owner.reset();});
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        if(batch)owner->importFiles({QUrl::fromLocalFile(first),QUrl::fromLocalFile(second)});else QVERIFY(owner->importFile(QUrl::fromLocalFile(first)));
+        QVERIFY(terminal);
+        if(closeOnly){QVERIFY(closed);QVERIFY(owner&&alive);QCOMPARE(owner->library().size(),batch?2:1);QVERIFY(!owner->executeCommand({{"command","scopes.domain"},{"domain","working"}}));}
+        else{QVERIFY(!owner);QVERIFY(!alive);}
+        QCOMPARE(bytes(first),originals[0]);QCOMPARE(bytes(second),originals[1]);
+    }
+    void exportCompletionNotificationsMayCloseOrDestroyOwner_data(){
+        QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
+        for(const auto &context:QStringList{"status","changed","finished"})for(bool closeOnly:{false,true})QTest::newRow(qPrintable(context+(closeOnly?"-close":"-destroy")))<<context<<closeOnly;
+    }
+    void exportCompletionNotificationsMayCloseOrDestroyOwner(){
+        QFETCH(QString,context);QFETCH(bool,closeOnly);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto source=dir.filePath("source.png"),output=dir.filePath("output.png");QVERIFY(image(source));const auto original=bytes(source);
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);QVERIFY(owner->importFile(QUrl::fromLocalFile(source)));
+        QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&!owner->rendering()&&owner->scopesPixelCount()>0,15000);QVERIFY(owner->flushEdits());
+        QPointer<PhotoController> alive(owner.get());QSignalSpy finished(owner.get(),&PhotoController::exportFinished);bool terminal=false,closed=false;
+        const auto completed=[&]{if(terminal||!owner||owner->exportBusy()||!QFileInfo::exists(output))return;terminal=true;if(closeOnly)closed=owner->beginClose();else owner.reset();};
+        QMetaObject::Connection connection;
+        if(context=="status")connection=connect(owner.get(),&PhotoController::statusMessageChanged,owner.get(),completed);
+        else if(context=="changed")connection=connect(owner.get(),&PhotoController::exportChanged,owner.get(),completed);
+        else connection=connect(owner.get(),&PhotoController::exportFinished,owner.get(),completed);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        QVERIFY(owner->exportCurrent(QUrl::fromLocalFile(output),"srgb",92));QTRY_VERIFY_WITH_TIMEOUT(terminal,10000);
+        if(closeOnly){QVERIFY(closed);QVERIFY(owner&&alive);QVERIFY(!owner->executeCommand({{"command","scopes.domain"},{"domain","working"}}));}
+        else{QVERIFY(!owner);QVERIFY(!alive);}
+        QCOMPARE(finished.count(),context=="finished"?1:0);QImageReader reader(output);const auto decoded=reader.read();QVERIFY(!decoded.isNull());QCOMPARE(decoded.size(),QSize(37,29));QVERIFY(decoded.colorSpace().isValid());QCOMPARE(bytes(source),original);
+    }
+    void copyCompletionNotificationsMayCloseOrDestroyOwner_data(){
+        QTest::addColumn<QString>("context");QTest::addColumn<bool>("closeOnly");
+        for(const auto &context:QStringList{"library","status","changed"})for(bool closeOnly:{false,true})QTest::newRow(qPrintable(context+(closeOnly?"-close":"-destroy")))<<context<<closeOnly;
+    }
+    void copyCompletionNotificationsMayCloseOrDestroyOwner(){
+        QFETCH(QString,context);QFETCH(bool,closeOnly);QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto first=dir.filePath("first.png"),second=dir.filePath("second.png"),destination=dir.filePath("copies");QVERIFY(image(first));QVERIFY(image(second,701));QVERIFY(QDir().mkpath(destination));
+        const QList<QByteArray> originals{bytes(first),bytes(second)};const QStringList outputs{QDir(destination).filePath("first.png"),QDir(destination).filePath("second.png")};
+        ProcessedImageProvider provider;auto owner=std::make_unique<PhotoController>(&provider);owner->setGpuEnabled(false);QPointer<PhotoController> alive(owner.get());bool terminal=false,closed=false;
+        const auto completed=[&]{if(terminal||!owner||owner->copyImportBusy()||owner->library().size()!=2||!QFileInfo::exists(outputs[1]))return;terminal=true;if(closeOnly)closed=owner->beginClose();else owner.reset();};
+        QMetaObject::Connection connection;
+        if(context=="library")connection=connect(owner.get(),&PhotoController::libraryChanged,owner.get(),completed);
+        else if(context=="status")connection=connect(owner.get(),&PhotoController::statusMessageChanged,owner.get(),completed);
+        else connection=connect(owner.get(),&PhotoController::copyImportChanged,owner.get(),completed);
+        const auto disconnect=qScopeGuard([&]{QObject::disconnect(connection);});
+        const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("transfer_owner_boundary",{{"marker",marker}});
+        QVERIFY(owner->copyImport({QUrl::fromLocalFile(first),QUrl::fromLocalFile(second)},QUrl::fromLocalFile(destination)));QTRY_VERIFY_WITH_TIMEOUT(terminal,10000);
+        if(closeOnly){QVERIFY(closed);QVERIFY(owner&&alive);QVERIFY(!owner->executeCommand({{"command","scopes.domain"},{"domain","working"}}));}
+        else{QVERIFY(!owner);QVERIFY(!alive);}
+        bool seen=false;int audit=0;for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="transfer_owner_boundary"&&row["marker"]==marker){seen=true;audit=0;}else if(seen&&row["action"]=="copy_import_finished"){++audit;QCOMPARE(row["copied"].toInt(),2);QCOMPARE(row["imported"].toInt(),2);}}
+        QVERIFY(seen);QCOMPARE(audit,1);QCOMPARE(bytes(first),originals[0]);QCOMPARE(bytes(second),originals[1]);for(int i=0;i<2;++i)QCOMPARE(bytes(outputs[i]),originals[i]);
+    }
     void verifiedCopyNeverRetiresBeforeSavedCatalogIdentity(){
         Fixture f;QVERIFY(f.valid);const auto originals=QList<QByteArray>{bytes(f.sources[0]),bytes(f.sources[1])};const auto batch=f.prepare();QVERIFY2(batch.error.isEmpty(),qPrintable(batch.error));QCOMPARE(batch.files.size(),2);QCOMPARE(batch.phase,QString("copied"));
         for(int i=0;i<2;++i){QCOMPARE(bytes(f.sources[i]),originals[i]);QCOMPARE(bytes(batch.files[i].copy.destination),originals[i]);}

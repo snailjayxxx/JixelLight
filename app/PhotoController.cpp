@@ -1212,7 +1212,7 @@ void PhotoController::resetCurve(int channel) {
 }
 
 bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
-    if (xmpMergeBusy()) return false;
+    if (m_closing || xmpMergeBusy()) return false;
     if (path.isEmpty()) return false;
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
@@ -1252,20 +1252,25 @@ bool PhotoController::importPath(const QString &path, bool notifyImmediately) {
         {"photo_key",entry.storageKey()},{"command",QJsonObject{{"command","photo.import"},{"source",entry.path}}}});
 
     if (notifyImmediately) {
-        emit libraryChanged();
-        if (m_currentIndex < 0) selectPhoto(m_photos.size() - 1);
+        const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch;
+        const auto current=[this,guard,catalog]{return guard&&!m_closing&&catalog==m_catalogEpoch;};
+        emit libraryChanged();if(!current())return true;
+        if (m_currentIndex < 0){selectPhoto(m_photos.size() - 1);if(!current())return true;}
         setStatus(uiText(QStringLiteral("已导入：%1").arg(entry.name), QStringLiteral("Imported: %1").arg(entry.name)));
     }
     return true;
 }
 
 void PhotoController::finishImportBatch(int added, int rawAdded) {
+    if(m_closing)return;
+    const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch;
+    const auto current=[this,guard,catalog]{return guard&&!m_closing&&catalog==m_catalogEpoch;};
     if (added <= 0) {
         setStatus(uiText(QStringLiteral("没有导入新的照片"), QStringLiteral("No new photos were imported")));
         return;
     }
-    emit libraryChanged();
-    if (m_currentIndex < 0 && !m_photos.isEmpty()) selectPhoto(0);
+    emit libraryChanged();if(!current())return;
+    if (m_currentIndex < 0 && !m_photos.isEmpty()){selectPhoto(0);if(!current())return;}
     ActionTrace::instance().record("import_files", {{"count", added}, {"raw_count", rawAdded}});
     setStatus(uiText(QStringLiteral("已导入 %1 张照片，其中 RAW %2 张").arg(added).arg(rawAdded),
                      QStringLiteral("Imported %1 image(s), %2 RAW").arg(added).arg(rawAdded)));
@@ -2187,18 +2192,21 @@ void PhotoController::initializeJobs() {
     });
     connect(m_copyImportQueue.get(),&CopyImportQueue::finished,this,[this](const CopyImportResult &result) {
         if (m_closing) return;
+        const QPointer<PhotoController> guard(this);const auto catalog=m_catalogEpoch;const auto snapshot=result;
+        const auto current=[this,guard,catalog]{return guard&&!m_closing&&catalog==m_catalogEpoch;};
         int added=0,raw=0;
-        for (const auto &file : result.completed) {
-            if (importPath(file.destination,false)) { ++added; if (RawDecoder::isRawFile(file.destination)) ++raw; }
+        const auto audit=qScopeGuard([snapshot,&added]{ActionTrace::instance().record("copy_import_finished",{{"copied",snapshot.completed.size()},{"imported",added},{"cancelled",snapshot.wasCancelled},{"error",snapshot.error}});});
+        for (const auto &file : snapshot.completed) {
+            const bool imported=importPath(file.destination,false);if(!current())return;
+            if (imported) { ++added; if (RawDecoder::isRawFile(file.destination)) ++raw; }
             ActionTrace::instance().record("copy_import_published",{{"source",file.source},{"destination",file.destination},{"sha256",file.sha256}});
         }
-        if (added) finishImportBatch(added,raw);
+        if (added){finishImportBatch(added,raw);if(!current())return;}
         m_copyImportProgress=result.error.isEmpty() && !result.wasCancelled ? 1 : m_copyImportProgress;
         m_copyImportStatus=uiText("复制完成 %1 个，导入 %2 张", "Copied %1 file(s), imported %2 image(s)").arg(result.completed.size()).arg(added);
         if (result.wasCancelled) m_copyImportStatus+=uiText(" · 已取消，保留已完成副本", " · cancelled; completed copies retained");
         if (!result.error.isEmpty()) m_copyImportStatus+=uiText(" · 错误：", " · error: ")+(m_language=="zh_CN" && !result.errorZh.isEmpty()?result.errorZh:result.error);
-        setStatus(m_copyImportStatus); emit copyImportChanged();
-        ActionTrace::instance().record("copy_import_finished",{{"copied",result.completed.size()},{"imported",added},{"cancelled",result.wasCancelled},{"error",result.error}});
+        setStatus(m_copyImportStatus);if(!current())return;emit copyImportChanged();
     });
     initializeMoveImport();
     m_plotTimer.setSingleShot(true); m_plotTimer.setInterval(250);
@@ -2388,10 +2396,12 @@ void PhotoController::initializeJobs() {
         if (!ok) qWarning() << "Export failed" << source << error;
     });
     connect(m_exportQueue.get(), &ExportQueue::finished, this, [this](int succeeded, int failed, bool stopped) {
+        if(m_closing)return;
+        const QPointer<PhotoController> guard(this);
         if (!stopped && !failed) m_exportProgress = 1;
         setStatus(uiText(QStringLiteral("导出%1：成功 %2，失败 %3").arg(stopped ? QStringLiteral("已取消") : QStringLiteral("结束")).arg(succeeded).arg(failed),
-                         QStringLiteral("Export %1: %2 succeeded, %3 failed").arg(stopped ? QStringLiteral("cancelled") : QStringLiteral("finished")).arg(succeeded).arg(failed)));
-        emit exportChanged(); emit exportFinished(succeeded, failed, stopped);
+                         QStringLiteral("Export %1: %2 succeeded, %3 failed").arg(stopped ? QStringLiteral("cancelled") : QStringLiteral("finished")).arg(succeeded).arg(failed)));if(!guard||m_closing)return;
+        emit exportChanged();if(!guard||m_closing)return;emit exportFinished(succeeded, failed, stopped);if(!guard||m_closing)return;
         retryBudgetJobs(true);
     });
 }
