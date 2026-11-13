@@ -63,6 +63,20 @@ def diagnostic_fixture(mode='gpu'):
 
 
 class SoftProofEvidenceTests(unittest.TestCase):
+    def test_windows_profile_command_uses_canonical_separators(self):
+        for native,canonical in [(r'D:\owned\output.icc','D:/owned/output.icc'),(r'\\server\share\owned\output.icc','//server/share/owned/output.icc')]:
+            d=report_fixture('cpu','windows');d['profile_path']=native;d['proof_commands'][0]['source']=canonical
+            self.assertTrue(validate_report(d,'cpu','windows'))
+
+    def test_separator_fix_still_rejects_other_files_and_preserves_posix_names(self):
+        for wrong in ('E:/owned/output.icc','D:/other/output.icc','D:/owned/different.icc',r'D:\owned\output.icc'):
+            d=report_fixture('cpu','windows');d['profile_path']=r'D:\owned\output.icc';d['proof_commands'][0]['source']=wrong
+            with self.assertRaises(ValueError):validate_report(d,'cpu','windows')
+        for qpa in ('cocoa','xcb'):
+            d=report_fixture('cpu',qpa);d['profile_path']=r'/owned/name\literal.icc';d['proof_commands'][0]['source']=d['profile_path']
+            self.assertTrue(validate_report(d,'cpu',qpa));d['proof_commands'][0]['source']='/owned/name/literal.icc'
+            with self.assertRaises(ValueError):validate_report(d,'cpu',qpa)
+
     def test_shared_proof_commands_require_a_true_boolean_flag(self):
         for value in (False,1,None,'true'):
             d=report_fixture();d['proof_command_trace_passed']=value

@@ -1,0 +1,13 @@
+# F6 Windows soft-proof path expectation — M116
+
+CI430 Windows passes preflight2/202.51s and full102/2340.61s, then its CPU soft-proof Main App completes phase15/9912ms but fails the new exact command predicate. The original native report has all eight commands in order. The profile command stores `D:/.../output.icc`, while the probe compares it with the original `D:\...\output.icc` spelling. All five native proof pixel comparisons, current source/edits/history/scopes and alpha composition pass; the independent PNG wrapper stops at the failed native result and is not accepted.
+
+The expected native profile command now uses `QFileInfo(...).absoluteFilePath()`, matching the existing command entry point. The independent verifier derives the Windows forward-separator spelling using `PureWindowsPath.as_posix()`; POSIX filenames remain literal. Exact eight-command order, exact fields/types/booleans and target identity remain required. Different drives, directories or files still refuse. Two new Python methods cover local Windows paths, UNC paths, noncanonical command spelling and literal POSIX backslashes; all283 Python methods pass0.766s.
+
+This corrects QA expectations. No controller, image math, ICC/render/export/scopes/history behavior, threshold, worker count, resource bound or deadline changes. The new candidate must independently complete build/targeted/native/full102/all96/all33/real-Sony/CLI/cross-RAW and thirteen unchanged binary guards, then three-platform/both88 installed/strict-delivery gates.
+
+The original CI430 Windows1,924,845-byte log SHA256 is `9319e47bf0f69a4bef594e9386b9a2b9f63e1247fded9068f0a643351cbdfa39`; artifact14014054256 is retained as its original136,574,891-byte ZIP SHA256 `13fbf5c2518b00e1a4dec3a13bf6daba0ed6036638b856f6058d2e2276801363`. Original native report SHA256 is `8b00a1b556e9fdaeca526d802e8cdc85db8fc8322063940828f6fc50be807056`. All remain failed evidence. An explicitly labelled disposable in-memory diagnostic evaluates remaining report predicates; it never changes the originals, runs an App or establishes PNG/product acceptance.
+
+CI430 Linux and macOS succeed, including macOS installed88/strict. Parentbf7d387 independently completes local102/940.59s/all33/thirteen guards; its CI431 remains independent. Workspaceff5377e completes its own local33 and all three CI429/both installed88/strict gates. The private uncompiled Source/Working analysis backend is paused and preserved separately until this correction is qualified.
+
+Main and protected PR15 remain unmerged. Overall F0–F6, A7R VI real-shot validation, physical calibration and native-FP32 RAW decoding are not claimed.

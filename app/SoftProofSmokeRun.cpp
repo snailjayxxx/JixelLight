@@ -108,7 +108,7 @@ void startSoftProofSmokeRun(PhotoController *c,ProcessedImageProvider *provider,
         if(s->done)return;s->done=true;s->timer->stop();
         QJsonArray commands;for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="proof_command")commands.append(row["command"]);}
         const QJsonArray expectedCommands{
-            QJsonObject{{"command","proof.profile"},{"source",s->profile}},QJsonObject{{"command","proof.enable"},{"enabled",true}},
+            QJsonObject{{"command","proof.profile"},{"source",QFileInfo(s->profile).absoluteFilePath()}},QJsonObject{{"command","proof.enable"},{"enabled",true}},
             QJsonObject{{"command","proof.paper"},{"enabled",true}},QJsonObject{{"command","proof.gamut-warning"},{"enabled",true}},
             QJsonObject{{"command","proof.black-point"},{"enabled",false}},QJsonObject{{"command","proof.refresh"}},
             QJsonObject{{"command","proof.enable"},{"enabled",false}},QJsonObject{{"command","proof.enable"},{"enabled",true}}};
