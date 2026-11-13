@@ -977,7 +977,7 @@ private slots:
     }
     void filmGrainWithNativePaintErasePreservesCpuParity() {
         namespace N=NativeBrush;
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,dehazeRefused=true,pointColorRefused=true,luminanceMaskAdmitted=true,colorMaskRefused=true,prophotoPolicyOk=false;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool adobeRefused=false,sharpenRefused=false,denoiseRefused=true,clarityRefused=true,textureRefused=true,dehazeRefused=true,pointColorRefused=true,luminanceMaskAdmitted=true,colorMaskAdmitted=true,prophotoPolicyOk=false;};
         for(bool fp32 : {false,true}) {
             QImage image(257,193,fp32?QImage::Format_RGBA32FPx4:QImage::Format_RGBA64);
             for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
@@ -1044,11 +1044,11 @@ private slots:
                     auto maskState=state;maskState.colorMaskEnabled=true;maskState.colorMaskExposure=exposure;
                     const auto mask=ProcessingPlan::compile(maskState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
                     const auto frame=N::FrameAdmission::prepare(result.source,caps,mask,{"grain-catalog","grain-input","grain-version",1},3,&why);
-                    result.colorMaskRefused=result.colorMaskRefused&&!frame&&why==N::FrameFailure::CPUPolicy;
+                    result.colorMaskAdmitted=result.colorMaskAdmitted&&bool(frame)&&why==N::FrameFailure::None;
                 }
                 auto request=result.source->exactRequest(p);if(request)result.reference=request->render({});return result;
             }));
-            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.dehazeRefused);QVERIFY(prepared.pointColorRefused);QVERIFY(prepared.luminanceMaskAdmitted);QVERIFY(prepared.colorMaskRefused);QVERIFY(prepared.prophotoPolicyOk);
+            QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);auto prepared=watcher.result();QVERIFY(prepared.upload&&prepared.frame&&prepared.reference);QVERIFY(prepared.adobeRefused);QVERIFY(prepared.sharpenRefused);QVERIFY(prepared.denoiseRefused);QVERIFY(prepared.clarityRefused);QVERIFY(prepared.textureRefused);QVERIFY(prepared.dehazeRefused);QVERIFY(prepared.pointColorRefused);QVERIFY(prepared.luminanceMaskAdmitted);QVERIFY(prepared.colorMaskAdmitted);QVERIFY(prepared.prophotoPolicyOk);
             auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
             QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
             QVERIFY(domain->activate(prepared.frame->stamp()));auto frame=domain->attachFrame(input,prepared.frame);QVERIFY(bool(frame));

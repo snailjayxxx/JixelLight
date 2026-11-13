@@ -166,7 +166,7 @@ private slots:
             auto malformed=plan;malformed.data[ProcessingPlan::LuminanceMask].w=0;attempt(malformed,false,N::FrameFailure::CPUPlan);
             malformed=plan;malformed.data[ProcessingPlan::LuminanceMaskOptions].x=2;attempt(malformed,false,N::FrameFailure::CPUPlan);
             auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
-            auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(ProcessingPlan::compile(color,plan.encoding,plan.output,false,0),false);
+            auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(ProcessingPlan::compile(color,plan.encoding,plan.output,false,0),true);
             auto grain=state;grain.grainAmount=19;attempt(ProcessingPlan::compile(grain,plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0),false);
             auto bright=state;bright.exposure=.6;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output,false,0),!restricted);
             return checks;
@@ -174,6 +174,68 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);const auto checks=watcher.result();QCOMPARE(checks.size(),8);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native luminance admission policy %1").arg(i)));
         domain->shutdown();
+    }
+    void nativeBrushColorMaskMatchesSourcesAndLuminance() {
+        QImage integer(37,29,QImage::Format_RGBA64),floating(37,29,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<29;++y)for(int x=0;x<37;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,quint16(((x+y)%4)*21845));
+            auto *p=reinterpret_cast<float *>(floating.scanLine(y))+4*x;p[0]=.02f+2.f*x/36.f;p[1]=.01f+1.5f*y/28.f;p[2]=.1f+1.2f*((x+y)%17)/16.f;p[3]=float((x+y)%4)/3.f;
+        }
+        for(bool fp32:{false,true})for(int source=0;source<3;++source)for(int output:{0,1,3})
+        for(double exposure:{-2.1,1.1})for(bool inverted:{false,true}) {
+            auto state=nativeLuminanceState(.4,!inverted);state.colorMaskEnabled=true;state.colorMaskExposure=exposure;state.colorMaskInverted=inverted;
+            state.colorMaskLab={.6,.02,.01};state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;
+            qInfo()<<"native colour broad"<<fp32<<source<<output<<exposure<<inverted;
+            verifyNativeLuminance(fp32?floating:integer,state,source==0?ImagePipeline::InputEncoding::SRgb:ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),source==2);
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushColorMaskHueSeamsAndNeutrals() {
+        constexpr float Pi=3.14159265358979323846f;
+        for(const auto center:{PointColor::Lab{.62f,.08f,359.f},PointColor::Lab{.035f,.012f,179.f},PointColor::Lab{.6f,0,0}})
+        for(const auto range:{std::array<float,3>{45,.003f,.003f},{90,.02f,.12f},{180,.12f,.4f}}) {
+            const float rH=range[0],rC=range[1],rL=range[2],angle=center.b*(Pi/180.f);QImage image(31,29,QImage::Format_RGBA32FPx4);
+            for(int y=0;y<29;++y)for(int x=0;x<31;++x) {
+                const float t=float((x*7+y*11)%101)/100.f,L=center.L+rL*(t*2-1),C=std::max(0.f,center.a+rC*(float(x)/30.f*2-1));
+                const float h=(center.b+rH*(float(y)/28.f*2-1))*(Pi/180.f);
+                const auto rgb=PointColor::toEncodedSrgb({L,C*std::cos(h),C*std::sin(h)});auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;
+                for(int c=0;c<3;++c)p[c]=rgb[c];const float alpha[]{0,1.e-9f,1.f/65535.f,.8f,1};p[3]=alpha[(x+y)%5];
+            }
+            for(int output:{0,1,3})for(double exposure:{-3.,3.})for(bool inverted:{false,true}) {
+                auto state=nativeLuminanceState(-.35,!inverted);state.colorMaskEnabled=true;state.colorMaskExposure=exposure;state.colorMaskInverted=inverted;
+                state.colorMaskLab={center.L,center.a*std::cos(angle),center.a*std::sin(angle)};state.colorMaskHueRange=rH;state.colorMaskChromaRange=rC;state.colorMaskLightnessRange=rL;state.grainAmount=19;
+                qInfo()<<"native colour seam"<<center.L<<center.a<<center.b<<rH<<rC<<rL<<output<<exposure<<inverted;
+                verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),false,{.125,.25,.5,.5});
+                if(QTest::currentTestFailed())return;
+            }
+        }
+    }
+    void nativeBrushColorMaskRetainsCpuPolicies() {
+        namespace N=NativeBrush;QImage image(19,13,QImage::Format_RGBA32FPx4);image.fill(QColor::fromRgbF(.2,.3,.4,.375));
+        auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+        const bool restricted=rhi->backend()==QRhi::D3D11||rhi->backend()==QRhi::OpenGLES2;
+        QFutureWatcher<QVector<bool>> watcher;watcher.setFuture(QtConcurrent::run([=] {
+            QVector<bool> checks;auto budget=std::make_shared<BrushRenderBudget>();auto state=nativeLuminanceState(.4,false);
+            state.colorMaskEnabled=true;state.colorMaskExposure=1.1;state.colorMaskLab={.6,.02,.01};state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;
+            auto source=N::CanonicalSource::capture(image,{"colour-policy",ImagePipeline::InputEncoding::LinearProPhoto,false,0,{0,0,1,1}},caps.threads(),budget);if(!source)return checks;
+            const auto attempt=[&](const ProcessingPlan &plan,bool accepted,N::FrameFailure expected=N::FrameFailure::CPUPolicy) {
+                N::FrameFailure why=N::FrameFailure::None;const auto frame=N::FrameAdmission::prepare(source,caps,plan,{"colour-catalog","colour-input","colour-version",1},1,&why);
+                qInfo()<<"native colour policy"<<checks.size()<<"admitted"<<bool(frame)<<"refusal"<<int(why);checks.push_back(accepted?bool(frame)&&why==N::FrameFailure::None:!frame&&why==expected);
+            };
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);attempt(plan,true);
+            attempt(ProcessingPlan::compile(state,plan.encoding,plan.output,true,0),false,N::FrameFailure::InvalidSource);
+            auto malformed=plan;malformed.data[ProcessingPlan::ColorMaskRange].y=0;attempt(malformed,false,N::FrameFailure::CPUPlan);
+            malformed=plan;malformed.data[ProcessingPlan::ColorMaskRange].w=2;attempt(malformed,false,N::FrameFailure::CPUPlan);
+            auto narrow=state;narrow.colorMaskHueRange=44.9;attempt(ProcessingPlan::compile(narrow,plan.encoding,plan.output,false,0),false);
+            narrow=state;narrow.colorMaskChromaRange=.001;attempt(ProcessingPlan::compile(narrow,plan.encoding,plan.output,false,0),false);
+            narrow=state;narrow.colorMaskLightnessRange=.001;attempt(ProcessingPlan::compile(narrow,plan.encoding,plan.output,false,0),false);
+            attempt(ProcessingPlan::compile(state,plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0),false);
+            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
+            auto bright=state;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output,false,0),!restricted);
+            return checks;
+        }));
+        QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);const auto checks=watcher.result();QCOMPARE(checks.size(),10);
+        for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native colour admission policy %1").arg(i)));domain->shutdown();
     }
 };
 int main(int argc,char **argv) {

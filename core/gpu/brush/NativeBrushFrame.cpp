@@ -5,7 +5,7 @@ namespace NativeBrush {
 namespace {
 bool needsExactBackend(bool restrictedBackend, const ProcessingPlan &plan) {
     // Captured by enum comparison on the owner; no backend enum integers or
-    // QRhi access are inferred on the worker. Include positive brush EV.
+    // QRhi access are inferred on the worker. Include positive local-mask EV.
     if (!restrictedBackend) return false;
     const auto &s = plan.state;
     bool complexHsl = s.hue != 0;
@@ -16,7 +16,8 @@ bool needsExactBackend(bool restrictedBackend, const ProcessingPlan &plan) {
         && s.exposure + std::max(0.0f, plan.data[ProcessingPlan::Vignette].x)
             + std::max(0.0f, plan.data[ProcessingPlan::LinearMask].x)
             + std::max(0.0f, plan.data[ProcessingPlan::RadialMask].x)
-            + std::max(0.0f, plan.data[ProcessingPlan::LuminanceMask].x) + brushEV >= 2.5
+            + std::max(0.0f, plan.data[ProcessingPlan::LuminanceMask].x)
+            + std::max(0.0f, plan.data[ProcessingPlan::ColorMask].x) + brushEV >= 2.5
         && (s.saturation != 0 || s.vibrance != 0);
     return complexHsl || bright;
 }
@@ -39,7 +40,9 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
     const auto look = intent.data[ProcessingPlan::LookDetail];
     if (look.x || look.y || look.z || look.w || intent.state.look.lut
         || intent.data[ProcessingPlan::IndependentDetail].x>0
-        || intent.colorMaskActive() || intent.pointColorActive() || intent.denoiseActive() || intent.dehazeActive() || intent.textureActive() || intent.clarityActive()
+        || intent.colorMaskNeedsCpuPrecision()
+        || (intent.colorMaskActive() && intent.output==ColorManagement::OutputSpace::AdobeRgb)
+        || intent.pointColorActive() || intent.denoiseActive() || intent.dehazeActive() || intent.textureActive() || intent.clarityActive()
         || (intent.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&intent.output==ColorManagement::OutputSpace::ProPhotoRgb&&source->m_floatFacts.negativeRgb)
         || (intent.data[ProcessingPlan::Grain].x>0 && intent.output==ColorManagement::OutputSpace::AdobeRgb)
         || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);
