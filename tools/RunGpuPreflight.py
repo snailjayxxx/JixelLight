@@ -13,7 +13,8 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-TEST_NAMES = {'sony-real-files', 'gpu-correctness'}
+TEST_NAMES = {'sony-real-files', 'gpu-correctness', 'native-brush-luminance-gpu'}
+GPU_REPORTS = {'gpu-results.txt': 3, 'native-brush-luminance-gpu-results.txt': 5}
 REPORT_SUFFIXES = {'.json', '.csv', '.txt', '.log', '.xml'}
 
 
@@ -34,22 +35,26 @@ def write_new(path, value):
 def inspect_evidence(directory):
     root = ET.parse(directory / 'ctest.xml').getroot()
     cases = root.findall('testcase')
-    if (root.tag != 'testsuite' or len(cases) != 2
+    if (root.tag != 'testsuite' or len(cases) != len(TEST_NAMES)
             or {c.get('name') for c in cases} != TEST_NAMES
             or any(c.get('status') != 'run' or c.find('failure') is not None
                    or c.find('error') is not None or c.find('skipped') is not None for c in cases)):
-        raise ValueError('Both required CTest cases must run successfully without skips')
-    gpu = (directory / 'original/gpu-results.txt').read_text(encoding='utf-8', errors='replace')
-    totals = re.findall(r'Totals: (\d+) passed, (\d+) failed, (\d+) skipped, (\d+) blacklisted', gpu)
-    if len(totals) != 1 or int(totals[0][0]) < 3 or list(map(int, totals[0][1:])) != [0, 0, 0]:
-        raise ValueError('Complete GPU suite has missing, failed or skipped Qt results')
+        raise ValueError('All three required CTest cases must run successfully without skips')
+    qt_counts = {}
+    for name, minimum in GPU_REPORTS.items():
+        gpu = (directory / 'original' / name).read_text(encoding='utf-8', errors='replace')
+        totals = re.findall(r'Totals: (\d+) passed, (\d+) failed, (\d+) skipped, (\d+) blacklisted', gpu)
+        if len(totals) != 1 or int(totals[0][0]) < minimum or list(map(int, totals[0][1:])) != [0, 0, 0]:
+            raise ValueError('Complete GPU suite has missing, failed or skipped Qt results: ' + name)
+        qt_counts[name] = int(totals[0][0])
     summary = json.loads((directory / 'original/sony-real-reports/summary.json').read_text(encoding='utf-8'))
     if summary.get('passed') is not True:
         raise ValueError('Actual real-Sony fixture/profile validation did not pass')
     profile = directory / 'original/sony-real-reports/dataset/empirical.jlook.json'
     if not profile.is_file() or not profile.stat().st_size:
         raise ValueError('Fitted real-Sony profile is missing')
-    return {'ctest_cases': sorted(TEST_NAMES), 'qt_passed': int(totals[0][0]),
+    return {'ctest_cases': sorted(TEST_NAMES), 'qt_passed': qt_counts['gpu-results.txt'],
+            'native_brush_luminance_qt_passed': qt_counts['native-brush-luminance-gpu-results.txt'],
             'qt_failed_skipped_blacklisted': [0, 0, 0], 'sony_profile_sha256': sha(profile)}
 
 
@@ -60,7 +65,7 @@ def run_preflight(build, report, source_commit, *, config='', ctest='ctest', env
     if not (build / 'CTestTestfile.cmake').is_file() or not (build / 'CMakeCache.txt').is_file():
         raise ValueError('Configured CTest build tree is required')
     # This extra invocation must never replace earlier full-run or failed evidence.
-    for path in (report, build / 'gpu-results.txt', build / 'sony-real-reports'):
+    for path in (report, *(build / name for name in GPU_REPORTS), build / 'sony-real-reports'):
         if path.exists() or path.is_symlink():
             raise ValueError('Preflight requires fresh evidence paths: ' + str(path))
     report.mkdir(parents=True, exist_ok=False)
@@ -68,7 +73,7 @@ def run_preflight(build, report, source_commit, *, config='', ctest='ctest', env
     env['JIXELLIGHT_REQUIRE_GPU'] = '1'
     env['JIXELLIGHT_REQUIRE_SONY_REAL'] = '1'
     argv = [ctest, '--test-dir', str(build), '--output-on-failure', '--no-tests=error',
-            '--output-junit', str(report / 'ctest.xml'), '-j1', '-R', '^(sony-real-files|gpu-correctness)$']
+            '--output-junit', str(report / 'ctest.xml'), '-j1', '-R', '^(' + '|'.join(sorted(TEST_NAMES)) + ')$']
     if config:
         argv += ['-C', config]
     result = {'schema': 1, 'passed': False, 'source_commit': source_commit,
@@ -88,7 +93,7 @@ def run_preflight(build, report, source_commit, *, config='', ctest='ctest', env
     finally:
         original = report / 'original'
         original.mkdir()
-        candidates = [build / 'gpu-results.txt']
+        candidates = [build / name for name in GPU_REPORTS]
         sony = build / 'sony-real-reports'
         if sony.is_dir():
             candidates += sorted(p for p in sony.rglob('*') if p.is_file() and p.suffix.lower() in REPORT_SUFFIXES)
