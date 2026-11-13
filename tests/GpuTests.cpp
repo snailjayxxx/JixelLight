@@ -220,19 +220,21 @@ private slots:
             if(!source)return checks;
             const auto attempt=[&](const ProcessingPlan &plan,bool accepted,N::FrameFailure expected=N::FrameFailure::CPUPolicy) {
                 N::FrameFailure why=N::FrameFailure::None;const auto frame=N::FrameAdmission::prepare(source,caps,plan,{"policy-catalog","policy-input","policy-version",1},1,&why);
+                qInfo()<<"native luminance policy"<<checks.size()<<"admitted"<<bool(frame)<<"refusal"<<int(why);
                 checks.push_back(accepted?bool(frame)&&why==N::FrameFailure::None:!frame&&why==expected);
             };
-            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,0);
             attempt(plan,true);
+            attempt(ProcessingPlan::compile(state,plan.encoding,plan.output,true,0),false,N::FrameFailure::InvalidSource);
             auto malformed=plan;malformed.data[ProcessingPlan::LuminanceMask].w=0;attempt(malformed,false,N::FrameFailure::CPUPlan);
             malformed=plan;malformed.data[ProcessingPlan::LuminanceMaskOptions].x=2;attempt(malformed,false,N::FrameFailure::CPUPlan);
-            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output),false);
-            auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(ProcessingPlan::compile(color,plan.encoding,plan.output),false);
-            auto grain=state;grain.grainAmount=19;attempt(ProcessingPlan::compile(grain,plan.encoding,ColorManagement::OutputSpace::AdobeRgb),false);
-            auto bright=state;bright.exposure=.6;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output),!restricted);
+            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
+            auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(ProcessingPlan::compile(color,plan.encoding,plan.output,false,0),false);
+            auto grain=state;grain.grainAmount=19;attempt(ProcessingPlan::compile(grain,plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0),false);
+            auto bright=state;bright.exposure=.6;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output,false,0),!restricted);
             return checks;
         }));
-        QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);const auto checks=watcher.result();QCOMPARE(checks.size(),7);
+        QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);const auto checks=watcher.result();QCOMPARE(checks.size(),8);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native luminance admission policy %1").arg(i)));
         domain->shutdown();
     }
