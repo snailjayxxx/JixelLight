@@ -101,6 +101,7 @@ private slots:
         if(action.startsWith("preset-")&&action!="preset-save"){
             owner->setExposure(.25);owner->finishInteraction();QVERIFY(owner->saveNamedPreset("Before"));QVERIFY(owner->exportNamedPreset("Before",QUrl::fromLocalFile(presetSource)));owner->setExposure(.75);owner->finishInteraction();
             if(action=="preset-import")QVERIFY(owner->removeNamedPreset("Before"));
+            if(action=="preset-export")owner->copyAdjustments();
         }
         QString openedProject;
         if(action=="project-open"){
@@ -154,9 +155,10 @@ private slots:
         else{QVERIFY(!owner);QVERIFY(!alive);}
         ProjectDatabase snapshot;QVector<ProjectDatabase::SavedPhoto> saved;QVERIFY(snapshot.readSnapshot(project,&saved));QCOMPARE(stored(saved),expected);QCOMPARE(sourceHash(a),hashA);QCOMPARE(sourceHash(b),hashB);
         if(!presetHash.isEmpty())QCOMPARE(sourceHash(presetSource),presetHash);
+        auto acceptedCommand=command;if(action.startsWith("curate-")&&command["field"]=="keywords")acceptedCommand["value"]="one,two";
         bool started=false,terminalSeen=false;int traced=0;
         for(const auto &value:ActionTrace::instance().snapshot()){const auto event=value.toObject();if(event["action"]=="catalog_owner_marker"&&event["id"]==marker)started=true;else if(event["action"]=="catalog_owner_terminal"&&event["id"]==marker)terminalSeen=true;
-            else if(started&&((!command.isEmpty()&&event["command"].toObject()==command)||(action=="language"&&event["action"]=="language_changed"))){QVERIFY(!terminalSeen);++traced;if(action=="copy"||action.startsWith("preset-")||action=="version-rename"||action=="version-remove")QCOMPARE(event["photo_key"].toString(),targetKey);if(action=="version-create"){QVERIFY(event["photo_key"].toString().startsWith("jixel-copy:"));QVERIFY(expected.contains(event["photo_key"].toString()));}if(action.startsWith("sync-"))QCOMPARE(event["source_key"].toString(),targetKey);}}
+            else if(started&&((!acceptedCommand.isEmpty()&&event["command"].toObject()==acceptedCommand)||(action=="language"&&event["action"]=="language_changed"))){QVERIFY(!terminalSeen);++traced;if(action=="copy"||action.startsWith("preset-")||action=="version-rename"||action=="version-remove")QCOMPARE(event["photo_key"].toString(),targetKey);if(action=="version-create"){QVERIFY(event["photo_key"].toString().startsWith("jixel-copy:"));QVERIFY(expected.contains(event["photo_key"].toString()));}if(action.startsWith("sync-"))QCOMPARE(event["source_key"].toString(),targetKey);}}
         QVERIFY(started);QVERIFY(terminalSeen);QCOMPARE(traced,action=="selection"?0:1);
         if(action=="preset-save")QVERIFY(QFileInfo::exists(presetPath));if(action=="preset-export")QVERIFY(QFileInfo::exists(presetOutput));
         if(action.startsWith("preset-")){
@@ -192,7 +194,8 @@ private slots:
         for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="nested_preset_marker"&&row["id"]==marker)after=true;else if(after&&row["action"]=="preset_command"){targets.append(row["photo_key"].toString());commands.append(row["command"].toObject()["command"].toString());}}QCOMPARE(targets,QStringList({first,second}));QCOMPARE(commands,QStringList({"preset.save","preset.replace"}));
     }
     void reentrantProjectOpenKeepsBothAcceptedCatalogTargets() {
-        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(64,48,QImage::Format_RGBA64);image.fill(Qt::gray);const auto path=dir.filePath("project.png");QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));c.setExposure(.75);c.finishInteraction();QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"First"));const auto first=c.projectPath();c.setExposure(1.25);c.finishInteraction();QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Second"));const auto second=c.projectPath();QVERIFY(c.flushEdits());QVERIFY(c.openProject(QUrl::fromLocalFile(first)));
+        QTemporaryDir dir;QVERIFY(dir.isValid());QImage image(64,48,QImage::Format_RGBA64);image.fill(Qt::gray);const auto path=dir.filePath("project.png");QVERIFY(image.save(path));PhotoController c(nullptr);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));c.setExposure(.75);c.finishInteraction();QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"First"));const auto first=c.projectPath();QVERIFY(c.createProject(QUrl::fromLocalFile(dir.path()),"Second"));const auto second=c.projectPath();c.setExposure(1.25);c.finishInteraction();QVERIFY(c.flushEdits());
+        ProjectDatabase snapshot;QVector<ProjectDatabase::SavedPhoto> firstRows,secondRows;QVERIFY(snapshot.readSnapshot(first,&firstRows));QVERIFY(snapshot.readSnapshot(second,&secondRows));QCOMPARE(firstRows.size(),1);QCOMPARE(secondRows.size(),1);QCOMPARE(firstRows[0].adjustments.exposure,.75);QCOMPARE(secondRows[0].adjustments.exposure,1.25);QVERIFY(c.openProject(QUrl::fromLocalFile(first)));
         const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("nested_project_marker",{{"id",marker}});bool nested=false,reopened=false;
         const auto connection=QObject::connect(&c,&PhotoController::projectChanged,&c,[&]{if(nested)return;nested=true;reopened=c.openProject(QUrl::fromLocalFile(first));});const bool accepted=c.openProject(QUrl::fromLocalFile(second));QObject::disconnect(connection);QVERIFY(accepted);QVERIFY(nested);QVERIFY(reopened);QCOMPARE(c.projectPath(),first);QCOMPARE(c.exposure(),.75);QStringList targets;bool after=false;
         for(const auto &value:ActionTrace::instance().snapshot()){const auto row=value.toObject();if(row["action"]=="nested_project_marker"&&row["id"]==marker)after=true;else if(after&&row["action"]=="project_command")targets.append(row["command"].toObject()["path"].toString());}QCOMPARE(targets,QStringList({second,first}));
