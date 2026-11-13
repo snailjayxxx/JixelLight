@@ -245,7 +245,7 @@ private slots:
         ColorStageDiagnostics observed(output.image().width(),output.image().height(),f.plan);
         for(int y=0;y<output.image().height();++y){const auto *p=reinterpret_cast<const float *>(output.image().constScanLine(y));const auto *source=reinterpret_cast<const float *>(corrected.constScanLine(y));for(int x=0;x<output.image().width();++x){QCOMPARE(p[4*x+3],source[4*x+3]);for(int i=0;i<int(ColorStage::Count);++i)observed.observe(static_cast<ColorStage>(i),x,p[4*x],p[4*x+1],p[4*x+2]);}observed.finishRow();}
         const auto find=[](const QJsonObject &stages){for(const auto &v:stages["entries"].toArray()){const auto row=v.toObject();if(row["id"]=="perceptual_look")return row;}return QJsonObject{};};
-        const auto actual=find(observed.result()),expected=find(original.stages["color_stages"].toObject());QVERIFY(!expected.isEmpty());QCOMPARE(actual,expected);
+        const auto actual=find(observed.result()),expected=find(original.stages);QVERIFY(!expected.isEmpty());QCOMPARE(actual,expected);
         QVERIFY(!request->render());auto view=output.sharedImage();QVERIFY(!view.isNull());const auto bytes=output.image().sizeInBytes();QVERIFY(cost>bytes);request.reset();QCOMPARE(budget->snapshot().charged,bytes);output={};QCOMPARE(budget->snapshot().charged,bytes);view={};QCOMPARE(budget->snapshot().charged,qint64(0));
     }
     void admittedWorkingBrushStripsMatchWholeAndChargeTheLargerFloatOutputs() {
