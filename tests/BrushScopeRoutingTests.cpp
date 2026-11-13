@@ -83,7 +83,7 @@ class BrushScopeRoutingTests final:public QObject {
 private slots:
     void gestureTransitionSignalsMayCloseOrDestroyOwner_data() {
         QTest::addColumn<QString>("action");QTest::addColumn<bool>("closeOnly");
-        for(const auto &action:QStringList{"crop-begin-refine","crop-begin-flag","crop-cancel-flag","crop-apply-flag","crop-apply-commit","brush-begin","brush-end","brush-end-preview","brush-begin-warning","brush-append-warning","brush-capacity-drawing","brush-capacity-warning","brush-capacity-recovery","brush-apply-recovery","brush-invalid-cancel","brush-discard-recovery","brush-cancel"})
+        for(const auto &action:QStringList{"crop-begin-refine","crop-begin-flag","crop-cancel-flag","crop-apply-flag","crop-apply-commit","brush-begin","brush-end","brush-end-preview","brush-end-recovery","brush-begin-warning","brush-append-warning","brush-capacity-drawing","brush-capacity-warning","brush-capacity-recovery","brush-apply-recovery","brush-invalid-cancel","brush-discard-recovery","brush-cancel"})
             for(bool closeOnly:{true,false})QTest::newRow(qPrintable(action+(closeOnly?"-close":"-destroy")))<<action<<closeOnly;
     }
     void gestureTransitionSignalsMayCloseOrDestroyOwner() {
@@ -101,8 +101,9 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);
         if(action.startsWith("crop-")&&!action.startsWith("crop-begin")){QVERIFY(owner->beginCrop());QTRY_VERIFY_WITH_TIMEOUT(owner->previewReady()&&!owner->m_preparing&&!owner->rendering()&&!owner->m_prepare->busy()&&!owner->m_render->busy(),15000);}
         if(action.startsWith("brush-")&&action!="brush-begin"&&action!="brush-begin-warning"){
-            QVERIFY(owner->beginBrushStrokeModePressure(capacity?"full":"",.5,.5,.002,.6,1,1,"paint",capacity?0:1));
+            QVERIFY(owner->beginBrushStrokeModePressure(capacity?"full":"",.5,.5,.002,.6,1,1,"paint",action.contains("recovery")?.5:(capacity?0:1)));
             if(capacity&&action!="brush-append-warning")QVERIFY(owner->appendBrushStroke(.5,.5,.5));
+            if(action=="brush-end-recovery")QVERIFY(owner->appendBrushStroke(.7,.5,.5));
             if(action=="brush-apply-recovery"||action=="brush-discard-recovery"){
                 bool refused=false;for(int i=0;i<40&&!refused;++i)refused=!owner->appendBrushStroke(i%2?.1:.9,.5,1);
                 QVERIFY(refused);QVERIFY(owner->brushRecoveryAvailable());
