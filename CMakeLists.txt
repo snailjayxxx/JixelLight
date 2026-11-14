@@ -450,7 +450,7 @@ target_compile_definitions(JixelLightPresentedWindowCaptureTests PRIVATE JIXELLI
 set_target_properties(JixelLightPresentedWindowCaptureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 add_test(NAME presented-window-capture COMMAND JixelLightPresentedWindowCaptureTests -o presented-window-capture-results.txt,txt -o -,txt)
 set_tests_properties(presented-window-capture PROPERTIES TIMEOUT 120
-    ENVIRONMENT "JIXELLIGHT_PRESENTED_CAPTURE_REPORT=${CMAKE_BINARY_DIR}/presented-window-capture.json")
+    ENVIRONMENT "JIXELLIGHT_PRESENTED_CAPTURE_REPORT=${CMAKE_BINARY_DIR}/presented-window-capture.json;QSG_RENDER_LOOP=threaded")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The original offscreen CPU tests retain their existing platform. This
     # additional test needs the actual window swapchain under CI's xvfb-run.

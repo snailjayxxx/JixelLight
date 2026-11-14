@@ -15,8 +15,9 @@
 #include <cstring>
 #include <memory>
 
-// QA only. Read the actual window backbuffer during a requested normal frame,
-// then wait for that frame's swap/end signals. Unlike grabWindow(), this does
+// QA only. Read the actual window backbuffer after a post-request scene-graph
+// synchronization, then wait for that normal frame's swap/end signals. This
+// cannot attach the readback to an older frame already rendering. Unlike grabWindow(), this does
 // not open another frame that ends with SkipPresent. Never substitute a cached
 // image, offscreen item render, desktop screenshot, or another rendering API.
 class PresentedWindowCapture final {
@@ -26,8 +27,8 @@ public:
         QImage image;
         QString error;
         qint64 bufferBytes=0;
-        bool frameSwapped=false;
-        bool ok() const { return error.isEmpty() && frameSwapped && !image.isNull(); }
+        bool frameSwapped=false,synchronizedAfterRequest=false;
+        bool ok() const { return error.isEmpty() && synchronizedAfterRequest && frameSwapped && !image.isNull(); }
     };
     bool busy() const { return busy_; }
 
@@ -57,14 +58,21 @@ public:
             QMetaObject::invokeMethod(window,[waiterGuard]{if(waiterGuard)waiterGuard->quit();},Qt::QueuedConnection);
         },Qt::DirectConnection);
         const auto destroyed=QObject::connect(window,&QObject::destroyed,&waiter,&QEventLoop::quit);
-        window->scheduleRenderJob(QRunnable::create([window,state]{readFrame(window,state);}),QQuickWindow::AfterRenderingStage);
+        // An AfterRendering job posted directly from the GUI can join a frame
+        // that already synchronized older properties. Register it only from
+        // our own future AfterSynchronizing job. Qt releases its job-list lock
+        // before executing these jobs; the second job belongs to this frame.
+        window->scheduleRenderJob(QRunnable::create([window,state]{
+            {QMutexLocker lock(&state->mutex);if(state->cancelled)return;state->synchronized=true;}
+            window->scheduleRenderJob(QRunnable::create([window,state]{readFrame(window,state);}),QQuickWindow::AfterRenderingStage);
+        }),QQuickWindow::AfterSynchronizingStage);
         QTimer deadline;deadline.setSingleShot(true);deadline.setTimerType(Qt::PreciseTimer);
         QObject::connect(&deadline,&QTimer::timeout,&waiter,&QEventLoop::quit);
         deadline.start(remainingMs);window->update();
         waiter.exec(QEventLoop::ExcludeUserInputEvents);
         QObject::disconnect(swapped);QObject::disconnect(ended);QObject::disconnect(destroyed);
         QMutexLocker lock(&state->mutex);state->cancelled=true;
-        Result result;result.bufferBytes=state->bufferBytes;result.frameSwapped=state->swapped;
+        Result result;result.bufferBytes=state->bufferBytes;result.frameSwapped=state->swapped;result.synchronizedAfterRequest=state->synchronized;
         if(!windowGuard)result.error=QStringLiteral("capture-window-destroyed");
         else if(elapsed.elapsed()>=remainingMs)result.error=QStringLiteral("capture-deadline-expired");
         else if(!state->error.isEmpty())result.error=state->error;
@@ -77,10 +85,10 @@ public:
 private:
     struct Pending {
         QMutex mutex;QSize extent;qreal dpr=1;qint64 bytes=0,limit=0,bufferBytes=0;
-        QImage image;QString error;bool attempted=false,swapped=false,ended=false,cancelled=false;
+        QImage image;QString error;bool synchronized=false,attempted=false,swapped=false,ended=false,cancelled=false;
     };
     static void readFrame(QQuickWindow *window,const std::shared_ptr<Pending> &state) {
-        {QMutexLocker lock(&state->mutex);if(state->cancelled)return;state->attempted=true;}
+        {QMutexLocker lock(&state->mutex);if(state->cancelled || !state->synchronized || state->attempted)return;state->attempted=true;}
         const auto fail=[&](const char *reason){QMutexLocker lock(&state->mutex);state->error=QString::fromLatin1(reason);};
         auto *renderer=window->rendererInterface();
         auto *rhi=static_cast<QRhi *>(renderer->getResource(window,QSGRendererInterface::RhiResource));

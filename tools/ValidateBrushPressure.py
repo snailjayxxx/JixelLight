@@ -93,6 +93,7 @@ def validate_presented_window_captures(data: dict) -> None:
     assert type(calls) is int and calls >= 38
     assert type(data["window_capture_presented_calls"]) is int
     assert data["window_capture_presented_calls"] == calls
+    assert type(data["window_capture_post_request_sync_calls"]) is int and data["window_capture_post_request_sync_calls"] == calls
     assert type(data["window_capture_pending_peak"]) is int and data["window_capture_pending_peak"] == 1
     assert type(data["window_capture_Qt_control_calls"]) is int and data["window_capture_Qt_control_calls"] == 1
     assert type(data["window_capture_failure_Qt_grab_calls"]) is int and data["window_capture_failure_Qt_grab_calls"] == 0
@@ -118,7 +119,7 @@ def validate_window_capture_protocol(data: dict, mode: str) -> None:
         assert data["window_capture_kind"] == "original-Qt-offscreen-window-grab"
         assert data["window_capture_error"] == ""
         assert type(data["window_grab_calls"]) is int and data["window_grab_calls"] >= 38
-        for key in ("window_capture_presented_calls", "window_capture_pending_peak",
+        for key in ("window_capture_presented_calls", "window_capture_post_request_sync_calls", "window_capture_pending_peak",
                     "window_capture_Qt_control_calls", "window_capture_failure_Qt_grab_calls",
                     "window_capture_peak_buffer_bytes"):
             assert type(data[key]) is int and data[key] == 0

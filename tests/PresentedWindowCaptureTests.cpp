@@ -8,9 +8,26 @@
 #include <QQuickItem>
 #include <QSGSimpleRectNode>
 #include <QSemaphore>
+#include <QCoreApplication>
+#include <QEvent>
 #include <atomic>
 #include "app/PresentedWindowCapture.h"
 namespace {
+class CaptureGateRelease final:public QObject {
+public:
+    CaptureGateRelease(QObject *parent,std::shared_ptr<QSemaphore> gate):QObject(parent),gate_(std::move(gate)){}
+protected:
+    bool event(QEvent *event) override {
+        if(event->type()==QEvent::User){gate_->release();return true;}
+        return QObject::event(event);
+    }
+private:
+    std::shared_ptr<QSemaphore> gate_;
+};
+struct InFlightCaptureProbe {
+    std::atomic_bool done=false,threaded=false,gateReleased=false;
+    PresentedWindowCapture::Result result;
+};
 class CaptureRect final:public QQuickItem {
 public:
     explicit CaptureRect(QQuickItem *parent):QQuickItem(parent){setFlag(ItemHasContents,true);}
@@ -90,8 +107,36 @@ private slots:
         records.append(QJsonObject{{"name","presentedWindowCaptureBoundsReentryAndPendingWindowDestruction"},{"passed",true},
             {"hidden_expired_overbudget_and_reentrant_refused",true},{"pending_window_destroyed",true},{"healthy_next_window",true}});
     }
+    void captureWaitsForRequestSynchronizationWhileOlderFrameIsRendering() {
+        QQuickWindow window;window.resize(96,64);window.setColor(QColor(13,37,61));
+        auto *rect=new CaptureRect(window.contentItem());rect->setPosition({8,8});rect->setSize({64,40});rect->color(QColor(120,30,60));
+        window.show();QTRY_VERIFY_WITH_TIMEOUT(window.isExposed(),5000);
+        auto capture=std::make_shared<PresentedWindowCapture>();auto gate=std::make_shared<QSemaphore>();auto probe=std::make_shared<InFlightCaptureProbe>();
+        // The old scene has synchronized before this job. Keep that render
+        // in flight while the GUI changes the item and requests its capture.
+        window.scheduleRenderJob(QRunnable::create([&window,rect,capture,gate,probe]{
+            probe->threaded.store(QThread::currentThread()!=window.thread());
+            QMetaObject::invokeMethod(&window,[&window,rect,capture,gate,probe]{
+                rect->color(QColor(30,160,210));
+                // The high-priority event runs only once grab enters its
+                // event loop, after its render jobs have been registered.
+                QCoreApplication::postEvent(new CaptureGateRelease(&window,gate),new QEvent(QEvent::User),Qt::HighEventPriority);
+                probe->result=capture->grab(&window,5000);probe->done.store(true,std::memory_order_release);
+            },Qt::QueuedConnection);
+            probe->gateReleased.store(gate->tryAcquire(1,1000));
+        }),QQuickWindow::BeforeRenderingStage);
+        window.update();QTRY_VERIFY_WITH_TIMEOUT(probe->done.load(std::memory_order_acquire),6000);
+        QVERIFY(probe->threaded.load());QVERIFY(probe->gateReleased.load());
+        QVERIFY2(probe->result.ok(),qPrintable(probe->result.error));QVERIFY(probe->result.synchronizedAfterRequest);
+        const qreal dpr=window.effectiveDevicePixelRatio();QCOMPARE(probe->result.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(30,160,210));
+        const auto control=window.grabWindow().convertToFormat(QImage::Format_RGBA8888);window.update();
+        QCOMPARE(probe->result.image.convertToFormat(QImage::Format_RGBA8888),control);
+        records.append(QJsonObject{{"name","captureWaitsForRequestSynchronizationWhileOlderFrameIsRendering"},{"passed",true},
+            {"older_frame_held_after_sync",true},{"request_during_in_flight_render",true},{"post_request_synchronization_observed",true},
+            {"new_revision_pixels_match_Qt_control",true},{"DPR",dpr}});
+    }
     void cleanupTestCase() {
-        const QJsonObject report{{"passed",records.size()==2},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+        const QJsonObject report{{"passed",records.size()==3},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"actual_qpa",QGuiApplication::platformName()},{"cases",records},{"QA_only",true},{"full_App_ASAN_or_physical_OS_presentation_claim",false}};
         const auto path=qEnvironmentVariable("JIXELLIGHT_PRESENTED_CAPTURE_REPORT");
         if(!path.isEmpty()){QSaveFile f(path);const auto bytes=QJsonDocument(report).toJson();QVERIFY(f.open(QIODevice::WriteOnly));QCOMPARE(f.write(bytes),bytes.size());QVERIFY(f.commit());}

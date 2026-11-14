@@ -135,7 +135,7 @@ class BrushPressureFailureEvidenceTests(unittest.TestCase):
 class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
     def valid(self):
         return dict(window_capture_kind="normal-presented-window-backbuffer", window_capture_error="",
-                    window_grab_calls=38, window_capture_presented_calls=38,
+                    window_grab_calls=38, window_capture_presented_calls=38, window_capture_post_request_sync_calls=38,
                     window_capture_pending_peak=1, window_capture_Qt_control_calls=1,
                     window_capture_failure_Qt_grab_calls=0, window_capture_seed_matches_Qt_grab=True,
                     window_capture_seed_sha256="ab" * 32, window_capture_Qt_control_sha256="ab" * 32,
@@ -159,6 +159,7 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
     def test_rejects_missing_per_packet_frames(self):
         self.rejects("window_grab_calls", (37, True))
         self.rejects("window_capture_presented_calls", (37, 39, True))
+        self.rejects("window_capture_post_request_sync_calls", (37, 39, True))
 
     def test_rejects_cached_or_synchronous_fallback_sources(self):
         self.rejects("window_capture_kind", ("cached-preview", "QQuickItem-grab", "synchronous-window-grab"))
@@ -185,7 +186,7 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
     def test_original_offscreen_protocol_is_restricted_to_Linux_CPU(self):
         data = self.valid()
         data.update(window_capture_qpa="offscreen", window_capture_kind="original-Qt-offscreen-window-grab",
-                    window_capture_presented_calls=0, window_capture_pending_peak=0,
+                    window_capture_presented_calls=0, window_capture_post_request_sync_calls=0, window_capture_pending_peak=0,
                     window_capture_Qt_control_calls=0, window_capture_peak_buffer_bytes=0,
                     window_capture_seed_matches_Qt_grab=False, window_capture_seed_sha256="",
                     window_capture_Qt_control_sha256="")
