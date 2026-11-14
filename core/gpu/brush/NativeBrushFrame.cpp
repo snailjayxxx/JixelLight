@@ -42,7 +42,7 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
         || intent.data[ProcessingPlan::IndependentDetail].x>0
         || intent.colorMaskNeedsCpuPrecision()
         || (intent.colorMaskActive() && intent.output==ColorManagement::OutputSpace::AdobeRgb)
-        || intent.pointColorNeedsCpuPrecision() || intent.denoiseActive() || intent.dehazeActive() || intent.textureActive() || intent.clarityActive()
+        || intent.pointColorNeedsCpuPrecision() || intent.denoiseActive() || intent.data[ProcessingPlan::Dehaze].x>0 || intent.textureActive() || intent.clarityActive()
         || (intent.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&intent.output==ColorManagement::OutputSpace::ProPhotoRgb&&source->m_floatFacts.negativeRgb)
         || (intent.data[ProcessingPlan::Grain].x>0 && intent.output==ColorManagement::OutputSpace::AdobeRgb)
         || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);
@@ -65,6 +65,11 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
     auto work = BudgetAccess::reserve(source->m_budget, workBytes);
     if (!work) return fail(FrameFailure::Budget);
     try {
+        auto resolved = intent;
+        // Partial previews must carry their complete corrected-frame facts.
+        // Resolve an absent airlight only on a complete canonical input.
+        if (resolved.dehazeActive() && !ImagePipeline::resolveDehazeAirlight(source->m_pixels, resolved, cancel))
+            return fail(cancelled(cancel) ? FrameFailure::Cancelled : FrameFailure::CPUPolicy);
         BrushMaskTileRaster::FramePlan original;
         if (!BrushMaskTileRaster::detail::planFrameBounded(doc, size.width(), size.height(), {0,0,size.width(),size.height()},
             &original, cancel.get(), {frame.x,frame.y,frame.z,frame.w}, indexLimit, std::size_t(BrushRenderRequest::MaxSourcePixels)))
@@ -75,7 +80,7 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
             if (s.style.opacity > 0 && s.style.hardness >= .999) return fail(FrameFailure::CPUPolicy);
         auto a = Ptr(new FrameAdmission);
         a->m_source = std::move(source); a->m_caps = caps; a->m_stamp = {std::move(target), revision, a->m_source->key()};
-        a->m_plan = intent; a->m_preparedOn=QThread::currentThreadId(); a->m_cancel = cancel; a->m_outputCharge = std::move(output); a->m_workCharge = std::move(work);
+        a->m_plan = std::move(resolved); a->m_preparedOn=QThread::currentThreadId(); a->m_cancel = cancel; a->m_outputCharge = std::move(output); a->m_workCharge = std::move(work);
         a->m_outputBytes = outputBytes; a->m_workBytes = workBytes; a->m_uniformBytes = u; a->m_colourUniformBytes = c;
         a->m_candidateCount = original.candidateVisits; a->m_packed.reserve(p.references); a->m_tiles.reserve(p.tiles.size());
         for (std::size_t t=0; t<p.tiles.size(); ++t) {
