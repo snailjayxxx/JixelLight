@@ -35,7 +35,7 @@ validator independently checks every flag and exact boolean command order; three
 Python tests reject forged/missing evidence, numeric booleans and extra fields.
 
 Expected counts before compilation: Python **305**, Core **278**, command-session
-one additional result, brush-scope scheduling **94**; CTest **107**, Qt result
+**24**, brush-scope scheduling **94**; CTest **107**, Qt result
 groups **101**, ordinary GPU **85**, native GPU **19**. No shader, RAW, processing
 math, precision/resource limit or deadline changes. Fresh compilation, complete
 local/native/RAW checks and own platform/package acceptance remain required.

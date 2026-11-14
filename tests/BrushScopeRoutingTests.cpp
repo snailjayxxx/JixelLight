@@ -564,13 +564,13 @@ private slots:
     }
     void cameraReferenceVisibilityNotificationCanDeleteOrCloseItsOwner() {
         for(bool closeOnly:{false,true}) {
-            ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);bool notified=false;
+            ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);bool notified=false,closed=false;
             const auto revision=owner->m_requestedRevision,photo=owner->m_photoEpoch;
-            QObject::connect(owner,&PhotoController::referenceChanged,owner,[&]{notified=true;if(closeOnly)owner->m_closing=true;else delete owner.data();});
+            QObject::connect(owner,&PhotoController::referenceChanged,owner,[&]{notified=true;if(closeOnly)closed=owner->beginClose();else delete owner.data();});
             const QJsonObject command{{"command","camera-reference.show"},{"enabled",true}};QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(notified);
             const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("camera_reference_command"));QCOMPARE(row["command"].toObject(),command);
             QCOMPARE(row["revision"].toString(),QString::number(revision));QCOMPARE(row["photo_epoch"].toString(),QString::number(photo));QCOMPARE(row["completion"].toString(),QString("visibility-request-accepted"));
-            if(closeOnly){QVERIFY(owner&&owner->m_closing);QVERIFY(!owner->referenceBusy());QVERIFY(!owner->m_referenceJob->busy());delete owner.data();}else QVERIFY(owner.isNull());
+            if(closeOnly){QVERIFY(closed);QVERIFY(owner&&owner->m_closing);QVERIFY(!owner->referenceBusy());QVERIFY(!owner->m_referenceJob->busy());delete owner.data();}else QVERIFY(owner.isNull());
         }
     }
     void cameraReferenceReentrantHideKeepsAcceptanceOrderAndStartsNoSupersededLoad() {
