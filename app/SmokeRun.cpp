@@ -693,6 +693,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto exportNamesTrace=std::make_shared<QJsonObject>();
     auto exportSelectionTrace=std::make_shared<QJsonObject>();
     auto photoSelectionTrace=std::make_shared<QJsonObject>();
+    auto referenceVisibilityTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -715,7 +716,18 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             state->lookEnabled=controller->currentIsRaw();
             if(state->lookEnabled) {
                 controller->setLookCode("FL");controller->setLookParameter("sharpness",5);controller->setLookParameter("clarity",4);
-                controller->setLookParameter("fade",2);controller->setShowCameraReference(true);
+                controller->setLookParameter("fade",2);
+                const auto before=controller->gpuPlan(true).state.toJson();const auto cursor=historyCursor(controller);
+                const auto revision=controller->renderRevision();const auto source=controller->gpuSource();
+                const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);
+                referenceVisibilityTrace->insert("trace_marker",marker);ActionTrace::instance().record("camera_reference_smoke_boundary",{{"marker",marker}});
+                controller->setShowCameraReference(false);
+                const bool hidden=!controller->showCameraReference();
+                const bool accepted=controller->executeCommand({{"command","camera-reference.show"},{"enabled",true}});
+                referenceVisibilityTrace->insert("adapter_hidden",hidden);
+                referenceVisibilityTrace->insert("command_accepted",accepted&&controller->showCameraReference());
+                referenceVisibilityTrace->insert("intent_history_revision_source_unchanged",controller->gpuPlan(true).state.toJson()==before
+                    &&historyCursor(controller)==cursor&&controller->renderRevision()==revision&&controller->gpuSource().cacheKey()==source.cacheKey());
             }
             state->phase=1;
         }
@@ -1550,9 +1562,25 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                             "other_intent_history_unchanged","copy_intent_history_unchanged","canonical_trace"})
             photoSelectionOk=photoSelectionOk&&photoSelectionTrace->value(key).toBool();
         bool scopeDomainsOk=true;for(const auto *key:{"source_pointer","source_histograms_exact","source_invariants","source_plot","working_pointer","working_histograms_exact","working_invariants","working_plot","display_pointer","display_restored","command_trace_passed"})scopeDomainsOk=scopeDomainsOk&&scopeDomains->value(key).toBool();
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && (!gpuRequired || controller->gpuActive());
+        bool referenceVisibilityOk=true;
+        if(state->lookEnabled) {
+            QJsonArray commands;bool seen=false;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();
+                if(row["action"]=="camera_reference_smoke_boundary"&&row["marker"]==referenceVisibilityTrace->value("trace_marker")){seen=true;commands={};}
+                else if(seen&&row["action"]=="camera_reference_command")commands.append(row["command"]);
+            }
+            const QJsonArray expected{QJsonObject{{"command","camera-reference.show"},{"enabled",false}},QJsonObject{{"command","camera-reference.show"},{"enabled",true}}};
+            referenceVisibilityTrace->insert("canonical_commands",commands);referenceVisibilityTrace->insert("command_trace_passed",seen&&commands==expected);
+            referenceVisibilityTrace->insert("reference_loaded",!controller->referenceBusy()&&!controller->cameraReferenceUrl().isEmpty());
+            for(const auto *key:{"adapter_hidden","command_accepted","intent_history_revision_source_unchanged","command_trace_passed","reference_loaded"})
+                referenceVisibilityOk=referenceVisibilityOk&&referenceVisibilityTrace->value(key).toBool();
+        }
+        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && referenceVisibilityOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
+        report["ui_camera_reference_command_trace_passed"]=referenceVisibilityOk;
+        report["ui_camera_reference_visibility"]=*referenceVisibilityTrace;
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_preset_actions_found"]=state->presetActionsPresent;

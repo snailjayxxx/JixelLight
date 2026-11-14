@@ -227,6 +227,17 @@ private slots:
             const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::proofSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopCameraReferenceVisibilityCannotAlterEarlierSessionExports(){
+        for(bool enabled:{false,true}) {
+            const QJsonObject command{{"command","camera-reference.show"},{"enabled",enabled}};bool parsed=!enabled;
+            QVERIFY(CommandRegistry::decodeCameraReferenceVisibility(command,&parsed));QCOMPARE(parsed,enabled);
+            CommandSession result;result.photoCount=90;result.commandCount=91;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));
+            QCOMPARE(result.photoCount,90);QCOMPARE(result.commandCount,91);QVERIFY(result.exports.isEmpty());
+            QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),"camera-reference.show"),CommandRegistry::cameraReferenceVisibilitySchema());
+            QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),"camera-reference.show").isEmpty());
+        }
+    }
     void desktopScopesCannotMutateAnOfflineSessionOrItsEarlierExports(){
         for(const auto &command:QList<QJsonObject>{{{"command","scopes.domain"},{"domain","source"}},{{"command","scopes.mode"},{"mode","waveform"}},{{"command","scopes.full-resolution"},{"enabled",true}}}) {
             CommandRegistry::ScopePresentation parsed;QVERIFY(CommandRegistry::decodeScopePresentation(command,&parsed));CommandSession result;result.photoCount=89;

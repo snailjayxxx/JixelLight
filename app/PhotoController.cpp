@@ -807,6 +807,7 @@ bool PhotoController::executeCommand(const QVariantMap &command) {
     const auto object=QJsonObject::fromVariantMap(command);
     if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel"||object["command"]=="xmp.cancel")return executeOperationCancel(object);
     if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
+    if(object["command"].toString().startsWith("camera-reference."))return executeCameraReferenceVisibility(object);
     if(object["command"].toString().startsWith("scopes."))return executeScopePresentation(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
