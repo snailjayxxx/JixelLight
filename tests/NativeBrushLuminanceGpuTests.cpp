@@ -166,6 +166,71 @@ private slots:
         engine=std::make_unique<GpuEngine>(rhi.get());
         qInfo()<<engine->backendName();
     }
+    void nativeDiagnosticCapturesPreparedSourceUpload() {
+        namespace N=NativeBrush;
+        constexpr int width=9,height=7,stride=width*16+32;
+        QByteArray storage(stride*height,char(0x5a));
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const float pixel[4]={.125f+float(x%4)/4,.25f+float(y%3)/8,1.5f,.75f+float(x%2)/4};
+            std::memcpy(storage.data()+y*stride+x*16,pixel,sizeof(pixel));
+        }
+        const QImage image(reinterpret_cast<const uchar *>(storage.constData()),width,height,stride,QImage::Format_RGBA32FPx4);
+        const auto expected=FloatFrameFingerprint::capture(image);
+        const QRectF frame{.125,.25,.5,.5};
+        AdjustmentState state;
+        BrushMaskGeometry::Stroke stroke;stroke.style={.3,.45,.7};stroke.dabs={{{.3,.4},.7},{{.6,.6},.9}};
+        state.brushMasks.layers.push_back({"upload-diagnostic",true,.25,{stroke}});
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,true,.5);
+        plan.setFrameRect(frame);
+        auto budget=std::make_shared<BrushRenderBudget>();
+        auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;};
+        Prepared prepared;
+        {
+            QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
+            QVERIFY(finished.isValid());watcher.setFuture(QtConcurrent::run([=] {
+                Prepared p;p.source=N::CanonicalSource::capture(image,{"native-upload-diagnostic",plan.encoding,true,.5f,frame},caps.threads(),budget);
+                if(p.source){p.upload=N::UploadAdmission::prepare(p.source,caps);p.frame=N::FrameAdmission::prepare(p.source,caps,plan,{"upload-catalog","upload-photo","upload-version",1},1);}
+                return p;
+            }));
+            if(!watcher.isFinished())QVERIFY(finished.wait(10000));
+            QVERIFY(watcher.isFinished());prepared=watcher.result();
+        }
+        QVERIFY(prepared.source&&prepared.upload&&prepared.frame);
+        const auto sourceKey=QString::fromLatin1(prepared.source->key().toHex());
+        auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
+        const auto stamp=prepared.frame->stamp();QVERIFY(domain->activate(stamp));auto handle=domain->attachFrame(input,prepared.frame);QVERIFY(bool(handle));
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->compute(handle,cb));
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->publishable(handle));
+        const auto before=domain->trace();QJsonObject output;N::FrameStamp replyStamp;int callbacks=0;
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        QVERIFY(domain->capture(handle,cb,image.cacheKey(),[&](N::FrameStamp value,QJsonObject result){++callbacks;replyStamp=std::move(value);output=std::move(result);}));
+        QRhiReadbackResult independent;bool done=false;independent.completed=[&]{done=true;};
+        auto *updates=rhi->nextResourceUpdateBatch();updates->readBackTexture(QRhiReadbackDescription(domain->texture(handle)),&independent);cb->resourceUpdate(updates);
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QCOMPARE(callbacks,1);QVERIFY(done);QVERIFY(replyStamp==stamp);
+        QVERIFY(output["available"].toBool());QCOMPARE(output["producer"].toString(),QString("native-brush-gpu-compute"));
+        QCOMPARE(independent.data.size(),width*height*16);
+        const QImage actual(reinterpret_cast<const uchar *>(independent.data.constData()),width,height,width*16,QImage::Format_RGBA32FPx4);
+        const auto finalFingerprint=FloatFrameFingerprint::capture(actual);
+        for(auto it=finalFingerprint.begin();it!=finalFingerprint.end();++it)QCOMPARE(output[it.key()],it.value());
+        QCOMPARE(output["diagnostic_samples_rgba16"].toArray().size(),32);
+        QCOMPARE(domain->trace().sourceUploads,before.sourceUploads);QCOMPARE(domain->trace().coverageDispatches,before.coverageDispatches);
+        QCOMPARE(domain->trace().colourDispatches,before.colourDispatches);QCOMPARE(domain->trace().controlReadbackBytes,before.controlReadbackBytes);
+        QCOMPARE(domain->normalFinishCalls(),quint64(0));
+        domain->release(handle);domain->release(input);domain->shutdown();prepared={};domain.reset();QCOMPARE(budget->snapshot().charged,qint64(0));
+        const auto uploaded=output["source_staging"].toObject();
+        QVERIFY2(uploaded["available"].toBool(),"Native brush prepared FP32 upload must have its own diagnostic fingerprint");
+        for(auto it=expected.begin();it!=expected.end();++it)QCOMPARE(uploaded[it.key()],it.value());
+        QCOMPARE(uploaded["stage"].toString(),QString("prepared-source-upload"));
+        QCOMPARE(uploaded["producer"].toString(),QString("gpu-texture-upload"));
+        QCOMPARE(uploaded["source_cache_key"].toString(),QString::number(image.cacheKey()));
+        QCOMPARE(uploaded["input_source_key"].toString(),sourceKey);QCOMPARE(uploaded["parameter_revision"].toInteger(),qint64(1));
+        QCOMPARE(uploaded["encoding"].toString(),QString("linear-prophoto"));
+        QVERIFY(uploaded["raw_source"].toBool());QCOMPARE(uploaded["base_exposure_stops"].toDouble(),.5);
+        QVERIFY(uploaded["used_for_compute"].toBool());QVERIFY(!uploaded["monitor_icc"].toBool());
+    }
     void nativeBrushLuminanceMatchesReferenceAcrossSources() {
         QImage integer(37,29,QImage::Format_RGBA64),floating(37,29,QImage::Format_RGBA32FPx4);
         for(int y=0;y<29;++y)for(int x=0;x<37;++x) {
