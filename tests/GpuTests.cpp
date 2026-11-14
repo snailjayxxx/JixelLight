@@ -907,7 +907,7 @@ private slots:
             exactPolicy(false,"none",{},ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
             AdjustmentState brush;BrushMaskGeometry::Stroke paint;paint.style={.3,.4,.8};paint.dabs={{{.4,.5},.8}};
             brush.brushMasks.layers.push_back({"span-reference",true,.7,{paint}});
-            exactPolicy(true,wide?"wide-rgb-span":"none",brush,ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
+            exactPolicy(true,wide?"wide-rgb-span":"existing-color-or-brush",brush,ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
         }
         source.fill(QColor::fromRgbF(.2,.3,.4,1));auto *widePixel=reinterpret_cast<float *>(source.scanLine(17))+4*16;
         widePixel[0]=65504;widePixel[1]=.2f;widePixel[2]=-.03f;widePixel[3]=0;
