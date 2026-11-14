@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -82,6 +83,68 @@ def validate_brush_radius(data: dict) -> None:
         assert math.isfinite(row["width"]) and math.isfinite(row["canvas_width"])
         assert 0 < row["width"] <= row["canvas_width"] - 15
 
+
+
+def validate_presented_window_captures(data: dict) -> None:
+    """Require fresh normal-window frames and the independent full-image control."""
+    assert data["window_capture_kind"] == "normal-presented-window-backbuffer"
+    assert data["window_capture_error"] == ""
+    calls = data["window_grab_calls"]
+    assert type(calls) is int and calls >= 38
+    seed_count = data["window_capture_seed_frame_count"]
+    assert type(seed_count) is int and 3 <= seed_count <= 64
+    assert type(data["window_capture_seed_stable_frames"]) is int and data["window_capture_seed_stable_frames"] == 3
+    assert type(data["window_capture_presented_calls"]) is int
+    assert data["window_capture_presented_calls"] == calls + seed_count - 1
+    assert type(data["window_capture_post_request_sync_calls"]) is int
+    assert data["window_capture_post_request_sync_calls"] == data["window_capture_presented_calls"]
+    assert type(data["window_capture_pending_peak"]) is int and data["window_capture_pending_peak"] == 1
+    assert type(data["window_capture_Qt_control_calls"]) is int and data["window_capture_Qt_control_calls"] == 1
+    assert type(data["window_capture_failure_Qt_grab_calls"]) is int and data["window_capture_failure_Qt_grab_calls"] == 0
+    assert data["window_capture_seed_matches_Qt_grab"] is True
+    seed, control = data["window_capture_seed_sha256"], data["window_capture_Qt_control_sha256"]
+    assert isinstance(seed, str) and re.fullmatch(r"[0-9a-f]{64}", seed) and seed == control
+    frames = data["window_capture_seed_frames"]
+    assert isinstance(frames, list) and len(frames) == seed_count
+    previous_ms = -1
+    for row in frames:
+        assert row["post_request_sync"] is True
+        assert isinstance(row["pixel_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", row["pixel_sha256"])
+        assert type(row["elapsed_ms"]) is int and 0 <= row["elapsed_ms"] < 45000 and previous_ms <= row["elapsed_ms"]
+        previous_ms = row["elapsed_ms"]
+    assert all(row["pixel_sha256"] == seed for row in frames[-3:])
+    budget, peak = data["window_capture_buffer_budget_bytes"], data["window_capture_peak_buffer_bytes"]
+    assert type(budget) is int and budget == 64 * 1024**2
+    assert type(peak) is int and 0 < peak <= budget
+    captures = data["captures"]
+    assert len(captures) == len(OWNED_CAPTURES)
+    assert peak == max(c["width"] * c["height"] * 8 for c in captures)
+    assert data["capture_png_quality"] == 85
+    assert data["capture_png_save_calls"] == len(OWNED_CAPTURES) and data["capture_png_failures"] == 0
+
+
+def validate_window_capture_protocol(data: dict, mode: str) -> None:
+    assert mode in ("cpu", "gpu")
+    if sys.platform.startswith("linux") and mode == "cpu":
+        # The existing CPU gate deliberately uses Qt's offscreen platform.
+        # Keep all its window grabs; it has no normal presented swapchain.
+        assert data["window_capture_qpa"] == "offscreen"
+        assert data["window_capture_kind"] == "original-Qt-offscreen-window-grab"
+        assert data["window_capture_error"] == ""
+        assert type(data["window_grab_calls"]) is int and data["window_grab_calls"] >= 38
+        for key in ("window_capture_presented_calls", "window_capture_post_request_sync_calls", "window_capture_pending_peak",
+                    "window_capture_Qt_control_calls", "window_capture_failure_Qt_grab_calls",
+                    "window_capture_peak_buffer_bytes", "window_capture_seed_frame_count", "window_capture_seed_stable_frames"):
+            assert type(data[key]) is int and data[key] == 0
+        assert data["window_capture_seed_frames"] == []
+        assert data["window_capture_seed_matches_Qt_grab"] is False
+        assert data["window_capture_seed_sha256"] == data["window_capture_Qt_control_sha256"] == ""
+        assert data["capture_png_quality"] == 85
+        assert data["capture_png_save_calls"] == len(OWNED_CAPTURES) and data["capture_png_failures"] == 0
+    else:
+        expected = "windows" if sys.platform == "win32" else "cocoa" if sys.platform == "darwin" else "xcb"
+        assert data["window_capture_qpa"] == expected
+        validate_presented_window_captures(data)
 
 
 def preserve_failure_captures(data: dict, native_path: Path, report: Path, *, sony: bool) -> tuple[dict, list]:
@@ -280,6 +343,7 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert 1 <= data["capture_png_queue_peak"] <= 2 and data["capture_png_failures"] == 0
             assert data["source_kind"] == "owned-rgba64-png"
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
+            validate_window_capture_protocol(data, mode)
             validate_scope_locale(data, mode)
             validate_brush_radius(data)
             assert all(data[key] is True for key in ("low_pressure_continuous", "low_pressure_undo", "low_pressure_redo", "low_pressure_reset"))

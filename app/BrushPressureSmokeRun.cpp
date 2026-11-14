@@ -1,6 +1,7 @@
 #include "app/PhotoController.h"
 #include "app/SmokeCaptureCoordinates.h"
 #include "app/PressureCaptureQueue.h"
+#include "app/PresentedWindowCapture.h"
 #include "core/pipeline/BrushMaskGeometry.h"
 #include "core/pipeline/BrushMaskDocument.h"
 #include "core/pipeline/ImagePipeline.h"
@@ -8,6 +9,7 @@
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QPointingDevice>
 #include <QTabletEvent>
 #include "core/pipeline/BrushRenderRequest.h"
@@ -21,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QSaveFile>
 #include <QFile>
+#include <QDir>
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -89,6 +92,11 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     for(int y=0;y<size.height();++y)for(int x=0;x<size.width();++x)reinterpret_cast<QRgba64 *>(image.scanLine(y))[x]=QRgba64::fromRgba64(9000+x*20,11000+y*20,16000+x*10,alpha);
     if(!owned->isValid()||!image.save(source)){QTimer::singleShot(0,c,[]{QCoreApplication::exit(2);});return;}
     struct State {
+        PresentedWindowCapture windowCapture;
+        int presentedCaptures=0,postSyncCaptures=0,capturePending=0,capturePendingPeak=0,controlCaptures=0,failureControlCaptures=0;
+        qint64 capturePeakBytes=0,controlCaptureNs=0;
+        bool offscreenCapture=false,captureSeedChecked=false,captureSeedMatches=false;QString captureError,captureSeedHash,captureControlHash;
+        QJsonObject captureSeedDiagnostic;QJsonArray captureSeedFrames;int captureSeedStableFrames=0;
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
         int pngSaveCalls=0,pngSaveFailures=0;qint64 pngSaveNs=0,pngSaveMaxNs=0;PressureCaptureQueue captureQueue;
         int focusBootstrapCount=0;bool focusObserved=false,initialWindowActive=false,focusReady=false;
@@ -104,29 +112,97 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         QJsonObject eraserTipCommitted;bool useEraser=false,eraserTipStarted=false,eraserTipEmptyRefused=false,eraserTipExact=false,eraserTipUndo=false,eraserTipRedo=false,eraserTipRestored=false,eraserTipPanelStable=false,eraserTipHintLocalized=false,eraserTipHintRestored=false;QString eraserTipHintEnglish,eraserTipHintChinese,eraserTipHintAfterRelease;std::shared_ptr<QPointingDevice> pen,eraser;std::optional<BM::Stroke> expectedPaint,expectedErase;
     };
     auto s=std::make_shared<State>();s->clock.start();s->sourceHash=hash(source);
+#ifdef Q_OS_LINUX
+    s->offscreenCapture=QGuiApplication::platformName()==QStringLiteral("offscreen");
+#endif
     s->mouse=false; // Controlled native tablet packets; legacy mouse has its own gates.s->initialPressure=.2;
     s->pen=std::make_shared<QPointingDevice>("Controlled photo pressure pen",987654329,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
     QWindowSystemInterface::registerInputDevice(s->pen.get());
     s->eraser=std::make_shared<QPointingDevice>("Controlled eraser end",987654330,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Eraser,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
     QWindowSystemInterface::registerInputDevice(s->eraser.get());auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return find(window->contentItem(),name);};
-    const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();
-        // Qt's synchronous grab skips presentation. Queue a regular frame for
-        // the next event turn before another grab uses the same swapchain.
-        window->update();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
-    // PNG compression and SHA run on a bounded worker; the UI frame itself
-    // is captured synchronously and remains immutable while it is encoded.
+    const auto grab=[=]{
+        if(s->offscreenCapture){
+            // Preserve the original Linux CPU/offscreen protocol verbatim.
+            QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();
+            window->update();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;
+        }
+        if(!s->captureError.isEmpty())return QImage{};
+        QElapsedTimer clock;clock.start();QScopedValueRollback<int> pending(s->capturePending,s->capturePending+1);
+        s->capturePendingPeak=std::max(s->capturePendingPeak,s->capturePending);
+        const auto intent=masks(c);const auto revision=c->renderRevision();const int cursor=history(c);const bool drawing=c->brushDrawing();
+        const qint64 captureStartedMs=s->clock.elapsed();PresentedWindowCapture::Result frame;++s->windowGrabCalls;
+        if(!s->captureSeedChecked){
+            auto seed=s->windowCapture.grabStable(window,int(45000-s->clock.elapsed()));
+            s->captureSeedStableFrames=seed.consecutiveFrames;s->capturePeakBytes=std::max(s->capturePeakBytes,seed.peakBufferBytes);
+            for(const auto &row:seed.observations){
+                ++s->presentedCaptures;if(row.synchronizedAfterRequest)++s->postSyncCaptures;
+                s->captureSeedFrames.append(QJsonObject{{"pixel_sha256",QString::fromLatin1(row.pixelSHA256)},
+                    {"elapsed_ms",row.elapsedMs},{"post_request_sync",row.synchronizedAfterRequest}});
+            }
+            frame=std::move(seed.frame);
+        }else{
+            frame=s->windowCapture.grab(window,int(45000-s->clock.elapsed()));
+            s->capturePeakBytes=std::max(s->capturePeakBytes,frame.bufferBytes);
+            if(frame.ok()){++s->presentedCaptures;if(frame.synchronizedAfterRequest)++s->postSyncCaptures;}
+        }
+        const qint64 captureReturnedMs=s->clock.elapsed();
+        if(!frame.ok())s->captureError=frame.error;
+        else {
+            if(!s->captureSeedChecked){
+                s->captureSeedChecked=true;QElapsedTimer controlClock;controlClock.start();
+                const auto control=window->grabWindow();s->controlCaptureNs+=controlClock.nsecsElapsed();++s->controlCaptures;window->update();
+                const qint64 controlReturnedMs=s->clock.elapsed();
+                const auto actual=frame.image.convertToFormat(QImage::Format_RGBA8888),expected=control.convertToFormat(QImage::Format_RGBA8888);
+                const auto fingerprint=[](const QImage &image){return QString::fromLatin1(QCryptographicHash::hash(
+                    QByteArrayView(reinterpret_cast<const char *>(image.constBits()),image.sizeInBytes()),QCryptographicHash::Sha256).toHex());};
+                s->captureSeedHash=fingerprint(actual);s->captureControlHash=fingerprint(expected);
+                s->captureSeedMatches=!actual.isNull()&&!expected.isNull()&&actual==expected&&actual.devicePixelRatio()==expected.devicePixelRatio();
+                if(!s->captureSeedMatches)s->captureError=QStringLiteral("CAPTURE_SEED_DIFFERS_FROM_QT_WINDOW_GRAB");
+                // Preserve both actual frames on a failed exact comparison. Save
+                // frames after computing the same original exact comparison.
+                // A separate owned prefix survives the validator's normal
+                // successful-work cleanup; never overwrite earlier evidence.
+                const auto prefix=qEnvironmentVariable("JIXELLIGHT_PRESSURE_SEED_DIAGNOSTIC_PREFIX",report+".seed-diagnostic");
+                QJsonArray frames;
+                const auto saveFrame=[&](const QString &label,const QImage &image,const QString &pixels){
+                    const auto path=prefix+"."+label+".png";
+                    const bool saved=QDir::isAbsolutePath(path)&&!QFile::exists(path)&&image.save(path,"PNG",85);
+                    frames.append(QJsonObject{{"label",label},{"path",path},{"saved",saved},{"width",image.width()},
+                        {"height",image.height()},{"DPR",image.devicePixelRatio()},{"canonical_pixel_sha256",pixels},
+                        {"PNG_sha256",saved?QString::fromLatin1(hash(path)):QString()}});
+                };
+                if(!s->captureSeedMatches){saveFrame("normal",actual,s->captureSeedHash);saveFrame("Qt-control",expected,s->captureControlHash);}
+                auto *label=item("scopeStatusLabel");
+                s->captureSeedDiagnostic={{"frames",frames},{"phase",s->phase},{"capture_started_ms",captureStartedMs},
+                    {"normal_returned_ms",captureReturnedMs},{"Qt_control_returned_ms",controlReturnedMs},
+                    {"same_exact_comparison",s->captureSeedMatches},{"original_revision",qint64(revision)},
+                    {"current_revision",qint64(c->renderRevision())},{"original_history",cursor},{"current_history",history(c)},
+                    {"gpu_active_after_control",c->gpuActive()},{"backend_after_control",c->processingBackend()},
+                    {"scope_pixels_after_control",qint64(c->scopesPixelCount())},{"scope_status_after_control",c->scopesStatus()},
+                    {"scope_UI_after_control",label?label->property("text").toString():QString()},
+                    {"instrumentation_after_original_comparison",true},{"product_acceptance_claim",false}};
+            }
+        }
+        if(masks(c)!=intent || c->renderRevision()!=revision || history(c)!=cursor || c->brushDrawing()!=drawing)
+            s->captureError=QStringLiteral("CAPTURE_WAIT_CHANGED_INTENT_HISTORY_OR_OWNER");
+        const auto ns=clock.nsecsElapsed();s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);
+        return s->captureError.isEmpty()?frame.image:QImage{};
+    };
+    // PNG compression and SHA run on a bounded worker; each actual presented
+    // window frame remains immutable while it is encoded.
     const auto capture=[=](const QString &label,const QImage &shot,bool allowAfterFailure=false){
         const auto path=report+"."+label+"-owned.png";
         return s->captureQueue.enqueue(label,path,shot,window->effectiveDevicePixelRatio(),allowAfterFailure);
     };
     const auto finish=[=](QString error){
         if(s->done)return;s->done=true;timer->stop();
-        if(!error.isEmpty())capture("failure",grab(),true);
+        const auto failureGrab=[=]{++s->failureControlCaptures;return window->grabWindow();};
+        if(!error.isEmpty())capture("failure",failureGrab(),true);
         const bool capturesOk=s->captureQueue.finish();
         if(!capturesOk && error.isEmpty()) {
             error=QStringLiteral("PNG_CAPTURE_SAVE_FAILED");
-            capture("failure",grab(),true);s->captureQueue.finish();
+            capture("failure",failureGrab(),true);s->captureQueue.finish();
         }
         for(const auto &record:s->captureQueue.records()) {
             ++s->pngSaveCalls;s->pngSaveNs+=record.saveNs;s->pngSaveMaxNs=std::max(s->pngSaveMaxNs,record.saveNs);
@@ -135,7 +211,10 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         }
         const bool isolated=QCoreApplication::instance()->property("jixellightSmokeSettingsIsolated").toBool();
         const bool unchanged=hash(source)==s->sourceHash;
-        const bool passed=error.isEmpty()&&capturesOk&&s->referencePlanStable&&s->expectedJob&&s->expectedJob->isFinished()&&s->lowPressureContinuous&&s->lowPressureUndo&&s->lowPressureRedo&&s->lowPressureReset&&s->lowLimitFinishRefused&&s->lowLimitStatusVisible&&s->lowLimitUnchanged&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
+        const bool windowCapturesOk=s->failureControlCaptures==0&&s->windowGrabCalls>=38&&(s->offscreenCapture?
+            (s->presentedCaptures==0&&s->postSyncCaptures==0&&s->captureSeedFrames.isEmpty()&&s->captureSeedStableFrames==0&&s->controlCaptures==0&&s->capturePendingPeak==0):
+            (s->captureSeedMatches&&s->postSyncCaptures==s->presentedCaptures&&s->controlCaptures==1&&s->capturePendingPeak==1&&s->captureSeedStableFrames==PresentedWindowCapture::RequiredStableFrames&&s->captureSeedFrames.size()>=PresentedWindowCapture::RequiredStableFrames&&s->captureSeedFrames.size()<=PresentedWindowCapture::MaxSeedFrames&&s->presentedCaptures==s->windowGrabCalls+s->captureSeedFrames.size()-1));
+        const bool passed=error.isEmpty()&&capturesOk&&windowCapturesOk&&s->referencePlanStable&&s->expectedJob&&s->expectedJob->isFinished()&&s->lowPressureContinuous&&s->lowPressureUndo&&s->lowPressureRedo&&s->lowPressureReset&&s->lowLimitFinishRefused&&s->lowLimitStatusVisible&&s->lowLimitUnchanged&&s->eraserTipStarted&&s->eraserTipEmptyRefused&&s->eraserTipExact&&s->eraserTipUndo&&s->eraserTipRedo&&s->eraserTipRestored&&s->eraserTipPanelStable&&s->eraserTipHintLocalized&&s->eraserTipHintRestored&&s->focusReady&&s->radiusProbeDone&&s->radiusRecords.size()==10&&s->radiusHintRecords.size()==3&&s->heldRadiusGuards==6&&s->localeChecks==6&&s->localeUnchanged&&s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase&&isolated&&unchanged&&s->cancelPaint&&s->cancelErase&&s->pressurePaint&&s->pressureErase&&s->oneUndo&&s->undoRedo&&s->reopened&&s->transient&&s->exactExport&&s->exportDone&&s->exported==1&&s->failed==0&&!s->exportCancelled&&s->clock.elapsed()<45000&&(!qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_GPU")||c->gpuActive());
         const QJsonObject d{{"window_focus_injection","Qt-QPA-controlled-window-focus"},{"initial_window_active",s->initialWindowActive},{"focus_bootstrap_count",s->focusBootstrapCount},{"window_focus_ready",s->focusReady},{"physical_OS_activation_verified",false},{"commit_check",s->commitCheck},{"radius_probe_done",s->radiusProbeDone},{"radius_key_records",s->radiusRecords},{"radius_hint_records",s->radiusHintRecords},{"radius_held_guards",s->heldRadiusGuards},{"scope_locale_checks",s->localeChecks},{"scope_locale_unchanged",s->localeUnchanged},{"scope_locale_records",s->localeRecords},{"passed",passed},{"error",error},{"phase",s->phase},{"elapsed_ms",s->clock.elapsed()},{"deadline_ms",45000},
             {"eraser_tip_started",s->eraserTipStarted},{"eraser_tip_empty_refused",s->eraserTipEmptyRefused},{"eraser_tip_exact",s->eraserTipExact},{"eraser_tip_undo",s->eraserTipUndo},{"eraser_tip_redo",s->eraserTipRedo},{"eraser_tip_restored",s->eraserTipRestored},{"eraser_tip_panel_stable",s->eraserTipPanelStable},{"eraser_tip_hint_localized",s->eraserTipHintLocalized},{"eraser_tip_hint_restored",s->eraserTipHintRestored},{"eraser_tip_hint_english",s->eraserTipHintEnglish},{"eraser_tip_hint_chinese",s->eraserTipHintChinese},{"eraser_tip_hint_after_release",s->eraserTipHintAfterRelease},{"test_fixture",true},{"product_UI_acceptance",false},{"actual_photo_app_UI",true},{"physical_tablet_verified",false},{"injection",s->mouse?"QWindow-mouse-events":"Qt-QPA-controlled-pressure-stylus"},{"initial_pressure",s->initialPressure},{"mouse_synthesis_enabled",QCoreApplication::testAttribute(Qt::AA_SynthesizeMouseForUnhandledTabletEvents)},
             {"reference_plan_stable",s->referencePlanStable},{"reference_started_ms",s->referenceStartedMs},{"export_queued_ms",s->exportQueuedMs},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},{"build_version",QStringLiteral(JIXELLIGHT_VERSION)},{"source_kind","owned-rgba64-png"},{"source_alpha_u16",alpha},{"barrel_transitions_held",s->barrelTransitions},{"cancelled_barrel_paint",s->cancelledBarrelPaint},{"cancelled_barrel_erase",s->cancelledBarrelErase},{"primary_lift_only",s->barrelTransitions==8&&s->cancelledBarrelPaint&&s->cancelledBarrelErase},{"source_pixels",size.width()*size.height()},
@@ -145,6 +224,10 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             {"pressure_paint_reference",s->pressurePaint},{"pressure_erase_reference",s->pressureErase},{"cancel_paint",s->cancelPaint},{"cancel_erase",s->cancelErase},{"one_undo",s->oneUndo},{"undo_redo",s->undoRedo},{"project_reopen",s->reopened},{"held_intent_history_revision_unchanged",s->transient},
             {"live_paint_delta",s->livePaintDelta},{"live_erase_delta",s->liveEraseDelta},{"live_to_commit_paint_delta",s->commitPaintDelta},{"live_to_commit_erase_delta",s->commitEraseDelta},
             {"export_exact_pixels_and_ICC",s->exactExport},{"gpu_active",c->gpuActive()},{"backend",c->processingBackend()},{"dpr",window->effectiveDevicePixelRatio()},
+            {"window_capture_seed_diagnostic",s->captureSeedDiagnostic},
+            {"window_capture_kind",s->offscreenCapture?"original-Qt-offscreen-window-grab":"normal-presented-window-backbuffer"},{"window_capture_qpa",QGuiApplication::platformName()},{"window_capture_error",s->captureError},{"window_capture_presented_calls",s->presentedCaptures},{"window_capture_post_request_sync_calls",s->postSyncCaptures},{"window_capture_pending_peak",s->capturePendingPeak},{"window_capture_buffer_budget_bytes",PresentedWindowCapture::BufferBudget},{"window_capture_peak_buffer_bytes",s->capturePeakBytes},
+            {"window_capture_seed_frame_count",s->captureSeedFrames.size()},{"window_capture_seed_stable_frames",s->captureSeedStableFrames},{"window_capture_seed_frames",s->captureSeedFrames},
+            {"window_capture_seed_matches_Qt_grab",s->captureSeedMatches},{"window_capture_seed_sha256",s->captureSeedHash},{"window_capture_Qt_control_sha256",s->captureControlHash},{"window_capture_Qt_control_calls",s->controlCaptures},{"window_capture_Qt_control_total_ms",s->controlCaptureNs/1e6},{"window_capture_failure_Qt_grab_calls",s->failureControlCaptures},
             {"native_gpu_brush",false},{"native_float_raw_decoder",false},{"capture_png_quality",85},{"capture_png_async",true},{"capture_png_queue_peak",int(s->captureQueue.peakPending())},{"capture_png_failures",s->pngSaveFailures},{"capture_png_save_calls",s->pngSaveCalls},{"capture_png_save_total_ms",s->pngSaveNs/1e6},{"capture_png_save_max_ms",s->pngSaveMaxNs/1e6},{"window_grab_calls",s->windowGrabCalls},{"window_grab_total_ms",s->windowGrabNs/1e6},{"window_grab_max_ms",s->windowGrabMaxNs/1e6},{"captures",s->captures},{"phases",s->phases}};
         QSaveFile f(report);const auto bytes=QJsonDocument(d).toJson(QJsonDocument::Indented);const bool saved=f.open(QIODevice::WriteOnly)&&f.write(bytes)==bytes.size()&&f.commit();
         QTimer::singleShot(0,c,[passed,saved]{QCoreApplication::exit(passed&&saved?0:1);});
@@ -152,8 +235,12 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     QObject::connect(c,&PhotoController::exportFinished,timer,[=](int success,int failed,bool cancelled){s->exportDone=true;s->exported=success;s->failed=failed;s->exportCancelled=cancelled;});
     QObject::connect(timer,&QTimer::timeout,c,[=,keep=owned]{
         Q_UNUSED(keep);
+        // A capture's bounded GUI wait may deliver this same 50ms timer. The
+        // original phase must not inject another packet until that frame ends.
+        if(s->windowCapture.busy())return;
         if(s->phases.isEmpty()||s->phases.last().toObject()["phase"].toInt()!=s->phase)s->phases.append(QJsonObject{{"phase",s->phase},{"at_ms",s->clock.elapsed()}});
         if(s->clock.elapsed()>=45000){finish("Controlled photo pressure QA exceeded45000ms");return;}
+        if(!s->captureError.isEmpty()){finish(s->captureError);return;}
         if(s->captureQueue.hasFailure()){finish("PNG_CAPTURE_SAVE_FAILED");return;}
         if(!c->brushReady())return;auto *canvas=item("photoCanvas"),*overlay=item("brushCanvasOverlay");if(!canvas||!overlay||!canvas->property("brushDisplayReady").toBool())return;
         const auto raw=overlay->property("editor");QObject *editor=raw.value<QObject *>();if(!editor&&raw.canConvert<QJSValue>())editor=raw.value<QJSValue>().toQObject();if(!editor){finish("Actual brush editor unavailable");return;}

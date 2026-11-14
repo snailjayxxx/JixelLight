@@ -970,3 +970,28 @@ The new plots currently run on the CPU and do not replace or weaken mandatory GP
 - `--catalog Project.jlp --list-catalog` reports saved original/virtual `catalog_key`, normalized absolute source paths, version names, curation, tags and timeline. It reads no source images or metadata and works while originals are offline. An empty valid catalog returns an empty list; export-specific flags and commands are rejected in listing mode.
 - Repeatable `--catalog-key` selects exact saved identities in existing catalog order, retaining history cursors and immutable Develop snapshots. Keys are not case-folded or Unicode-normalized. Unknown, repeated or empty keys reject the complete plan before outputs/decodes. No selectors preserves existing all-version names and behavior. Export limits remain 1–1000 selected versions; a small selection from a larger catalog is allowed.
 - Two additional pure core checks cover exact identities, saved ordering, empty listing and whole-plan ambiguity/unknown/duplicate refusal. The expanded ordinary/deployed CLI safety suite verifies selected virtual-copy pixels/geometry/state, dense sequence names, offline listing, read-only database/source SHA-256 and no migration/WAL files, rejected flag combinations, empty catalogs and a 1002-version catalog with a one-version export. Local Qt 6.8.3 Release verification passed: **119 core / 25 performance-correctness**, full 10-test CTest **59.90 s**, including the expanded CLI suite. Local offscreen compute/display-GPU explicitly skip and do not count as GPU acceptance. No GUI/image-pipeline source changes are made in this batch; the unchanged full RAW GUI passed at the accepted parent with all UI and **10,340,960** pixels in **18.012 s**. Exact-commit core/GUI, mandatory three-platform GPU and deployed-package acceptance remain pending.
+
+
+## M162：正常窗口帧取图的独立验证（开发中）
+
+M161 / b91de16 已以原始三平台 CI454、本地106项、两平台安装包和实际 macOS 运行证据完成独立验收；工作区已更新，main 与 PR15 保持原状。Windows CPU 压力流程44160/44219ms仍接近45000ms上限。M162 在独立 NAS 源码/构建中增加仅供 QA 使用的正常窗口后备缓冲取图器，以及同一窗口两次实际修订的全图 Qt 截图一致性、颜色/混合、预算/重入/超时后关窗验证。当前压力流程尚未接入新取图器，不声称 Windows 性能已改善；原有正常 UI、像素运算、106项测试选择与所有产品期限均保留。详见 `F0_PRESENTED_WINDOW_CAPTURE_PROOF_M162.md`。
+
+
+## M163：逐次压力检查接入正常窗口帧（开发中）
+
+M162 / 247830e 的独立实际窗口验证完成：Cocoa DPR1/2各7/0，两次修订均与 Qt 同步截图全像素一致，预算/重入/超时后关窗检查通过。M163 在另一个全新 NAS 源码/构建中接入 Windows/macOS 及 Linux GPU/xcb 压力取图，保留原始所有阶段操作、逐包检查、38次逻辑取图、22张质量85 PNG、独立导出像素/ICC与45000ms期限。Linux CPU保留原有离屏 Qt 取图及全部检查；每个正常窗口运行额外要求一次全图 Qt 对照，已失败时保留原紧急 Qt 截图。两条已验证的 Qt 测试方法移至独立目标，原 native-monitor 文件和三项检查逐字节恢复；原106项/100个Qt组全部保留，新增1项后107/101。新增7个便携反例，Python301；正常产品图像运算、UI和依赖不变。跨平台条件是在C++编译前核对、调整，先前300项Python通过日志保留。Windows改善与完整验收尚待新源码自身 CI 和交付证据，已验收根仍为 b91de16。详见 `F0_PRESENTED_PRESSURE_CAPTURE_STAGE_M163.md`。
+
+
+## M164：保留首次 GPU 初始帧差异（仅诊断）
+
+M163/e460454 暂存未验收：CPU压力6787ms通过，实际窗口DPR1/2各4/0，但首次GPU初始正常帧与立即Qt同步截图全图不一致，899ms/phase50失败。81份文件77,878,994字节、19份运行文件副本、五份构建记录、完整源码及全部1400个构建文件哈希已封存，manifest为a946fcff…；已验收根仍为b91de16。M164在全新NAS源码/物理构建中仅追加两帧PNG和只读时间/状态诊断，完全保留原始精确失败判定、所有阶段和45000ms期限。先取得一次实际GPU结果和差异区域，不声称修复或完整验收。详见 `F0_PRESENTED_SEED_DIAGNOSTIC_M164.md`。
+
+
+## M165：捕获请求之后的场景同步（开发中）
+
+M164/8c5e64e已保留首次GPU真实失败及两帧3080×1840图像。独立字节解码验证PNG CRC/像素哈希，17497个差异像素、alpha一致；旧正常帧显示半径8%/不透明度80%，立即Qt对照已为20%/100%，说明首帧沿用了较早的界面状态。M163/e460与M164原失败、源码及构建均封存，已验收根仍为b91de16。M165使用新的NAS源码/物理构建，将读回任务延后到请求之后的AfterSynchronizing阶段再注册，并要求同步标记。新增确定性的在途旧帧回归，独立捕获Qt预期5/0；原38次逻辑取图、22张质量85 PNG、首次Qt精确全图对照、所有阶段和45000ms期限保持。Python301、原106项/100组加独立捕获后107/101、19份运行文件均待新版本完整验证；尚无Windows速度改善或整体完成声明。详见 `F0_POST_SYNC_WINDOW_CAPTURE_STAGE_M165.md`。
+
+
+## M166：首次Qt对照前等待真实窗口帧一致（开发中）
+
+M165/7b5904c的在途旧帧回归DPR1/2各5/0，前三个压力场景通过；透明GPU初始对照仍失败。已封存131份文件109,757,550字节、完整源码/构建、19份运行文件与五份构建记录。逐字节对照仅386个像素位于加载指示动画，最大RGBA差[2,2,2,0]，其余所有像素一致；没有放宽像素判定。M166在全新NAS源码/构建中，让首次Qt精确对照前连续3个已同步、正常呈现的实际窗口全图哈希一致；最多64帧且仍使用原45000ms剩余期限。额外读回单独计数/记录哈希，只保留旧帧哈希；原38次逐包逻辑读取、22张质量85 PNG、首次Qt全图精确对照和所有阶段保持。新增实际GUI变化后收敛回归，捕获Qt预期6/0；Python302，107/101、19运行文件待本版完整验证。已验收根仍为b91de16。详见 `F0_STABLE_INITIAL_WINDOW_SEED_STAGE_M166.md`。
