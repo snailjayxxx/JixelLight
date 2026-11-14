@@ -10,6 +10,11 @@
 #include <QSemaphore>
 #include <QCoreApplication>
 #include <QEvent>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QFileInfo>
+#include <QDir>
+#include <QFont>
 #include <atomic>
 #include "app/PresentedWindowCapture.h"
 namespace {
@@ -170,8 +175,57 @@ private slots:
             {"normal_frames",stable.observations.size()},{"required_matching_frames",3},{"consecutive_matching_frames",stable.consecutiveFrames},
             {"earlier_different_actual_frame_observed",true},{"final_full_image_matches_Qt_control",true},{"DPR",dpr}});
     }
+    void bilingualCaptionKeepsPhotoViewportStable() {
+        QQmlEngine engine;
+        const auto path=QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath("../ui/BilingualCaption.qml");
+        QQmlComponent component(&engine,QUrl::fromLocalFile(path));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        QQuickWindow window;window.resize(400,240);window.setColor(QColor(13,37,61));
+        std::unique_ptr<QObject> owned(component.createWithInitialProperties({
+            {"chineseText",QStringLiteral("当前 RAW / 编辑结果")},
+            {"englishText",QStringLiteral("Current RAW / edit result")}}));
+        QVERIFY2(owned,qPrintable(component.errorString()));
+        QQmlEngine::setObjectOwnership(owned.get(),QQmlEngine::CppOwnership);
+        auto *caption=qobject_cast<QQuickItem *>(owned.get());QVERIFY(caption);
+        caption->setParentItem(window.contentItem());
+        auto *canvas=new CaptureRect(window.contentItem());canvas->color(QColor(49,83,113));
+        const auto layout=[&]{canvas->setPosition({0,caption->height()+6});canvas->setHeight(window.height()-caption->height()-6);};
+        QObject::connect(caption,&QQuickItem::heightChanged,canvas,layout);
+        layout();
+        window.show();QTRY_VERIFY_WITH_TIMEOUT(window.isExposed(),5000);
+        const QFont initial=caption->property("font").value<QFont>();
+        PresentedWindowCapture capture;QJsonArray rows;
+        for(const QString &family:QStringList{QString{},QStringLiteral("Arial"),QStringLiteral("Helvetica"),QStringLiteral("Times New Roman"),QStringLiteral("Courier New"),QStringLiteral("PingFang SC")}) {
+            QFont font=initial;if(!family.isEmpty())font.setFamily(family);
+            caption->setProperty("font",font);
+            for(const int width:{400,176,100}) {
+                caption->setWidth(width);canvas->setWidth(width);
+                caption->setProperty("chinese",false);layout();
+                const auto english=capture.grab(&window,5000);QVERIFY2(english.ok(),qPrintable(english.error));
+                const qreal captionHeight=caption->height(),canvasHeight=canvas->height();
+                QVERIFY(captionHeight>0&&canvasHeight>0);
+                QCOMPARE(caption->property("text").toString(),QStringLiteral("Current RAW / edit result"));
+                const qreal padding=caption->property("topPadding").toReal()+caption->property("bottomPadding").toReal();
+                QVERIFY(caption->property("contentHeight").toReal()+padding<=captionHeight+.01);
+                caption->setProperty("chinese",true);
+                const auto chinese=capture.grab(&window,5000);QVERIFY2(chinese.ok(),qPrintable(chinese.error));
+                QCOMPARE(caption->height(),captionHeight);QCOMPARE(canvas->height(),canvasHeight);
+                QCOMPARE(caption->property("text").toString(),QStringLiteral("当前 RAW / 编辑结果"));
+                QVERIFY(caption->property("contentHeight").toReal()+padding<=captionHeight+.01);
+                QVERIFY(english.image!=chinese.image);
+                const auto control=window.grabWindow().convertToFormat(QImage::Format_RGBA8888);window.update();
+                QCOMPARE(chinese.image.convertToFormat(QImage::Format_RGBA8888),control);
+                rows.append(QJsonObject{{"family",family.isEmpty()?initial.family():family},{"width",width},
+                    {"caption_height",captionHeight},{"canvas_height",canvasHeight},{"both_languages_unclipped",true},
+                    {"canvas_height_unchanged",true},{"different_actual_language_frames",true},{"full_image_matches_Qt_control",true}});
+            }
+        }
+        QCOMPARE(rows.size(),18);
+        records.append(QJsonObject{{"name","bilingualCaptionKeepsPhotoViewportStable"},{"passed",true},
+            {"rows",rows},{"DPR",window.effectiveDevicePixelRatio()},{"actual_frozen_QML_component",true}});
+    }
     void cleanupTestCase() {
-        const QJsonObject report{{"passed",records.size()==4},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+        const QJsonObject report{{"passed",records.size()==5},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"actual_qpa",QGuiApplication::platformName()},{"cases",records},{"QA_only",true},{"full_App_ASAN_or_physical_OS_presentation_claim",false}};
         const auto path=qEnvironmentVariable("JIXELLIGHT_PRESENTED_CAPTURE_REPORT");
         if(!path.isEmpty()){QSaveFile f(path);const auto bytes=QJsonDocument(report).toJson();QVERIFY(f.open(QIODevice::WriteOnly));QCOMPARE(f.write(bytes),bytes.size());QVERIFY(f.commit());}
