@@ -895,7 +895,13 @@ ApplicationWindow {
                     anchors.fill: parent; spacing: 12; visible: photoController.currentSourceAvailable
                     ColumnLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0
-                        Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.t("当前 RAW / 编辑结果", "Current RAW / edit result"); color: "#aebccc" }
+                        BilingualCaption {
+                            Layout.fillWidth: true
+                            chineseText: "当前 RAW / 编辑结果"
+                            englishText: "Current RAW / edit result"
+                            chinese: photoController.language !== "en_US"
+                            color: "#aebccc"
+                        }
                         PhotoCanvas { objectName: "photoCanvas"; enabled: !shortcutHelpDialog.visible; Layout.fillWidth: true; Layout.fillHeight: true; controller: photoController; brushEditor: brushEditorState }
                     }
                     CameraReferenceView { controller: photoController; visible: photoController.showCameraReference; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0 }
