@@ -442,6 +442,21 @@ add_test(NAME native-brush-monitor COMMAND JixelLightNativeBrushMonitorTests -o 
 set_tests_properties(native-brush-monitor PROPERTIES TIMEOUT 120
     ENVIRONMENT "JIXELLIGHT_NATIVE_MONITOR_REPORT=${CMAKE_BINARY_DIR}/native-brush-monitor.json")
 
+# QA-only actual-window readback; keep every original106 test selection.
+qt_add_executable(JixelLightPresentedWindowCaptureTests tests/PresentedWindowCaptureTests.cpp)
+target_include_directories(JixelLightPresentedWindowCaptureTests PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(JixelLightPresentedWindowCaptureTests PRIVATE Qt6::Quick Qt6::Test Qt6::GuiPrivate)
+target_compile_definitions(JixelLightPresentedWindowCaptureTests PRIVATE JIXELLIGHT_GIT_COMMIT="${JIXELLIGHT_GIT_COMMIT}")
+set_target_properties(JixelLightPresentedWindowCaptureTests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME presented-window-capture COMMAND JixelLightPresentedWindowCaptureTests -o presented-window-capture-results.txt,txt -o -,txt)
+set_tests_properties(presented-window-capture PROPERTIES TIMEOUT 120
+    ENVIRONMENT "JIXELLIGHT_PRESENTED_CAPTURE_REPORT=${CMAKE_BINARY_DIR}/presented-window-capture.json")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The original offscreen CPU tests retain their existing platform. This
+    # additional test needs the actual window swapchain under CI's xvfb-run.
+    set_property(TEST presented-window-capture APPEND PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+endif()
+
 # BEGIN XMP normal-controller native coverage; the original70 names remain unchanged.
 qt_add_executable(JixelLightXmpControllerTests tests/XmpControllerTests.cpp)
 target_link_libraries(JixelLightXmpControllerTests PRIVATE JixelLightCore Qt6::Test Qt6::Widgets Qt6::Quick Qt6::Qml Qt6::Sql Qt6::Concurrent)

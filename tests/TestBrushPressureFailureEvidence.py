@@ -182,6 +182,25 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
         self.rejects("capture_png_failures", (1,))
         self.rejects("captures", ([], [dict(width=3080, height=1840)]))
 
+    def test_original_offscreen_protocol_is_restricted_to_Linux_CPU(self):
+        data = self.valid()
+        data.update(window_capture_qpa="offscreen", window_capture_kind="original-Qt-offscreen-window-grab",
+                    window_capture_presented_calls=0, window_capture_pending_peak=0,
+                    window_capture_Qt_control_calls=0, window_capture_peak_buffer_bytes=0,
+                    window_capture_seed_matches_Qt_grab=False, window_capture_seed_sha256="",
+                    window_capture_Qt_control_sha256="")
+        with patch.object(pressure.sys, "platform", "linux"):
+            pressure.validate_window_capture_protocol(data, "cpu")
+            with self.assertRaises(AssertionError):
+                pressure.validate_window_capture_protocol(data, "gpu")
+            for key in ("window_grab_calls", "capture_png_save_calls"):
+                incomplete = dict(data, **{key: data[key] - 1})
+                with self.assertRaises(AssertionError):
+                    pressure.validate_window_capture_protocol(incomplete, "cpu")
+        for platform in ("darwin", "win32"):
+            with patch.object(pressure.sys, "platform", platform), self.assertRaises(AssertionError):
+                pressure.validate_window_capture_protocol(data, "cpu")
+
 
 if __name__ == "__main__":
     unittest.main()

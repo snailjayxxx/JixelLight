@@ -109,6 +109,29 @@ def validate_presented_window_captures(data: dict) -> None:
     assert data["capture_png_save_calls"] == len(OWNED_CAPTURES) and data["capture_png_failures"] == 0
 
 
+def validate_window_capture_protocol(data: dict, mode: str) -> None:
+    assert mode in ("cpu", "gpu")
+    if sys.platform.startswith("linux") and mode == "cpu":
+        # The existing CPU gate deliberately uses Qt's offscreen platform.
+        # Keep all its window grabs; it has no normal presented swapchain.
+        assert data["window_capture_qpa"] == "offscreen"
+        assert data["window_capture_kind"] == "original-Qt-offscreen-window-grab"
+        assert data["window_capture_error"] == ""
+        assert type(data["window_grab_calls"]) is int and data["window_grab_calls"] >= 38
+        for key in ("window_capture_presented_calls", "window_capture_pending_peak",
+                    "window_capture_Qt_control_calls", "window_capture_failure_Qt_grab_calls",
+                    "window_capture_peak_buffer_bytes"):
+            assert type(data[key]) is int and data[key] == 0
+        assert data["window_capture_seed_matches_Qt_grab"] is False
+        assert data["window_capture_seed_sha256"] == data["window_capture_Qt_control_sha256"] == ""
+        assert data["capture_png_quality"] == 85
+        assert data["capture_png_save_calls"] == len(OWNED_CAPTURES) and data["capture_png_failures"] == 0
+    else:
+        expected = "windows" if sys.platform == "win32" else "cocoa" if sys.platform == "darwin" else "xcb"
+        assert data["window_capture_qpa"] == expected
+        validate_presented_window_captures(data)
+
+
 def preserve_failure_captures(data: dict, native_path: Path, report: Path, *, sony: bool) -> tuple[dict, list]:
     """Copy only self-consistent partial QA screenshots; never turn failure into success."""
     copied, errors, seen = {}, [], set()
@@ -305,7 +328,7 @@ def validate_brush_pressure(binary: Path, environment: dict[str, str], home: Pat
             assert 1 <= data["capture_png_queue_peak"] <= 2 and data["capture_png_failures"] == 0
             assert data["source_kind"] == "owned-rgba64-png"
             assert data["source_alpha_u16"] == (42000 if transparent else 65535)
-            validate_presented_window_captures(data)
+            validate_window_capture_protocol(data, mode)
             validate_scope_locale(data, mode)
             validate_brush_radius(data)
             assert all(data[key] is True for key in ("low_pressure_continuous", "low_pressure_undo", "low_pressure_redo", "low_pressure_reset"))
