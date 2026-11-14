@@ -26,6 +26,7 @@
 #include <QFutureWatcher>
 #include <QtConcurrent>
 #include "core/gpu/brush/NativeBrushFrame.h"
+#include "core/gpu/brush/NativeBrushPrivate.h"
 
 class NativeBrushLuminanceGpuTests : public QObject {
     Q_OBJECT
@@ -144,6 +145,66 @@ private:
         domain->release(handle);domain->release(input);domain->collect();domain->shutdown();QCOMPARE(domain->teardownFinishCalls(),quint64(0));
         replies.clear();prepared={};domain.reset();QCOMPARE(budget->snapshot().charged,qint64(0));
     }
+    struct DiagnosticScene {
+        std::shared_ptr<BrushRenderBudget> budget=std::make_shared<BrushRenderBudget>();
+        std::unique_ptr<NativeBrush::RenderDomain> domain;
+        NativeBrush::InputHandle input;
+        NativeBrush::FrameHandle frame;
+        NativeBrush::FrameStamp stamp;
+        QJsonObject sourceFingerprint,outputFingerprint;
+        qint64 qtKey=0;
+        QString error;
+    };
+    DiagnosticScene diagnosticScene() {
+        namespace N=NativeBrush;DiagnosticScene scene;
+        QImage image(9,7,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x){auto *v=reinterpret_cast<float *>(image.scanLine(y))+4*x;v[0]=.125f+float(x%4)/4;v[1]=.25f+float(y%3)/8;v[2]=1.5f;v[3]=1;}
+        scene.qtKey=image.cacheKey();scene.sourceFingerprint=FloatFrameFingerprint::capture(image);
+        AdjustmentState state;BrushMaskGeometry::Stroke stroke;stroke.style={.3,.45,.7};stroke.dabs={{{.3,.4},.7},{{.6,.6},.9}};
+        state.brushMasks.layers.push_back({"diagnostic-lifetime",true,.25,{stroke}});
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,true,.5);plan.setFrameRect({0,0,1,1});
+        scene.domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=scene.domain->capabilities();
+        if(!caps.active()){scene.error="Inactive native diagnostic fixture";return scene;}
+        struct Prepared{N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;};Prepared prepared;
+        {
+            const auto budget=scene.budget;QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
+            watcher.setFuture(QtConcurrent::run([=]{Prepared p;p.source=N::CanonicalSource::capture(image,{"diagnostic-lifetime",plan.encoding,true,.5f,{0,0,1,1}},caps.threads(),budget);if(p.source){p.upload=N::UploadAdmission::prepare(p.source,caps);p.frame=N::FrameAdmission::prepare(p.source,caps,plan,{"diagnostic-catalog","diagnostic-photo","diagnostic-version",1},1);}return p;}));
+            if(!watcher.isFinished()&&!finished.wait(10000)){scene.error="Diagnostic worker timed out";return scene;}
+            prepared=watcher.result();
+        }
+        if(!prepared.source||!prepared.upload||!prepared.frame){scene.error="Native diagnostic fixture admission failed";return scene;}
+        auto &domain=*scene.domain;scene.input=domain.attach(prepared.upload);QRhiCommandBuffer *cb=nullptr;
+        if(!scene.input||rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess){scene.error="Diagnostic fixture upload attachment failed";return scene;}
+        bool ok=domain.upload(scene.input,cb);rhi->endOffscreenFrame();rhi->finish();domain.collect();
+        if(!ok||!domain.ready(scene.input)){scene.error="Diagnostic fixture upload failed";return scene;}
+        scene.stamp=prepared.frame->stamp();if(!domain.activate(scene.stamp)){scene.error="Diagnostic fixture activation failed";return scene;}
+        scene.frame=domain.attachFrame(scene.input,prepared.frame);
+        if(!scene.frame||rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess){scene.error="Diagnostic fixture frame attachment failed";return scene;}
+        ok=domain.compute(scene.frame,cb);rhi->endOffscreenFrame();rhi->finish();domain.collect();
+        if(!ok||!domain.publishable(scene.frame)){scene.error="Diagnostic fixture compute failed";return scene;}
+        QRhiReadbackResult readback;bool done=false;readback.completed=[&]{done=true;};
+        if(rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess){scene.error="Independent diagnostic fixture frame failed";return scene;}
+        auto *updates=rhi->nextResourceUpdateBatch();updates->readBackTexture(QRhiReadbackDescription(domain.texture(scene.frame)),&readback);cb->resourceUpdate(updates);
+        rhi->endOffscreenFrame();rhi->finish();domain.collect();
+        if(!done||readback.data.size()!=9*7*16||readback.format!=QRhiTexture::RGBA32F||readback.pixelSize!=image.size()){scene.error="Independent diagnostic fixture readback failed";return scene;}
+        const QImage output(reinterpret_cast<const uchar *>(readback.data.constData()),9,7,9*16,QImage::Format_RGBA32FPx4);scene.outputFingerprint=FloatFrameFingerprint::capture(output);
+        // Prepared CPU payloads leave this scope: subsequent source diagnostics
+        // must use the actual retained GPU input, without a CPU re-upload.
+        return scene;
+    }
+    struct DiagnosticReplies {QVector<QJsonObject> values;QVector<NativeBrush::FrameStamp> stamps;int accepted=0;QString error;};
+    DiagnosticReplies captureDiagnostic(DiagnosticScene &scene,qint64 budget,const std::function<void()> &beforeEnd={},bool shutdown=false,int requests=1) {
+        DiagnosticReplies replies;QRhiCommandBuffer *cb=nullptr;
+        if(rhi->beginOffscreenFrame(&cb)!=QRhi::FrameOpSuccess){replies.error="Diagnostic frame failed";return replies;}
+        for(int i=0;i<requests;++i)if(scene.domain->capture(scene.frame,cb,scene.qtKey,[&](NativeBrush::FrameStamp stamp,QJsonObject value){replies.stamps.append(std::move(stamp));replies.values.append(std::move(value));},budget))++replies.accepted;
+        if(beforeEnd)beforeEnd();rhi->endOffscreenFrame();
+        if(shutdown)scene.domain->shutdown();else{rhi->finish();scene.domain->collect();}
+        if(scene.domain->pending()){replies.error="Diagnostic did not settle";scene.domain->shutdown();}
+        return replies;
+    }
+    void disposeDiagnostic(DiagnosticScene &scene) {
+        scene.domain->release(scene.frame);scene.domain->release(scene.input);scene.domain->shutdown();scene.domain.reset();
+    }
 private slots:
     void initTestCase() {
 #ifdef Q_OS_WIN
@@ -165,6 +226,129 @@ private slots:
         }
         engine=std::make_unique<GpuEngine>(rhi.get());
         qInfo()<<engine->backendName();
+    }
+    void nativeDiagnosticCapturesPreparedSourceUpload() {
+        namespace N=NativeBrush;
+        constexpr int width=9,height=7,stride=width*16+32;
+        QByteArray storage(stride*height,char(0x5a));
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const float pixel[4]={.125f+float(x%4)/4,.25f+float(y%3)/8,1.5f,.75f+float(x%2)/4};
+            std::memcpy(storage.data()+y*stride+x*16,pixel,sizeof(pixel));
+        }
+        const QImage image(reinterpret_cast<const uchar *>(storage.constData()),width,height,stride,QImage::Format_RGBA32FPx4);
+        const auto expected=FloatFrameFingerprint::capture(image);
+        const QRectF frame{.125,.25,.5,.5};
+        AdjustmentState state;
+        BrushMaskGeometry::Stroke stroke;stroke.style={.3,.45,.7};stroke.dabs={{{.3,.4},.7},{{.6,.6},.9}};
+        state.brushMasks.layers.push_back({"upload-diagnostic",true,.25,{stroke}});
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::DisplayP3,true,.5);
+        plan.setFrameRect(frame);
+        auto budget=std::make_shared<BrushRenderBudget>();
+        auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;};
+        Prepared prepared;
+        {
+            QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
+            QVERIFY(finished.isValid());watcher.setFuture(QtConcurrent::run([=] {
+                Prepared p;p.source=N::CanonicalSource::capture(image,{"native-upload-diagnostic",plan.encoding,true,.5f,frame},caps.threads(),budget);
+                if(p.source){p.upload=N::UploadAdmission::prepare(p.source,caps);p.frame=N::FrameAdmission::prepare(p.source,caps,plan,{"upload-catalog","upload-photo","upload-version",1},1);}
+                return p;
+            }));
+            if(!watcher.isFinished())QVERIFY(finished.wait(10000));
+            QVERIFY(watcher.isFinished());prepared=watcher.result();
+        }
+        QVERIFY(prepared.source&&prepared.upload&&prepared.frame);
+        const auto sourceKey=QString::fromLatin1(prepared.source->key().toHex());
+        auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
+        const auto stamp=prepared.frame->stamp();QVERIFY(domain->activate(stamp));auto handle=domain->attachFrame(input,prepared.frame);QVERIFY(bool(handle));
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->compute(handle,cb));
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->publishable(handle));
+        const auto before=domain->trace();QJsonObject output;N::FrameStamp replyStamp;int callbacks=0;
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        QVERIFY(domain->capture(handle,cb,image.cacheKey(),[&](N::FrameStamp value,QJsonObject result){++callbacks;replyStamp=std::move(value);output=std::move(result);}));
+        QRhiReadbackResult independent;bool done=false;independent.completed=[&]{done=true;};
+        auto *updates=rhi->nextResourceUpdateBatch();updates->readBackTexture(QRhiReadbackDescription(domain->texture(handle)),&independent);cb->resourceUpdate(updates);
+        rhi->endOffscreenFrame();rhi->finish();domain->collect();QCOMPARE(callbacks,1);QVERIFY(done);QVERIFY(replyStamp==stamp);
+        QVERIFY(output["available"].toBool());QCOMPARE(output["producer"].toString(),QString("native-brush-gpu-compute"));
+        QCOMPARE(independent.data.size(),width*height*16);
+        const QImage actual(reinterpret_cast<const uchar *>(independent.data.constData()),width,height,width*16,QImage::Format_RGBA32FPx4);
+        const auto finalFingerprint=FloatFrameFingerprint::capture(actual);
+        for(auto it=finalFingerprint.begin();it!=finalFingerprint.end();++it)QCOMPARE(output[it.key()],it.value());
+        QCOMPARE(output["diagnostic_samples_rgba16"].toArray().size(),32);
+        QCOMPARE(domain->trace().sourceUploads,before.sourceUploads);QCOMPARE(domain->trace().coverageDispatches,before.coverageDispatches);
+        QCOMPARE(domain->trace().colourDispatches,before.colourDispatches);QCOMPARE(domain->trace().controlReadbackBytes,before.controlReadbackBytes);
+        QCOMPARE(domain->normalFinishCalls(),quint64(0));
+        domain->release(handle);domain->release(input);domain->shutdown();prepared={};domain.reset();QCOMPARE(budget->snapshot().charged,qint64(0));
+        const auto uploaded=output["source_staging"].toObject();
+        QVERIFY2(uploaded["available"].toBool(),"Native brush prepared FP32 upload must have its own diagnostic fingerprint");
+        for(auto it=expected.begin();it!=expected.end();++it)QCOMPARE(uploaded[it.key()],it.value());
+        QCOMPARE(uploaded["stage"].toString(),QString("prepared-source-upload"));
+        QCOMPARE(uploaded["producer"].toString(),QString("gpu-texture-upload"));
+        QCOMPARE(uploaded["source_cache_key"].toString(),QString::number(image.cacheKey()));
+        QCOMPARE(uploaded["input_source_key"].toString(),sourceKey);QCOMPARE(uploaded["parameter_revision"].toInteger(),qint64(1));
+        QCOMPARE(uploaded["encoding"].toString(),QString("linear-prophoto"));
+        QVERIFY(uploaded["raw_source"].toBool());QCOMPARE(uploaded["base_exposure_stops"].toDouble(),.5);
+        QVERIFY(uploaded["used_for_compute"].toBool());QVERIFY(!uploaded["monitor_icc"].toBool());
+    }
+    void nativeDiagnosticSharesAggregateAndNativeResourceBudget() {
+        auto scene=diagnosticScene();QVERIFY2(scene.error.isEmpty(),qPrintable(scene.error));
+        const auto trace=scene.domain->trace();const auto base=scene.budget->snapshot().charged;constexpr qint64 bytes=9*7*16;
+        const auto counter=[](){return PerformanceRecorder::snapshot()["counters"].toObject()["diagnostic_gpu_readback_bytes"].toInteger();};
+        for(const qint64 budget:{qint64(-1),bytes-1,bytes,2*bytes-1,2*bytes,FloatFrameFingerprint::BudgetBytes+1}) {
+            const auto before=counter();auto replies=captureDiagnostic(scene,budget);QVERIFY2(replies.error.isEmpty(),qPrintable(replies.error));
+            if(budget<bytes){QCOMPARE(replies.accepted,0);QVERIFY(replies.values.isEmpty());QCOMPARE(counter(),before);}
+            else {
+                QCOMPARE(replies.accepted,1);QCOMPARE(replies.values.size(),1);QVERIFY(replies.stamps[0]==scene.stamp);
+                const auto output=replies.values[0],source=output["source_staging"].toObject();QVERIFY(output["available"].toBool());
+                for(auto it=scene.outputFingerprint.begin();it!=scene.outputFingerprint.end();++it)QCOMPARE(output[it.key()],it.value());
+                const bool both=budget>=2*bytes;QCOMPARE(source["available"].toBool(),both);
+                QCOMPARE(output["readback_budget_bytes"].toInteger(),std::min(budget,FloatFrameFingerprint::BudgetBytes));
+                QCOMPARE(output["readback_requested_bytes"].toInteger(),both?2*bytes:bytes);QCOMPARE(output["readback_received_bytes"],output["readback_requested_bytes"]);
+                QCOMPARE(counter()-before,output["readback_received_bytes"].toInteger());
+                if(both)QCOMPARE(source["pixel_sha256"],scene.sourceFingerprint["pixel_sha256"]);
+                else{QCOMPARE(source["reason"].toString(),QString("budget"));QVERIFY(!source.contains("pixel_sha256"));}
+            }
+            QCOMPARE(scene.budget->snapshot().charged,base);
+        }
+        // Reserve accounting capacity without allocating physical pixel memory.
+        // The original final capture fits exactly; the optional input cannot fit.
+        auto occupied=NativeBrush::BudgetAccess::reserve(scene.budget,scene.budget->snapshot().limit-base-(bytes*2+1024*1024));QVERIFY(occupied);
+        auto limited=captureDiagnostic(scene,FloatFrameFingerprint::BudgetBytes);QVERIFY(limited.error.isEmpty());QCOMPARE(limited.accepted,1);QCOMPARE(limited.values.size(),1);
+        const auto output=limited.values[0],source=output["source_staging"].toObject();QVERIFY(output["available"].toBool());QVERIFY(!source["available"].toBool());
+        QCOMPARE(source["reason"].toString(),QString("resource-budget"));QVERIFY(!source.contains("pixel_sha256"));QCOMPARE(output["readback_requested_bytes"].toInteger(),bytes);
+        occupied.reset();QCOMPARE(scene.budget->snapshot().charged,base);
+        QCOMPARE(scene.domain->trace().sourceUploads,trace.sourceUploads);QCOMPARE(scene.domain->trace().coverageDispatches,trace.coverageDispatches);QCOMPARE(scene.domain->trace().colourDispatches,trace.colourDispatches);
+        QCOMPARE(scene.domain->trace().controlReadbackBytes,trace.controlReadbackBytes);QCOMPARE(scene.domain->trace().histogramReadbackBytes,trace.histogramReadbackBytes);QCOMPARE(scene.domain->normalFinishCalls(),quint64(0));
+        disposeDiagnostic(scene);QCOMPARE(scene.budget->snapshot().charged,qint64(0));
+    }
+    void nativeDiagnosticSourceLifetimeRetirementAndShutdown() {
+        for(int mode=0;mode<4;++mode) {
+            auto scene=diagnosticScene();QVERIFY2(scene.error.isEmpty(),qPrintable(scene.error));const auto trace=scene.domain->trace();
+            if(mode==3){scene.domain->release(scene.input);QVERIFY(scene.domain->sourceKey(scene.input).isEmpty());}
+            bool heldWhilePending=true;
+            const auto beforeEnd=[&]{
+                if(mode==1)scene.domain->retirement().retire();
+                if(mode==0||mode==1){scene.domain->release(scene.frame);scene.domain->release(scene.input);if(scene.domain->pending())heldWhilePending=!scene.domain->sourceKey(scene.input).isEmpty();}
+            };
+            const int requests=mode==0?2:1;
+            auto replies=captureDiagnostic(scene,FloatFrameFingerprint::BudgetBytes,beforeEnd,mode==2,requests);
+            QVERIFY2(replies.error.isEmpty(),qPrintable(replies.error));QCOMPARE(replies.accepted,requests);QCOMPARE(replies.values.size(),requests);QVERIFY(heldWhilePending);
+            for(int i=0;i<replies.values.size();++i){
+                const auto output=replies.values[i],source=output["source_staging"].toObject();QVERIFY(replies.stamps[i]==scene.stamp);
+                if(mode==1||mode==2){QVERIFY(!output["available"].toBool());QVERIFY(!source["available"].toBool());QVERIFY(!output.contains("pixel_sha256"));QVERIFY(!source.contains("pixel_sha256"));}
+                else{
+                    QVERIFY(output["available"].toBool());for(auto it=scene.outputFingerprint.begin();it!=scene.outputFingerprint.end();++it)QCOMPARE(output[it.key()],it.value());
+                    QCOMPARE(output["diagnostic_samples_rgba16"].toArray().size(),32);
+                    if(mode==3){QVERIFY(!source["available"].toBool());QCOMPARE(source["reason"].toString(),QString("source-retired"));QCOMPARE(output["readback_requested_bytes"].toInteger(),qint64(9*7*16));}
+                    else{QVERIFY(source["available"].toBool());for(auto it=scene.sourceFingerprint.begin();it!=scene.sourceFingerprint.end();++it)QCOMPARE(source[it.key()],it.value());}
+                }
+            }
+            QVERIFY(!scene.domain->pending());QCOMPARE(scene.domain->normalFinishCalls(),quint64(0));QVERIFY(scene.domain->teardownFinishCalls()<=1);
+            QCOMPARE(scene.domain->trace().sourceUploads,trace.sourceUploads);QCOMPARE(scene.domain->trace().coverageDispatches,trace.coverageDispatches);QCOMPARE(scene.domain->trace().colourDispatches,trace.colourDispatches);
+            disposeDiagnostic(scene);QCOMPARE(scene.budget->snapshot().charged,qint64(0));
+        }
     }
     void nativeBrushLuminanceMatchesReferenceAcrossSources() {
         QImage integer(37,29,QImage::Format_RGBA64),floating(37,29,QImage::Format_RGBA32FPx4);

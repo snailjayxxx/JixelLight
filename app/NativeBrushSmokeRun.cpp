@@ -1,6 +1,7 @@
 #include "app/SmokeRun.h"
 #include "app/PhotoController.h"
 #include "core/pipeline/BrushRenderRequest.h"
+#include "core/pipeline/FloatFrameFingerprint.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -59,6 +60,15 @@ void startNativeBrushRouteSmokeRun(PhotoController *c,QQuickWindow *window,const
             if(matched)for(const auto &value:samples){const auto sample=value.toObject();const int x=sample.value("x").toInt(-1),y=sample.value("y").toInt(-1);const auto rgba=sample.value("rgba16").toArray();if(x<0||y<0||x>=reference.image().width()||y>=reference.image().height()||rgba.size()!=4){matched=false;break;}
                 const auto pixel=reinterpret_cast<const QRgba64*>(reference.image().constScanLine(y))[x];const int expected[4]={pixel.red(),pixel.green(),pixel.blue(),pixel.alpha()};for(int ch=0;ch<4;++ch){const int delta=std::abs(expected[ch]-rgba[ch].toInt(-999999));if(ch<3)maxRGB=std::max(maxRGB,delta);else maxAlpha=std::max(maxAlpha,delta);}}
             state->checks["native_diagnostic_32_samples_original_CPU_RGB40_alpha_exact"]=matched&&maxRGB<=40&&maxAlpha==0;
+            const auto expectedUpload=FloatFrameFingerprint::capture(state->referenceSource),uploaded=diag.value("source_staging").toObject();
+            bool uploadMatched=expectedUpload.value("available").toBool()&&uploaded.value("available").toBool();
+            for(auto it=expectedUpload.begin();it!=expectedUpload.end();++it)uploadMatched=uploadMatched&&uploaded.value(it.key())==it.value();
+            uploadMatched=uploadMatched&&uploaded.value("parameter_revision")==diag.value("parameter_revision")&&uploaded.value("source_cache_key")==diag.value("source_cache_key")
+                &&uploaded.value("input_source_key")==diag.value("input_source_key")&&diag.value("readback_requested_bytes").toInteger()==diag.value("bytes").toInteger()+uploaded.value("bytes").toInteger()
+                &&diag.value("readback_received_bytes")==diag.value("readback_requested_bytes")&&diag.value("readback_requested_bytes").toInteger()<=FloatFrameFingerprint::BudgetBytes;
+            state->checks["native_source_upload_matches_frozen_FP32"]=uploadMatched;
+            state->observations.append(QJsonObject{{"source_upload_reference",expectedUpload}});
+
             state->observations.append(QJsonObject{{"diagnostic_samples",samples.size()},{"max_RGB16_error",maxRGB},{"max_alpha16_error",maxAlpha},{"CPU_error",error}});
             state->referenceSource={};if(!capture("native-initial")){finish("Native screenshot unavailable");return;}c->undo();state->phase=3;return;
         }

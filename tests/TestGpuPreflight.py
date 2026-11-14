@@ -22,7 +22,7 @@ def tree(root):
 
 
 def complete(build, report, *, code=0, qt='85 passed, 0 failed, 0 skipped, 0 blacklisted',
-             native_qt='16 passed, 0 failed, 0 skipped, 0 blacklisted',
+             native_qt='19 passed, 0 failed, 0 skipped, 0 blacklisted',
              names=('sony-real-files', 'gpu-correctness', 'native-brush-luminance-gpu')):
     (build / 'gpu-results.txt').write_text('owned GPU fixture\nTotals: ' + qt + ', 9ms\n')
     (build / 'native-brush-luminance-gpu-results.txt').write_text('owned native GPU fixture\nTotals: ' + native_qt + ', 9ms\n')
@@ -50,7 +50,7 @@ class GpuPreflightTests(unittest.TestCase):
                 result = run_preflight(build, report, COMMIT, config='Release', environment={})
             self.assertTrue(result['passed']); self.assertTrue(result['full_ctest_native_and_package_gates_still_required'])
             self.assertEqual(result['checks']['qt_passed'], 85)
-            self.assertEqual(result['checks']['native_brush_luminance_qt_passed'], 16)
+            self.assertEqual(result['checks']['native_brush_luminance_qt_passed'], 19)
             self.assertEqual(result['checks']['ctest_cases'], ['gpu-correctness', 'native-brush-luminance-gpu', 'sony-real-files'])
             self.assertFalse((report / 'original/sony-real-reports/private.ARW').exists())
             self.assertEqual((report / 'original/sony-real-reports/probe.log').read_bytes(), b'original failed/successful probe\r\n')
@@ -88,7 +88,7 @@ class GpuPreflightTests(unittest.TestCase):
                     if fault == 'gpu-incomplete': (build / 'gpu-results.txt').write_text('Totals: 84 passed, 0 failed, 0 skipped, 0 blacklisted\n')
                     if fault == 'native-qt-skip': native.write_text('Totals: 11 passed, 0 failed, 1 skipped, 0 blacklisted\n')
                     if fault == 'native-qt-fail': native.write_text('Totals: 11 passed, 1 failed, 0 skipped, 0 blacklisted\n')
-                    if fault == 'native-incomplete': native.write_text('Totals: 11 passed, 0 failed, 0 skipped, 0 blacklisted\n')
+                    if fault == 'native-incomplete': native.write_text('Totals: 18 passed, 0 failed, 0 skipped, 0 blacklisted\n')
                     if fault == 'native-missing': native.unlink()
                     if fault == 'native-duplicate-totals': native.write_text(native.read_text() * 2)
                     if fault == 'ctest-skip':
@@ -131,7 +131,7 @@ if sys.argv[1]=='sony':
  (p/'summary.json').write_text(json.dumps({'passed':True}))
  (p/'dataset/empirical.jlook.json').write_text('{"owned":"synthetic CTest integration fixture"}')
 elif sys.argv[1]=='gpu':(build/'gpu-results.txt').write_text('Totals: 85 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms\\n')
-else:(build/'native-brush-luminance-gpu-results.txt').write_text('Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms\\n')
+else:(build/'native-brush-luminance-gpu-results.txt').write_text('Totals: 19 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms\\n')
 ''')
             script = (source / 'fixture.py').as_posix(); python = Path(sys.executable).as_posix()
             (source / 'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.24)\nproject(OwnedPreflightFixture NONE)\nenable_testing()\n' + ''.join('add_test(NAME ' + name + ' COMMAND [=[' + python + ']=] [=[' + script + ']=] ' + mode + ' "${CMAKE_BINARY_DIR}")\n' for name, mode in [('sony-real-files', 'sony'), ('gpu-correctness', 'gpu'), ('native-brush-luminance-gpu', 'native')]) + 'set_tests_properties(gpu-correctness native-brush-luminance-gpu PROPERTIES DEPENDS sony-real-files)\n')

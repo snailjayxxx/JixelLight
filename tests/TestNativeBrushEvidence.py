@@ -84,6 +84,48 @@ class NativeBrushContractTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 self.validate(d, "delivery")
 
+    def test_native_upload_matches_independent_frozen_input_and_identity(self):
+        mutations = (("pixel_sha256", "d" * 64), ("source_cache_key", "other-source"),
+                     ("input_source_key", "f" * 64), ("parameter_revision", 99),
+                     ("used_for_compute", False), ("monitor_icc", True),
+                     ("alpha", "premultiplied"), ("encoding", "unknown"), ("bytes", 1))
+        for field, value in mutations:
+            d = example("route"); frame = next(r for r in d["observations"] if "diagnostic_samples_rgba16" in r)
+            frame["source_staging"][field] = value
+            with self.subTest(field=field), self.assertRaises((AssertionError, KeyError)):
+                self.validate(d, "route")
+        d = example("route"); next(r for r in d["observations"] if "source_upload_reference" in r)["source_upload_reference"]["pixel_sha256"] = "d" * 64
+        with self.assertRaises(AssertionError): self.validate(d, "route")
+        d = example("delivery"); row = next(r for r in d["completed_cases"] if r["name"] == "revision")
+        row["expected_source_upload"]["pixel_sha256"] = "d" * 64
+        with self.assertRaises(AssertionError): self.validate(d, "delivery")
+
+    def test_native_upload_requires_aggregate_accounting_and_honest_unavailability(self):
+        for field, value in (("readback_budget_bytes", 64 * 1024**2 + 1), ("readback_requested_bytes", 1), ("readback_received_bytes", 1)):
+            d = example("sony")["diagnostic"]; d[field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError): gate.diagnostic(d)
+        for reason in ("budget", "resource-budget", "source-retired"):
+            d = example("sony")["diagnostic"]; source = d["source_staging"]
+            source.update(available=False, reason=reason, error="owned declared refusal", required_bytes=d["bytes"])
+            source.pop("pixel_sha256"); d["readback_requested_bytes"] = d["readback_received_bytes"] = d["bytes"]
+            if reason == "budget": d["readback_budget_bytes"] = d["bytes"]
+            gate.diagnostic(d)
+            source["pixel_sha256"] = "c" * 64
+            with self.assertRaises(AssertionError): gate.diagnostic(d)
+        d = example("sony")["diagnostic"]; d["source_staging"].update(available=False, reason="budget", error="dishonest budget", required_bytes=d["bytes"])
+        d["source_staging"].pop("pixel_sha256"); d["readback_requested_bytes"] = d["readback_received_bytes"] = d["bytes"]
+        with self.assertRaises(AssertionError): gate.diagnostic(d)
+
+    def test_native_upload_numbers_and_counts_refuse_booleans(self):
+        for field, value in (("width", True), ("height", "294"), ("bytes", False), ("parameter_revision", True),
+                             ("base_exposure_stops", False), ("raw_source", 0), ("available", 1),
+                             ("nonfinite_rgba", [False] * 4), ("ranges_rgba", [[False, 1]] * 4)):
+            d = example("sony")["diagnostic"]; d["source_staging"][field] = value
+            with self.subTest(field=field), self.assertRaises((AssertionError, TypeError)):
+                gate.diagnostic(d)
+        d = example("sony")["diagnostic"]; d["readback_requested_bytes"] = True
+        with self.assertRaises(AssertionError): gate.diagnostic(d)
+
     def test_six_synthetic_examples(self):
         for mode in gate.MODES:
             with self.subTest(mode=mode):

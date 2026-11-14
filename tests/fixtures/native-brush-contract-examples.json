@@ -5,7 +5,7 @@
     "route": {
       "actual_dpr": 1,
       "actual_qpa": "cocoa",
-      "backend": "GPU · Metal · schema-device · native brush",
+      "backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
       "captures": [
         {
           "height": 920,
@@ -41,7 +41,8 @@
         "redo_reentered_native_route": true,
         "two_native_compute_dispatches": true,
         "undo_preserved_original_intent": true,
-        "virtual_copy_distinct_actual_delivery": true
+        "virtual_copy_distinct_actual_delivery": true,
+        "native_source_upload_matches_frozen_FP32": true
       },
       "elapsed_ms": 1985,
       "error": "",
@@ -468,7 +469,60 @@
           ],
           "source_cache_key": "1133871366145",
           "stage": "working-output",
-          "width": 640
+          "width": 640,
+          "source_staging": {
+            "width": 640,
+            "height": 480,
+            "pixels": 307200,
+            "bytes": 4915200,
+            "parameter_revision": 8,
+            "source_cache_key": "1133871366145",
+            "input_source_key": "8ad8fd9ed6644ccec52340e8152d409246b2dcfe2f478405ff274caa556e6c2c",
+            "available": true,
+            "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "ranges_rgba": [
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "stage": "prepared-source-upload",
+            "producer": "gpu-texture-upload",
+            "alpha": "straight",
+            "monitor_icc": false,
+            "used_for_compute": true,
+            "encoding": "linear-prophoto",
+            "raw_source": false,
+            "base_exposure_stops": 0,
+            "processing_frame_rect": [
+              0,
+              0,
+              1,
+              1
+            ]
+          },
+          "readback_budget_bytes": 67108864,
+          "readback_requested_bytes": 9830400,
+          "readback_received_bytes": 9830400
         },
         {
           "CPU_error": "",
@@ -565,6 +619,41 @@
           "source_worker_thread": "89c220203",
           "version": "jixel-copy:e27aa39d-b8d5-444a-a525-76451f46ba4f",
           "current_delivery_matches": true
+        },
+        {
+          "source_upload_reference": {
+            "available": true,
+            "width": 640,
+            "height": 480,
+            "pixels": 307200,
+            "bytes": 4915200,
+            "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "ranges_rgba": [
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ]
+          }
         }
       ],
       "passed": true,
@@ -577,7 +666,7 @@
     "delivery": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU · Metal · schema-device",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -1076,7 +1165,60 @@
             ],
             "source_cache_key": "1159641169921",
             "stage": "working-output",
-            "width": 640
+            "width": 640,
+            "source_staging": {
+              "width": 640,
+              "height": 416,
+              "pixels": 266240,
+              "bytes": 4259840,
+              "parameter_revision": 9,
+              "source_cache_key": "1159641169921",
+              "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+              "available": true,
+              "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+              "ranges_rgba": [
+                [
+                  0.1,
+                  0.9
+                ],
+                [
+                  0.1,
+                  0.9
+                ],
+                [
+                  0.1,
+                  0.9
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "nonfinite_rgba": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "stage": "prepared-source-upload",
+              "producer": "gpu-texture-upload",
+              "alpha": "straight",
+              "monitor_icc": false,
+              "used_for_compute": true,
+              "encoding": "linear-prophoto",
+              "raw_source": false,
+              "base_exposure_stops": 0,
+              "processing_frame_rect": [
+                0,
+                0,
+                1,
+                1
+              ]
+            },
+            "readback_budget_bytes": 67108864,
+            "readback_requested_bytes": 8519680,
+            "readback_received_bytes": 8519680
           },
           "latest_revision": 9,
           "max_RGB16_error": 0,
@@ -1093,7 +1235,40 @@
             "retired_owners_released": 0
           },
           "obsolete_revision": 8,
-          "passed": true
+          "passed": true,
+          "expected_source_upload": {
+            "available": true,
+            "width": 640,
+            "height": 416,
+            "pixels": 266240,
+            "bytes": 4259840,
+            "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "ranges_rgba": [
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ]
+          }
         },
         {
           "GUI_accepted_before": 2,
@@ -1525,7 +1700,60 @@
               ],
               "source_cache_key": "1159641169921",
               "stage": "working-output",
-              "width": 640
+              "width": 640,
+              "source_staging": {
+                "width": 640,
+                "height": 416,
+                "pixels": 266240,
+                "bytes": 4259840,
+                "parameter_revision": 9,
+                "source_cache_key": "1159641169921",
+                "input_source_key": "4479e5487bc17af028e2be65c70f831fde48b64e23fc3c2aef3d6e7df40db349",
+                "available": true,
+                "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+                "ranges_rgba": [
+                  [
+                    0.1,
+                    0.9
+                  ],
+                  [
+                    0.1,
+                    0.9
+                  ],
+                  [
+                    0.1,
+                    0.9
+                  ],
+                  [
+                    1,
+                    1
+                  ]
+                ],
+                "nonfinite_rgba": [
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "stage": "prepared-source-upload",
+                "producer": "gpu-texture-upload",
+                "alpha": "straight",
+                "monitor_icc": false,
+                "used_for_compute": true,
+                "encoding": "linear-prophoto",
+                "raw_source": false,
+                "base_exposure_stops": 0,
+                "processing_frame_rect": [
+                  0,
+                  0,
+                  1,
+                  1
+                ]
+              },
+              "readback_budget_bytes": 67108864,
+              "readback_requested_bytes": 8519680,
+              "readback_received_bytes": 8519680
             },
             "frame_worker_thread": "9bd863834",
             "gui_thread": "d2a9f7409",
@@ -1671,7 +1899,7 @@
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU · Metal · schema-device",
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1766,7 +1994,7 @@
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU · Metal · schema-device",
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1861,7 +2089,7 @@
         {
           "actual_diagnostic": {
             "available": true,
-            "backend": "GPU · Metal · schema-device",
+            "backend": "GPU \u00b7 Metal \u00b7 schema-device",
             "bytes": 5767168,
             "encoding": "encoded RGB",
             "height": 512,
@@ -1985,7 +2213,7 @@
         },
         "diagnostic": {
           "available": true,
-          "backend": "GPU · Metal · schema-device",
+          "backend": "GPU \u00b7 Metal \u00b7 schema-device",
           "bytes": 5767168,
           "encoding": "encoded RGB",
           "height": 512,
@@ -2172,7 +2400,7 @@
     "pending": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU · Metal · schema-device · native brush",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -2380,7 +2608,7 @@
     "retired-render": {
       "active_case": "",
       "actual_DPR": 1,
-      "actual_backend": "GPU · Metal · schema-device · native brush",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
       "actual_qpa": "cocoa",
       "all_F0_F6_complete": false,
       "captures": [
@@ -2591,7 +2819,7 @@
       "Root_modified": false,
       "actual_DPR": 1,
       "actual_afterFrameEnd_RHI_thread": "dd97b75ed",
-      "actual_backend": "GPU · Metal · schema-device · native brush",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
       "actual_controller_QtQuick_native_frame": true,
       "actual_qpa": "cocoa",
       "budget_limit_bytes": 3221225472,
@@ -2897,7 +3125,7 @@
     "sony": {
       "Root_native_GPU_accepted": false,
       "actual_DPR": 0.5,
-      "actual_backend": "GPU · Metal · schema-device · native brush",
+      "actual_backend": "GPU \u00b7 Metal \u00b7 schema-device \u00b7 native brush",
       "actual_qpa": "cocoa",
       "all_backend_or_package_accepted": false,
       "captures": [
@@ -3300,7 +3528,60 @@
         ],
         "source_cache_key": "1172526071809",
         "stage": "working-output",
-        "width": 440
+        "width": 440,
+        "source_staging": {
+          "width": 440,
+          "height": 294,
+          "pixels": 129360,
+          "bytes": 2069760,
+          "parameter_revision": 8,
+          "source_cache_key": "1172526071809",
+          "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+          "available": true,
+          "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+          "ranges_rgba": [
+            [
+              0.1,
+              0.9
+            ],
+            [
+              0.1,
+              0.9
+            ],
+            [
+              0.1,
+              0.9
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "nonfinite_rgba": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "stage": "prepared-source-upload",
+          "producer": "gpu-texture-upload",
+          "alpha": "straight",
+          "monitor_icc": false,
+          "used_for_compute": true,
+          "encoding": "linear-prophoto",
+          "raw_source": false,
+          "base_exposure_stops": 0,
+          "processing_frame_rect": [
+            0,
+            0,
+            1,
+            1
+          ]
+        },
+        "readback_budget_bytes": 67108864,
+        "readback_requested_bytes": 4139520,
+        "readback_received_bytes": 4139520
       },
       "elapsed_ms": 71113,
       "error": "",
@@ -3706,7 +3987,60 @@
           ],
           "source_cache_key": "1172526071809",
           "stage": "working-output",
-          "width": 440
+          "width": 440,
+          "source_staging": {
+            "width": 440,
+            "height": 294,
+            "pixels": 129360,
+            "bytes": 2069760,
+            "parameter_revision": 8,
+            "source_cache_key": "1172526071809",
+            "input_source_key": "5a997511807dcfc5f77cdbc8918a9bc858c5751de319d327482498f7b71c87f4",
+            "available": true,
+            "pixel_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pixel_order": "IEEE-754 binary32 RGBA, little-endian; row padding excluded",
+            "ranges_rgba": [
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                0.1,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "nonfinite_rgba": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "stage": "prepared-source-upload",
+            "producer": "gpu-texture-upload",
+            "alpha": "straight",
+            "monitor_icc": false,
+            "used_for_compute": true,
+            "encoding": "linear-prophoto",
+            "raw_source": false,
+            "base_exposure_stops": 0,
+            "processing_frame_rect": [
+              0,
+              0,
+              1,
+              1
+            ]
+          },
+          "readback_budget_bytes": 67108864,
+          "readback_requested_bytes": 4139520,
+          "readback_received_bytes": 4139520
         },
         "frame_worker_thread": "510d45888",
         "gui_thread": "d2a9f7409",
