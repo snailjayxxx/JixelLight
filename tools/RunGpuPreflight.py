@@ -14,7 +14,7 @@ import time
 import xml.etree.ElementTree as ET
 
 TEST_NAMES = {'sony-real-files', 'gpu-correctness', 'native-brush-luminance-gpu'}
-GPU_REPORTS = {'gpu-results.txt': 3, 'native-brush-luminance-gpu-results.txt': 8}
+GPU_REPORTS = {'gpu-results.txt': 3, 'native-brush-luminance-gpu-results.txt': 12}
 REPORT_SUFFIXES = {'.json', '.csv', '.txt', '.log', '.xml'}
 
 

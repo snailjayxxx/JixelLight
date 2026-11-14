@@ -1029,7 +1029,7 @@ private slots:
                     result.dehazeRefused=result.dehazeRefused&&!dehazeFrame&&why==N::FrameFailure::CPUPolicy;
                 }
                 for(double hue : {-180.,90.}) {
-                    auto pointState=state;pointState.pointColorEnabled=true;pointState.pointColorHue=hue;
+                    auto pointState=state;pointState.pointColorEnabled=true;pointState.pointColorHue=hue;pointState.pointColorHueRange=5;
                     const auto point=ProcessingPlan::compile(pointState,p.encoding,ColorManagement::OutputSpace::SRgb,false,0);why=N::FrameFailure::None;
                     const auto pointFrame=N::FrameAdmission::prepare(result.source,caps,point,{"grain-catalog","grain-input","grain-version",1},3,&why);
                     result.pointColorRefused=result.pointColorRefused&&!pointFrame&&why==N::FrameFailure::CPUPolicy;
