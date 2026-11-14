@@ -176,8 +176,12 @@ void startNativeBrushDeliverySmokeRun(PhotoController *c,QQuickWindow *window,co
             bool ok=ref&&diag.value("available").toBool()&&diag.value("parameter_revision").toInteger()==qint64(s->expectedRevision)&&samples.size()==32;
             if(ok)for(auto v:samples){const auto a=v.toObject();const int x=a.value("x").toInt(-1),y=a.value("y").toInt(-1);const auto q=a.value("rgba16").toArray();if(x<0||y<0||x>=ref.image().width()||y>=ref.image().height()||q.size()!=4){ok=false;break;}
                 const auto pix=reinterpret_cast<const QRgba64*>(ref.image().constScanLine(y))[x];const int expected[4]={pix.red(),pix.green(),pix.blue(),pix.alpha()};for(int ch=0;ch<4;++ch){const int d=std::abs(expected[ch]-q[ch].toInt(-999999));if(ch<3)rgb=std::max(rgb,d);else alpha=std::max(alpha,d);}}
+            const auto expectedUpload=FloatFrameFingerprint::capture(s->frozenSource),uploaded=diag.value("source_staging").toObject();
+            bool uploadMatched=expectedUpload.value("available").toBool()&&uploaded.value("available").toBool();
+            for(auto it=expectedUpload.begin();it!=expectedUpload.end();++it)uploadMatched=uploadMatched&&uploaded.value(it.key())==it.value();
+            if(!uploadMatched){finish("Latest native upload fingerprint does not match frozen FP32 input");return;}
             s->frozenSource={};if(!ok||rgb>40||alpha){finish("Latest post-rejection native samples do not match original CPU under RGB40/alpha-exact");return;}
-            if(!capture("native-latest-revision")){finish("Revision capture failed");return;}complete({{"actual_Qt_MetaCall_interleave",true},{"obsolete_revision",qint64(interleave->revision)},{"latest_revision",qint64(s->expectedRevision)},{"obsolete_facts",s->oldFacts->snapshot()},{"GUI_rejections_before",qint64(s->rejected)},{"CPU_samples",32},{"max_RGB16_error",rgb},{"max_alpha16_error",alpha},{"actual_diagnostic",diag}});return;
+            if(!capture("native-latest-revision")){finish("Revision capture failed");return;}complete({{"actual_Qt_MetaCall_interleave",true},{"obsolete_revision",qint64(interleave->revision)},{"latest_revision",qint64(s->expectedRevision)},{"obsolete_facts",s->oldFacts->snapshot()},{"GUI_rejections_before",qint64(s->rejected)},{"CPU_samples",32},{"max_RGB16_error",rgb},{"max_alpha16_error",alpha},{"actual_diagnostic",diag},{"expected_source_upload",expectedUpload}});return;
         }
         if(s->phase==7||s->phase==10)return;
         if(s->phase==8){if(c->loading()||c->rendering()||!c->brushReady())return;s->layerB=stroke(.4);if(s->layerB.isEmpty()){finish("Second actual photo soft layer refused");return;}s->phase=9;return;}

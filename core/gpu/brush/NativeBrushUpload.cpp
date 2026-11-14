@@ -57,7 +57,7 @@ InputHandle RenderDomain::attach(const UploadAdmission::Ptr &a, SourceFailure *w
         input->marker.reset(m_rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, 4));
         if (!input->texture->create() || !input->marker->create()) return fail(SourceFailure::Allocation);
         if (!m_caps.active()) return fail(SourceFailure::Stale);
-        input->key = a->m_source->key(); input->cancel = a->m_cancel;
+        input->key = a->m_source->key(); input->description=a->m_source->description(); input->cancel = a->m_cancel;
         input->uploadCanonical = a->m_source;
         // Insertion can allocate. Do it before consuming the admission.
         const quint64 id = ++m_nextInput; auto *p = input.get(); m_inputs.emplace(id, std::move(input));

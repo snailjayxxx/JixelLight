@@ -46,7 +46,7 @@ FrameHandle RenderDomain::attachFrame(InputHandle input,const std::shared_ptr<Fr
         frame->colour.reset(m_rhi->newComputePipeline());frame->colour->setShaderStage({QRhiShaderStage::Compute,colourShader});frame->colour->setShaderResourceBindings(frame->colourBindings.get());
         if (!frame->maskBindings->create() || !frame->colourBindings->create() || !frame->coverage->create() || !frame->colour->create()) return fail(FrameFailure::Allocation);
         if (!m_caps.active()) return fail(FrameFailure::Stale);
-        frame->budget=a->m_source->m_budget;frame->outputSpace=a->m_plan.output;frame->stamp=a->m_stamp;frame->input=input;frame->extent=size;frame->columns=(size.width()+127)/128;frame->cancel=a->m_cancel;
+        frame->budget=a->m_source->m_budget;frame->outputSpace=a->m_plan.output;frame->stamp=a->m_stamp;frame->input=input;frame->diagnosticInput=input;frame->extent=size;frame->columns=(size.width()+127)/128;frame->cancel=a->m_cancel;
         const auto id=++m_nextFrame;auto *f=frame.get();m_frames.emplace(id,std::move(frame));
         ++find(input)->gpuUsers;
         f->outputCharge=std::move(a->m_outputCharge);f->workCharge=std::move(a->m_workCharge);
@@ -120,7 +120,7 @@ bool RenderDomain::workPending() const {
     for(const auto &[id,f]:m_frames)if(f->issued && !f->completion.done())return true;
     for(const auto &[id,h]:m_histograms)if(!h->completion.done())return true;
     for(const auto &[id,p]:m_presentations)if(!p->completion.done())return true;
-    for(const auto &[id,d]:m_diagnostics)if(!d->completion.done())return true;
+    for(const auto &[id,d]:m_diagnostics)if(!d->done())return true;
     return false;
 }
 void RenderDomain::clearWorkResources() {

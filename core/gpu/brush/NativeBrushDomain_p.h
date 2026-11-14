@@ -36,6 +36,7 @@ struct RenderDomain::Input {
     CanonicalSource::Ptr uploadCanonical;
     QImage upload;
     QByteArray key;
+    SourceDescription description;
     std::unique_ptr<QRhiTexture> texture;
     std::unique_ptr<QRhiBuffer> marker;
     detail::Completion completion;
@@ -48,6 +49,8 @@ struct RenderDomain::Frame {
     std::shared_ptr<const void> outputCharge,workCharge;
     FrameStamp stamp;
     InputHandle input;
+    // Weak ID only: settled frames still release their normal input GPU hold.
+    InputHandle diagnosticInput;
     QSize extent;
     ProcessingPlan plan;
     ColorManagement::OutputSpace outputSpace=ColorManagement::OutputSpace::SRgb;
@@ -85,6 +88,11 @@ struct RenderDomain::Diagnostic {
     QSize extent;
     qint64 qtSourceKey=0;
     DiagnosticReady deliver;
-    detail::Completion completion;
+    InputHandle source;
+    bool sourceRequested=false;
+    qint64 readbackBudget=0,requestedBytes=0;
+    QJsonObject sourceContext;
+    detail::Completion completion,sourceCompletion;
+    bool done() const { return completion.done()&&(!sourceRequested||sourceCompletion.done()); }
 };
 }

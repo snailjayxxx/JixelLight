@@ -14,7 +14,7 @@ ROUTE_CHECKS = {
     "native_source_uploaded_once", "no_CPU_colour_or_mask_upload", "normal_no_finish",
     "original_monitor_presentation", "physical_source_key_shared_across_delivery_versions",
     "redo_reentered_native_route", "two_native_compute_dispatches", "undo_preserved_original_intent",
-    "virtual_copy_distinct_actual_delivery",
+    "virtual_copy_distinct_actual_delivery", "native_source_upload_matches_frozen_FP32",
 }
 SONY_CHECKS = {
     "actual_current_target_source_revision", "actual_native_source_two_dispatches_no_CPU_upload",
@@ -95,6 +95,63 @@ def captures(data, count):
             digest(row["sha256"])
 
 
+def upload_fingerprint(frame):
+    flags(frame, ["available"])
+    for key in ("width", "height", "pixels", "bytes"):
+        number(frame[key], 1, integer=True)
+    assert frame["pixels"] == frame["width"] * frame["height"] and frame["bytes"] == frame["pixels"] * 16
+    digest(frame["pixel_sha256"])
+    assert frame["pixel_order"] == "IEEE-754 binary32 RGBA, little-endian; row padding excluded"
+    assert frame["nonfinite_rgba"] == [0] * 4
+    for count in frame["nonfinite_rgba"]:
+        number(count, 0, 0, integer=True)
+    assert type(frame["ranges_rgba"]) is list and len(frame["ranges_rgba"]) == 4
+    for index, limits in enumerate(frame["ranges_rgba"]):
+        assert type(limits) is list and len(limits) == 2
+        for value in limits:
+            number(value, 0 if index == 3 else -65536, 1 if index == 3 else 65536)
+        assert limits[0] <= limits[1]
+
+
+def source_upload(data, reference=None):
+    source = data["source_staging"]
+    assert type(source["available"]) is bool
+    flags(source, ["used_for_compute"], ["monitor_icc"])
+    assert source["stage"] == "prepared-source-upload" and source["producer"] == "gpu-texture-upload" and source["alpha"] == "straight"
+    for key in ("parameter_revision", "source_cache_key", "input_source_key"):
+        assert source[key] == data[key]
+    number(source["parameter_revision"], 1, integer=True)
+    digest(source["input_source_key"])
+    assert type(source["source_cache_key"]) is str and source["source_cache_key"]
+    number(data["readback_budget_bytes"], data["bytes"], 64 * 1024**2, integer=True)
+    requested = data["bytes"]
+    if source["available"]:
+        upload_fingerprint(source)
+        for key in ("width", "height", "pixels", "bytes"):
+            assert source[key] == data[key]
+        assert source["encoding"] in ("linear-prophoto", "encoded-srgb") and type(source["raw_source"]) is bool
+        number(source["base_exposure_stops"], -8, 8)
+        rect = source["processing_frame_rect"]
+        assert type(rect) is list and len(rect) == 4
+        for value in rect:
+            number(value, 0, 1.000001)
+        assert rect[2] >= 1e-6 and rect[3] >= 1e-6 and rect[0] + rect[2] <= 1.000001 and rect[1] + rect[3] <= 1.000001
+        requested += source["bytes"]
+    else:
+        assert source["reason"] in ("budget", "resource-budget", "source-retired") and source["error"]
+        number(source["required_bytes"], data["bytes"], data["bytes"], integer=True)
+        assert "pixel_sha256" not in source
+        if source["reason"] == "budget":
+            assert data["bytes"] * 2 > data["readback_budget_bytes"]
+    number(data["readback_requested_bytes"], requested, requested, integer=True)
+    number(data["readback_received_bytes"], requested, requested, integer=True)
+    assert requested <= data["readback_budget_bytes"]
+    if reference is not None:
+        upload_fingerprint(reference)
+        for key in ("available", "width", "height", "pixels", "bytes", "pixel_sha256", "pixel_order", "ranges_rgba", "nonfinite_rgba"):
+            assert source[key] == reference[key]
+
+
 def diagnostic(data):
     flags(data, ["available"])
     assert data["producer"] == "native-brush-gpu-compute"
@@ -115,6 +172,7 @@ def diagnostic(data):
         assert type(s["rgba16"]) is list and len(s["rgba16"]) == 4
         for v in s["rgba16"]:
             number(v, 0, 65535, integer=True)
+    source_upload(data)
 
 
 def route(data):
@@ -138,6 +196,10 @@ def route(data):
     number(numeric[0]["max_RGB16_error"], 0, 40, integer=True)
     number(numeric[0]["max_alpha16_error"], 0, 0, integer=True)
     assert numeric[0]["CPU_error"] == ""
+    diagnostics = [r for r in rows if "diagnostic_samples_rgba16" in r]
+    references = [r["source_upload_reference"] for r in rows if "source_upload_reference" in r]
+    assert len(diagnostics) == len(references) == 1
+    diagnostic(diagnostics[0]); source_upload(diagnostics[0], references[0])
     captures(data, 4)
 
 
@@ -199,6 +261,7 @@ def delivery(data, mode):
             number(r["GUI_rejections_before"], 0, integer=True)
             assert r["obsolete_facts"]["GUI_rejected"] > r["GUI_rejections_before"]
             diagnostic(r["actual_diagnostic"])
+            source_upload(r["actual_diagnostic"], r["expected_source_upload"])
             assert r["actual_diagnostic"]["parameter_revision"] == r["latest_revision"]
             continue
         a, b = r["before"], r["after"]

@@ -124,7 +124,10 @@ public:
     bool present(FrameHandle, QRhiCommandBuffer *, const std::function<bool(QRhiTexture *)> &);
     bool histogram(FrameHandle, QRhiCommandBuffer *);
     using DiagnosticReady=std::function<void(FrameStamp,QJsonObject)>;
-    bool capture(FrameHandle,QRhiCommandBuffer *,qint64 qtSourceKey,const DiagnosticReady &);
+    // Final output has priority. Optional prepared-source readback shares this
+    // request's aggregate diagnostic limit and the existing native budget.
+    bool capture(FrameHandle,QRhiCommandBuffer *,qint64 qtSourceKey,const DiagnosticReady &,
+                 qint64 budget=64*1024*1024);
     std::vector<std::shared_ptr<HistogramReply>> takeHistogramReplies();
     void shutdown();
     quint64 generation() const { return m_caps.generation(); }

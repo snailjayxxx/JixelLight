@@ -33,4 +33,4 @@ original final capture. No new ordinary texture/upload/dispatch/readback/finish,
 shader/uniform/colour math, histogram precision or deadline change is intended.
 The existing producer, sample and retirement checks remain authoritative.
 
-Baseline execution and all new-source acceptance remain pending.
+Baseline3413268 reproduces the missing input stage on Metal (2/1 Qt). All28 evidence files plus complete source archive are frozen. [Implementation](F3_NATIVE_SOURCE_STAGING_RENDER_STAGE_M160.md); new-source acceptance remains pending.
