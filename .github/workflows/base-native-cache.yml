@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            triplet: x64-windows-static-md
+            triplet: x64-windows-ci-release
           - os: macos-15
-            triplet: arm64-osx-static
+            triplet: arm64-osx-ci-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:

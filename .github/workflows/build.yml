@@ -23,13 +23,13 @@ jobs:
         include:
           - os: windows-2022
             artifact: JixelLight-Windows-x64
-            triplet: x64-windows-static-md
+            triplet: x64-windows-ci-release
             # CI337 reached90m after its47-mode manifest, cancelling final packaging.
             # Individual GUI and export/reference deadlines remain unchanged.
             job_timeout: 120
           - os: macos-15
             artifact: JixelLight-macOS-arm64
-            triplet: arm64-osx-static
+            triplet: arm64-osx-ci-release
             # Run301 completed native validation before the 75-minute aggregate
             # limit interrupted packaging. Individual validation limits stay fixed.
             job_timeout: 180
