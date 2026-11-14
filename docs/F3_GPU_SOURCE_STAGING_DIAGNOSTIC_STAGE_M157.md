@@ -24,4 +24,4 @@ no shader/uniform change, extra ordinary readback, texture or per-frame finish
 is authorised by this diagnostic extension. CPU reference uploads must be
 labelled accurately. Native brush capture remains a separate producer.
 
-Baseline execution and all new-source acceptance remain pending.
+Baseline852b6fa executed as an expected missing-stage failure (2/1 Qt); all26 files plus complete source archive are frozen. [Implementation and acceptance scope](F3_GPU_SOURCE_STAGING_RENDER_STAGE_M158.md). New-source acceptance remains pending.

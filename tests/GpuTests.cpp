@@ -656,6 +656,7 @@ private slots:
         QCOMPARE(accepted.diagnostic["pixel_sha256"].toString().size(),64);
         QCOMPARE(frozen["pixel_sha256"],accepted.diagnostic["pixel_sha256"]);
         QCOMPARE(frozen["pixels"],accepted.diagnostic["pixels"]);
+        QCOMPARE(frozen["source_staging"],accepted.diagnostic["source_staging"]);
         QCOMPARE(frozen["producer"].toString(),QString("cpu-reference-upload"));
         QCOMPARE(frozen["spatial_texture"].toString(),QString("cpu-reference"));
         QCOMPARE(frozen["numeric_source_policy"].toString(),QString("texture-near-zero-alpha"));
@@ -1155,6 +1156,67 @@ private slots:
             QCOMPARE(result.histogram.pixelCount,quint64(width*height));
         }
     }
+    void diagnosticSourceSharesBudgetAndLeavesOrdinaryReadbackUnchanged() {
+        QImage source(13,9,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.25,.5,.75));
+        const auto counter=[](const char *name){return PerformanceRecorder::snapshot()["counters"].toObject()[name].toInteger();};
+        const auto before=counter("diagnostic_gpu_readback_bytes"),histogramBefore=counter("gpu_readback_bytes");
+        QVERIFY(!render(source,{},true).image.isNull());
+        QCOMPARE(counter("diagnostic_gpu_readback_bytes"),before);
+        QCOMPARE(counter("gpu_readback_bytes")-histogramBefore,qint64(16400));
+        const auto uploads=engine->sourceUploads();
+        constexpr qint64 bytes=13*9*16;
+        const auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto);
+        for(const qint64 budget:{bytes,2*bytes-1,2*bytes,FloatFrameFingerprint::BudgetBytes+1}) {
+            QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+            QVERIFY(engine->process(cb,source,plan,++revision,{}));
+            QJsonObject output;int callbacks=0;const auto start=counter("diagnostic_gpu_readback_bytes");
+            QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){++callbacks;output=std::move(value);},nullptr,budget));
+            rhi->endOffscreenFrame();rhi->finish();QCOMPARE(callbacks,1);QVERIFY(!engine->hasPendingReadback());
+            QVERIFY(output["available"].toBool());const auto uploaded=output["source_staging"].toObject();
+            const bool both=budget>=2*bytes;QCOMPARE(uploaded["available"].toBool(),both);
+            QCOMPARE(output["readback_budget_bytes"].toInteger(),std::min(budget,FloatFrameFingerprint::BudgetBytes));
+            QCOMPARE(output["readback_requested_bytes"].toInteger(),both?2*bytes:bytes);
+            QCOMPARE(output["readback_received_bytes"],output["readback_requested_bytes"]);
+            QCOMPARE(counter("diagnostic_gpu_readback_bytes")-start,output["readback_received_bytes"].toInteger());
+            if(both)QCOMPARE(uploaded["pixel_sha256"],FloatFrameFingerprint::capture(source)["pixel_sha256"]);
+            else {QCOMPARE(uploaded["reason"].toString(),QString("budget"));QVERIFY(!uploaded.contains("pixel_sha256"));}
+            QCOMPARE(engine->sourceUploads(),uploads);
+        }
+    }
+    void diagnosticSourceIdentitySurvivesCpuFallbackAndQueuedReplacement() {
+        QImage first(9,7,QImage::Format_RGBA32FPx4);first.fill(QColor::fromRgbF(.25,.5,.75));
+        reinterpret_cast<float *>(first.scanLine(0))[0]=-.125f;
+        QImage second(first.size(),first.format());second.fill(QColor::fromRgbF(.5,.25,.125));
+        const auto expected=FloatFrameFingerprint::capture(first),nextExpected=FloatFrameFingerprint::capture(second);
+        AdjustmentState state;state.vignetteAmount=-.25;
+        auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::ProPhotoRgb,true,.75);
+        plan.setFrameRect({.125,.25,.5,.5});
+        QRhiCommandBuffer *cb=nullptr;QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);
+        QVERIFY(engine->process(cb,first,plan,++revision,{}));QVERIFY(engine->lastProcessUsedCpuFallback());
+        const auto frozenRevision=revision;int callbacks=0;QJsonObject output;
+        QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){++callbacks;output=std::move(value);}));
+        auto next=ProcessingPlan::compile({},ImagePipeline::InputEncoding::SRgb);
+        QVERIFY(engine->process(cb,second,next,++revision,{}));
+        rhi->endOffscreenFrame();rhi->finish();QCOMPARE(callbacks,1);QVERIFY(!engine->hasPendingReadback());
+        QVERIFY(output["available"].toBool());QCOMPARE(output["producer"].toString(),QString("cpu-reference-upload"));
+        const auto uploaded=output["source_staging"].toObject();QVERIFY(uploaded["available"].toBool());
+        for(auto it=expected.begin();it!=expected.end();++it)QCOMPARE(uploaded[it.key()],it.value());
+        QCOMPARE(uploaded["parameter_revision"].toInteger(),qint64(frozenRevision));
+        QCOMPARE(uploaded["source_cache_key"].toString(),QString::number(first.cacheKey()));
+        QVERIFY(uploaded["raw_source"].toBool());QCOMPARE(uploaded["base_exposure_stops"].toDouble(),.75);
+        QCOMPARE(uploaded["processing_frame_rect"].toArray(),QJsonArray({.125,.25,.5,.5}));
+        QVERIFY(!uploaded["used_for_compute"].toBool());
+        QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QJsonObject replaced;
+        QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){replaced=std::move(value);}));
+        rhi->endOffscreenFrame();rhi->finish();QVERIFY(replaced["available"].toBool());
+        const auto nextSource=replaced["source_staging"].toObject();
+        QCOMPARE(nextSource["pixel_sha256"],nextExpected["pixel_sha256"]);
+        QCOMPARE(nextSource["source_cache_key"].toString(),QString::number(second.cacheKey()));
+        QCOMPARE(nextSource["parameter_revision"].toInteger(),qint64(revision));
+        QCOMPARE(nextSource["encoding"].toString(),QString("encoded-srgb"));
+        QVERIFY(!nextSource["raw_source"].toBool());QVERIFY(nextSource["used_for_compute"].toBool());
+        QCOMPARE(nextSource["base_exposure_stops"].toDouble(),0.0);
+    }
     void diagnosticRefusalsDoNotPoisonRenderingOrUploadSource() {
         QImage source(17,13,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.2,.3,.4));
         auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
@@ -1191,6 +1253,8 @@ private slots:
         QVERIFY(engine->captureWorkingFrame(cb,revision,[&](QJsonObject value){second=std::move(value);}));
         rhi->endOffscreenFrame();engine.reset(); // Destruction must drain a still-owned result.
         QVERIFY(second["available"].toBool());QCOMPARE(second["pixel_sha256"],first.diagnostic["pixel_sha256"]);
+        QCOMPARE(second["source_staging"].toObject()["pixel_sha256"],first.diagnostic["source_staging"].toObject()["pixel_sha256"]);
+        QVERIFY(second["source_staging"].toObject()["available"].toBool());
         engine=std::make_unique<GpuEngine>(rhi.get());
         QImage resized(5,3,QImage::Format_RGBA32FPx4);resized.fill(Qt::gray);
         QVERIFY(!render(resized,{}).image.isNull());

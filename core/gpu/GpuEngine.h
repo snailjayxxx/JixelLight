@@ -10,7 +10,8 @@
 
 // Render-thread-only engine. Source uploads are keyed independently of editing
 // revisions. Normal interaction reads back only 16,400 histogram bytes. An
-// explicit diagnostic request can capture the pre-monitor working output.
+// explicit diagnostic request can capture the prepared upload and pre-monitor
+// working output within one aggregate 64MiB readback budget.
 class GpuEngine final {
 public:
     using HistogramReady = std::function<void(quint64, QByteArray, quint64)>;
@@ -62,6 +63,13 @@ private:
     bool processImpl(QRhiCommandBuffer *cb,const QImage &source,ProcessingPlan plan,quint64 revision,
         const HistogramReady &histogramReady,bool forceHistogram,BrushRenderRequest *admitted);
     struct ReadbackState { QRhiReadbackResult result; bool done = false; };
+    struct FrameReadbackState {
+        std::array<QRhiReadbackResult,2> results;
+        std::array<QJsonObject,2> fingerprints;
+        int remaining = 0;
+        qint64 receivedBytes = 0;
+        bool done = false;
+    };
     bool initialize(QSize size);
     bool ensureDetail();
     bool ensureDenoise();
@@ -82,8 +90,12 @@ private:
     int m_groups = 0;
     QElapsedTimer m_histogramClock;
     std::shared_ptr<ReadbackState> m_readback;
-    std::shared_ptr<ReadbackState> m_frameReadback;
+    std::shared_ptr<FrameReadbackState> m_frameReadback;
     ColorManagement::OutputSpace m_outputSpace = ColorManagement::OutputSpace::SRgb;
+    ImagePipeline::InputEncoding m_inputEncoding = ImagePipeline::InputEncoding::SRgb;
+    bool m_inputRawSource = false;
+    float m_inputBaseExposureStops = 0;
+    Float4 m_inputFrameRect{0,0,1,1};
     std::unique_ptr<QRhiTexture> m_source, m_output, m_lutTexture, m_detailBase, m_horizontal, m_displayLutTexture;
     std::unique_ptr<QRhiTexture> m_denoiseGuide,m_denoiseLinear;
     std::unique_ptr<QRhiShaderResourceBindings> m_denoisePrepareBindings,m_denoiseFilterBindings,m_denoiseColorBindings,m_denoiseDetailBindings;

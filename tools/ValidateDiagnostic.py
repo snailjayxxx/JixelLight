@@ -64,7 +64,19 @@ def validate_diagnostic(executable: Path, environment: dict, cwd: Path,
             assert reference['available'] is True
             if gpu['producer'] == 'cpu-reference-upload':
                 assert gpu['pixel_sha256'] == reference['pixel_sha256']
-            result.update(producer=gpu['producer'], pixel_sha256=gpu['pixel_sha256'], backend=gpu['backend'])
+            uploaded = gpu['source_staging']
+            source = stages['gpu_context']['source']
+            assert uploaded['available'] is True and source['available'] is True
+            assert uploaded['stage'] == 'prepared-source-upload' and uploaded['producer'] == 'gpu-texture-upload'
+            for key in ('pixel_sha256', 'width', 'height', 'pixels', 'bytes', 'pixel_order', 'ranges_rgba', 'nonfinite_rgba'):
+                assert uploaded[key] == source[key], key
+            assert uploaded['parameter_revision'] == gpu['parameter_revision'] and uploaded['source_cache_key'] == gpu['source_cache_key']
+            assert uploaded['monitor_icc'] is False and uploaded['alpha'] == 'straight'
+            assert uploaded['used_for_compute'] == (gpu['producer'] == 'gpu-compute')
+            assert gpu['readback_requested_bytes'] == gpu['readback_received_bytes'] == gpu['bytes'] + uploaded['bytes']
+            assert gpu['readback_requested_bytes'] <= gpu['readback_budget_bytes'] <= 64 * 1024 * 1024
+            result.update(producer=gpu['producer'], pixel_sha256=gpu['pixel_sha256'], backend=gpu['backend'],
+                          uploaded_pixel_sha256=uploaded['pixel_sha256'], readback_bytes=gpu['readback_received_bytes'])
         else:
             assert data['gpu_active'] is False and gpu['available'] is False and gpu['error']
             assert 'pixel_sha256' not in gpu

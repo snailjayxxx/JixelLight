@@ -2106,7 +2106,7 @@ QString PhotoController::createBugReport(const BugSnapshot &snapshot, QJsonObjec
         {"color_stages",colorCapture.stages},
         {"gpu_working_output",gpuOutput},{"gpu_context",gpuContext},
         {"monitor_icc","excluded; hashes precede screen presentation"},
-        {"note","RGBA64/proxy and CPU color boundaries; explicit GPU final working-output fingerprint only; float RAW and internal GPU boundaries remain unavailable"}};
+        {"note","RGBA64/proxy and CPU color boundaries; ordinary GPU prepared-upload and final working-output fingerprints share a diagnostic budget; native brush capture is separate; float RAW and internal GPU boundaries remain unavailable"}};
     PerformanceRecorder::sample("diagnostic_stage_hash_ms",hashTimer.nsecsElapsed()/1e6,{{"source_bytes",qint64(snapshot.prepare.image.sizeInBytes())}});
     for (auto it = snapshot.performanceValues.begin(); it != snapshot.performanceValues.end(); ++it)
         PerformanceRecorder::value(it.key(), it.value());
