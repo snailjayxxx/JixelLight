@@ -110,11 +110,17 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
     if (m_frameReadback && !m_frameReadback->done)
         return reject(QStringLiteral("A diagnostic readback is already pending"));
     const qint64 bytes = qint64(m_size.width()) * m_size.height() * 16;
-    if (budget < 0 || bytes > std::min(budget, FloatFrameFingerprint::BudgetBytes))
+    const qint64 limit = std::min(budget, FloatFrameFingerprint::BudgetBytes);
+    if (budget < 0 || bytes > limit)
         return reject(QStringLiteral("Diagnostic frame exceeds readback budget"));
     if (error) error->clear();
-    m_frameReadback = std::make_shared<ReadbackState>();
-    const std::weak_ptr<ReadbackState> weak = m_frameReadback;
+    // Reserve the existing final-output capture first. A second texture readback
+    // is optional and shares this request's unchanged aggregate budget.
+    const bool captureSource = m_source && bytes <= limit - bytes;
+    const int count = captureSource ? 2 : 1;
+    m_frameReadback = std::make_shared<FrameReadbackState>();
+    m_frameReadback->remaining = count;
+    const std::weak_ptr<FrameReadbackState> weak = m_frameReadback;
     const auto size = m_size;
     const QJsonObject context{{"parameter_revision", qint64(revision)},
         {"source_cache_key", QString::number(m_sourceKey)}, {"backend", backendName()},
@@ -129,27 +135,59 @@ bool GpuEngine::captureWorkingFrame(QRhiCommandBuffer *cb, quint64 revision, con
         {"spatial_denoise",m_outputDenoiseActive?(m_lastCpuFallback?"cpu-reference":"gpu-compute"):"inactive"},
         {"numeric_source_policy",m_outputNumericPolicy},
         {"stage", "working-output"}, {"monitor_icc", false}};
-    m_frameReadback->result.completed = [weak, ready, size, bytes, context] {
-        if (const auto state = weak.lock()) {
-            state->done = true;
-            QJsonObject result;
-            if (state->result.format != QRhiTexture::RGBA32F || state->result.pixelSize != size
-                || state->result.data.size() != bytes) {
-                result = {{"available", false}, {"error", "Invalid RGBA32F texture readback"}};
-            } else {
-                const QImage frame(reinterpret_cast<const uchar *>(state->result.data.constData()),
-                                   size.width(), size.height(), size.width() * 16, QImage::Format_RGBA32FPx4);
-                result = FloatFrameFingerprint::capture(frame);
+    const QJsonObject sourceContext{{"parameter_revision",qint64(revision)},
+        {"source_cache_key",QString::number(m_sourceKey)}, {"backend",backendName()},
+        {"stage","prepared-source-upload"}, {"producer","gpu-texture-upload"},
+        {"encoding",m_inputEncoding==ImagePipeline::InputEncoding::LinearProPhoto?"linear-prophoto":"encoded-srgb"},
+        {"raw_source",m_inputRawSource}, {"base_exposure_stops",m_inputBaseExposureStops},
+        {"processing_frame_rect",QJsonArray{m_inputFrameRect.x,m_inputFrameRect.y,m_inputFrameRect.z,m_inputFrameRect.w}},
+        {"alpha","straight"}, {"monitor_icc",false}, {"used_for_compute",!m_lastCpuFallback},
+        {"note","Prepared preview upload; not native sensor float or an internal colour/spatial boundary"}};
+    if (!captureSource) {
+        auto unavailable = sourceContext;
+        unavailable.insert("available",false);
+        unavailable.insert("reason",m_source?"budget":"source-unavailable");
+        unavailable.insert("required_bytes",bytes);
+        unavailable.insert("error",m_source?"Source capture exceeds remaining aggregate readback budget":"Prepared source texture is unavailable");
+        m_frameReadback->fingerprints[1] = std::move(unavailable);
+    }
+    const std::array<QJsonObject,2> contexts{context,sourceContext};
+    for (int index=0;index<count;++index) {
+        m_frameReadback->results[index].completed = [weak,ready,size,bytes,limit,count,index,context=contexts[index]] {
+            if (const auto state = weak.lock()) {
+                auto &readback = state->results[index];
+                QJsonObject result;
+                if (readback.format != QRhiTexture::RGBA32F || readback.pixelSize != size
+                    || readback.data.size() != bytes) {
+                    result = {{"available",false},{"error","Invalid RGBA32F texture readback"}};
+                } else {
+                    const QImage frame(reinterpret_cast<const uchar *>(readback.data.constData()),
+                                       size.width(),size.height(),size.width()*16,QImage::Format_RGBA32FPx4);
+                    result = FloatFrameFingerprint::capture(frame);
+                }
+                for (auto it=context.begin();it!=context.end();++it) result.insert(it.key(),it.value());
+                state->fingerprints[index] = std::move(result);
+                state->receivedBytes += readback.data.size();
+                PerformanceRecorder::count("diagnostic_gpu_readback_bytes",readback.data.size());
+                // Each result owns its storage until completion. Keep only small
+                // fingerprints and notify once, after both requested reads settle.
+                readback.data.clear();
+                if (--state->remaining == 0) {
+                    state->done = true;
+                    auto output = std::move(state->fingerprints[0]);
+                    output.insert("source_staging",std::move(state->fingerprints[1]));
+                    output.insert("readback_budget_bytes",limit);
+                    output.insert("readback_requested_bytes",bytes*count);
+                    output.insert("readback_received_bytes",state->receivedBytes);
+                    ready(std::move(output));
+                }
             }
-            for (auto it = context.begin(); it != context.end(); ++it) result.insert(it.key(), it.value());
-            PerformanceRecorder::count("diagnostic_gpu_readback_bytes", state->result.data.size());
-            // Release frame bytes before notifying; retain only a small fingerprint.
-            state->result.data.clear();
-            ready(std::move(result));
-        }
-    };
+        };
+    }
     auto *updates = m_rhi->nextResourceUpdateBatch();
-    updates->readBackTexture(QRhiReadbackDescription(m_output.get()), &m_frameReadback->result);
+    updates->readBackTexture(QRhiReadbackDescription(m_output.get()),&m_frameReadback->results[0]);
+    if (captureSource)
+        updates->readBackTexture(QRhiReadbackDescription(m_source.get()),&m_frameReadback->results[1]);
     cb->resourceUpdate(updates);
     return true;
 }
@@ -207,7 +245,7 @@ bool GpuEngine::initialize(QSize size) {
     m_groups = (size.width()*size.height()+16383)/16384;
     m_sourceKey = 0; m_revision = 0; m_histogramRevision = 0;
     const auto textureFlags = QRhiTexture::UsedWithLoadStore | QRhiTexture::UsedAsTransferSource;
-    m_source.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, size, 1, QRhiTexture::UsedWithLoadStore));
+    m_source.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, size, 1, textureFlags));
     m_output.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, size, 1, textureFlags));
     if (!m_source->create() || !m_output->create()) return fail(QStringLiteral("GPU source/output allocation failed"));
     if (!m_uniform) {
@@ -513,6 +551,8 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
                 &&!BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)?QStringLiteral("color-mask-adobe-boundary"):
             cpuFallback?QStringLiteral("existing-color-or-brush"):QStringLiteral("none");
         m_outputSpace = plan.output;
+        m_inputEncoding=plan.encoding;m_inputRawSource=plan.rawSource;
+        m_inputBaseExposureStops=plan.baseExposureStops;m_inputFrameRect=plan.data[ProcessingPlan::FrameRect];
     }
     if (histogramReady && !hasPendingReadback() && m_histogramRevision != revision
         && (forceHistogram || !m_histogramClock.isValid() || m_histogramClock.elapsed() >= 70)) {

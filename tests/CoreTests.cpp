@@ -8076,6 +8076,9 @@ private slots:
         auto output=FloatFrameFingerprint::capture(ImagePipeline::floatSource(expected));
         output["parameter_revision"]=qint64(revision); output["source_cache_key"]=QString::number(key);
         output["producer"]="gpu-compute"; output["monitor_icc"]=false;
+        auto uploaded=FloatFrameFingerprint::capture(c.gpuSource());
+        uploaded["parameter_revision"]=qint64(revision);uploaded["source_cache_key"]=QString::number(key);
+        uploaded["stage"]="prepared-source-upload";output["source_staging"]=uploaded;
         QSignalSpy finished(&c,&PhotoController::diagnosticFinished);
         const auto request=c.requestBugReport(); QVERIFY(request>0); QVERIFY(c.diagnosticBusy());
         QCOMPARE(c.requestBugReport(),qulonglong(0));
@@ -8104,6 +8107,8 @@ private slots:
         QCOMPARE(replayInfo["version_key"].toString(),source);
         QCOMPARE(stages["parameter_revision"].toInteger(),qint64(revision));
         QCOMPARE(stages["gpu_working_output"].toObject()["pixel_sha256"],output["pixel_sha256"]);
+        QCOMPARE(stages["gpu_working_output"].toObject()["source_staging"],output["source_staging"]);
+        QCOMPARE(stages["gpu_context"].toObject()["source"].toObject()["pixel_sha256"],uploaded["pixel_sha256"]);
         QCOMPARE(stages["gpu_context"].toObject()["cpu_reference"].toObject()["pixel_sha256"],output["pixel_sha256"]);
         QCOMPARE(stages["cpu_srgb_output"].toObject()["pixel_sha256"],StageGraph::outputFingerprint(expected)["pixel_sha256"]);
         const auto performance=QJsonDocument::fromJson(storedZipEntry(path,"performance.json")).object()["values"].toObject();
