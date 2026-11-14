@@ -43,6 +43,9 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
         || intent.colorMaskNeedsCpuPrecision()
         || (intent.colorMaskActive() && intent.output==ColorManagement::OutputSpace::AdobeRgb)
         || intent.pointColorNeedsCpuPrecision() || intent.denoiseActive() || intent.data[ProcessingPlan::Dehaze].x>0 || intent.textureActive() || intent.clarityActive()
+        // Preserve the ordinary spatial tiny-alpha policy and the measured
+        // negative-veil Adobe RGB gamut-edge precision bound on every backend.
+        || (intent.dehazeActive() && (source->m_floatFacts.nearZeroAlpha || intent.output==ColorManagement::OutputSpace::AdobeRgb))
         || (intent.encoding==ImagePipeline::InputEncoding::LinearProPhoto&&intent.output==ColorManagement::OutputSpace::ProPhotoRgb&&source->m_floatFacts.negativeRgb)
         || (intent.data[ProcessingPlan::Grain].x>0 && intent.output==ColorManagement::OutputSpace::AdobeRgb)
         || needsExactBackend(caps.m_numericRestricted, intent)) return fail(FrameFailure::CPUPolicy);
