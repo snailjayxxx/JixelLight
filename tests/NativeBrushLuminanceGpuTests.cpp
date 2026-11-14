@@ -47,12 +47,12 @@ private:
         return state;
     }
     void verifyNativeLuminance(const QImage &image,const AdjustmentState &state,ImagePipeline::InputEncoding encoding,
-                               ColorManagement::OutputSpace output,bool raw,const QRectF &frame={0,0,1,1}) {
+                               ColorManagement::OutputSpace output,bool raw,const QRectF &frame={0,0,1,1},bool pointMustChange=false) {
         namespace N=NativeBrush;
         auto budget=std::make_shared<BrushRenderBudget>();
         auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();
         QVERIFY(caps.active());auto plan=ProcessingPlan::compile(state,encoding,output,raw,raw?.35f:0.f);plan.setFrameRect(frame);
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;N::FrameFailure why=N::FrameFailure::None;};
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool pointChanged=false;N::FrameFailure why=N::FrameFailure::None;};
         Prepared prepared;
         {
             QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
@@ -61,7 +61,17 @@ private:
                 if(!result.source)return result;
                 result.upload=N::UploadAdmission::prepare(result.source,caps);
                 result.frame=N::FrameAdmission::prepare(result.source,caps,plan,{"range-catalog","range-input","range-version",1},1,&result.why);
-                const auto request=result.source->exactRequest(plan);if(request)result.reference=request->render({});return result;
+                const auto request=result.source->exactRequest(plan);if(request)result.reference=request->render({});
+                if(pointMustChange&&result.reference) {
+                    auto inactive=state;inactive.pointColorEnabled=false;
+                    auto off=ProcessingPlan::compile(inactive,encoding,output,raw,raw?.35f:0.f);off.setFrameRect(frame);
+                    const auto withoutPoint=result.source->exactRequest(off);
+                    if(withoutPoint) {
+                        const auto unchanged=withoutPoint->render({});
+                        result.pointChanged=unchanged&&unchanged.image()!=result.reference.image();
+                    }
+                }
+                return result;
             }));
             if(!watcher.isFinished())QVERIFY(finished.wait(10000));
             QVERIFY(watcher.isFinished());prepared=watcher.result();
@@ -69,6 +79,7 @@ private:
         const auto context=QString("native luminance: format=%1 encoding=%2 output=%3 RAW=%4 EV=%5 invert=%6 refusal=%7")
             .arg(int(image.format())).arg(int(encoding)).arg(int(output)).arg(raw).arg(state.luminanceMaskExposure).arg(state.luminanceMaskInverted).arg(int(prepared.why));
         QVERIFY2(prepared.upload&&prepared.frame&&prepared.reference,qPrintable(context));
+        if(pointMustChange)QVERIFY2(prepared.pointChanged,"Point Color fixture must visibly change the independent CPU reference");
         auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
         QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
         QVERIFY(domain->activate(prepared.frame->stamp()));auto handle=domain->attachFrame(input,prepared.frame);QVERIFY(bool(handle));
@@ -238,6 +249,108 @@ private slots:
         }));
         QTRY_VERIFY_WITH_TIMEOUT(watcher.isFinished(),10000);const auto checks=watcher.result();QCOMPARE(checks.size(),10);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native colour admission policy %1").arg(i)));domain->shutdown();
+    }
+    void nativeBrushPointColorMatchesSourcesAndMasks() {
+        QImage integer(37,29,QImage::Format_RGBA64),floating(37,29,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<29;++y)for(int x=0;x<37;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,quint16(((x+y)%4)*21845));
+            auto *p=reinterpret_cast<float *>(floating.scanLine(y))+4*x;
+            p[0]=.02f+2.f*x/36.f;p[1]=.01f+1.5f*y/28.f;p[2]=.1f+1.2f*((x+y)%17)/16.f;p[3]=float((x+y)%4)/3.f;
+        }
+        for(bool fp32:{false,true})for(int source=0;source<3;++source)for(int output=0;output<4;++output)
+        for(const auto adjustment:{std::array<double,3>{-33,27,12},{42,-32,-18},{0,55,21}}) {
+            const auto &image=fp32?floating:integer;
+            const auto encoding=source==0?ImagePipeline::InputEncoding::SRgb:ImagePipeline::InputEncoding::LinearProPhoto;
+            const auto space=ColorManagement::OutputSpace(output);const bool raw=source==2;
+            auto state=nativeLuminanceState(.4,false);
+            state.colorMaskEnabled=space!=ColorManagement::OutputSpace::AdobeRgb;state.colorMaskExposure=.25;
+            state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;
+            const auto selected=ImagePipeline::samplePointColor(image,ProcessingPlan::compile(state,encoding,space,raw,raw?.35f:0.f),{18,13});
+            QVERIFY(selected.has_value());state.pointColorLab={selected->L,selected->a,selected->b};
+            state.pointColorEnabled=true;state.pointColorHue=adjustment[0];state.pointColorSaturation=adjustment[1];state.pointColorLuminance=adjustment[2];
+            state.pointColorHueRange=180;state.pointColorChromaRange=1;state.pointColorLightnessRange=1;
+            qInfo()<<"native point sources"<<fp32<<source<<output<<adjustment[0]<<adjustment[1]<<adjustment[2];
+            verifyNativeLuminance(image,state,encoding,space,raw,{0,0,1,1},true);
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushPointColorHueSeamsAndNeutrals() {
+        constexpr float Pi=3.14159265358979323846f;
+        for(const auto center:{PointColor::Lab{.62f,.08f,359.f},PointColor::Lab{.035f,.012f,179.f},PointColor::Lab{.6f,0,0}})
+        for(const auto range:{std::array<float,3>{45,.003f,.003f},{90,.02f,.12f},{180,.12f,.4f}}) {
+            const float rH=range[0],rC=range[1],rL=range[2],angle=center.b*(Pi/180.f);QImage image(31,29,QImage::Format_RGBA32FPx4);
+            for(int y=0;y<29;++y)for(int x=0;x<31;++x) {
+                const float L=center.L+rL*(float((x*7+y*11)%101)/50.f-1),C=std::max(0.f,center.a+rC*(float(x)/30.f*2-1));
+                const float hue=(center.b+rH*(float(y)/28.f*2-1))*(Pi/180.f);
+                const auto rgb=PointColor::toEncodedSrgb({L,C*std::cos(hue),C*std::sin(hue)});
+                auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;for(int c=0;c<3;++c)p[c]=rgb[c];
+                const float alpha[]{0,1.e-30f,1.e-9f,.8f,1};p[3]=alpha[(x+y)%5];
+            }
+            for(int output=0;output<4;++output)for(double shift:{-87.,87.}) {
+                auto state=nativeLuminanceState(-.35,false);
+                state.pointColorEnabled=true;state.pointColorLab={center.L,center.a*std::cos(angle),center.a*std::sin(angle)};
+                state.pointColorHue=shift;state.pointColorSaturation=shift<0?-73:73;state.pointColorLuminance=shift<0?-37:37;
+                state.pointColorHueRange=rH;state.pointColorChromaRange=rC;state.pointColorLightnessRange=rL;
+                state.grainAmount=ColorManagement::OutputSpace(output)==ColorManagement::OutputSpace::AdobeRgb?0:19;
+                qInfo()<<"native point seam"<<center.L<<center.a<<center.b<<rH<<rC<<rL<<output<<shift;
+                verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::SRgb,ColorManagement::OutputSpace(output),false,{.125,.25,.5,.5});
+                if(QTest::currentTestFailed())return;
+            }
+        }
+    }
+    void nativeBrushPointColorRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const QRect crop((loaded.image.width()-128)/2,(loaded.image.height()-96)/2,128,96);
+        const auto image=loaded.image.copy(crop);
+        const QRectF frame(double(crop.x())/loaded.image.width(),double(crop.y())/loaded.image.height(),double(crop.width())/loaded.image.width(),double(crop.height())/loaded.image.height());
+        for(int output=0;output<4;++output)for(double shift:{-87.,87.}) {
+            auto state=nativeLuminanceState(-.35,false);const auto space=ColorManagement::OutputSpace(output);
+            auto picking=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,.35f);picking.setFrameRect(frame);
+            const auto selected=ImagePipeline::samplePointColor(image,picking,{64,48});QVERIFY(selected.has_value());
+            state.pointColorEnabled=true;state.pointColorLab={selected->L,selected->a,selected->b};
+            state.pointColorHue=shift;state.pointColorSaturation=41;state.pointColorLuminance=shift<0?-19:19;
+            state.pointColorHueRange=180;state.pointColorChromaRange=1;state.pointColorLightnessRange=1;
+            qInfo()<<"native point Sony full-decode/cropped-export"<<output<<shift;
+            verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::LinearProPhoto,space,true,frame,true);
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushPointColorRetainsCpuPolicies() {
+        namespace N=NativeBrush;QImage image(19,13,QImage::Format_RGBA32FPx4);image.fill(QColor::fromRgbF(.2,.3,.4,.375));
+        auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+        QFutureWatcher<QVector<bool>> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<QVector<bool>>::finished);QVERIFY(finished.isValid());
+        watcher.setFuture(QtConcurrent::run([=] {
+            QVector<bool> checks;auto budget=std::make_shared<BrushRenderBudget>();auto state=nativeLuminanceState(.4,false);
+            state.pointColorEnabled=true;state.pointColorHue=23;state.pointColorSaturation=37;state.pointColorLuminance=-19;
+            state.pointColorHueRange=90;state.pointColorChromaRange=.12;state.pointColorLightnessRange=.4;
+            const auto source=N::CanonicalSource::capture(image,{"point-policy",ImagePipeline::InputEncoding::LinearProPhoto,false,0,{0,0,1,1}},caps.threads(),budget);if(!source)return checks;
+            const auto attempt=[&](const ProcessingPlan &plan,bool accepted,N::FrameFailure expected=N::FrameFailure::CPUPolicy) {
+                N::FrameFailure why=N::FrameFailure::None;const auto frame=N::FrameAdmission::prepare(source,caps,plan,{"point-catalog","point-input","point-version",1},1,&why);
+                qInfo()<<"native point policy"<<checks.size()<<"admitted"<<bool(frame)<<"refusal"<<int(why);
+                checks.push_back(accepted?bool(frame)&&why==N::FrameFailure::None:!frame&&why==expected);
+            };
+            const auto compile=[&](const AdjustmentState &s,ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb){return ProcessingPlan::compile(s,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0);};
+            const auto plan=compile(state);attempt(plan,true);
+            attempt(ProcessingPlan::compile(state,plan.encoding,plan.output,true,0),false,N::FrameFailure::InvalidSource);
+            auto malformed=plan;malformed.data[ProcessingPlan::PointColorRange].y=0;attempt(malformed,false,N::FrameFailure::CPUPlan);
+            malformed=plan;malformed.data[ProcessingPlan::PointColorAdjust].x=2;attempt(malformed,false,N::FrameFailure::CPUPlan);
+            auto narrow=state;narrow.pointColorHueRange=44.9;attempt(compile(narrow),false);
+            narrow=state;narrow.pointColorChromaRange=.001;attempt(compile(narrow),false);
+            narrow=state;narrow.pointColorLightnessRange=.001;attempt(compile(narrow),false);
+            auto boundary=state;boundary.pointColorHueRange=45;boundary.pointColorChromaRange=.003;boundary.pointColorLightnessRange=.003;attempt(compile(boundary),true);
+            attempt(compile(state,ColorManagement::OutputSpace::AdobeRgb),true);
+            auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(compile(color),true);
+            attempt(compile(color,ColorManagement::OutputSpace::AdobeRgb),false);
+            auto disabled=state;disabled.pointColorEnabled=false;disabled.pointColorHueRange=1;attempt(compile(disabled),true);
+            auto grain=state;grain.grainAmount=19;attempt(compile(grain,ColorManagement::OutputSpace::AdobeRgb),false);
+            auto sharpen=state;sharpen.sharpenAmount=73;attempt(compile(sharpen),false);
+            return checks;
+        }));
+        if(!watcher.isFinished())QVERIFY(finished.wait(10000));QVERIFY(watcher.isFinished());
+        const auto checks=watcher.result();QCOMPARE(checks.size(),14);
+        for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native Point Color admission policy %1").arg(i)));domain->shutdown();
     }
 };
 int main(int argc,char **argv) {
