@@ -178,7 +178,7 @@ private slots:
             attempt(ProcessingPlan::compile(state,plan.encoding,plan.output,true,0),false,N::FrameFailure::InvalidSource);
             auto malformed=plan;malformed.data[ProcessingPlan::LuminanceMask].w=0;attempt(malformed,false,N::FrameFailure::CPUPlan);
             malformed=plan;malformed.data[ProcessingPlan::LuminanceMaskOptions].x=2;attempt(malformed,false,N::FrameFailure::CPUPlan);
-            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
+            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;point.pointColorHueRange=5;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
             auto color=state;color.colorMaskEnabled=true;color.colorMaskExposure=.5;attempt(ProcessingPlan::compile(color,plan.encoding,plan.output,false,0),true);
             auto grain=state;grain.grainAmount=19;attempt(ProcessingPlan::compile(grain,plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0),false);
             auto bright=state;bright.exposure=.6;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output,false,0),!restricted);
@@ -243,7 +243,7 @@ private slots:
             narrow=state;narrow.colorMaskChromaRange=.001;attempt(ProcessingPlan::compile(narrow,plan.encoding,plan.output,false,0),false);
             narrow=state;narrow.colorMaskLightnessRange=.001;attempt(ProcessingPlan::compile(narrow,plan.encoding,plan.output,false,0),false);
             attempt(ProcessingPlan::compile(state,plan.encoding,ColorManagement::OutputSpace::AdobeRgb,false,0),false);
-            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
+            auto point=state;point.pointColorEnabled=true;point.pointColorHue=23;point.pointColorHueRange=5;attempt(ProcessingPlan::compile(point,plan.encoding,plan.output,false,0),false);
             auto bright=state;bright.saturation=21;attempt(ProcessingPlan::compile(bright,plan.encoding,plan.output,false,0),!restricted);
             return checks;
         }));
