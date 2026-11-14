@@ -96,7 +96,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         int presentedCaptures=0,postSyncCaptures=0,capturePending=0,capturePendingPeak=0,controlCaptures=0,failureControlCaptures=0;
         qint64 capturePeakBytes=0,controlCaptureNs=0;
         bool offscreenCapture=false,captureSeedChecked=false,captureSeedMatches=false;QString captureError,captureSeedHash,captureControlHash;
-        QJsonObject captureSeedDiagnostic;QJsonArray captureSeedFrames;int captureSeedStableFrames=0;
+        QJsonObject captureSeedDiagnostic,captureWaitStateDiagnostic;QJsonArray captureSeedFrames;int captureSeedStableFrames=0;
         int windowGrabCalls=0;qint64 windowGrabNs=0,windowGrabMaxNs=0;
         int pngSaveCalls=0,pngSaveFailures=0;qint64 pngSaveNs=0,pngSaveMaxNs=0;PressureCaptureQueue captureQueue;
         int focusBootstrapCount=0;bool focusObserved=false,initialWindowActive=false,focusReady=false;
@@ -131,6 +131,8 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         QElapsedTimer clock;clock.start();QScopedValueRollback<int> pending(s->capturePending,s->capturePending+1);
         s->capturePendingPeak=std::max(s->capturePendingPeak,s->capturePending);
         const auto intent=masks(c);const auto revision=c->renderRevision();const int cursor=history(c);const bool drawing=c->brushDrawing();
+        const auto developBefore=c->gpuPlan(true).state.toJson();const auto sourceBefore=c->currentFile();
+        auto *photoCanvas=item("photoCanvas");const QSizeF canvasBefore=photoCanvas?photoCanvas->size():QSizeF{};
         const qint64 captureStartedMs=s->clock.elapsed();PresentedWindowCapture::Result frame;++s->windowGrabCalls;
         if(!s->captureSeedChecked){
             auto seed=s->windowCapture.grabStable(window,int(45000-s->clock.elapsed()));
@@ -184,8 +186,20 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
                     {"instrumentation_after_original_comparison",true},{"product_acceptance_claim",false}};
             }
         }
-        if(masks(c)!=intent || c->renderRevision()!=revision || history(c)!=cursor || c->brushDrawing()!=drawing)
+        if(masks(c)!=intent || c->renderRevision()!=revision || history(c)!=cursor || c->brushDrawing()!=drawing){
+            const QSizeF canvasAfter=photoCanvas?photoCanvas->size():QSizeF{};
+            s->captureWaitStateDiagnostic={{"phase",s->phase},{"logical_capture",s->windowGrabCalls},
+                {"revision_before",qint64(revision)},{"revision_after",qint64(c->renderRevision())},
+                {"history_before",cursor},{"history_after",history(c)},
+                {"drawing_before",drawing},{"drawing_after",c->brushDrawing()},
+                {"brush_document_equal",masks(c)==intent},{"complete_Develop_equal",c->gpuPlan(true).state.toJson()==developBefore},
+                {"source_path_equal",c->currentFile()==sourceBefore},
+                {"canvas_width_before",canvasBefore.width()},{"canvas_height_before",canvasBefore.height()},
+                {"canvas_width_after",canvasAfter.width()},{"canvas_height_after",canvasAfter.height()},
+                {"Develop_before",developBefore},{"Develop_after",c->gpuPlan(true).state.toJson()},
+                {"original_state_comparison_preserved",true},{"product_acceptance_claim",false}};
             s->captureError=QStringLiteral("CAPTURE_WAIT_CHANGED_INTENT_HISTORY_OR_OWNER");
+        }
         const auto ns=clock.nsecsElapsed();s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);
         return s->captureError.isEmpty()?frame.image:QImage{};
     };
@@ -225,6 +239,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
             {"live_paint_delta",s->livePaintDelta},{"live_erase_delta",s->liveEraseDelta},{"live_to_commit_paint_delta",s->commitPaintDelta},{"live_to_commit_erase_delta",s->commitEraseDelta},
             {"export_exact_pixels_and_ICC",s->exactExport},{"gpu_active",c->gpuActive()},{"backend",c->processingBackend()},{"dpr",window->effectiveDevicePixelRatio()},
             {"window_capture_seed_diagnostic",s->captureSeedDiagnostic},
+            {"window_capture_wait_state_diagnostic",s->captureWaitStateDiagnostic},
             {"window_capture_kind",s->offscreenCapture?"original-Qt-offscreen-window-grab":"normal-presented-window-backbuffer"},{"window_capture_qpa",QGuiApplication::platformName()},{"window_capture_error",s->captureError},{"window_capture_presented_calls",s->presentedCaptures},{"window_capture_post_request_sync_calls",s->postSyncCaptures},{"window_capture_pending_peak",s->capturePendingPeak},{"window_capture_buffer_budget_bytes",PresentedWindowCapture::BufferBudget},{"window_capture_peak_buffer_bytes",s->capturePeakBytes},
             {"window_capture_seed_frame_count",s->captureSeedFrames.size()},{"window_capture_seed_stable_frames",s->captureSeedStableFrames},{"window_capture_seed_frames",s->captureSeedFrames},
             {"window_capture_seed_matches_Qt_grab",s->captureSeedMatches},{"window_capture_seed_sha256",s->captureSeedHash},{"window_capture_Qt_control_sha256",s->captureControlHash},{"window_capture_Qt_control_calls",s->controlCaptures},{"window_capture_Qt_control_total_ms",s->controlCaptureNs/1e6},{"window_capture_failure_Qt_grab_calls",s->failureControlCaptures},
@@ -237,7 +252,7 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
         Q_UNUSED(keep);
         // A capture's bounded GUI wait may deliver this same 50ms timer. The
         // original phase must not inject another packet until that frame ends.
-        if(s->windowCapture.busy())return;
+        if(s->capturePending||s->windowCapture.busy())return;
         if(s->phases.isEmpty()||s->phases.last().toObject()["phase"].toInt()!=s->phase)s->phases.append(QJsonObject{{"phase",s->phase},{"at_ms",s->clock.elapsed()}});
         if(s->clock.elapsed()>=45000){finish("Controlled photo pressure QA exceeded45000ms");return;}
         if(!s->captureError.isEmpty()){finish(s->captureError);return;}
