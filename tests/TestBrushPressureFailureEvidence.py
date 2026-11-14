@@ -132,5 +132,56 @@ class BrushPressureFailureEvidenceTests(unittest.TestCase):
             self.assertTrue(errors)
 
 
+class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
+    def valid(self):
+        return dict(window_capture_kind="normal-presented-window-backbuffer", window_capture_error="",
+                    window_grab_calls=38, window_capture_presented_calls=38,
+                    window_capture_pending_peak=1, window_capture_Qt_control_calls=1,
+                    window_capture_failure_Qt_grab_calls=0, window_capture_seed_matches_Qt_grab=True,
+                    window_capture_seed_sha256="ab" * 32, window_capture_Qt_control_sha256="ab" * 32,
+                    window_capture_buffer_budget_bytes=64 * 1024**2,
+                    window_capture_peak_buffer_bytes=3080 * 1840 * 8,
+                    captures=[dict(width=3080, height=1840) for _ in pressure.OWNED_CAPTURES],
+                    capture_png_quality=85, capture_png_save_calls=len(pressure.OWNED_CAPTURES),
+                    capture_png_failures=0)
+
+    def rejects(self, field, values):
+        for value in values:
+            with self.subTest(field=field, value=value):
+                data = self.valid()
+                data[field] = value
+                with self.assertRaises((AssertionError, KeyError, TypeError, ValueError)):
+                    pressure.validate_presented_window_captures(data)
+
+    def test_accepts_complete_presented_frames_and_independent_control(self):
+        pressure.validate_presented_window_captures(self.valid())
+
+    def test_rejects_missing_per_packet_frames(self):
+        self.rejects("window_grab_calls", (37, True))
+        self.rejects("window_capture_presented_calls", (37, 39, True))
+
+    def test_rejects_cached_or_synchronous_fallback_sources(self):
+        self.rejects("window_capture_kind", ("cached-preview", "QQuickItem-grab", "synchronous-window-grab"))
+        self.rejects("window_capture_error", ("capture-deadline-expired",))
+        self.rejects("window_capture_Qt_control_calls", (0, 2, True))
+        self.rejects("window_capture_failure_Qt_grab_calls", (1, False))
+
+    def test_rejects_unverified_or_different_control_pixels(self):
+        self.rejects("window_capture_seed_matches_Qt_grab", (False, 1))
+        self.rejects("window_capture_seed_sha256", ("ab" * 31, "z" * 64, "cd" * 32))
+        self.rejects("window_capture_Qt_control_sha256", ("cd" * 32,))
+
+    def test_rejects_unbounded_or_inconsistent_frame_storage(self):
+        self.rejects("window_capture_pending_peak", (0, 2, True))
+        self.rejects("window_capture_buffer_budget_bytes", (64 * 1024**2 + 1, 0))
+        self.rejects("window_capture_peak_buffer_bytes", (0, 64 * 1024**2 + 1, 3080 * 1840 * 8 - 8))
+
+    def test_rejects_incomplete_or_changed_lossless_PNG_evidence(self):
+        self.rejects("capture_png_quality", (80,))
+        self.rejects("capture_png_save_calls", (len(pressure.OWNED_CAPTURES) - 1,))
+        self.rejects("capture_png_failures", (1,))
+        self.rejects("captures", ([], [dict(width=3080, height=1840)]))
+
+
 if __name__ == "__main__":
     unittest.main()
