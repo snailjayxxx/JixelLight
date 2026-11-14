@@ -1128,6 +1128,33 @@ private slots:
             QCOMPARE(result.histogram.pixelCount,quint64(source.width()*source.height()));
         }
     }
+    void diagnosticCapturesPreparedSourceUpload() {
+        constexpr int width=7,height=5,stride=width*16+32;
+        QByteArray storage(stride*height,char(0x5a));
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const float pixel[4]={float(x)/8-.25f,float(y)/8+.125f,2.0f,float((x+y)%4)/4};
+            std::memcpy(storage.data()+y*stride+x*16,pixel,sizeof(pixel));
+        }
+        const QImage source(reinterpret_cast<const uchar *>(storage.constData()),width,height,stride,QImage::Format_RGBA32FPx4);
+        const auto expected=FloatFrameFingerprint::capture(source);
+        for(const auto encoding:{ImagePipeline::InputEncoding::LinearProPhoto,ImagePipeline::InputEncoding::SRgb}) {
+            AdjustmentState state;state.exposure=.5;state.vignetteAmount=-.25;
+            const auto result=render(source,state,true,encoding,ColorManagement::OutputSpace::DisplayP3,{.125,.25,.5,.5},true);
+            QVERIFY(!result.image.isNull());QVERIFY(result.diagnostic["available"].toBool());
+            for(auto it=result.independentFingerprint.begin();it!=result.independentFingerprint.end();++it)
+                QCOMPARE(result.diagnostic[it.key()],it.value());
+            const auto uploaded=result.diagnostic["source_staging"].toObject();
+            QVERIFY2(uploaded["available"].toBool(),"Prepared FP32 upload texture must have its own diagnostic fingerprint");
+            for(auto it=expected.begin();it!=expected.end();++it)QCOMPARE(uploaded[it.key()],it.value());
+            QCOMPARE(uploaded["stage"].toString(),QString("prepared-source-upload"));
+            QCOMPARE(uploaded["producer"].toString(),QString("gpu-texture-upload"));
+            QCOMPARE(uploaded["source_cache_key"].toString(),QString::number(source.cacheKey()));
+            QCOMPARE(uploaded["parameter_revision"].toInteger(),qint64(revision));
+            QCOMPARE(uploaded["encoding"].toString(),QString(encoding==ImagePipeline::InputEncoding::LinearProPhoto?"linear-prophoto":"encoded-srgb"));
+            QVERIFY(!uploaded["monitor_icc"].toBool());QVERIFY(uploaded["used_for_compute"].toBool());
+            QCOMPARE(result.histogram.pixelCount,quint64(width*height));
+        }
+    }
     void diagnosticRefusalsDoNotPoisonRenderingOrUploadSource() {
         QImage source(17,13,QImage::Format_RGBA32FPx4);source.fill(QColor::fromRgbF(.2,.3,.4));
         auto plan=ProcessingPlan::compile({},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);
