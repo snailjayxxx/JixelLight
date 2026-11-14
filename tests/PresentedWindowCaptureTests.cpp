@@ -112,6 +112,15 @@ private slots:
         auto *rect=new CaptureRect(window.contentItem());rect->setPosition({8,8});rect->setSize({64,40});rect->color(QColor(120,30,60));
         window.show();QTRY_VERIFY_WITH_TIMEOUT(window.isExposed(),5000);
         auto capture=std::make_shared<PresentedWindowCapture>();auto gate=std::make_shared<QSemaphore>();auto probe=std::make_shared<InFlightCaptureProbe>();
+        // Exposure alone does not mean the first frame ended. Qt keeps the
+        // GUI blocked through submission of an expose frame, so a render gate
+        // in that frame cannot be released by a queued GUI capture request.
+        // Complete an actual normal capture before arming the concurrent
+        // regression; its older frame must be an ordinary update frame.
+        const auto warmup=capture->grab(&window,5000);
+        QVERIFY2(warmup.ok(),qPrintable(warmup.error));QVERIFY(warmup.frameSwapped);
+        const qreal dpr=window.effectiveDevicePixelRatio();
+        QCOMPARE(warmup.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(120,30,60));
         // The old scene has synchronized before this job. Keep that render
         // in flight while the GUI changes the item and requests its capture.
         window.scheduleRenderJob(QRunnable::create([&window,rect,capture,gate,probe]{
@@ -128,10 +137,11 @@ private slots:
         window.update();QTRY_VERIFY_WITH_TIMEOUT(probe->done.load(std::memory_order_acquire),6000);
         QVERIFY(probe->threaded.load());QVERIFY(probe->gateReleased.load());
         QVERIFY2(probe->result.ok(),qPrintable(probe->result.error));QVERIFY(probe->result.synchronizedAfterRequest);
-        const qreal dpr=window.effectiveDevicePixelRatio();QCOMPARE(probe->result.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(30,160,210));
+        QCOMPARE(probe->result.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(30,160,210));
         const auto control=window.grabWindow().convertToFormat(QImage::Format_RGBA8888);window.update();
         QCOMPARE(probe->result.image.convertToFormat(QImage::Format_RGBA8888),control);
         records.append(QJsonObject{{"name","captureWaitsForRequestSynchronizationWhileOlderFrameIsRendering"},{"passed",true},
+            {"warmup_normal_frame_swapped",true},{"warmup_old_revision_matches",true},
             {"older_frame_held_after_sync",true},{"request_during_in_flight_render",true},{"post_request_synchronization_observed",true},
             {"new_revision_pixels_match_Qt_control",true},{"DPR",dpr}});
     }
