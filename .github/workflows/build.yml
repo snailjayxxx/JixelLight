@@ -94,7 +94,9 @@ jobs:
         with: {fetch-depth: 0}
       - name: Validate strict artifact-delivery gate
         shell: bash
-        run: python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
+          python -m unittest discover -s tests -p 'TestMacBundleArchive.py' -v
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -668,9 +670,19 @@ jobs:
           mkdir -p "$APP/Contents/Resources/profiles"
           cp build/sony-real-reports/dataset/empirical.jlook.json "$APP/Contents/Resources/profiles/Sony-ILCE7M4-ST-experimental.jlook.json"
           cp docs/SONY_REAL_VALIDATION.md "$APP/Contents/Resources/profiles/README.md"
-          macdeployqt "$APP" -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli" -executable="$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
-          python tools/ValidatePackage.py "$APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$APP/Contents/MacOS/JixelLightSonyValidation" --cli "$APP/Contents/MacOS/JixelLightCli" --sony-brush-raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --pressure-export-verifier "$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
+          macdeployqt "$APP" -codesign=- -qmldir=ui -executable="$APP/Contents/MacOS/JixelLightSonyValidation" -executable="$APP/Contents/MacOS/JixelLightCli" -executable="$APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
+          codesign --verify --deep --strict --verbose=2 "$APP"
           ditto -c -k --sequesterRsrc --keepParent "$APP" JixelLight-macOS-arm64.zip
+          JIXEL_ARCHIVE_ROOT="$RUNNER_TEMP/JixelLight-shipping-archive-validation"
+          test ! -e "$JIXEL_ARCHIVE_ROOT"
+          mkdir "$JIXEL_ARCHIVE_ROOT"
+          ditto -x -k JixelLight-macOS-arm64.zip "$JIXEL_ARCHIVE_ROOT"
+          JIXEL_DEPLOYED_APP="$JIXEL_ARCHIVE_ROOT/JixelLight.app"
+          codesign --verify --deep --strict --verbose=2 "$JIXEL_DEPLOYED_APP"
+          mkdir -p package-validation
+          python tools/ValidateMacBundleArchive.py "$APP" "$JIXEL_DEPLOYED_APP" JixelLight-macOS-arm64.zip --report package-validation/macos-archive-integrity.json
+          python tools/ValidatePackage.py "$JIXEL_DEPLOYED_APP/Contents/MacOS/JixelLight" "$RUNNER_TEMP/JixelLight-test.DNG" --sony-probe "$JIXEL_DEPLOYED_APP/Contents/MacOS/JixelLightSonyValidation" --cli "$JIXEL_DEPLOYED_APP/Contents/MacOS/JixelLightCli" --sony-brush-raw "$JIXELLIGHT_SONY_FIXTURES/sony_a7_iv_07.arw" --pressure-export-verifier "$JIXEL_DEPLOYED_APP/Contents/MacOS/JixelLightBrushPressureExportVerifier"
+          codesign --verify --deep --strict --verbose=2 "$JIXEL_DEPLOYED_APP"
           shasum -a 256 JixelLight-macOS-arm64.zip
       - name: Upload validation reports
         id: validation_upload
@@ -857,7 +869,9 @@ jobs:
         with: {fetch-depth: 0}
       - name: Validate strict artifact-delivery gate
         shell: bash
-        run: python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'TestArtifactDelivery.py' -v
+          python -m unittest discover -s tests -p 'TestMacBundleArchive.py' -v
       - name: Native dependencies and headless GPU validation
         run: |
           # The runner's Azure mirror failed DNS before any product build in CI364.
