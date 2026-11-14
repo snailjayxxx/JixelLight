@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include "core/gpu/GpuEngine.h"
 #include "core/pipeline/BrushMaskTileRaster.h"
 #include "core/pipeline/FloatFrameFingerprint.h"
@@ -47,12 +48,18 @@ private:
         return state;
     }
     void verifyNativeLuminance(const QImage &image,const AdjustmentState &state,ImagePipeline::InputEncoding encoding,
-                               ColorManagement::OutputSpace output,bool raw,const QRectF &frame={0,0,1,1},bool pointMustChange=false) {
+                               ColorManagement::OutputSpace output,bool raw,const QRectF &frame={0,0,1,1},bool pointMustChange=false,
+                               bool dehazeMustChange=false,std::optional<SpatialDehaze::Airlight> fullAirlight={},QSize fullSize={}) {
         namespace N=NativeBrush;
         auto budget=std::make_shared<BrushRenderBudget>();
         auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();
-        QVERIFY(caps.active());auto plan=ProcessingPlan::compile(state,encoding,output,raw,raw?.35f:0.f);plan.setFrameRect(frame);
-        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool pointChanged=false;N::FrameFailure why=N::FrameFailure::None;};
+        const auto compile=[=](const AdjustmentState &adjustments) {
+            auto plan=ProcessingPlan::compile(adjustments,encoding,output,raw,raw?.35f:0.f);plan.setFrameRect(frame);
+            if(fullAirlight&&plan.dehazeActive()){plan.setReferenceFrameSize(fullSize);plan.setDehazeAirlight(*fullAirlight);}
+            return plan;
+        };
+        QVERIFY(caps.active());const auto plan=compile(state);
+        struct Prepared {N::CanonicalSource::Ptr source;N::UploadAdmission::Ptr upload;N::FrameAdmission::Ptr frame;BrushImageLease reference;bool pointChanged=false,dehazeChanged=false;N::FrameFailure why=N::FrameFailure::None;};
         Prepared prepared;
         {
             QFutureWatcher<Prepared> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<Prepared>::finished);
@@ -64,11 +71,19 @@ private:
                 const auto request=result.source->exactRequest(plan);if(request)result.reference=request->render({});
                 if(pointMustChange&&result.reference) {
                     auto inactive=state;inactive.pointColorEnabled=false;
-                    auto off=ProcessingPlan::compile(inactive,encoding,output,raw,raw?.35f:0.f);off.setFrameRect(frame);
+                    const auto off=compile(inactive);
                     const auto withoutPoint=result.source->exactRequest(off);
                     if(withoutPoint) {
                         const auto unchanged=withoutPoint->render({});
                         result.pointChanged=unchanged&&unchanged.image()!=result.reference.image();
+                    }
+                }
+                if(dehazeMustChange&&result.reference) {
+                    auto inactive=state;inactive.dehazeAmount=0;
+                    const auto withoutDehaze=result.source->exactRequest(compile(inactive));
+                    if(withoutDehaze) {
+                        const auto unchanged=withoutDehaze->render({});
+                        result.dehazeChanged=unchanged&&unchanged.image()!=result.reference.image();
                     }
                 }
                 return result;
@@ -80,6 +95,7 @@ private:
             .arg(int(image.format())).arg(int(encoding)).arg(int(output)).arg(raw).arg(state.luminanceMaskExposure).arg(state.luminanceMaskInverted).arg(int(prepared.why));
         QVERIFY2(prepared.upload&&prepared.frame&&prepared.reference,qPrintable(context));
         if(pointMustChange)QVERIFY2(prepared.pointChanged,"Point Color fixture must visibly change the independent CPU reference");
+        if(dehazeMustChange)QVERIFY2(prepared.dehazeChanged,"Negative dehaze fixture must visibly change the independent CPU reference");
         auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
         QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
         QVERIFY(domain->activate(prepared.frame->stamp()));auto handle=domain->attachFrame(input,prepared.frame);QVERIFY(bool(handle));
@@ -351,6 +367,107 @@ private slots:
         if(!watcher.isFinished())QVERIFY(finished.wait(10000));QVERIFY(watcher.isFinished());
         const auto checks=watcher.result();QCOMPARE(checks.size(),14);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native Point Color admission policy %1").arg(i)));domain->shutdown();
+    }
+    void nativeBrushNegativeDehazeMatchesSourcesAndMasks() {
+        QImage integer(37,29,QImage::Format_RGBA64),floating(37,29,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<29;++y)for(int x=0;x<37;++x) {
+            reinterpret_cast<QRgba64 *>(integer.scanLine(y))[x]=QRgba64::fromRgba64((x*1597+y*311)%65536,(x*431+y*1973)%65536,(x*1131+y*89)%65536,quint16(((x+y)%4)*21845));
+            auto *p=reinterpret_cast<float *>(floating.scanLine(y))+4*x;
+            p[0]=.02f+2.f*x/36.f;p[1]=.01f+1.5f*y/28.f;p[2]=.1f+1.2f*((x+y)%17)/16.f;p[3]=float((x+y)%4)/3.f;
+        }
+        for(bool fp32:{false,true})for(int source=0;source<3;++source)for(int output=0;output<4;++output)
+        for(double amount:{-100.,-37.,-1.}) {
+            const auto space=ColorManagement::OutputSpace(output);auto state=nativeLuminanceState(.4,false);
+            state.dehazeAmount=amount;state.colorMaskEnabled=space!=ColorManagement::OutputSpace::AdobeRgb;state.colorMaskExposure=.25;
+            state.colorMaskHueRange=90;state.colorMaskChromaRange=.12;state.colorMaskLightnessRange=.4;
+            state.pointColorEnabled=true;state.pointColorLab={.6,.02,.01};state.pointColorHue=23;state.pointColorSaturation=37;state.pointColorLuminance=-19;
+            state.pointColorHueRange=180;state.pointColorChromaRange=1;state.pointColorLightnessRange=1;
+            qInfo()<<"native negative dehaze sources"<<fp32<<source<<output<<amount;
+            verifyNativeLuminance(fp32?floating:integer,state,source==0?ImagePipeline::InputEncoding::SRgb:ImagePipeline::InputEncoding::LinearProPhoto,space,source==2,{0,0,1,1},true,true);
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushNegativeDehazeHdrAlphaAndFullContext() {
+        QImage image(37,13,QImage::Format_RGBA32FPx4);
+        const float levels[]{-.03f,0.f,.001f,.2f,.7f,1.f,2.f,3.5f,65504.f},alpha[]{0.f,1.e-30f,.375f,1.f};
+        for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
+            auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;
+            p[0]=levels[(x+y)%std::size(levels)];p[1]=levels[(2*x+y+3)%std::size(levels)];p[2]=levels[(x+3*y+5)%std::size(levels)];p[3]=alpha[(x+2*y)%4];
+        }
+        for(int output=0;output<3;++output)for(bool raw:{false,true})for(double amount:{-100.,-1.})for(int context=0;context<4;++context) {
+            auto state=nativeLuminanceState(.4,raw);state.dehazeAmount=amount;state.grainAmount=output==2?0:19;
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),raw,raw?.35f:0.f);
+            const auto airlight=ImagePipeline::estimateDehazeAirlight(image,plan);QVERIFY(airlight.valid);
+            QImage input=image;QRectF frame{0,0,1,1};
+            if(context==1||context==3) {
+                const QRect crop(9,3,19,7);input=image.copy(crop);
+                frame={double(crop.x())/image.width(),double(crop.y())/image.height(),double(crop.width())/image.width(),double(crop.height())/image.height()};
+            }
+            if(context>=2)input=input.scaled(context==2?QSize(19,7):QSize(11,5),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
+            QCOMPARE(input.format(),QImage::Format_RGBA32FPx4);
+            qInfo()<<"native negative dehaze context"<<output<<raw<<amount<<context;
+            verifyNativeLuminance(input,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),raw,frame,false,true,
+                                  context==0?std::nullopt:std::optional<SpatialDehaze::Airlight>(airlight),image.size());
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushNegativeDehazeRealSonyCropMatchesReference() {
+        const auto folder=qEnvironmentVariable("JIXELLIGHT_SONY_FIXTURES");
+        if(folder.isEmpty()){if(qEnvironmentVariableIsSet("JIXELLIGHT_REQUIRE_SONY_REAL"))QFAIL("Required real Sony fixtures unavailable");QSKIP("No real Sony fixtures configured");}
+        const auto loaded=loadSourceFresh(QDir(folder).filePath("sony_a7_iv_07.arw"),{});QVERIFY2(!loaded.image.isNull(),qPrintable(loaded.error));
+        const QRect crop((loaded.image.width()-128)/2,(loaded.image.height()-96)/2,128,96);const auto image=loaded.image.copy(crop);
+        const QRectF frame(double(crop.x())/loaded.image.width(),double(crop.y())/loaded.image.height(),double(crop.width())/loaded.image.width(),double(crop.height())/loaded.image.height());
+        for(int output=0;output<4;++output)for(double amount:{-100.,-37.}) {
+            auto state=nativeLuminanceState(-.35,false);state.dehazeAmount=amount;
+            state.pointColorEnabled=true;state.pointColorLab={.6,.02,.01};state.pointColorHue=23;state.pointColorSaturation=37;state.pointColorLuminance=-19;
+            state.pointColorHueRange=180;state.pointColorChromaRange=1;state.pointColorLightnessRange=1;
+            const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,.35f);
+            const auto airlight=ImagePipeline::estimateDehazeAirlight(loaded.image,plan);QVERIFY(airlight.valid);
+            qInfo()<<"native negative dehaze Sony full-decode/cropped-export"<<output<<amount;
+            verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,frame,true,true,airlight,loaded.image.size());
+            if(QTest::currentTestFailed())return;
+        }
+    }
+    void nativeBrushNegativeDehazeRetainsCpuPolicies() {
+        namespace N=NativeBrush;QImage image(19,13,QImage::Format_RGBA32FPx4);image.fill(QColor::fromRgbF(.2,.3,.4,.375));
+        auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();QVERIFY(caps.active());
+        QFutureWatcher<QVector<bool>> watcher;QSignalSpy finished(&watcher,&QFutureWatcher<QVector<bool>>::finished);QVERIFY(finished.isValid());
+        watcher.setFuture(QtConcurrent::run([=] {
+            QVector<bool> checks;auto budget=std::make_shared<BrushRenderBudget>();auto state=nativeLuminanceState(.4,false);state.dehazeAmount=-37;
+            const auto source=N::CanonicalSource::capture(image,{"veil-policy",ImagePipeline::InputEncoding::LinearProPhoto,false,0,{0,0,1,1}},caps.threads(),budget);if(!source)return checks;
+            const auto attempt=[&](const ProcessingPlan &plan,bool accepted,N::FrameFailure expected=N::FrameFailure::CPUPolicy,N::CanonicalSource::Ptr candidate={},const CancelToken &cancel={}) {
+                N::FrameFailure why=N::FrameFailure::None;const auto frame=N::FrameAdmission::prepare(candidate?candidate:source,caps,plan,{"veil-catalog","veil-input","veil-version",1},1,&why,cancel);
+                qInfo()<<"native negative dehaze policy"<<checks.size()<<"admitted"<<bool(frame)<<"refusal"<<int(why);
+                checks.push_back(accepted?bool(frame)&&why==N::FrameFailure::None:!frame&&why==expected);
+            };
+            const auto compile=[&](const AdjustmentState &s,ColorManagement::OutputSpace output=ColorManagement::OutputSpace::SRgb){return ProcessingPlan::compile(s,ImagePipeline::InputEncoding::LinearProPhoto,output,false,0);};
+            const auto plan=compile(state);attempt(plan,true);
+            auto changed=state;changed.dehazeAmount=-.01;attempt(compile(changed),true);
+            changed=state;changed.dehazeAmount=-100;attempt(compile(changed),true);
+            changed=state;changed.dehazeAmount=1;attempt(compile(changed),false);
+            changed=state;changed.dehazeAmount=100;attempt(compile(changed),false);
+            auto malformed=plan;malformed.data[ProcessingPlan::Dehaze].x=-1.01;attempt(malformed,false,N::FrameFailure::CPUPlan);
+            malformed=plan;malformed.data[ProcessingPlan::DehazeAirlight]={std::numeric_limits<float>::quiet_NaN(),1,1,1};attempt(malformed,false,N::FrameFailure::CPUPlan);
+            attempt(ProcessingPlan::compile(state,plan.encoding,plan.output,true,0),false,N::FrameFailure::InvalidSource);
+            changed=state;changed.sharpenAmount=73;attempt(compile(changed),false);
+            changed=state;changed.denoiseLuma=37;attempt(compile(changed),false);
+            changed=state;changed.textureAmount=37;attempt(compile(changed),false);
+            changed=state;changed.clarityAmount=37;attempt(compile(changed),false);
+            changed=state;changed.pointColorEnabled=true;changed.pointColorHue=23;changed.pointColorHueRange=5;attempt(compile(changed),false);
+            changed=state;changed.colorMaskEnabled=true;changed.colorMaskExposure=.5;attempt(compile(changed,ColorManagement::OutputSpace::AdobeRgb),false);
+            auto resolved=plan;const auto facts=ImagePipeline::estimateDehazeAirlight(image,plan);if(!facts.valid)return checks;
+            resolved.setDehazeAirlight(facts);attempt(resolved,true);
+            const QRect crop(4,3,9,6);const auto cropped=image.copy(crop);
+            const QRectF frame(double(crop.x())/image.width(),double(crop.y())/image.height(),double(crop.width())/image.width(),double(crop.height())/image.height());
+            const auto cropSource=N::CanonicalSource::capture(cropped,{"veil-crop-policy",plan.encoding,false,0,frame},caps.threads(),budget);if(!cropSource)return checks;
+            auto partial=plan;partial.setFrameRect(frame);partial.setReferenceFrameSize(image.size());attempt(partial,false,N::FrameFailure::CPUPolicy,cropSource);
+            partial.setDehazeAirlight(facts);attempt(partial,true,N::FrameFailure::None,cropSource);
+            const auto cancel=std::make_shared<std::atomic_bool>(true);attempt(plan,false,N::FrameFailure::Cancelled,{},cancel);
+            return checks;
+        }));
+        if(!watcher.isFinished())QVERIFY(finished.wait(10000));QVERIFY(watcher.isFinished());
+        const auto checks=watcher.result();QCOMPARE(checks.size(),18);
+        for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native negative dehaze admission policy %1").arg(i)));domain->shutdown();
     }
 };
 int main(int argc,char **argv) {

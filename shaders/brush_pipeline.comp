@@ -209,6 +209,10 @@ void main() {
     vec4 original=imageLoad(sourceImage,coord);
     precise vec3 v=original.rgb;
     if(p[5].y==0.0) v=mulRows(25,vec3(decode(v.r),decode(v.g),decode(v.b)));
+    if(p[56].x<0.0 && original.a>1.e-20) {
+        precise float transmission=1.0+.65*p[56].x;
+        v=p[57].rgb+(v-p[57].rgb)*transmission;
+    }
     // Match the CPU/ordinary GPU selection before white balance and every gain.
     precise float maskY=max(0.0,luminancePro(v));
     precise float colorMaskGain=1.0;
