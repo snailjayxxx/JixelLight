@@ -42,7 +42,8 @@ FrameAdmission::Ptr FrameAdmission::prepare(CanonicalSource::Ptr source, const S
         || intent.data[ProcessingPlan::IndependentDetail].x>0
         || intent.colorMaskNeedsCpuPrecision()
         || (intent.colorMaskActive() && intent.output==ColorManagement::OutputSpace::AdobeRgb)
-        || intent.pointColorNeedsCpuPrecision() || intent.denoiseActive() || intent.data[ProcessingPlan::Dehaze].x>0 || intent.textureActive() || intent.clarityActive()
+        || intent.pointColorNeedsCpuPrecision() || source->m_floatFacts.wideRgbSpan
+        || intent.denoiseActive() || intent.data[ProcessingPlan::Dehaze].x>0 || intent.textureActive() || intent.clarityActive()
         // Preserve the ordinary spatial tiny-alpha policy and the measured
         // negative-veil Adobe RGB gamut-edge precision bound on every backend.
         || (intent.dehazeActive() && (source->m_floatFacts.nearZeroAlpha || intent.output==ColorManagement::OutputSpace::AdobeRgb))

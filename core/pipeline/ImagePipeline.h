@@ -24,7 +24,10 @@ public:
     // display range [0,1], or carry negative out-of-gamut color channels.
     // Alpha must be finite and within [0,1]; no pre-tone RGB clipping.
     static constexpr float MaxLinearInputMagnitude = 65536.0f;
-    struct FloatSourceFacts {bool nearZeroAlpha=false,negativeRgb=false;};
+    // Wider per-pixel channel spans keep the complete CPU precision path.
+    // This is a compute policy, not a limit on accepted scene-linear input.
+    static constexpr float GpuChannelSpanLimit = 16.0f;
+    struct FloatSourceFacts {bool nearZeroAlpha=false,negativeRgb=false,wideRgbSpan=false;};
     static bool validFloatSource(const QImage &source,const CancelToken &cancel = {},FloatSourceFacts *facts=nullptr);
     static QImage rgba64Source(const QImage &source,const CancelToken &cancel = {});
     static QImage process(const QImage &source, const AdjustmentState &state,

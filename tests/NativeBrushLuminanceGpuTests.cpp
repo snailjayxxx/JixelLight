@@ -406,9 +406,10 @@ private slots:
         }
     }
     void nativeBrushNegativeDehazeHdrAlphaAndFullContext() {
-        for(bool nearZero:{true,false}) {
+        for(int sourceMode=0;sourceMode<3;++sourceMode) {
+        const bool nearZero=sourceMode==0;
         QImage image(37,13,QImage::Format_RGBA32FPx4);
-        const float levels[]{-.03f,0.f,.001f,.2f,.7f,1.f,2.f,3.5f,65504.f},alpha[]{0.f,nearZero?1.e-30f:1.f/65535.f,.375f,1.f};
+        const float levels[]{-.03f,0.f,.001f,.2f,.7f,1.f,2.f,3.5f,sourceMode==2?15.f:65504.f},alpha[]{0.f,nearZero?1.e-30f:1.f/65535.f,.375f,1.f};
         for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
             auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;
             p[0]=levels[(x+y)%std::size(levels)];p[1]=levels[(2*x+y+3)%std::size(levels)];p[2]=levels[(x+3*y+5)%std::size(levels)];p[3]=alpha[(x+2*y)%4];
@@ -424,17 +425,30 @@ private slots:
             }
             if(context>=2)input=input.scaled(context==2?QSize(19,7):QSize(11,5),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
             QCOMPARE(input.format(),QImage::Format_RGBA32FPx4);
-            bool inputHasNearZeroAlpha=false;
+            bool inputHasNearZeroAlpha=false,inputHasWideRgbSpan=false;
             for(int y=0;y<input.height();++y)for(int x=0;x<input.width();++x) {
-                const float a=reinterpret_cast<const float *>(input.constScanLine(y))[4*x+3];
+                const auto *p=reinterpret_cast<const float *>(input.constScanLine(y))+4*x;const float a=p[3];
                 inputHasNearZeroAlpha=inputHasNearZeroAlpha||(a>0&&a<1.e-18f);
+                inputHasWideRgbSpan=inputHasWideRgbSpan||std::max({p[0],p[1],p[2]})-std::min({p[0],p[1],p[2]})>ImagePipeline::GpuChannelSpanLimit;
             }
             QCOMPARE(inputHasNearZeroAlpha,nearZero&&context<2);
-            qInfo()<<"native negative dehaze context"<<output<<raw<<amount<<context<<"near-zero"<<nearZero;
+            QCOMPARE(inputHasWideRgbSpan,sourceMode<2);
+            qInfo()<<"native negative dehaze context"<<output<<raw<<amount<<context<<"source-mode"<<sourceMode;
             verifyNativeLuminance(input,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),raw,frame,false,true,
-                                  context==0?std::nullopt:std::optional<SpatialDehaze::Airlight>(airlight),image.size(),(nearZero&&context<2)||ColorManagement::OutputSpace(output)==ColorManagement::OutputSpace::AdobeRgb);
+                                  context==0?std::nullopt:std::optional<SpatialDehaze::Airlight>(airlight),image.size(),sourceMode<2||ColorManagement::OutputSpace(output)==ColorManagement::OutputSpace::AdobeRgb);
             if(QTest::currentTestFailed())return;
         }
+        }
+        QImage boundary(19,13,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<boundary.height();++y)for(int x=0;x<boundary.width();++x) {
+            auto *p=reinterpret_cast<float *>(boundary.scanLine(y))+4*x;
+            p[0]=16.f*x/18.f;p[1]=16.f*y/12.f;p[2]=16.f*(x+y)/30.f;p[3]=(x+y)%3==0?0.f:.375f;
+        }
+        for(double amount:{0.,-37.})for(int output=0;output<2;++output) {
+            auto state=nativeLuminanceState(.4,false);state.dehazeAmount=amount;
+            qInfo()<<"native negative dehaze exact span boundary"<<amount<<output;
+            verifyNativeLuminance(boundary,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),false,{0,0,1,1},false,amount<0);
+            if(QTest::currentTestFailed())return;
         }
     }
     void nativeBrushNegativeDehazeRealSonyCropMatchesReference() {
@@ -494,10 +508,20 @@ private slots:
             for(int y=0;y<tiny.height();++y)for(int x=0;x<tiny.width();++x)reinterpret_cast<float *>(tiny.scanLine(y))[4*x+3]=1.e-30f;
             const auto tinySource=N::CanonicalSource::capture(tiny,{"veil-tiny-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!tinySource)return checks;
             attempt(plan,false,N::FrameFailure::CPUPolicy,tinySource);
+            QImage wide=image.copy();auto *w=reinterpret_cast<float *>(wide.scanLine(0));w[0]=65504;w[1]=.2f;w[2]=-.03f;w[3]=0;
+            const auto wideSource=N::CanonicalSource::capture(wide,{"wide-RGB-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!wideSource)return checks;
+            attempt(plan,false,N::FrameFailure::CPUPolicy,wideSource);
+            auto inactive=state;inactive.dehazeAmount=0;attempt(compile(inactive),false,N::FrameFailure::CPUPolicy,wideSource);
+            QImage boundary=image.copy();auto *b=reinterpret_cast<float *>(boundary.scanLine(0));b[0]=ImagePipeline::GpuChannelSpanLimit;b[1]=b[2]=b[3]=0;
+            const auto boundarySource=N::CanonicalSource::capture(boundary,{"span-boundary-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!boundarySource)return checks;
+            attempt(plan,true,N::FrameFailure::None,boundarySource);
+            auto above=boundary.copy();reinterpret_cast<float *>(above.scanLine(0))[0]=std::nextafter(ImagePipeline::GpuChannelSpanLimit,std::numeric_limits<float>::infinity());
+            const auto aboveSource=N::CanonicalSource::capture(above,{"above-span-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!aboveSource)return checks;
+            attempt(plan,false,N::FrameFailure::CPUPolicy,aboveSource);
             return checks;
         }));
         if(!watcher.isFinished())QVERIFY(finished.wait(10000));QVERIFY(watcher.isFinished());
-        const auto checks=watcher.result();QCOMPARE(checks.size(),20);
+        const auto checks=watcher.result();QCOMPARE(checks.size(),24);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native negative dehaze admission policy %1").arg(i)));domain->shutdown();
     }
 };

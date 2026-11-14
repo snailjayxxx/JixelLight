@@ -880,6 +880,8 @@ bool ImagePipeline::validFloatSource(const QImage &source,const CancelToken &tok
             if (!std::isfinite(p[3]) || p[3]<0.0f || p[3]>1.0f) return false;
             if(facts) {
                 found.negativeRgb=found.negativeRgb||p[0]<0||p[1]<0||p[2]<0;
+                found.wideRgbSpan=found.wideRgbSpan
+                    || std::max({p[0],p[1],p[2]})-std::min({p[0],p[1],p[2]})>GpuChannelSpanLimit;
                 // Inspect the bits so subnormal alpha is observed even when
                 // a hardware floating-point mode would flush arithmetic to0.
                 const auto bits=std::bit_cast<quint32>(p[3])&0x7fffffffu;
