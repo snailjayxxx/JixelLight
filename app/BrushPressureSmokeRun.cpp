@@ -110,7 +110,10 @@ void startBrushPressureCanvasSmokeRun(PhotoController *c,QQuickWindow *window,co
     s->eraser=std::make_shared<QPointingDevice>("Controlled eraser end",987654330,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Eraser,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
     QWindowSystemInterface::registerInputDevice(s->eraser.get());auto *timer=new QTimer(c);timer->setInterval(50);
     const auto item=[=](const QString &name){return find(window->contentItem(),name);};
-    const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
+    const auto grab=[=]{QElapsedTimer clock;clock.start();const auto shot=window->grabWindow();const auto ns=clock.nsecsElapsed();
+        // Qt's synchronous grab skips presentation. Queue a regular frame for
+        // the next event turn before another grab uses the same swapchain.
+        window->update();++s->windowGrabCalls;s->windowGrabNs+=ns;s->windowGrabMaxNs=std::max(s->windowGrabMaxNs,ns);return shot;};
     // PNG compression and SHA run on a bounded worker; the UI frame itself
     // is captured synchronously and remains immutable while it is encoded.
     const auto capture=[=](const QString &label,const QImage &shot,bool allowAfterFailure=false){
