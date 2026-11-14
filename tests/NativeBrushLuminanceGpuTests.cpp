@@ -49,7 +49,8 @@ private:
     }
     void verifyNativeLuminance(const QImage &image,const AdjustmentState &state,ImagePipeline::InputEncoding encoding,
                                ColorManagement::OutputSpace output,bool raw,const QRectF &frame={0,0,1,1},bool pointMustChange=false,
-                               bool dehazeMustChange=false,std::optional<SpatialDehaze::Airlight> fullAirlight={},QSize fullSize={}) {
+                               bool dehazeMustChange=false,std::optional<SpatialDehaze::Airlight> fullAirlight={},QSize fullSize={},
+                               bool precisionCpuExpected=false) {
         namespace N=NativeBrush;
         auto budget=std::make_shared<BrushRenderBudget>();
         auto domain=std::make_unique<N::RenderDomain>(rhi.get(),engine->nativeBrushShaders());const auto caps=domain->capabilities();
@@ -93,9 +94,26 @@ private:
         }
         const auto context=QString("native luminance: format=%1 encoding=%2 output=%3 RAW=%4 EV=%5 invert=%6 refusal=%7")
             .arg(int(image.format())).arg(int(encoding)).arg(int(output)).arg(raw).arg(state.luminanceMaskExposure).arg(state.luminanceMaskInverted).arg(int(prepared.why));
-        QVERIFY2(prepared.upload&&prepared.frame&&prepared.reference,qPrintable(context));
+        QVERIFY2(prepared.upload&&prepared.reference,qPrintable(context));
+        if(precisionCpuExpected)QVERIFY2(!prepared.frame&&prepared.why==N::FrameFailure::CPUPolicy,qPrintable(context));
+        else QVERIFY2(prepared.frame&&prepared.why==N::FrameFailure::None,qPrintable(context));
         if(pointMustChange)QVERIFY2(prepared.pointChanged,"Point Color fixture must visibly change the independent CPU reference");
         if(dehazeMustChange)QVERIFY2(prepared.dehazeChanged,"Negative dehaze fixture must visibly change the independent CPU reference");
+        if(precisionCpuExpected) {
+            QCOMPARE(prepared.reference.image().size(),image.size());
+            QCOMPARE(prepared.reference.image().format(),QImage::Format_RGBA64);
+            const auto original=ImagePipeline::floatSource(image);
+            for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
+                const auto expected=quint16(std::lround(reinterpret_cast<const float *>(original.constScanLine(y))[4*x+3]*65535.f));
+                QCOMPARE(reinterpret_cast<const QRgba64 *>(prepared.reference.image().constScanLine(y))[x].alpha(),expected);
+            }
+            QCOMPARE(ScopesEngine::analyze(prepared.reference.image()).pixelCount,quint64(image.width())*image.height());
+            QCOMPARE(domain->trace().sourceUploads,quint64(0));QCOMPARE(domain->trace().colourDispatches,quint64(0));
+            QCOMPARE(domain->normalFinishCalls(),quint64(0));domain->shutdown();QCOMPARE(domain->teardownFinishCalls(),quint64(0));
+            prepared={};domain.reset();QCOMPARE(budget->snapshot().charged,qint64(0));
+            qInfo().noquote()<<context<<"verified owning CPU precision reference";
+            return;
+        }
         auto input=domain->attach(prepared.upload);QVERIFY(bool(input));QRhiCommandBuffer *cb=nullptr;
         QCOMPARE(rhi->beginOffscreenFrame(&cb),QRhi::FrameOpSuccess);QVERIFY(domain->upload(input,cb));rhi->endOffscreenFrame();rhi->finish();domain->collect();QVERIFY(domain->ready(input));
         QVERIFY(domain->activate(prepared.frame->stamp()));auto handle=domain->attachFrame(input,prepared.frame);QVERIFY(bool(handle));
@@ -383,13 +401,15 @@ private slots:
             state.pointColorEnabled=true;state.pointColorLab={.6,.02,.01};state.pointColorHue=23;state.pointColorSaturation=37;state.pointColorLuminance=-19;
             state.pointColorHueRange=180;state.pointColorChromaRange=1;state.pointColorLightnessRange=1;
             qInfo()<<"native negative dehaze sources"<<fp32<<source<<output<<amount;
-            verifyNativeLuminance(fp32?floating:integer,state,source==0?ImagePipeline::InputEncoding::SRgb:ImagePipeline::InputEncoding::LinearProPhoto,space,source==2,{0,0,1,1},true,true);
+            verifyNativeLuminance(fp32?floating:integer,state,source==0?ImagePipeline::InputEncoding::SRgb:ImagePipeline::InputEncoding::LinearProPhoto,space,source==2,{0,0,1,1},true,true,{},{},space==ColorManagement::OutputSpace::AdobeRgb);
             if(QTest::currentTestFailed())return;
         }
     }
     void nativeBrushNegativeDehazeHdrAlphaAndFullContext() {
+        for(int sourceMode=0;sourceMode<3;++sourceMode) {
+        const bool nearZero=sourceMode==0;
         QImage image(37,13,QImage::Format_RGBA32FPx4);
-        const float levels[]{-.03f,0.f,.001f,.2f,.7f,1.f,2.f,3.5f,65504.f},alpha[]{0.f,1.e-30f,.375f,1.f};
+        const float levels[]{-.03f,0.f,.001f,.2f,.7f,1.f,2.f,3.5f,sourceMode==2?15.f:65504.f},alpha[]{0.f,nearZero?1.e-30f:1.f/65535.f,.375f,1.f};
         for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x) {
             auto *p=reinterpret_cast<float *>(image.scanLine(y))+4*x;
             p[0]=levels[(x+y)%std::size(levels)];p[1]=levels[(2*x+y+3)%std::size(levels)];p[2]=levels[(x+3*y+5)%std::size(levels)];p[3]=alpha[(x+2*y)%4];
@@ -405,9 +425,29 @@ private slots:
             }
             if(context>=2)input=input.scaled(context==2?QSize(19,7):QSize(11,5),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
             QCOMPARE(input.format(),QImage::Format_RGBA32FPx4);
-            qInfo()<<"native negative dehaze context"<<output<<raw<<amount<<context;
+            bool inputHasNearZeroAlpha=false,inputHasWideRgbSpan=false;
+            for(int y=0;y<input.height();++y)for(int x=0;x<input.width();++x) {
+                const auto *p=reinterpret_cast<const float *>(input.constScanLine(y))+4*x;const float a=p[3];
+                inputHasNearZeroAlpha=inputHasNearZeroAlpha||(a>0&&a<1.e-18f);
+                inputHasWideRgbSpan=inputHasWideRgbSpan||std::max({p[0],p[1],p[2]})-std::min({p[0],p[1],p[2]})>ImagePipeline::GpuChannelSpanLimit;
+            }
+            QCOMPARE(inputHasNearZeroAlpha,nearZero&&context<2);
+            QCOMPARE(inputHasWideRgbSpan,sourceMode<2);
+            qInfo()<<"native negative dehaze context"<<output<<raw<<amount<<context<<"source-mode"<<sourceMode;
             verifyNativeLuminance(input,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),raw,frame,false,true,
-                                  context==0?std::nullopt:std::optional<SpatialDehaze::Airlight>(airlight),image.size());
+                                  context==0?std::nullopt:std::optional<SpatialDehaze::Airlight>(airlight),image.size(),sourceMode<2||ColorManagement::OutputSpace(output)==ColorManagement::OutputSpace::AdobeRgb);
+            if(QTest::currentTestFailed())return;
+        }
+        }
+        QImage boundary(19,13,QImage::Format_RGBA32FPx4);
+        for(int y=0;y<boundary.height();++y)for(int x=0;x<boundary.width();++x) {
+            auto *p=reinterpret_cast<float *>(boundary.scanLine(y))+4*x;
+            p[0]=16.f*x/18.f;p[1]=16.f*y/12.f;p[2]=16.f*(x+y)/30.f;p[3]=(x+y)%3==0?0.f:.375f;
+        }
+        for(double amount:{0.,-37.})for(int output=0;output<2;++output) {
+            auto state=nativeLuminanceState(.4,false);state.dehazeAmount=amount;
+            qInfo()<<"native negative dehaze exact span boundary"<<amount<<output;
+            verifyNativeLuminance(boundary,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),false,{0,0,1,1},false,amount<0);
             if(QTest::currentTestFailed())return;
         }
     }
@@ -424,7 +464,7 @@ private slots:
             const auto plan=ProcessingPlan::compile(state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,.35f);
             const auto airlight=ImagePipeline::estimateDehazeAirlight(loaded.image,plan);QVERIFY(airlight.valid);
             qInfo()<<"native negative dehaze Sony full-decode/cropped-export"<<output<<amount;
-            verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,frame,true,true,airlight,loaded.image.size());
+            verifyNativeLuminance(image,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,frame,true,true,airlight,loaded.image.size(),ColorManagement::OutputSpace(output)==ColorManagement::OutputSpace::AdobeRgb);
             if(QTest::currentTestFailed())return;
         }
     }
@@ -463,10 +503,25 @@ private slots:
             auto partial=plan;partial.setFrameRect(frame);partial.setReferenceFrameSize(image.size());attempt(partial,false,N::FrameFailure::CPUPolicy,cropSource);
             partial.setDehazeAirlight(facts);attempt(partial,true,N::FrameFailure::None,cropSource);
             const auto cancel=std::make_shared<std::atomic_bool>(true);attempt(plan,false,N::FrameFailure::Cancelled,{},cancel);
+            attempt(compile(state,ColorManagement::OutputSpace::AdobeRgb),false);
+            QImage tiny=image.copy();
+            for(int y=0;y<tiny.height();++y)for(int x=0;x<tiny.width();++x)reinterpret_cast<float *>(tiny.scanLine(y))[4*x+3]=1.e-30f;
+            const auto tinySource=N::CanonicalSource::capture(tiny,{"veil-tiny-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!tinySource)return checks;
+            attempt(plan,false,N::FrameFailure::CPUPolicy,tinySource);
+            QImage wide=image.copy();auto *w=reinterpret_cast<float *>(wide.scanLine(0));w[0]=65504;w[1]=.2f;w[2]=-.03f;w[3]=0;
+            const auto wideSource=N::CanonicalSource::capture(wide,{"wide-RGB-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!wideSource)return checks;
+            attempt(plan,false,N::FrameFailure::CPUPolicy,wideSource);
+            auto inactive=state;inactive.dehazeAmount=0;attempt(compile(inactive),false,N::FrameFailure::CPUPolicy,wideSource);
+            QImage boundary=image.copy();auto *b=reinterpret_cast<float *>(boundary.scanLine(0));b[0]=ImagePipeline::GpuChannelSpanLimit;b[1]=b[2]=b[3]=0;
+            const auto boundarySource=N::CanonicalSource::capture(boundary,{"span-boundary-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!boundarySource)return checks;
+            attempt(plan,true,N::FrameFailure::None,boundarySource);
+            auto above=boundary.copy();reinterpret_cast<float *>(above.scanLine(0))[0]=std::nextafter(ImagePipeline::GpuChannelSpanLimit,std::numeric_limits<float>::infinity());
+            const auto aboveSource=N::CanonicalSource::capture(above,{"above-span-policy",plan.encoding,false,0,{0,0,1,1}},caps.threads(),budget);if(!aboveSource)return checks;
+            attempt(plan,false,N::FrameFailure::CPUPolicy,aboveSource);
             return checks;
         }));
         if(!watcher.isFinished())QVERIFY(finished.wait(10000));QVERIFY(watcher.isFinished());
-        const auto checks=watcher.result();QCOMPARE(checks.size(),18);
+        const auto checks=watcher.result();QCOMPARE(checks.size(),24);
         for(int i=0;i<checks.size();++i)QVERIFY2(checks[i],qPrintable(QString("native negative dehaze admission policy %1").arg(i)));domain->shutdown();
     }
 };

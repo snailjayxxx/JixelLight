@@ -881,7 +881,7 @@ private slots:
         for(float alpha : {0.f,std::numeric_limits<float>::denorm_min(),1.e-38f,1.e-30f,1.e-21f,1.e-20f,1.e-18f,1.e-8f,1.f/65535,1.f}) {
             for(int y=0;y<35;++y)for(int x=0;x<33;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=.15f+.001f*((x*17+y*7)%23);p[1]=.12f;p[2]=.18f;p[3]=1;}
             auto *center=reinterpret_cast<float *>(source.scanLine(17))+4*16;center[0]=.17f;center[1]=.14f;center[2]=.19f;center[3]=alpha;
-            const bool near=alpha>0&&alpha<1.e-18f;ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QCOMPARE(facts.nearZeroAlpha,near);QVERIFY(!facts.negativeRgb);
+            const bool near=alpha>0&&alpha<1.e-18f;ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QCOMPARE(facts.nearZeroAlpha,near);QVERIFY(!facts.negativeRgb);QVERIFY(!facts.wideRgbSpan);
             exactPolicy(false,"none",{},ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;const auto uploads=engine->sourceUploads();
             for(int output=0;output<4;++output) {
                 qInfo()<<"boundary alpha"<<alpha;verifyParity(source,state,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"alpha boundary denoise");if(QTest::currentTestFailed())return;
@@ -891,14 +891,32 @@ private slots:
         }
         for(float scale : {1.e-10f,4.f,256.f,65536.f}) {
             for(int y=0;y<35;++y)for(int x=0;x<33;++x){auto *p=reinterpret_cast<float *>(source.scanLine(y))+4*x;p[0]=scale*float((x*7+y*3)%19-9)/10;p[1]=scale*float((x*3+y*7)%17-8)/10;p[2]=scale*float((x*5+y*11)%23-11)/12;p[3]=1;}
-            ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QVERIFY(facts.negativeRgb);QVERIFY(!facts.nearZeroAlpha);
+            ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));QVERIFY(facts.negativeRgb);QVERIFY(!facts.nearZeroAlpha);QCOMPARE(facts.wideRgbSpan,scale>ImagePipeline::GpuChannelSpanLimit);
             for(int output=0;output<4;++output)for(bool active : {false,true}) {
                 qInfo()<<"boundary RGB scale"<<scale<<"denoise active"<<active;const auto edits=active?state:AdjustmentState{};
                 verifyParity(source,edits,ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace(output),true,"range boundary");if(QTest::currentTestFailed())return;
                 exactPolicy(output==3,output==3?"signed-linear-prophoto":"none",edits,ColorManagement::OutputSpace(output));if(QTest::currentTestFailed())return;
             }
         }
-        auto invalid=source.copy();reinterpret_cast<float *>(invalid.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();ImagePipeline::FloatSourceFacts facts{true,true};QVERIFY(!ImagePipeline::validFloatSource(invalid,{},&facts));QVERIFY(!facts.nearZeroAlpha&&!facts.negativeRgb);
+        for(float span:{ImagePipeline::GpuChannelSpanLimit,std::nextafter(ImagePipeline::GpuChannelSpanLimit,std::numeric_limits<float>::infinity())}) {
+            source.fill(QColor::fromRgbF(.2,.3,.4,1));
+            auto *p=reinterpret_cast<float *>(source.scanLine(17))+4*16;p[0]=span;p[1]=p[2]=p[3]=0;
+            ImagePipeline::FloatSourceFacts facts;QVERIFY(ImagePipeline::validFloatSource(source,{},&facts));
+            const bool wide=span>ImagePipeline::GpuChannelSpanLimit;QCOMPARE(facts.wideRgbSpan,wide);
+            verifyParity(source,{},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb,false,"wide RGB span boundary");if(QTest::currentTestFailed())return;
+            exactPolicy(false,"none",{},ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
+            AdjustmentState brush;BrushMaskGeometry::Stroke paint;paint.style={.3,.4,.8};paint.dabs={{{.4,.5},.8}};
+            brush.brushMasks.layers.push_back({"span-reference",true,.7,{paint}});
+            exactPolicy(true,wide?"wide-rgb-span":"none",brush,ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
+        }
+        source.fill(QColor::fromRgbF(.2,.3,.4,1));auto *widePixel=reinterpret_cast<float *>(source.scanLine(17))+4*16;
+        widePixel[0]=65504;widePixel[1]=.2f;widePixel[2]=-.03f;widePixel[3]=0;
+        for(double dehaze:{0.,-100.}) {
+            AdjustmentState brush;brush.dehazeAmount=dehaze;BrushMaskGeometry::Stroke paint;paint.style={.3,.4,.8};paint.dabs={{{.4,.5},.8}};
+            brush.brushMasks.layers.push_back({"retained-HDR-reference",true,.7,{paint}});
+            exactPolicy(true,"wide-rgb-span",brush,ColorManagement::OutputSpace::SRgb);if(QTest::currentTestFailed())return;
+        }
+        auto invalid=source.copy();reinterpret_cast<float *>(invalid.scanLine(0))[0]=std::numeric_limits<float>::quiet_NaN();ImagePipeline::FloatSourceFacts facts{true,true,true};QVERIFY(!ImagePipeline::validFloatSource(invalid,{},&facts));QVERIFY(!facts.nearZeroAlpha&&!facts.negativeRgb&&!facts.wideRgbSpan);
     }
     void independentSharpenMatchesCpuAtFullAndPreviewDensity() {
         QImage source(137,139,QImage::Format_RGBA64);const quint16 alpha[]{0,1,24576,65535};

@@ -503,6 +503,7 @@ bool GpuEngine::processImpl(QRhiCommandBuffer *cb,const QImage &source,Processin
         m_outputDenoiseActive=plan.denoiseActive();m_outputClarityActive=plan.clarityActive();m_outputTextureActive=plan.textureActive();m_outputDehazeActive=plan.dehazeActive();m_outputPointColorActive=plan.pointColorActive();m_outputLuminanceMaskActive=plan.luminanceMaskActive();m_outputColorMaskActive=plan.colorMaskActive();
         m_outputNumericPolicy=plan.colorMaskNeedsCpuPrecision()?QStringLiteral("color-mask-narrow-range"):
             plan.pointColorNeedsCpuPrecision()?QStringLiteral("point-color-narrow-range"):
+            m_sourceFacts.wideRgbSpan&&BrushMaskTileRaster::anyEnabled(plan.state.brushMasks)?QStringLiteral("wide-rgb-span"):
             plan.dehazeActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("dehaze-near-zero-alpha"):
             plan.textureActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("texture-near-zero-alpha"):
             plan.clarityActive()&&m_sourceFacts.nearZeroAlpha?QStringLiteral("clarity-near-zero-alpha"):
