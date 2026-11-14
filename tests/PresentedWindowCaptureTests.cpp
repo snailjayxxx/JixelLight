@@ -135,8 +135,33 @@ private slots:
             {"older_frame_held_after_sync",true},{"request_during_in_flight_render",true},{"post_request_synchronization_observed",true},
             {"new_revision_pixels_match_Qt_control",true},{"DPR",dpr}});
     }
+    void stableSeedObservesChangingGuiFramesBeforeExactWindowControl() {
+        QQuickWindow window;window.resize(96,64);window.setColor(QColor(13,37,61));
+        auto *rect=new CaptureRect(window.contentItem());rect->setPosition({8,8});rect->setSize({64,40});rect->color(QColor(120,30,60));
+        window.show();QTRY_VERIFY_WITH_TIMEOUT(window.isExposed(),5000);PresentedWindowCapture capture;
+        const auto first=capture.grab(&window,5000);QVERIFY2(first.ok(),qPrintable(first.error));
+        auto changes=std::make_shared<std::atomic_int>(0);
+        const auto connection=QObject::connect(&window,&QQuickWindow::beforeSynchronizing,&window,[&window,rect,changes]{
+            const int index=changes->fetch_add(1);
+            if(index<2)QMetaObject::invokeMethod(&window,[rect,index]{rect->color(index==0?QColor(50,170,90):QColor(30,160,210));},Qt::QueuedConnection);
+        },Qt::DirectConnection);
+        const auto stable=capture.grabStable(&window,5000);QObject::disconnect(connection);
+        QVERIFY2(stable.ok(),qPrintable(stable.frame.error));QVERIFY(!capture.busy());
+        QVERIFY(stable.observations.size()>=4&&stable.observations.size()<=PresentedWindowCapture::MaxSeedFrames);
+        QCOMPARE(stable.consecutiveFrames,PresentedWindowCapture::RequiredStableFrames);
+        QVERIFY(stable.observations.first().pixelSHA256!=stable.observations.last().pixelSHA256);
+        for(int i=stable.observations.size()-3;i<stable.observations.size();++i)QCOMPARE(stable.observations[i].pixelSHA256,stable.observations.last().pixelSHA256);
+        for(const auto &row:stable.observations)QVERIFY(row.synchronizedAfterRequest);
+        const qreal dpr=window.effectiveDevicePixelRatio();QCOMPARE(stable.frame.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(30,160,210));
+        const auto control=window.grabWindow().convertToFormat(QImage::Format_RGBA8888);window.update();
+        QCOMPARE(stable.frame.image.convertToFormat(QImage::Format_RGBA8888),control);
+        QVERIFY(stable.peakBufferBytes<=PresentedWindowCapture::BufferBudget);
+        records.append(QJsonObject{{"name","stableSeedObservesChangingGuiFramesBeforeExactWindowControl"},{"passed",true},
+            {"normal_frames",stable.observations.size()},{"required_matching_frames",3},{"consecutive_matching_frames",stable.consecutiveFrames},
+            {"earlier_different_actual_frame_observed",true},{"final_full_image_matches_Qt_control",true},{"DPR",dpr}});
+    }
     void cleanupTestCase() {
-        const QJsonObject report{{"passed",records.size()==3},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
+        const QJsonObject report{{"passed",records.size()==4},{"source_commit",QStringLiteral(JIXELLIGHT_GIT_COMMIT)},
             {"actual_qpa",QGuiApplication::platformName()},{"cases",records},{"QA_only",true},{"full_App_ASAN_or_physical_OS_presentation_claim",false}};
         const auto path=qEnvironmentVariable("JIXELLIGHT_PRESENTED_CAPTURE_REPORT");
         if(!path.isEmpty()){QSaveFile f(path);const auto bytes=QJsonDocument(report).toJson();QVERIFY(f.open(QIODevice::WriteOnly));QCOMPARE(f.write(bytes),bytes.size());QVERIFY(f.commit());}

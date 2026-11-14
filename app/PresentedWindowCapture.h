@@ -1,5 +1,6 @@
 #pragma once
 #include <QElapsedTimer>
+#include <QCryptographicHash>
 #include <QEventLoop>
 #include <QImage>
 #include <QMutex>
@@ -10,6 +11,7 @@
 #include <QSGRendererInterface>
 #include <QThread>
 #include <QTimer>
+#include <QVector>
 #include <rhi/qrhi.h>
 #include <algorithm>
 #include <cstring>
@@ -23,6 +25,8 @@
 class PresentedWindowCapture final {
 public:
     static constexpr qint64 BufferBudget = 64 * 1024 * 1024;
+    static constexpr int RequiredStableFrames = 3;
+    static constexpr int MaxSeedFrames = 64;
     struct Result {
         QImage image;
         QString error;
@@ -30,7 +34,39 @@ public:
         bool frameSwapped=false,synchronizedAfterRequest=false;
         bool ok() const { return error.isEmpty() && synchronizedAfterRequest && frameSwapped && !image.isNull(); }
     };
-    bool busy() const { return busy_; }
+    struct Observation {
+        QByteArray pixelSHA256;qint64 elapsedMs=0;bool synchronizedAfterRequest=false;
+    };
+    struct StableResult {
+        Result frame;QVector<Observation> observations;int consecutiveFrames=0;qint64 peakBufferBytes=0;
+        bool ok() const { return consecutiveFrames==RequiredStableFrames && frame.ok(); }
+    };
+    bool busy() const { return busy_ || stableBusy_; }
+
+    // Only the initial full-window control needs a quiescent frame. Every
+    // probe is a fresh synchronized/presented window read, and every probe
+    // consumes the original remaining deadline. Retain hashes, never earlier
+    // images, while waiting for three identical actual frames.
+    StableResult grabStable(QQuickWindow *window,int remainingMs,qint64 budget=BufferBudget) {
+        StableResult result;
+        if(!window || QThread::currentThread()!=window->thread()){result.frame.error=QStringLiteral("capture-GUI-owner-required");return result;}
+        if(busy()){result.frame.error=QStringLiteral("capture-reentrant");return result;}
+        QScopedValueRollback<bool> coordinated(stableBusy_,true);QElapsedTimer elapsed;elapsed.start();QByteArray previous;
+        for(int i=0;i<MaxSeedFrames;++i){
+            // grab's own busy_ protects every nested GUI wait. Between waits
+            // this GUI thread only hashes owned bytes; it processes no events.
+            auto frame=grab(window,int(remainingMs-elapsed.elapsed()),budget);
+            result.peakBufferBytes=std::max(result.peakBufferBytes,frame.bufferBytes);
+            if(!frame.ok()){result.frame=std::move(frame);return result;}
+            const auto canonical=frame.image.convertToFormat(QImage::Format_RGBA8888);
+            const auto pixels=QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char *>(canonical.constBits()),canonical.sizeInBytes()),QCryptographicHash::Sha256).toHex();
+            result.observations.append({pixels,elapsed.elapsed(),frame.synchronizedAfterRequest});
+            result.consecutiveFrames=pixels==previous?result.consecutiveFrames+1:1;
+            if(result.consecutiveFrames==RequiredStableFrames){result.frame=std::move(frame);return result;}
+            previous=pixels;
+        }
+        result.frame.error=QStringLiteral("capture-initial-window-not-stable");return result;
+    }
 
     Result grab(QQuickWindow *window,int remainingMs,qint64 budget=BufferBudget) {
         const auto refused=[](const char *reason){Result r;r.error=QString::fromLatin1(reason);return r;};
@@ -121,5 +157,5 @@ private:
         if(state->bufferBytes>state->limit)state->error=QStringLiteral("capture-buffer-budget");
         else if(!state->cancelled)state->image=std::move(image);
     }
-    bool busy_=false;
+    bool busy_=false,stableBusy_=false;
 };

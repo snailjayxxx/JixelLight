@@ -135,7 +135,10 @@ class BrushPressureFailureEvidenceTests(unittest.TestCase):
 class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
     def valid(self):
         return dict(window_capture_kind="normal-presented-window-backbuffer", window_capture_error="",
-                    window_grab_calls=38, window_capture_presented_calls=38, window_capture_post_request_sync_calls=38,
+                    window_grab_calls=38, window_capture_presented_calls=40, window_capture_post_request_sync_calls=40,
+                    window_capture_seed_frame_count=3, window_capture_seed_stable_frames=3,
+                    window_capture_seed_frames=[dict(pixel_sha256="ab" * 32, elapsed_ms=i * 16,
+                                                    post_request_sync=True) for i in range(3)],
                     window_capture_pending_peak=1, window_capture_Qt_control_calls=1,
                     window_capture_failure_Qt_grab_calls=0, window_capture_seed_matches_Qt_grab=True,
                     window_capture_seed_sha256="ab" * 32, window_capture_Qt_control_sha256="ab" * 32,
@@ -158,8 +161,8 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
 
     def test_rejects_missing_per_packet_frames(self):
         self.rejects("window_grab_calls", (37, True))
-        self.rejects("window_capture_presented_calls", (37, 39, True))
-        self.rejects("window_capture_post_request_sync_calls", (37, 39, True))
+        self.rejects("window_capture_presented_calls", (37, 38, 39, True))
+        self.rejects("window_capture_post_request_sync_calls", (37, 38, 39, True))
 
     def test_rejects_cached_or_synchronous_fallback_sources(self):
         self.rejects("window_capture_kind", ("cached-preview", "QQuickItem-grab", "synchronous-window-grab"))
@@ -187,6 +190,7 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
         data = self.valid()
         data.update(window_capture_qpa="offscreen", window_capture_kind="original-Qt-offscreen-window-grab",
                     window_capture_presented_calls=0, window_capture_post_request_sync_calls=0, window_capture_pending_peak=0,
+                    window_capture_seed_frame_count=0, window_capture_seed_stable_frames=0, window_capture_seed_frames=[],
                     window_capture_Qt_control_calls=0, window_capture_peak_buffer_bytes=0,
                     window_capture_seed_matches_Qt_grab=False, window_capture_seed_sha256="",
                     window_capture_Qt_control_sha256="")
@@ -201,6 +205,17 @@ class PresentedWindowCaptureEvidenceTests(unittest.TestCase):
         for platform in ("darwin", "win32"):
             with patch.object(pressure.sys, "platform", platform), self.assertRaises(AssertionError):
                 pressure.validate_window_capture_protocol(data, "cpu")
+
+    def test_rejects_unstable_or_incomplete_initial_window_frames(self):
+        self.rejects("window_capture_seed_frame_count", (2, 65, True))
+        self.rejects("window_capture_seed_stable_frames", (0, 2, 4, True))
+        self.rejects("window_capture_seed_frames", ([], self.valid()["window_capture_seed_frames"][:2]))
+        for change in (dict(post_request_sync=False), dict(pixel_sha256="cd" * 32), dict(elapsed_ms=-1)):
+            with self.subTest(change=change):
+                data = self.valid()
+                data["window_capture_seed_frames"][-1].update(change)
+                with self.assertRaises((AssertionError, KeyError, TypeError, ValueError)):
+                    pressure.validate_presented_window_captures(data)
 
 
 if __name__ == "__main__":
