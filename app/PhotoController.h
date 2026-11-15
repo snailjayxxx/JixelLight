@@ -842,6 +842,8 @@ private:
     std::unique_ptr<LatestJob<LookCalibrationRequest,LookCalibrationResult>> m_calibrationJob;
     void initializeLookJobs();
     bool applyLookEdit(const QJsonObject &command, const QString &action, const QVariantMap &details = {});
+    bool executeReferenceCalibration(const QJsonObject &command);
+    bool calibrateFromReferenceImpl(const QJsonObject &command);
     void cancelCalibrationImpl();
     void resetReference();
     void requestReference();

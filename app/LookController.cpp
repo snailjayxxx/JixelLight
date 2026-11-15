@@ -69,8 +69,19 @@ void PhotoController::initializeLookJobs() {
         });
 }
 void PhotoController::cancelCalibration() {
-    if(QThread::currentThread()!=thread()||m_closing)return;
-    cancelCalibrationImpl();
+    executeReferenceCalibration({{"command","camera-reference.fit.cancel"}});
+}
+bool PhotoController::executeReferenceCalibration(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::ReferenceCalibration operation;
+    if(!CommandRegistry::decodeReferenceCalibration(command,&operation)||!m_calibrationJob)return false;
+    if(operation==CommandRegistry::ReferenceCalibration::Start)return calibrateFromReferenceImpl(command);
+    // Cancellation can retire a result during its completion notification,
+    // after busy becomes false. Record acceptance before any callback.
+    ActionTrace::instance().record("camera_reference_calibration_command",{{"command",command},
+        {"completion","calibration-cancel-request-accepted"},{"was_busy",m_calibrationBusy},
+        {"revision",QString::number(m_requestedRevision)},{"photo_epoch",QString::number(m_photoEpoch)}});
+    cancelCalibrationImpl();return true;
 }
 void PhotoController::cancelCalibrationImpl() {
     if(m_calibrationJob)m_calibrationJob->cancel();
@@ -97,7 +108,7 @@ void PhotoController::requestReference() {
     const QVariantMap metadata=!key.isEmpty()&&key==m_loadedKey?m_currentMetadata:QVariantMap{};
     const CameraReferenceRequest request{path,m_manualReferencePath,metadata,photo};
     const auto current=[this,guard,photo,selection]{return guard&&!m_closing&&photo==m_photoEpoch&&selection==m_referenceSelectionRevision;};
-    cancelCalibration();if(!current())return;
+    cancelCalibrationImpl();if(!current())return;
     m_referenceBusy=true;emit referenceChanged();if(!current())return;
     m_referenceJob->submit(request);
 }
@@ -173,7 +184,7 @@ bool PhotoController::executeCameraReferenceSelection(const QJsonObject &command
     m_referenceImage={};m_referenceInfo.clear();m_referenceScopes={};m_calibrationReport.clear();
     m_referenceBusy=false;m_showReference=true;++m_referenceRevision;
     if(m_provider)m_provider->setReference({});
-    cancelCalibration();if(!current())return true;
+    cancelCalibrationImpl();if(!current())return true;
     emit referenceChanged();if(!current())return true;
     emit calibrationChanged();if(!current())return true;
     requestReference();return true;
@@ -185,6 +196,9 @@ void PhotoController::openReferenceDialog() {
     if(guard&&!m_closing&&photo==m_photoEpoch&&!path.isEmpty())loadReference(QUrl::fromLocalFile(path));
 }
 bool PhotoController::calibrateFromReference() {
+    return executeReferenceCalibration({{"command","camera-reference.fit"}});
+}
+bool PhotoController::calibrateFromReferenceImpl(const QJsonObject &command) {
     if(QThread::currentThread()!=thread()||m_closing||!m_calibrationJob||!currentIsRaw()
         ||m_fullSource.isNull()||m_referenceImage.isNull()||m_referenceBusy||m_calibrationBusy)return false;
     const auto key=SourceCache::fileKey(currentFile());
@@ -200,6 +214,10 @@ bool PhotoController::calibrateFromReference() {
         &&request.photo==m_photoEpoch&&request.revision==m_requestedRevision
         &&reference==m_referenceRevision&&selection==m_referenceSelectionRevision
         &&key==m_loadedKey&&key==SourceCache::fileKey(currentFile());};
+    ActionTrace::instance().record("camera_reference_calibration_command",{{"command",command},
+        {"completion","calibration-request-accepted"},{"revision",QString::number(request.revision)},
+        {"photo_epoch",QString::number(request.photo)},{"reference_revision",QString::number(reference)},
+        {"source_identity",key},{"scope","this-image-only-not-camera-characterization"}});
     m_calibrationBusy=true;m_calibrationReport.clear();emit calibrationChanged();
     if(!guard)return true;
     if(!current()){
