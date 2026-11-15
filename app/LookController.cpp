@@ -69,18 +69,20 @@ void PhotoController::cancelCalibration() {
     if(m_calibrationBusy){m_calibrationBusy=false;emit calibrationChanged();}
 }
 void PhotoController::resetReference() {
-    const QPointer<PhotoController> guard(this);
-    cancelCalibration();if(!guard||m_closing)return;if(m_referenceJob)m_referenceJob->cancel();
+    const QPointer<PhotoController> guard(this);const auto selection=++m_referenceSelectionRevision;
+    cancelCalibration();if(!guard||m_closing||selection!=m_referenceSelectionRevision)return;if(m_referenceJob)m_referenceJob->cancel();
     m_referenceImage={};m_referenceInfo.clear();m_referenceScopes={};m_manualReferencePath.clear();
     m_calibrationReport.clear();m_referenceBusy=false;++m_referenceRevision;
-    if(m_provider)m_provider->setReference({});emit referenceChanged();if(!guard||m_closing)return;emit calibrationChanged();
+    if(m_provider)m_provider->setReference({});emit referenceChanged();if(!guard||m_closing||selection!=m_referenceSelectionRevision)return;emit calibrationChanged();
 }
 void PhotoController::requestReference() {
     if(m_closing||!hasImage()||!m_referenceJob)return;
-    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;
-    cancelCalibration();if(!guard||m_closing||photo!=m_photoEpoch)return;
-    m_referenceBusy=true;emit referenceChanged();if(!guard||m_closing||photo!=m_photoEpoch)return;
-    m_referenceJob->submit({currentFile(),m_manualReferencePath,m_currentMetadata,m_photoEpoch});
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch,selection=m_referenceSelectionRevision;
+    const CameraReferenceRequest request{currentFile(),m_manualReferencePath,m_currentMetadata,photo};
+    const auto current=[this,guard,photo,selection]{return guard&&!m_closing&&photo==m_photoEpoch&&selection==m_referenceSelectionRevision;};
+    cancelCalibration();if(!current())return;
+    m_referenceBusy=true;emit referenceChanged();if(!current())return;
+    m_referenceJob->submit(request);
 }
 void PhotoController::setShowCameraReference(bool show) {
     executeCameraReferenceVisibility({{"command","camera-reference.show"},{"enabled",show}});
@@ -131,13 +133,39 @@ void PhotoController::setLookParameter(const QString &name,double value) {
                   "look_parameter",{{"name",name},{"value",value}});
 }
 bool PhotoController::loadReference(const QUrl &url) {
-    if(!hasImage()||!url.isLocalFile()||!QFileInfo(url.toLocalFile()).isFile())return false;
-    m_manualReferencePath=url.toLocalFile();m_referenceFiles.insert(QFileInfo(m_manualReferencePath).absoluteFilePath());
-    m_referenceImage={};if(m_provider)m_provider->setReference({});m_showReference=true;requestReference();return true;
+    if(QThread::currentThread()!=thread()||m_closing||!url.isLocalFile())return false;
+    return executeCameraReferenceSelection({{"command","camera-reference.load"},{"source",QFileInfo(url.toLocalFile()).absoluteFilePath()}});
+}
+bool PhotoController::useAutomaticCameraReference() {
+    return executeCameraReferenceSelection({{"command","camera-reference.auto"}});
+}
+bool PhotoController::executeCameraReferenceSelection(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    CommandRegistry::CameraReferenceSelection parsed;
+    if(!CommandRegistry::decodeCameraReferenceSelection(command,&parsed)||!hasImage()||!m_referenceJob
+        ||(parsed.automatic&&!currentIsRaw())||(!parsed.automatic&&!QFileInfo(parsed.source).isFile()))return false;
+    const auto photo=m_photoEpoch,selection=++m_referenceSelectionRevision;
+    const QPointer<PhotoController> guard(this);
+    const auto current=[this,guard,photo,selection]{return guard&&!m_closing&&photo==m_photoEpoch&&selection==m_referenceSelectionRevision;};
+    ActionTrace::instance().record("camera_reference_selection_command",{{"command",command},{"presentation_only",true},
+        {"completion","reference-selection-request-accepted"},{"revision",QString::number(m_requestedRevision)},{"photo_epoch",QString::number(photo)}});
+    // Retire old work before any notification can accept a nested selection.
+    // Mutation is presentation-only; every callback boundary checks ownership.
+    m_referenceJob->cancel();m_manualReferencePath=parsed.source;
+    if(!parsed.automatic)m_referenceFiles.insert(QFileInfo(parsed.source).absoluteFilePath());
+    m_referenceImage={};m_referenceInfo.clear();m_referenceScopes={};m_calibrationReport.clear();
+    m_referenceBusy=false;m_showReference=true;++m_referenceRevision;
+    if(m_provider)m_provider->setReference({});
+    cancelCalibration();if(!current())return true;
+    emit referenceChanged();if(!current())return true;
+    emit calibrationChanged();if(!current())return true;
+    requestReference();return true;
 }
 void PhotoController::openReferenceDialog() {
+    if(QThread::currentThread()!=thread()||m_closing||!hasImage())return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;
     const auto path=QFileDialog::getOpenFileName(nullptr,uiText("选择同次拍摄的未裁剪 JPEG 参考图", "Choose an uncropped JPEG of the same shot"),QFileInfo(currentFile()).absolutePath(),"JPEG (*.jpg *.jpeg *.JPG *.JPEG)");
-    if(!path.isEmpty())loadReference(QUrl::fromLocalFile(path));
+    if(guard&&!m_closing&&photo==m_photoEpoch&&!path.isEmpty())loadReference(QUrl::fromLocalFile(path));
 }
 bool PhotoController::calibrateFromReference() {
     if(!currentIsRaw()||m_fullSource.isNull()||m_referenceImage.isNull()||m_referenceBusy||m_calibrationBusy)return false;

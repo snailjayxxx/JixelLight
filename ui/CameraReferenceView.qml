@@ -13,6 +13,12 @@ ColumnLayout {
         text: (root.info.kind === "paired-jpeg" ? root.t("同名 JPEG：元数据匹配，非真实性认证", "Companion JPEG: metadata match, not authentication") : root.info.kind === "embedded-preview" ? root.t("RAW 内嵌相机预览", "Embedded camera preview") : root.t("用户选择参考图，非自动认证", "User-selected reference, not authenticated"))
             + " · " + (root.info.width || 0) + " × " + (root.info.height || 0) + " · " + (root.info.colorBasis || "")
     }
+    Button {
+        objectName: "automaticCameraReference"; Layout.fillWidth: true; Layout.minimumWidth: 0
+        text: root.t("恢复自动相机参考", "Restore automatic camera reference")
+        enabled: root.controller.currentIsRaw
+        onClicked: root.controller.useAutomaticCameraReference()
+    }
     Item { Layout.fillWidth: true; Layout.fillHeight: true
         Image { objectName: "cameraReferenceImage"; anchors.fill: parent; source: root.controller.cameraReferenceUrl; fillMode: Image.PreserveAspectFit; asynchronous: true; cache: false }
         BusyIndicator { anchors.centerIn: parent; running: root.controller.referenceBusy; visible: running }

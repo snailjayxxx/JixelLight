@@ -226,6 +226,7 @@ public:
     Q_INVOKABLE void setLookParameter(const QString &name, double value);
     Q_INVOKABLE void openReferenceDialog();
     Q_INVOKABLE bool loadReference(const QUrl &url);
+    Q_INVOKABLE bool useAutomaticCameraReference();
     Q_INVOKABLE bool calibrateFromReference();
     Q_INVOKABLE void cancelCalibration();
     Q_INVOKABLE void openLookProfileDialog();
@@ -836,7 +837,7 @@ private:
     ScopesResult m_referenceScopes;
     QString m_manualReferencePath;
     QSet<QString> m_referenceFiles;
-    quint64 m_referenceRevision=0;
+    quint64 m_referenceRevision=0,m_referenceSelectionRevision=0;
     std::unique_ptr<LatestJob<CameraReferenceRequest,CameraReferenceResult>> m_referenceJob;
     std::unique_ptr<LatestJob<LookCalibrationRequest,LookCalibrationResult>> m_calibrationJob;
     void initializeLookJobs();
@@ -853,6 +854,7 @@ private:
     void requestFullScopes();
     void requestPreviewScopes();
     bool executeCameraReferenceVisibility(const QJsonObject &command);
+    bool executeCameraReferenceSelection(const QJsonObject &command);
     void setShowCameraReferenceImpl(bool show);
     bool executeScopePresentation(const QJsonObject &command);
     void setScopeDomainImpl(const QString &domain);

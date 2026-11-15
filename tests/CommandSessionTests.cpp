@@ -227,6 +227,18 @@ private slots:
             const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::proofSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopCameraReferenceSelectionRefusesTheWholeOfflinePlan(){
+        for(bool automatic:{false,true}) {
+            QJsonObject command{{"command",automatic?"camera-reference.auto":"camera-reference.load"}};
+            if(!automatic)command["source"]=QDir::rootPath()+"reference.jpg";
+            CommandRegistry::CameraReferenceSelection parsed;QVERIFY(CommandRegistry::decodeCameraReferenceSelection(command,&parsed));
+            CommandSession result;result.photoCount=92;result.commandCount=93;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));
+            QCOMPARE(result.photoCount,92);QCOMPARE(result.commandCount,93);QVERIFY(result.exports.isEmpty());
+            const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::cameraReferenceSelectionSchema(automatic));
+            QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void desktopCameraReferenceVisibilityCannotAlterEarlierSessionExports(){
         for(bool enabled:{false,true}) {
             const QJsonObject command{{"command","camera-reference.show"},{"enabled",enabled}};bool parsed=!enabled;

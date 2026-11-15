@@ -534,6 +534,72 @@ private slots:
             QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(owner.isNull());const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("scopes_command"));QCOMPARE(row["command"].toObject(),command);QVERIFY(row["presentation_only"].toBool());
         }
     }
+    void cameraReferenceSelectionLoadsReadOnlyJPEGAndSharesLegacyAdapter() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("selection-source.png"),jpeg=dir.filePath("selection-reference.jpg");
+        const auto image=sourceImage().scaled(192,128);QVERIFY(image.save(path));QVERIFY(image.convertToFormat(QImage::Format_RGB888).save(jpeg));
+        const auto sourceBytes=fileHash(path),jpegBytes=fileHash(jpeg);ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);
+        const QJsonObject load{{"command","camera-reference.load"},{"source",jpeg}},automatic{{"command","camera-reference.auto"}};
+        QVERIFY(!c.executeCommand(load.toVariantMap()));QVERIFY(!c.useAutomaticCameraReference());
+        QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&c.scopesPixelCount()>0,15000);
+        QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        const auto state=c.currentState().toJson();const auto history=c.editHistory();const auto revision=c.m_requestedRevision,photo=c.m_photoEpoch;
+        const auto preview=StageGraph::outputFingerprint(c.m_processedPreview),source=StageGraph::outputFingerprint(c.m_fullSource);const auto scopes=c.m_scopes;
+        const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);ActionTrace::instance().record("reference_selection_test_boundary",{{"marker",marker}});
+        const auto commands=[&]{QJsonArray rows;bool seen=false;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="reference_selection_test_boundary"&&row["marker"]==marker){seen=true;rows={};}else if(seen&&row["action"]=="camera_reference_selection_command")rows.append(row["command"]);}return rows;};
+        QVERIFY(c.executeCommand(load.toVariantMap()));QVERIFY(c.showCameraReference());QVERIFY(c.referenceBusy());QVERIFY(c.cameraReferenceUrl().isEmpty());QVERIFY(c.cameraReferenceInfo().isEmpty());QCOMPARE(c.referenceHistogram().value("pixels").toULongLong(),qulonglong(0));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.referenceBusy()&&!c.cameraReferenceUrl().isEmpty(),5000);
+        QCOMPARE(c.cameraReferenceInfo().value("kind").toString(),QString("manual-reference"));QCOMPARE(c.cameraReferenceInfo().value("pairStatus").toString(),QString("user-selected-not-authenticated"));
+        const auto reference=StageGraph::outputFingerprint(c.m_referenceImage);QVERIFY(c.loadReference(QUrl::fromLocalFile(jpeg)));
+        QTRY_VERIFY_WITH_TIMEOUT(!c.referenceBusy()&&!c.cameraReferenceUrl().isEmpty(),5000);QCOMPARE(StageGraph::outputFingerprint(c.m_referenceImage),reference);
+        const auto referenceRevision=c.m_referenceRevision,selectionRevision=c.m_referenceSelectionRevision;
+        for(const auto &bad:QList<QVariantMap>{{{"command","camera-reference.load"},{"source",true}},{{"command","camera-reference.load"},{"source",dir.filePath("missing.jpg")}},{{"command","camera-reference.load"},{"source",dir.path()}},{{"command","camera-reference.auto"},{"extra",true}},automatic.toVariantMap()})QVERIFY(!c.executeCommand(bad));
+        QVERIFY(!c.loadReference(QUrl("https://example.invalid/reference.jpg")));QVERIFY(!c.useAutomaticCameraReference());
+        bool generic=true,adapter=true,autoAdapter=true;std::thread worker([&]{generic=c.executeCommand(load.toVariantMap());adapter=c.loadReference(QUrl::fromLocalFile(jpeg));autoAdapter=c.useAutomaticCameraReference();c.openReferenceDialog();});worker.join();QVERIFY(!generic&&!adapter&&!autoAdapter);
+        QCOMPARE(c.m_referenceRevision,referenceRevision);QCOMPARE(c.m_referenceSelectionRevision,selectionRevision);QCOMPARE(commands(),QJsonArray({load,load}));
+        QCOMPARE(c.currentState().toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(c.m_photoEpoch,photo);
+        QCOMPARE(StageGraph::outputFingerprint(c.m_processedPreview),preview);QCOMPARE(StageGraph::outputFingerprint(c.m_fullSource),source);QVERIFY(sameHistogram(c.m_scopes,scopes));
+        QCOMPARE(fileHash(path),sourceBytes);QCOMPARE(fileHash(jpeg),jpegBytes);QVERIFY(c.isProtectedPhoto(jpeg));
+    }
+    void cameraReferenceSelectionNotificationsCanCloseOrDestroyOwner() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("selection-owner.png"),jpeg=dir.filePath("selection-owner.jpg");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));QVERIFY(image.convertToFormat(QImage::Format_RGB888).save(jpeg));
+        for(bool calibrationSignal:{false,true})for(bool closeOnly:{false,true}) {
+            ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);owner->setGpuEnabled(false);
+            QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&!owner->rendering(),15000);QVERIFY(owner->flushEdits());owner->m_saveTimer.stop();owner->m_saveMaxTimer.stop();owner->m_refineTimer.stop();
+            bool notified=false,closed=false;const auto revision=owner->m_requestedRevision,photo=owner->m_photoEpoch;
+            const auto notify=[&]{notified=true;if(closeOnly)closed=owner->beginClose();else delete owner.data();};
+            if(calibrationSignal){owner->m_calibrationBusy=true;QObject::connect(owner,&PhotoController::calibrationChanged,owner,notify);}
+            else QObject::connect(owner,&PhotoController::referenceChanged,owner,notify);
+            const QJsonObject command{{"command","camera-reference.load"},{"source",jpeg}};QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(notified);
+            QJsonObject accepted;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="camera_reference_selection_command")accepted=row;}
+            QCOMPARE(accepted["command"].toObject(),command);QCOMPARE(accepted["revision"].toString(),QString::number(revision));QCOMPARE(accepted["photo_epoch"].toString(),QString::number(photo));
+            if(closeOnly){QVERIFY(closed);QVERIFY(owner&&owner->m_closing);QVERIFY(!owner->referenceBusy());QVERIFY(!owner->m_referenceJob->busy());QVERIFY(!owner->loadReference(QUrl::fromLocalFile(jpeg)));QVERIFY(!owner->useAutomaticCameraReference());delete owner.data();}else QVERIFY(owner.isNull());
+        }
+    }
+    void cameraReferenceSelectionReentrySubmitsOnlyLatestIntent() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("selection-reentry.png"),jpeg=dir.filePath("selection-reentry.jpg");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));QVERIFY(image.convertToFormat(QImage::Format_RGB888).save(jpeg));
+        for(bool onBusy:{false,true}) {
+            std::atomic_int starts{0};QList<CameraReferenceRequest> delivered;
+            ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();c.m_photos[c.m_currentIndex].raw=true;
+            c.m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>([&](const CameraReferenceRequest &,const CancelToken &){++starts;return CameraReferenceResult{};},[&](const CameraReferenceRequest &request,CameraReferenceResult){delivered.append(request);c.m_referenceBusy=false;});
+            bool nested=false,nestedAccepted=false;QObject::connect(&c,&PhotoController::referenceChanged,&c,[&]{if(!nested&&c.referenceBusy()==onBusy){nested=true;nestedAccepted=c.useAutomaticCameraReference();}});
+            const auto revision=c.m_requestedRevision,photo=c.m_photoEpoch;
+            QVERIFY(c.loadReference(QUrl::fromLocalFile(jpeg)));QVERIFY(nested&&nestedAccepted);QTRY_COMPARE_WITH_TIMEOUT(delivered.size(),1,5000);
+            QCOMPARE(starts.load(),1);QVERIFY(delivered.first().manualPath.isEmpty());QCOMPARE(delivered.first().rawPath,path);QCOMPARE(delivered.first().photo,photo);QVERIFY(c.m_manualReferencePath.isEmpty());QCOMPARE(c.m_requestedRevision,revision);
+            QJsonArray commands;for(const auto &v:ActionTrace::instance().snapshot()){const auto row=v.toObject();if(row["action"]=="camera_reference_selection_command")commands.append(row["command"]);}
+            QVERIFY(commands.size()>=2);QCOMPARE(commands[commands.size()-2].toObject()["command"].toString(),QString("camera-reference.load"));QCOMPARE(commands.last().toObject(),QJsonObject({{"command","camera-reference.auto"}}));
+        }
+    }
+    void cameraReferenceSelectionSupersedesBlockedWorkWithoutPublishingOldPixels() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("selection-pending.png"),jpeg=dir.filePath("selection-pending.jpg");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));QVERIFY(image.convertToFormat(QImage::Format_RGB888).save(jpeg));
+        QSemaphore entered,release;QStringList published;std::atomic_int starts{0};ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();c.m_photos[c.m_currentIndex].raw=true;
+        c.m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>([&](const CameraReferenceRequest &request,const CancelToken &){++starts;if(!request.manualPath.isEmpty()){entered.release();release.tryAcquire(1,5000);}CameraReferenceResult result;result.info["kind"]=request.manualPath.isEmpty()?"automatic":"stale-manual";return result;},[&](const CameraReferenceRequest &,CameraReferenceResult result){published.append(result.info["kind"].toString());c.m_referenceBusy=false;});
+        const auto cleanup=qScopeGuard([&]{release.release();});QVERIFY(c.loadReference(QUrl::fromLocalFile(jpeg)));QVERIFY(entered.tryAcquire(1,1000));QVERIFY(c.useAutomaticCameraReference());QVERIFY(c.referenceBusy());release.release();
+        QTRY_COMPARE_WITH_TIMEOUT(published,QStringList{"automatic"},5000);QCOMPARE(starts.load(),2);QTRY_VERIFY_WITH_TIMEOUT(!c.m_referenceJob->busy(),5000);QVERIFY(!c.referenceBusy());QVERIFY(c.m_manualReferencePath.isEmpty());QVERIFY(c.isProtectedPhoto(jpeg));
+    }
     void cameraReferenceCommandSharesAdaptersWithoutChangingPhotoIntentOrLoadedPixels() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto path=dir.filePath("reference-commands.png"),jpeg=dir.filePath("manual-reference.jpg");
