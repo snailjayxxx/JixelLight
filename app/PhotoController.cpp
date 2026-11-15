@@ -807,8 +807,11 @@ bool PhotoController::executeCommand(const QVariantMap &command) {
     const auto object=QJsonObject::fromVariantMap(command);
     if(object["command"]=="export.cancel"||object["command"]=="photo.transfer.cancel"||object["command"]=="xmp.cancel")return executeOperationCancel(object);
     if(object["command"].toString().startsWith("proof."))return executeProofCommand(object);
-    if(object["command"].toString().startsWith("camera-reference."))return object["command"]=="camera-reference.show"
-        ?executeCameraReferenceVisibility(object):executeCameraReferenceSelection(object);
+    if(object["command"].toString().startsWith("camera-reference.")) {
+        if(object["command"]=="camera-reference.show")return executeCameraReferenceVisibility(object);
+        if(object["command"]=="camera-reference.fit"||object["command"]=="camera-reference.fit.cancel")return executeReferenceCalibration(object);
+        return executeCameraReferenceSelection(object);
+    }
     if(object["command"].toString().startsWith("scopes."))return executeScopePresentation(object);
     if(object["command"].toString().startsWith("photo.relink."))return executeRelinkCommand(object);
     if(object["command"].toString().startsWith("xmp."))return executeXmpCommand(object);
@@ -1557,7 +1560,7 @@ bool PhotoController::applyCurrent() {
     const auto current=[this,guard,catalog,epoch,&revision]{return guard&&!m_closing&&catalog==m_catalogEpoch&&epoch==m_photoEpoch&&revision==m_requestedRevision;};
     // Another Develop action, including Undo/Redo, abandons an uncommitted box.
     if (m_cropEditing) { m_cropEditing = false;emit cropEditingChanged();if(!current())return false; }
-    cancelCalibration();if(!current())return false;
+    cancelCalibrationImpl();if(!current())return false;
     revision=++m_requestedRevision;
     m_plotTimer.stop();m_plotJob->cancel();m_plotSubmittedRevision=0;emit scopePlotChanged();if(!current())return false;
     m_scopesUpdating = true; m_scopesRank = -1;

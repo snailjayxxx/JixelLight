@@ -35,6 +35,7 @@ from ValidateSoftProof import validate_soft_proof
 from ValidateMoveImport import validate_move_import
 from CameraReferenceVisibilityEvidence import camera_reference_visibility_checks
 from CameraReferenceSelectionEvidence import camera_reference_selection_checks
+from CameraReferenceCalibrationEvidence import camera_reference_calibration_checks
 
 
 def qml_runtime_errors(text: str) -> list[str]:
@@ -119,7 +120,8 @@ def main() -> int:
                   and bool(data.get('reference', {}).get('previewPixelSha256')))
             reference_commands = camera_reference_visibility_checks(data)
             reference_selection = camera_reference_selection_checks(data)
-            ok = ok and all(reference_commands.values()) and all(reference_selection.values())
+            reference_calibration = camera_reference_calibration_checks(data)
+            ok = ok and all(reference_commands.values()) and all(reference_selection.values()) and all(reference_calibration.values())
             binding_errors = qml_runtime_errors(log.read_text(encoding='utf-8', errors='replace'))
             ok = ok and not binding_errors
             if mode == 'gpu':
@@ -134,7 +136,8 @@ def main() -> int:
                             'reference_kind': data.get('reference', {}).get('kind'),
                             'reference_pixel_sha256': data.get('reference', {}).get('previewPixelSha256'),
                             'camera_reference_visibility_checks': reference_commands,
-                            'camera_reference_selection_checks': reference_selection})
+                            'camera_reference_selection_checks': reference_selection,
+                            'camera_reference_calibration_checks': reference_calibration})
             if not ok:
                 print(log.read_text(encoding='utf-8', errors='replace')[-20000:], flush=True)
                 print(json.dumps(data, indent=2), flush=True)

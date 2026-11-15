@@ -277,6 +277,20 @@ private slots:
         AnalysisFrameCache shared(10*cost);auto older=shared.beginLinear("same",frame.size(),AnalysisDomain::Source);auto newer=shared.beginLinear("same",frame.size(),AnalysisDomain::Working);QVERIFY(older);QVERIFY(newer);QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(2));QVERIFY(older.append(frame,0));QVERIFY(!older.publish());QVERIFY(newer.append(frame,0));QVERIFY(newer.publish());QCOMPARE(shared.snapshot()["stale_publications"].toInteger(),qint64(1));QVERIFY(!shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Source));QVERIFY(shared.findLinear("same",AnalysisDomain::Working));
         auto wrong=shared.begin("same",frame.size());QVERIFY(wrong);QVERIFY(!wrong.append(frame,0));QImage rgba64(frame.size(),QImage::Format_RGBA64);rgba64.fill(QColor(40,90,170));auto legacy=shared.begin("same",frame.size());QVERIFY(legacy);QVERIFY(legacy.append(rgba64,0));QVERIFY(legacy.publish());QVERIFY(shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Working));QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(0));
     }
+    void referenceCalibrationCommandsAreStrictAndCannotMutateOfflineEdits() {
+        using Operation=CommandRegistry::ReferenceCalibration;
+        for(bool cancel:{false,true}) {
+            const QJsonObject command{{"command",cancel?"camera-reference.fit.cancel":"camera-reference.fit"}};Operation operation=cancel?Operation::Start:Operation::Cancel;QString error="old";
+            QVERIFY(CommandRegistry::decodeReferenceCalibration(command,&operation,&error));QVERIFY(error.isEmpty());QVERIFY(operation==(cancel?Operation::Cancel:Operation::Start));
+            QVERIFY(!CommandRegistry::decodeReferenceCalibration(command,nullptr,&error));QVERIFY(!error.isEmpty());
+            AdjustmentState state;state.exposure=.4;const auto before=state.toJson();QVERIFY(!CommandRegistry::execute(state,command,&error));QCOMPARE(state.toJson(),before);
+            const auto schema=CommandRegistry::referenceCalibrationSchema(cancel);QCOMPARE(schema["scope"].toString(),QString("desktop"));QCOMPARE(schema["fields"].toArray(),QJsonArray{});QVERIFY(schema["source_writes"].isBool()&&!schema["source_writes"].toBool());QCOMPARE(schema["edit_history_on_success"].toBool(),!cancel);QCOMPARE(schema["requires_current_RAW"].toBool(),!cancel);
+            QJsonObject described;for(const auto &v:CommandRegistry::schema()["workflow_commands"].toArray())if(v.toObject()["name"]==command["command"])described=v.toObject();QCOMPARE(described,schema);
+        }
+        for(const auto &command:QList<QJsonObject>{{},{ {"command",true} },{{"command",QJsonValue::Null}},{{"command","camera-reference.Fit"}},{{"command","camera-reference.fit"},{"source","injected.jpg"}},{{"command","camera-reference.fit.cancel"},{"enabled",true}},{{"command","camera-reference.fit.cancel"},{"operation_id","unexpected"}},{{"command","camera-reference.auto"}}}) {
+            Operation output=Operation::Cancel;QString error;QVERIFY(!CommandRegistry::decodeReferenceCalibration(command,&output,&error));QVERIFY(output==Operation::Cancel);QVERIFY(!error.isEmpty());
+        }
+    }
     void cameraReferenceSelectionRequiresExactPathsAndAtomicDecoding() {
         const auto path=QDir::rootPath()+"owned-reference.jpg";
         const QList<QJsonObject> valid{{{"command","camera-reference.load"},{"source",path}},{{"command","camera-reference.auto"}}};

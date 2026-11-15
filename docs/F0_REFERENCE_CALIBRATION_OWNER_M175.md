@@ -1,0 +1,11 @@
+# F0 reference-calibration task ownership — M175
+
+The preceding metadata/reference command candidate ba29fda has local107/101 groups, all33 contexts, private3 and actual downloaded Mac package validation. Original Linux/macOS CI459 passed; Windows package closure and its independent final index are still required. This new NAS worktree does not modify its source or build.
+
+Calibration start now freezes its image pair, provenance and source/photo/edit/reference identity before notifying the UI. Deletion, accepted close, cancellation and nested replacement stop the obsolete submission. Public start/cancel/look-mode entry refuses another thread or an accepted close before reading mutable controller state. Reset clears reference pixels, metadata, scopes, report and provider before cancellation notifies the newly selected photo. Completion checks the original job sequence and reference generations after notifying, so a callback can retire a result before its LUT is applied.
+
+An external exact-Core witness on accepted e12cc69 has already captured one worker start after cancellation and one after accepted close. Its runtime3/passed:false, unchanged19 runtimes/five graphs/link/PCH inputs and all closed proof originals are retained; outcome SHA256 d61a1465d5cf408df16a6ef7fd953acb98d1fbe9e0a500c58dd802495ed23acb. This is a pre-existing controller boundary issue, not a new RAW or fitter result.
+
+Four explicitly selected controller methods cover start-time close/deletion, foreign-thread refusal, cancel/restart and frozen provenance, atomic reset, and real fitter completion cancelled or replaced by a deliberately invalid new pair. Tiny PNGs with explicit synthetic RAW admission flags test controller ownership only. The existing real-RAW reference fit regression remains mandatory. No fitter math, RAW processing, matching policy, image/export colour, cache semantics, resource limits or timeouts change.
+
+Before compilation, Python308, a fresh Release, Core279/session25/scheduling104, original107 CTests/101 Qt groups, own full local/platform/packages and unchanged19 runtimes/five build graphs remain pending. Full F0–F6, native float RAW, sensor calibration, internal GPU stages and physical-device qualification remain incomplete. Main and protected PR15 remain unchanged.

@@ -335,6 +335,21 @@ struct CommandRegistry {
         if(!automatic){result["type"]="string";result["path_kind"]="absolute native local path to an existing file; readable bounded JPEG checked asynchronously";}
         return result;
     }
+    enum class ReferenceCalibration { Start, Cancel };
+    static bool decodeReferenceCalibration(const QJsonObject &command,ReferenceCalibration *output,QString *error=nullptr) {
+        if(error)error->clear();const auto name=command["command"].toString();
+        if(!output||!fields(command,{})||(name!="camera-reference.fit"&&name!="camera-reference.fit.cancel")) {
+            if(error)*error="Invalid reference calibration command";return false;
+        }
+        *output=name=="camera-reference.fit"?ReferenceCalibration::Start:ReferenceCalibration::Cancel;return true;
+    }
+    static QJsonObject referenceCalibrationSchema(bool cancel) {
+        return {{"name",cancel?"camera-reference.fit.cancel":"camera-reference.fit"},{"scope","desktop"},{"fields",QJsonArray{}},
+            {"source_writes",false},{"settings_writes",false},{"requires_current_RAW",!cancel},{"edit_history_on_success",!cancel},
+            {"operation",cancel?"retire the current controller's pending or delivering fit; idle cancellation is idempotent":"fit the frozen current RAW/reference pair; apply only a successful current image-specific LUT"},
+            {"completion",cancel?"true means current fit retirement accepted":"true means asynchronous request accepted; observe calibrationBusy and calibrationReport.error"},
+            {"camera_characterization",false},{"offline_sessions","unsupported; current loaded source/reference and controller ownership are required"}};
+    }
     enum class ScopeOperation { Domain, Mode, FullResolution };
     struct ScopePresentation {ScopeOperation operation=ScopeOperation::Domain;QString value;bool enabled=false;};
     static bool decodeScopePresentation(const QJsonObject &command,ScopePresentation *output,QString *error=nullptr) {
@@ -1129,6 +1144,7 @@ struct CommandRegistry {
                 proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
                 proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh"),
                 cameraReferenceVisibilitySchema(),cameraReferenceSelectionSchema(false),cameraReferenceSelectionSchema(true),
+                referenceCalibrationSchema(false),referenceCalibrationSchema(true),
                 scopePresentationSchema("scopes.domain"),scopePresentationSchema("scopes.mode"),scopePresentationSchema("scopes.full-resolution"),
                 operationCancelSchema(false),operationCancelSchema(true),operationCancelSchema(false,true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},

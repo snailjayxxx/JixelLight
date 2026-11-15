@@ -227,6 +227,14 @@ private slots:
             const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::proofSchema(name));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
         }
     }
+    void desktopReferenceCalibrationRefusesTheWholeOfflinePlan(){
+        for(bool cancel:{false,true}) {
+            const QJsonObject command{{"command",cancel?"camera-reference.fit.cancel":"camera-reference.fit"}};CommandRegistry::ReferenceCalibration parsed;
+            QVERIFY(CommandRegistry::decodeReferenceCalibration(command,&parsed));CommandSession result;result.photoCount=94;result.commandCount=95;
+            QVERIFY(!CommandSession::compile(manifest({photoImport(),save(),command}),base(),source(),&result));QCOMPARE(result.photoCount,94);QCOMPARE(result.commandCount,95);QVERIFY(result.exports.isEmpty());
+            const auto name=command["command"].toString();QCOMPARE(describedCommand(CommandRegistry::schema()["workflow_commands"].toArray(),name),CommandRegistry::referenceCalibrationSchema(cancel));QVERIFY(describedCommand(CommandSession::schema()["commands"].toArray(),name).isEmpty());
+        }
+    }
     void desktopCameraReferenceSelectionRefusesTheWholeOfflinePlan(){
         for(bool automatic:{false,true}) {
             QJsonObject command{{"command",automatic?"camera-reference.auto":"camera-reference.load"}};

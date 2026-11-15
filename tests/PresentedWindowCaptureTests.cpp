@@ -16,21 +16,13 @@
 #include <QDir>
 #include <QFont>
 #include <atomic>
+#include <functional>
+#include <utility>
+#include <QScopeGuard>
 #include "app/PresentedWindowCapture.h"
 namespace {
-class CaptureGateRelease final:public QObject {
-public:
-    CaptureGateRelease(QObject *parent,std::shared_ptr<QSemaphore> gate):QObject(parent),gate_(std::move(gate)){}
-protected:
-    bool event(QEvent *event) override {
-        if(event->type()==QEvent::User){gate_->release();return true;}
-        return QObject::event(event);
-    }
-private:
-    std::shared_ptr<QSemaphore> gate_;
-};
 struct InFlightCaptureProbe {
-    std::atomic_bool done=false,threaded=false,gateReleased=false;
+    std::atomic_bool threaded=false,gateReleased=false,gateWaiting=false;
     PresentedWindowCapture::Result result;
 };
 class CaptureRect final:public QQuickItem {
@@ -126,27 +118,34 @@ private slots:
         QVERIFY2(warmup.ok(),qPrintable(warmup.error));QVERIFY(warmup.frameSwapped);
         const qreal dpr=window.effectiveDevicePixelRatio();
         QCOMPARE(warmup.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(120,30,60));
-        // The old scene has synchronized before this job. Keep that render
-        // in flight while the GUI changes the item and requests its capture.
-        window.scheduleRenderJob(QRunnable::create([&window,rect,capture,gate,probe]{
+        auto entered=std::make_shared<QSemaphore>();auto active=std::make_shared<std::atomic_bool>(true);
+        const auto retire=qScopeGuard([active,gate]{active->store(false);gate->release();});
+        window.scheduleRenderJob(QRunnable::create([&window,gate,entered,probe,active]{
+            if(!active->load())return;
             probe->threaded.store(QThread::currentThread()!=window.thread());
-            QMetaObject::invokeMethod(&window,[&window,rect,capture,gate,probe]{
-                rect->color(QColor(30,160,210));
-                // The high-priority event runs only once grab enters its
-                // event loop, after its render jobs have been registered.
-                QCoreApplication::postEvent(new CaptureGateRelease(&window,gate),new QEvent(QEvent::User),Qt::HighEventPriority);
-                probe->result=capture->grab(&window,5000);probe->done.store(true,std::memory_order_release);
-            },Qt::QueuedConnection);
-            probe->gateReleased.store(gate->tryAcquire(1,1000));
+            // This pending update blocks the old queued-GUI protocol. The new
+            // registration handshake releases the renderer before it runs.
+            QCoreApplication::postEvent(&window,new QEvent(QEvent::UpdateRequest),Qt::NormalEventPriority);
+            probe->gateWaiting.store(true);entered->release();
+            probe->gateReleased.store(gate->tryAcquire(1,1000));probe->gateWaiting.store(false);
         }),QQuickWindow::BeforeRenderingStage);
-        window.update();QTRY_VERIFY_WITH_TIMEOUT(probe->done.load(std::memory_order_acquire),6000);
-        QVERIFY(probe->threaded.load());QVERIFY(probe->gateReleased.load());
+        QElapsedTimer handshake;handshake.start();window.update();
+        QEvent update(QEvent::UpdateRequest);QCoreApplication::sendEvent(&window,&update);
+        QVERIFY(entered->tryAcquire(1,1000));QVERIFY(probe->threaded.load());QVERIFY(probe->gateWaiting.load());
+        rect->color(QColor(30,160,210));
+        // Release only when grab has registered its post-request sync/readback
+        // jobs; nested GUI dispatch is not part of the gate's delivery path.
+        probe->result=capture->grab(&window,5000,PresentedWindowCapture::BufferBudget,gate.get());
+        const auto handshakeMs=handshake.elapsed();QVERIFY(handshakeMs<6000);
+        QVERIFY(probe->gateReleased.load());
         QVERIFY2(probe->result.ok(),qPrintable(probe->result.error));QVERIFY(probe->result.synchronizedAfterRequest);
         QCOMPARE(probe->result.image.pixelColor(qRound(20*dpr),qRound(20*dpr)),QColor(30,160,210));
         const auto control=window.grabWindow().convertToFormat(QImage::Format_RGBA8888);window.update();
         QCOMPARE(probe->result.image.convertToFormat(QImage::Format_RGBA8888),control);
         records.append(QJsonObject{{"name","captureWaitsForRequestSynchronizationWhileOlderFrameIsRendering"},{"passed",true},
             {"warmup_normal_frame_swapped",true},{"warmup_old_revision_matches",true},
+            {"capture_jobs_registered_before_gate_release",true},{"gate_entered_before_GUI_request",true},
+            {"competing_normal_update_queued",true},{"normal_update_explicitly_driven",true},{"whole_handshake_deadline_ms",6000},{"whole_handshake_elapsed_ms",handshakeMs},
             {"older_frame_held_after_sync",true},{"request_during_in_flight_render",true},{"post_request_synchronization_observed",true},
             {"new_revision_pixels_match_Qt_control",true},{"DPR",dpr}});
     }

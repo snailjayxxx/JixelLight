@@ -695,6 +695,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto photoSelectionTrace=std::make_shared<QJsonObject>();
     auto referenceVisibilityTrace=std::make_shared<QJsonObject>();
     auto referenceSelectionTrace=std::make_shared<QJsonObject>();
+    auto referenceCalibrationTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -756,6 +757,32 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
         else if(state->phase==502 && ready && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty()) {
             referenceSelectionTrace->insert("manual_info",QJsonObject::fromVariantMap(controller->cameraReferenceInfo()));
             const auto revision=controller->renderRevision();const auto source=controller->gpuSource();
+            const auto fitMarker=QUuid::createUuid().toString(QUuid::WithoutBraces);
+            referenceCalibrationTrace->insert("trace_marker",fitMarker);referenceCalibrationTrace->insert("reference_ready",!controller->referenceBusy()&&!controller->cameraReferenceUrl().isEmpty());
+            referenceCalibrationTrace->insert("before_state",controller->gpuPlan(true).state.toJson());
+            referenceCalibrationTrace->insert("before_cursor",historyCursor(controller));
+            referenceCalibrationTrace->insert("before_revision",QString::number(revision));
+            referenceCalibrationTrace->insert("before_source_cache_key",QString::number(source.cacheKey()));
+            ActionTrace::instance().record("camera_reference_calibration_smoke_boundary",{{"marker",fitMarker}});
+            bool started=false,cancelAccepted=false,traceBeforeCallback=false;
+            const auto connection=QObject::connect(controller,&PhotoController::calibrationChanged,controller,[&]{
+                if(started||!controller->calibrationBusy())return;started=true;
+                const auto event=ActionTrace::instance().snapshot().last().toObject();
+                traceBeforeCallback=event["action"]=="camera_reference_calibration_command"
+                    &&event["command"].toObject()==QJsonObject({{"command","camera-reference.fit"}})
+                    &&event["revision"].toString()==QString::number(revision);
+                cancelAccepted=controller->executeCommand({{"command","camera-reference.fit.cancel"}});
+            });
+            const bool fitAccepted=controller->calibrateFromReference();QObject::disconnect(connection);
+            referenceCalibrationTrace->insert("legacy_fit_adapter_accepted",fitAccepted);
+            referenceCalibrationTrace->insert("start_notification_observed",started);
+            referenceCalibrationTrace->insert("start_trace_before_cancel",traceBeforeCallback);
+            referenceCalibrationTrace->insert("canonical_cancel_accepted",cancelAccepted);
+            referenceCalibrationTrace->insert("same_call_cancellation_settled",!controller->calibrationBusy()&&controller->calibrationReport().isEmpty());
+            referenceCalibrationTrace->insert("after_state",controller->gpuPlan(true).state.toJson());
+            referenceCalibrationTrace->insert("after_cursor",historyCursor(controller));
+            referenceCalibrationTrace->insert("after_revision",QString::number(controller->renderRevision()));
+            referenceCalibrationTrace->insert("after_source_cache_key",QString::number(controller->gpuSource().cacheKey()));
             const bool clicked=clickItem(window,visualChild(window->contentItem(),"automaticCameraReference"));
             referenceSelectionTrace->insert("auto_button_clicked",clicked);
             referenceSelectionTrace->insert("request_invariants",referenceSelectionTrace->value("request_invariants").toBool()
@@ -1634,13 +1661,34 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             for(const auto *key:{"manual_fixture_created","manual_command_accepted","request_invariants","auto_button_clicked","photo_intent_history_unchanged","command_trace_passed","manual_loaded_unauthed","auto_restored_original"})
                 referenceSelectionOk=referenceSelectionOk&&referenceSelectionTrace->value(key).toBool();
         }
-        bool ok=referenceSelectionOk && complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && referenceVisibilityOk && (!gpuRequired || controller->gpuActive());
+        bool referenceCalibrationOk=true;
+        if(state->lookEnabled) {
+            QJsonArray commands,events;bool seen=false;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();
+                if(row["action"]=="camera_reference_calibration_smoke_boundary"&&row["marker"]==referenceCalibrationTrace->value("trace_marker")){seen=true;commands={};events={};}
+                else if(seen&&row["action"]=="camera_reference_calibration_command"){commands.append(row["command"]);events.append(row);}
+            }
+            const QJsonArray expected{QJsonObject{{"command","camera-reference.fit"}},QJsonObject{{"command","camera-reference.fit.cancel"}}};
+            referenceCalibrationTrace->insert("canonical_commands",commands);referenceCalibrationTrace->insert("accepted_events",events);
+            referenceCalibrationTrace->insert("command_trace_passed",seen&&commands==expected);
+            const auto before=referenceCalibrationTrace->value("before_state"),after=referenceCalibrationTrace->value("after_state");
+            referenceCalibrationTrace->insert("intent_history_revision_source_unchanged",before.isObject()&&!before.toObject().isEmpty()&&before==after
+                &&referenceCalibrationTrace->value("before_cursor")==referenceCalibrationTrace->value("after_cursor")
+                &&referenceCalibrationTrace->value("before_revision")==referenceCalibrationTrace->value("after_revision")
+                &&referenceCalibrationTrace->value("before_source_cache_key")==referenceCalibrationTrace->value("after_source_cache_key"));
+            for(const auto *key:{"reference_ready","legacy_fit_adapter_accepted","start_notification_observed","start_trace_before_cancel","canonical_cancel_accepted","same_call_cancellation_settled","command_trace_passed","intent_history_revision_source_unchanged"})
+                referenceCalibrationOk=referenceCalibrationOk&&referenceCalibrationTrace->value(key).toBool();
+        }
+        bool ok=referenceCalibrationOk && referenceSelectionOk && complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && referenceVisibilityOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_camera_reference_command_trace_passed"]=referenceVisibilityOk;
         report["ui_camera_reference_visibility"]=*referenceVisibilityTrace;
         report["ui_camera_reference_selection_passed"]=referenceSelectionOk;
         report["ui_camera_reference_selection"]=*referenceSelectionTrace;
+        report["ui_camera_reference_calibration_passed"]=referenceCalibrationOk;
+        report["ui_camera_reference_calibration"]=*referenceCalibrationTrace;
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_preset_actions_found"]=state->presetActionsPresent;
