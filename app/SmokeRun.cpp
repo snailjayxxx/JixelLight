@@ -694,6 +694,7 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
     auto exportSelectionTrace=std::make_shared<QJsonObject>();
     auto photoSelectionTrace=std::make_shared<QJsonObject>();
     auto referenceVisibilityTrace=std::make_shared<QJsonObject>();
+    auto referenceSelectionTrace=std::make_shared<QJsonObject>();
     auto importFixture=std::make_shared<QTemporaryDir>();
     auto *timer=new QTimer(controller);timer->setInterval(50);
     QObject::connect(timer,&QTimer::timeout,controller,[=] {
@@ -729,6 +730,45 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
                 referenceVisibilityTrace->insert("intent_history_revision_source_unchanged",controller->gpuPlan(true).state.toJson()==before
                     &&historyCursor(controller)==cursor&&controller->renderRevision()==revision&&controller->gpuSource().cacheKey()==source.cacheKey());
             }
+            state->phase=state->lookEnabled?501:1;
+        }
+        else if(state->phase==501 && ready && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty()) {
+            // Retain the real paired/embedded RAW preview before exercising an
+            // explicitly artificial manual JPEG. Restore the original preview
+            // through the actual UI button before the existing edit workflow.
+            referenceSelectionTrace->insert("original_info",QJsonObject::fromVariantMap(controller->cameraReferenceInfo()));
+            referenceSelectionTrace->insert("before",controller->gpuPlan(true).state.toJson());
+            referenceSelectionTrace->insert("before_cursor",historyCursor(controller));
+            referenceSelectionTrace->insert("raw_source",controller->currentFile());
+            const auto manual=importFixture->filePath("manual-reference-command.jpg");QImage fixture(64,48,QImage::Format_RGB888);fixture.fill(QColor(31,127,219));
+            referenceSelectionTrace->insert("manual_fixture_created",importFixture->isValid()&&fixture.save(manual,"JPEG"));
+            referenceSelectionTrace->insert("manual_source",manual);
+            const auto marker=QUuid::createUuid().toString(QUuid::WithoutBraces);referenceSelectionTrace->insert("trace_marker",marker);
+            ActionTrace::instance().record("camera_reference_selection_smoke_boundary",{{"marker",marker}});
+            const auto revision=controller->renderRevision();const auto source=controller->gpuSource();
+            const bool accepted=controller->executeCommand({{"command","camera-reference.load"},{"source",manual}});
+            referenceSelectionTrace->insert("manual_command_accepted",accepted);
+            referenceSelectionTrace->insert("request_invariants",controller->gpuPlan(true).state.toJson()==referenceSelectionTrace->value("before").toObject()
+                &&historyCursor(controller)==referenceSelectionTrace->value("before_cursor").toInt(-1)
+                &&controller->renderRevision()==revision&&controller->gpuSource().cacheKey()==source.cacheKey());
+            state->phase=502;
+        }
+        else if(state->phase==502 && ready && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty()) {
+            referenceSelectionTrace->insert("manual_info",QJsonObject::fromVariantMap(controller->cameraReferenceInfo()));
+            const auto revision=controller->renderRevision();const auto source=controller->gpuSource();
+            const bool clicked=clickItem(window,visualChild(window->contentItem(),"automaticCameraReference"));
+            referenceSelectionTrace->insert("auto_button_clicked",clicked);
+            referenceSelectionTrace->insert("request_invariants",referenceSelectionTrace->value("request_invariants").toBool()
+                &&controller->gpuPlan(true).state.toJson()==referenceSelectionTrace->value("before").toObject()
+                &&historyCursor(controller)==referenceSelectionTrace->value("before_cursor").toInt(-1)
+                &&controller->renderRevision()==revision&&controller->gpuSource().cacheKey()==source.cacheKey());
+            state->phase=503;
+        }
+        else if(state->phase==503 && ready && !controller->referenceBusy() && !controller->cameraReferenceUrl().isEmpty()) {
+            referenceSelectionTrace->insert("automatic_info",QJsonObject::fromVariantMap(controller->cameraReferenceInfo()));
+            referenceSelectionTrace->insert("photo_intent_history_unchanged",controller->gpuPlan(true).state.toJson()==referenceSelectionTrace->value("before").toObject()
+                &&historyCursor(controller)==referenceSelectionTrace->value("before_cursor").toInt(-1)
+                &&controller->currentFile()==referenceSelectionTrace->value("raw_source").toString());
             state->phase=1;
         }
         else if(state->phase==1) {
@@ -1576,11 +1616,31 @@ void startSmokeRun(PhotoController *controller, QQuickWindow *window, const QStr
             for(const auto *key:{"adapter_hidden","command_accepted","intent_history_revision_source_unchanged","command_trace_passed","reference_loaded"})
                 referenceVisibilityOk=referenceVisibilityOk&&referenceVisibilityTrace->value(key).toBool();
         }
-        bool ok=complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && referenceVisibilityOk && (!gpuRequired || controller->gpuActive());
+        bool referenceSelectionOk=true;
+        if(state->lookEnabled) {
+            QJsonArray commands;bool seen=false;
+            for(const auto &value:ActionTrace::instance().snapshot()) {
+                const auto row=value.toObject();
+                if(row["action"]=="camera_reference_selection_smoke_boundary"&&row["marker"]==referenceSelectionTrace->value("trace_marker")){seen=true;commands={};}
+                else if(seen&&row["action"]=="camera_reference_selection_command")commands.append(row["command"]);
+            }
+            const QJsonArray expected{QJsonObject{{"command","camera-reference.load"},{"source",referenceSelectionTrace->value("manual_source")}},QJsonObject{{"command","camera-reference.auto"}}};
+            referenceSelectionTrace->insert("canonical_commands",commands);referenceSelectionTrace->insert("command_trace_passed",seen&&commands==expected);
+            const auto original=referenceSelectionTrace->value("original_info").toObject(),manual=referenceSelectionTrace->value("manual_info").toObject(),automatic=referenceSelectionTrace->value("automatic_info").toObject();
+            referenceSelectionTrace->insert("manual_loaded_unauthed",manual["kind"]=="manual-reference"&&manual["pairStatus"]=="user-selected-not-authenticated"
+                &&!manual["previewPixelSha256"].toString().isEmpty()&&manual["previewPixelSha256"]!=original["previewPixelSha256"]);
+            referenceSelectionTrace->insert("auto_restored_original",!original["previewPixelSha256"].toString().isEmpty()
+                &&automatic["kind"]==original["kind"]&&automatic["previewPixelSha256"]==original["previewPixelSha256"]);
+            for(const auto *key:{"manual_fixture_created","manual_command_accepted","request_invariants","auto_button_clicked","photo_intent_history_unchanged","command_trace_passed","manual_loaded_unauthed","auto_restored_original"})
+                referenceSelectionOk=referenceSelectionOk&&referenceSelectionTrace->value(key).toBool();
+        }
+        bool ok=referenceSelectionOk && complete && workspaceOk && copyOk && transferOk && correctionOk && vignetteOk && gradingUiOk && exportNamesOk && exportSelectionOk && photoSelectionOk && scopeDomainsOk && referenceVisibilityOk && (!gpuRequired || controller->gpuActive());
         auto report=PerformanceRecorder::snapshot();
         report["look_validation_required"]=state->lookEnabled;
         report["ui_camera_reference_command_trace_passed"]=referenceVisibilityOk;
         report["ui_camera_reference_visibility"]=*referenceVisibilityTrace;
+        report["ui_camera_reference_selection_passed"]=referenceSelectionOk;
+        report["ui_camera_reference_selection"]=*referenceSelectionTrace;
         report["ui_library_visited"]=state->gridVisited;
         report["ui_filmstrip_found"]=state->filmstripPresent;
         report["ui_preset_actions_found"]=state->presetActionsPresent;

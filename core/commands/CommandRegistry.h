@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <QRegularExpression>
 #include <QSet>
+#include <QFileInfo>
 #include <algorithm>
 #include <cmath>
 
@@ -308,6 +309,31 @@ struct CommandRegistry {
             {"presentation_only",true},{"source_writes",false},{"catalog_writes",false},{"edit_history_writes",false},{"settings_writes",false},
             {"completion","true means visibility request accepted; a missing reference may still be loading or unavailable"},
             {"offline_sessions","unsupported; reference visibility cannot alter Develop or export plans"}};
+    }
+    struct CameraReferenceSelection {QString source;bool automatic=false;};
+    static bool decodeCameraReferenceSelection(const QJsonObject &command,CameraReferenceSelection *output,QString *error=nullptr) {
+        if(error)error->clear();const auto fail=[&]{if(error)*error="Invalid camera-reference selection command";return false;};
+        if(!output)return fail();CameraReferenceSelection staged;const auto name=command["command"].toString();
+        if(name=="camera-reference.auto") {
+            if(!fields(command,{}))return fail();staged.automatic=true;
+        }else if(name=="camera-reference.load") {
+            if(!fields(command,{"source"})||!command["source"].isString())return fail();staged.source=command["source"].toString();
+            if(staged.source.isEmpty()||staged.source.size()>32768||staged.source.contains(QChar(u'\0'))
+                ||staged.source.startsWith(':')||!QFileInfo(staged.source).isAbsolute())return fail();
+        }else return fail();
+        *output=std::move(staged);return true;
+    }
+    static QJsonObject cameraReferenceSelectionSchema(bool automatic) {
+        QJsonObject result{{"name",automatic?"camera-reference.auto":"camera-reference.load"},{"scope","desktop"},
+            {"fields",automatic?QJsonArray{}:QJsonArray{"source"}},{"presentation_only",true},
+            {"source_writes",false},{"catalog_writes",false},{"edit_history_writes",false},{"settings_writes",false},
+            {"reference",automatic?"restore existing verified companion JPEG or embedded RAW preview":"user-selected JPEG; never authenticated as a camera pair"},
+            {"requires_current_RAW",automatic},{"maximum_path_utf16_units",32768},
+            {"completion","true means asynchronous request accepted; observe referenceBusy and cameraReferenceInfo.error"},
+            {"supersession","latest accepted selection for the current photo; old results cannot publish"},
+            {"offline_sessions","unsupported; references cannot change Develop or export plans"}};
+        if(!automatic){result["type"]="string";result["path_kind"]="absolute native local path to an existing file; readable bounded JPEG checked asynchronously";}
+        return result;
     }
     enum class ScopeOperation { Domain, Mode, FullResolution };
     struct ScopePresentation {ScopeOperation operation=ScopeOperation::Domain;QString value;bool enabled=false;};
@@ -1102,7 +1128,7 @@ struct CommandRegistry {
                 relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel"),
                 proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
                 proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh"),
-                cameraReferenceVisibilitySchema(),
+                cameraReferenceVisibilitySchema(),cameraReferenceSelectionSchema(false),cameraReferenceSelectionSchema(true),
                 scopePresentationSchema("scopes.domain"),scopePresentationSchema("scopes.mode"),scopePresentationSchema("scopes.full-resolution"),
                 operationCancelSchema(false),operationCancelSchema(true),operationCancelSchema(false,true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},

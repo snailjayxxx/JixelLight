@@ -277,6 +277,34 @@ private slots:
         AnalysisFrameCache shared(10*cost);auto older=shared.beginLinear("same",frame.size(),AnalysisDomain::Source);auto newer=shared.beginLinear("same",frame.size(),AnalysisDomain::Working);QVERIFY(older);QVERIFY(newer);QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(2));QVERIFY(older.append(frame,0));QVERIFY(!older.publish());QVERIFY(newer.append(frame,0));QVERIFY(newer.publish());QCOMPARE(shared.snapshot()["stale_publications"].toInteger(),qint64(1));QVERIFY(!shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Source));QVERIFY(shared.findLinear("same",AnalysisDomain::Working));
         auto wrong=shared.begin("same",frame.size());QVERIFY(wrong);QVERIFY(!wrong.append(frame,0));QImage rgba64(frame.size(),QImage::Format_RGBA64);rgba64.fill(QColor(40,90,170));auto legacy=shared.begin("same",frame.size());QVERIFY(legacy);QVERIFY(legacy.append(rgba64,0));QVERIFY(legacy.publish());QVERIFY(shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Working));QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(0));
     }
+    void cameraReferenceSelectionRequiresExactPathsAndAtomicDecoding() {
+        const auto path=QDir::rootPath()+"owned-reference.jpg";
+        const QList<QJsonObject> valid{{{"command","camera-reference.load"},{"source",path}},{{"command","camera-reference.auto"}}};
+        for(const auto &command:valid) {
+            CommandRegistry::CameraReferenceSelection parsed{"old",true};QString error="old";
+            QVERIFY(CommandRegistry::decodeCameraReferenceSelection(command,&parsed,&error));QVERIFY(error.isEmpty());
+            QCOMPARE(parsed.automatic,command["command"]=="camera-reference.auto");QCOMPARE(parsed.source,parsed.automatic?QString():path);
+            QVERIFY(!CommandRegistry::decodeCameraReferenceSelection(command,nullptr,&error));QVERIFY(!error.isEmpty());
+        }
+        const QList<QJsonObject> invalid{
+            {{"command","camera-reference.load"}},{{"command","camera-reference.load"},{"source",true}},
+            {{"command","camera-reference.load"},{"source",17}},{{"command","camera-reference.load"},{"source",QJsonValue::Null}},
+            {{"command","camera-reference.load"},{"source",QJsonArray{path}}},{{"command","camera-reference.load"},{"source",QJsonObject{}}},
+            {{"command","camera-reference.load"},{"source",""}},{{"command","camera-reference.load"},{"source","relative.jpg"}},
+            {{"command","camera-reference.load"},{"source","file:///reference.jpg"}},{{"command","camera-reference.load"},{"source",":/reference.jpg"}},
+            {{"command","camera-reference.load"},{"source",path+QChar(u'\0')}},{{"command","camera-reference.load"},{"source",path+QString(32769,'x')}},
+            {{"command","camera-reference.load"},{"source",path},{"enabled",true}},{{"command","camera-reference.auto"},{"source",path}},
+            {{"command","camera-reference.Auto"}},{{"command","camera-reference.show"},{"enabled",true}},{{"command",true}}};
+        for(const auto &command:invalid) {
+            CommandRegistry::CameraReferenceSelection parsed{"preserved",true};QString error;
+            QVERIFY(!CommandRegistry::decodeCameraReferenceSelection(command,&parsed,&error));QCOMPARE(parsed.source,QString("preserved"));QVERIFY(parsed.automatic);QVERIFY(!error.isEmpty());
+        }
+        for(bool automatic:{false,true}) {
+            const auto form=CommandRegistry::cameraReferenceSelectionSchema(automatic);QCOMPARE(form["scope"].toString(),QString("desktop"));
+            QCOMPARE(form["fields"].toArray(),automatic?QJsonArray{}:QJsonArray{"source"});QCOMPARE(form["requires_current_RAW"].toBool(),automatic);QVERIFY(form["presentation_only"].toBool());
+            for(const auto *key:{"source_writes","catalog_writes","edit_history_writes","settings_writes"})QVERIFY(form[key].isBool()&&!form[key].toBool());
+        }
+    }
     void cameraReferenceVisibilityRequiresAnExactBooleanAndNeverPartiallyDecodes() {
         for(bool enabled:{false,true}) {
             const QJsonObject command{{"command","camera-reference.show"},{"enabled",enabled}};bool result=!enabled;QString error="old";

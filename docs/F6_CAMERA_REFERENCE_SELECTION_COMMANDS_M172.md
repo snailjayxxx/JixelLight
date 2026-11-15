@@ -1,0 +1,14 @@
+# F6 camera-reference selection commands — M172
+
+This independent successor to frozen `e12cc69` unifies existing manual JPEG selection and a new automatic-reference restore button through strict desktop commands. The accepted root remains `6845833`; parent e12 has passed its own local107/all101/all33/all19/five-graph/retention46 and private3 checks, while its original CI458 and package delivery are pending.
+
+- `camera-reference.load {"source": "/absolute/native/reference.jpg"}` accepts an existing file for bounded asynchronous JPEG reading. The original QUrl adapter and chooser use the same executor. Selection is explicitly user-supplied and never authenticated as a camera pair.
+- `camera-reference.auto {}` restores the existing same-shot metadata matching and embedded-preview fallback for the current RAW. A bilingual button in the reference view calls the public adapter; manual selection remains available for rendered sources, while automatic selection requires RAW.
+- Exact fields/types/absolute path constraints reject malformed requests before mutation. Foreign-thread, closing, missing-photo/file and unsupported auto requests refuse without acceptance traces. Entire offline plans refuse these desktop-only actions before earlier exports run.
+- Accepted traces freeze photo/revision before callbacks. A per-selection generation, immutable asynchronous request snapshot and the existing latest-job queue prevent nested or superseded work from publishing old references. Reference pixels, histogram, errors and calibration report clear together; cancellation, deletion, close and photo-switch callback boundaries retain guards. No RAW, Develop state/history, output, settings or catalog writes are introduced.
+
+One Core case, one session case and four explicitly selected controller methods require actual279/25/98 results. Controller fixtures include real JPEG reading/read-only reuse, thread/closing refusal, owner deletion/real close, early/busy notification reentry, and blocked stale work. Synthetic RAW flags in queue-isolation tests do not qualify real RAW decoding.
+
+The ordinary real-RAW App flow first retains its actual paired/embedded reference; it loads a small synthetic JPEG only for command coverage, restores automatic mode by an actual pointer click, and requires original reference kind/pixel hash plus unchanged photo intent/history. Independent Python evidence rejects forged ordering/types/provenance/hashes. Existing visibility checks, full-resolution source/scopes, original60s App deadline, pressure45s, GPU40/65535 and package88 contexts remain required.
+
+Before compilation, all tests, new full107/all101/all33/all19/five-graph qualification, private compatibility, three-platform CI and both deployed packages remain pending. Overall F0–F6, native float RAW, sensor calibration, physical devices and internal GPU-stage qualification remain incomplete. Protected PR15 and main remain independent and untouched.
