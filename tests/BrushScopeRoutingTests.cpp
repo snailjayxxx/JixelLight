@@ -534,6 +534,62 @@ private slots:
             QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(owner.isNull());const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("scopes_command"));QCOMPARE(row["command"].toObject(),command);QVERIFY(row["presentation_only"].toBool());
         }
     }
+    void calibrationStartNotificationsMayCloseOrDestroyOwner() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto path=dir.filePath("calibration-terminal.png");const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));const auto bytes=fileHash(path);
+        for(bool closeOnly:{false,true}) {
+            std::atomic_int starts{0};ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);owner->setGpuEnabled(false);
+            QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering(),15000);
+            QVERIFY(owner->flushEdits());owner->m_refineTimer.stop();owner->m_photos[0].raw=true;owner->m_referenceImage=image;
+            owner->m_calibrationJob=std::make_unique<LatestJob<LookCalibrationRequest,LookCalibrationResult>>([&](const LookCalibrationRequest &,const CancelToken &){++starts;return LookCalibrationResult{};},[](const LookCalibrationRequest &,LookCalibrationResult){});
+            bool notified=false,closed=false;quint64 stopped=0;
+            QObject::connect(owner,&PhotoController::calibrationChanged,owner,[&]{if(notified)return;notified=true;if(closeOnly){closed=owner->beginClose();stopped=owner->m_calibrationJob->sequence();}else delete owner.data();});
+            QVERIFY(owner->calibrateFromReference());QVERIFY(notified);QCOMPARE(starts.load(),0);
+            if(closeOnly){QVERIFY(closed&&owner&&owner->m_closing);QCOMPARE(owner->m_calibrationJob->sequence(),stopped);QVERIFY(!owner->calibrateFromReference());owner->cancelCalibration();owner->setLookMode("as-shot");QCOMPARE(owner->m_calibrationJob->sequence(),stopped);delete owner.data();}
+            else QVERIFY(owner.isNull());
+        }
+        QCOMPARE(fileHash(path),bytes);
+    }
+    void calibrationStartCancellationAndNestedRestartKeepLatestRequest() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("calibration-reentry.png");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));const auto bytes=fileHash(path);
+        for(const auto &action:QStringList{"cancel","restart","snapshot"}) {
+            std::atomic_int starts{0};QList<LookCalibrationRequest> delivered;ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);
+            QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+            c.m_photos[0].raw=true;c.m_referenceImage=image;c.m_referenceInfo={{"fixture","original"}};c.m_currentMetadata["model"]="original-camera";
+            c.m_calibrationJob=std::make_unique<LatestJob<LookCalibrationRequest,LookCalibrationResult>>([&](const LookCalibrationRequest &,const CancelToken &){++starts;return LookCalibrationResult{};},[&](const LookCalibrationRequest &request,LookCalibrationResult){delivered.append(request);c.m_calibrationBusy=false;});
+            const auto sequence=c.m_calibrationJob->sequence(),revision=c.m_requestedRevision;const auto state=c.currentState().toJson();const auto history=c.editHistory();const auto status=c.statusMessage();
+            bool foreign=true;std::thread worker([&]{foreign=c.calibrateFromReference();c.cancelCalibration();c.setLookMode("as-shot");});worker.join();QVERIFY(!foreign);QCOMPARE(c.m_calibrationJob->sequence(),sequence);QCOMPARE(c.statusMessage(),status);QVERIFY(!c.calibrationBusy());
+            bool notified=false,nested=false;QObject::connect(&c,&PhotoController::calibrationChanged,&c,[&]{if(notified||!c.calibrationBusy())return;notified=true;c.m_referenceInfo["fixture"]="nested";c.m_currentMetadata["model"]="nested-camera";if(action!="snapshot")c.cancelCalibration();if(action=="restart")nested=c.calibrateFromReference();});
+            QVERIFY(c.calibrateFromReference());QVERIFY(notified);
+            if(action=="cancel"){QCOMPARE(starts.load(),0);QVERIFY(!c.calibrationBusy());QVERIFY(delivered.isEmpty());}
+            else {QCOMPARE(nested,action=="restart");QTRY_COMPARE_WITH_TIMEOUT(delivered.size(),1,5000);QCOMPARE(starts.load(),1);const auto &request=delivered.first();QCOMPARE(request.provenance.value("fixture").toString(),action=="restart"?QString("nested"):QString("original"));QCOMPARE(request.provenance.value("camera").toString(),action=="restart"?QString("nested-camera"):QString("original-camera"));QCOMPARE(request.provenance.value("sourceIdentity").toString(),c.m_loadedKey);QCOMPARE(request.photo,c.m_photoEpoch);QCOMPARE(request.revision,revision);}
+            QCOMPARE(c.currentState().toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.m_requestedRevision,revision);
+        }
+        QCOMPARE(fileHash(path),bytes);
+    }
+    void referenceResetClearsCalibrationInputsBeforeNotifying() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto first=dir.filePath("calibration-first.png"),second=dir.filePath("calibration-second.png");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(first));QVERIFY(image.mirrored().save(second));const auto firstBytes=fileHash(first),secondBytes=fileHash(second);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(first)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(second)));c.selectPhoto(0);QTRY_VERIFY_WITH_TIMEOUT(c.currentIndex()==0&&c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_refineTimer.stop();
+        c.m_photos[1].raw=true;c.m_referenceImage=image;c.m_referenceInfo={{"fixture","old-reference"}};c.m_referenceScopes.pixelCount=7680;c.m_manualReferencePath="old-reference.jpg";c.m_calibrationReport={{"fixture","old-report"}};c.m_calibrationBusy=true;provider.setReference(image);
+        bool notified=false,accepted=true,empty=false;QObject::connect(&c,&PhotoController::calibrationChanged,&c,[&]{if(notified||c.currentIndex()!=1)return;notified=true;empty=c.m_referenceImage.isNull()&&c.m_referenceInfo.isEmpty()&&c.m_referenceScopes.pixelCount==0&&c.m_manualReferencePath.isEmpty()&&c.m_calibrationReport.isEmpty()&&provider.requestImage("reference/1",nullptr,{}).isNull();accepted=c.calibrateFromReference();});
+        c.selectPhoto(1);QVERIFY(notified&&empty);QVERIFY(!accepted);QVERIFY(!c.calibrationBusy());QVERIFY(!c.m_calibrationJob->busy());QCOMPARE(fileHash(first),firstBytes);QCOMPARE(fileHash(second),secondBytes);
+    }
+    void calibrationCompletionNotificationCanRetireResult() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("calibration-completion.png");QVERIFY(sourceImage().scaled(160,128).save(path));const auto bytes=fileHash(path);
+        for(bool restart:{false,true}) {
+            ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering()&&!c.m_prepare->busy()&&!c.m_render->busy(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();c.m_exactTimer.stop();c.m_plotTimer.stop();
+            c.m_photos[0].raw=true;const auto small=c.m_fullSource.scaled(512,512,Qt::KeepAspectRatio,Qt::SmoothTransformation);c.m_referenceImage=ImagePipeline::process(small,{},ImagePipeline::InputEncoding::LinearProPhoto,ColorManagement::OutputSpace::SRgb);QVERIFY(!c.m_referenceImage.isNull());
+            for(int y=0;y<c.m_referenceImage.height();++y){auto *p=reinterpret_cast<QRgba64 *>(c.m_referenceImage.scanLine(y));for(int x=0;x<c.m_referenceImage.width();++x)p[x]=QRgba64::fromRgba64(p[x].red()*.88+2200,p[x].green()*.95+1000,p[x].blue()*.86+2800,65535);}
+            const auto state=c.currentState().toJson();const auto history=c.editHistory();const auto revision=c.m_requestedRevision;bool notified=false,nested=false;QVariantMap completed;
+            QObject::connect(&c,&PhotoController::calibrationChanged,&c,[&]{if(notified||c.calibrationBusy()||c.calibrationReport().isEmpty())return;notified=true;completed=c.calibrationReport();c.cancelCalibration();if(restart){c.m_referenceImage=c.m_referenceImage.scaled(10,8);nested=c.calibrateFromReference();}});
+            QVERIFY(c.calibrateFromReference());QTRY_VERIFY_WITH_TIMEOUT(notified&&!c.calibrationBusy()&&!c.m_calibrationJob->busy(),10000);QVERIFY(completed.value("error").toString().isEmpty());QCOMPARE(nested,restart);
+            if(restart)QVERIFY(c.calibrationReport().value("error").toString().contains("too small"));
+            QCOMPARE(c.currentState().toJson(),state);QCOMPARE(c.editHistory(),history);QCOMPARE(c.m_requestedRevision,revision);QCOMPARE(fileHash(path),bytes);
+        }
+    }
     void cameraReferenceSelectionLoadsReadOnlyJPEGAndSharesLegacyAdapter() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto path=dir.filePath("selection-source.png"),jpeg=dir.filePath("selection-reference.jpg");

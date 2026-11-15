@@ -842,6 +842,7 @@ private:
     std::unique_ptr<LatestJob<LookCalibrationRequest,LookCalibrationResult>> m_calibrationJob;
     void initializeLookJobs();
     bool applyLookEdit(const QJsonObject &command, const QString &action, const QVariantMap &details = {});
+    void cancelCalibrationImpl();
     void resetReference();
     void requestReference();
     bool isProtectedPhoto(const QString &path) const;
