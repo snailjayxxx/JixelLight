@@ -254,6 +254,7 @@ bool PhotoController::loadLookProfile(const QUrl &url) {
     auto *state=mutableCurrentState();if(!state)return false;state->look=std::move(look);persistAndApply("look_profile_imported");return true;
 }
 bool PhotoController::saveLookProfile(const QUrl &url) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
     if(!hasImage()||!url.isLocalFile())return false;
     auto look=currentState().look;if(!LookProfiles::active(look))return false;
     if(look.mode=="as-shot")look.mode="manual";
@@ -266,10 +267,15 @@ bool PhotoController::saveLookProfile(const QUrl &url) {
     setStatus(uiText("外观已保存：", "Look saved: ")+path);return true;
 }
 void PhotoController::openLookProfileDialog() {
+    if(QThread::currentThread()!=thread()||m_closing||xmpMergeBusy()||!currentSourceAvailable())return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch,catalog=m_catalogEpoch;
     const auto path=QFileDialog::getOpenFileName(nullptr,uiText("导入外观（LUT 必须是显示 sRGB，非 Log/HDR）", "Import look (LUT must be display sRGB, not Log/HDR)"),{},"Looks (*.jlook.json *.cube)");
-    if(!path.isEmpty())loadLookProfile(QUrl::fromLocalFile(path));
+    if(guard&&!m_closing&&photo==m_photoEpoch&&catalog==m_catalogEpoch&&!path.isEmpty())loadLookProfile(QUrl::fromLocalFile(path));
 }
 void PhotoController::saveLookProfileDialog() {
+    if(QThread::currentThread()!=thread()||m_closing||!hasImage()||!LookProfiles::active(currentState().look))return;
+    const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch,catalog=m_catalogEpoch;
+    const auto look=currentState().look.toJson();
     const auto path=QFileDialog::getSaveFileName(nullptr,uiText("保存独立外观", "Save independent look"),"JixelLight.jlook.json","JixelLight Look (*.jlook.json)");
-    if(!path.isEmpty())saveLookProfile(QUrl::fromLocalFile(path));
+    if(guard&&!m_closing&&photo==m_photoEpoch&&catalog==m_catalogEpoch&&look==currentState().look.toJson()&&!path.isEmpty())saveLookProfile(QUrl::fromLocalFile(path));
 }

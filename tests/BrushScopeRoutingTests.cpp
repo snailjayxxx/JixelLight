@@ -534,6 +534,27 @@ private slots:
             QVERIFY(owner->executeCommand(command.toVariantMap()));QVERIFY(owner.isNull());const auto row=ActionTrace::instance().snapshot().last().toObject();QCOMPARE(row["action"].toString(),QString("scopes_command"));QCOMPARE(row["command"].toObject(),command);QVERIFY(row["presentation_only"].toBool());
         }
     }
+    void lookProfileSaveRefusesForeignThreadAndAcceptedClose() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("profile-owner.png");QVERIFY(sourceImage().scaled(96,80).save(path));const auto original=fileHash(path);
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        auto *state=c.mutableCurrentState();QVERIFY(state);state->look.mode="manual";state->look.code="ST";QVERIFY(c.lookState().value("active").toBool());
+        const auto look=state->look.toJson(),intent=c.currentState().toJson();const auto history=c.editHistory();const auto revision=c.m_requestedRevision;
+        const auto normal=dir.filePath("normal.jlook.json");QVERIFY(c.saveLookProfile(QUrl::fromLocalFile(normal)));QFile file(normal);QVERIFY(file.open(QIODevice::ReadOnly));const auto profile=QJsonDocument::fromJson(file.readAll()).object();file.close();QCOMPARE(profile["format"].toString(),QString("JixelLightLook"));QCOMPARE(profile["version"].toInt(),1);QCOMPARE(profile["look"].toObject(),look);
+        const auto status=c.statusMessage();const auto foreign=dir.filePath("foreign.jlook.json");bool accepted=true,loaded=true;
+        std::thread worker([&]{accepted=c.saveLookProfile(QUrl::fromLocalFile(foreign));loaded=c.loadLookProfile(QUrl::fromLocalFile(normal));});worker.join();QVERIFY(!accepted&&!loaded);QVERIFY(!QFile::exists(foreign));QCOMPARE(c.statusMessage(),status);QCOMPARE(c.currentState().toJson(),intent);QCOMPARE(c.editHistory(),history);QCOMPARE(c.m_requestedRevision,revision);
+        QVERIFY(c.beginClose());const auto closedStatus=c.statusMessage();const auto closedRevision=c.m_requestedRevision;const auto closed=dir.filePath("closed.jlook.json");QVERIFY(!c.saveLookProfile(QUrl::fromLocalFile(closed)));QVERIFY(!c.loadLookProfile(QUrl::fromLocalFile(normal)));c.openLookProfileDialog();c.saveLookProfileDialog();QVERIFY(!QFile::exists(closed));QCOMPARE(c.statusMessage(),closedStatus);QCOMPARE(c.m_requestedRevision,closedRevision);QCOMPARE(c.currentState().toJson(),intent);QCOMPARE(c.editHistory(),history);QCOMPARE(fileHash(path),original);
+    }
+    void lookProfileSaveNotificationCanCloseOrDestroyOwner() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("profile-notify.png");QVERIFY(sourceImage().scaled(96,80).save(path));const auto original=fileHash(path);
+        for(bool closeOnly:{false,true}) {
+            ProcessedImageProvider provider;QPointer<PhotoController> owner=new PhotoController(&provider);owner->setGpuEnabled(false);QVERIFY(owner->importFile(QUrl::fromLocalFile(path)));QTRY_VERIFY_WITH_TIMEOUT(owner->brushReady()&&owner->m_sourceIsFull&&!owner->rendering(),15000);QVERIFY(owner->flushEdits());owner->m_saveTimer.stop();owner->m_saveMaxTimer.stop();owner->m_refineTimer.stop();
+            auto *state=owner->mutableCurrentState();QVERIFY(state);state->look.mode="manual";state->look.code="ST";const auto look=state->look.toJson();
+            const auto output=dir.filePath(closeOnly?"notify-close.jlook.json":"notify-delete.jlook.json"),nested=dir.filePath(closeOnly?"nested-close.jlook.json":"nested-delete.jlook.json");bool notified=false,closed=false,nestedAccepted=true;
+            QObject::connect(owner,&PhotoController::statusMessageChanged,owner,[&]{if(notified)return;notified=true;if(closeOnly){closed=owner->beginClose();nestedAccepted=owner->saveLookProfile(QUrl::fromLocalFile(nested));}else delete owner.data();});
+            QVERIFY(owner->saveLookProfile(QUrl::fromLocalFile(output)));QVERIFY(notified);QVERIFY(!QFile::exists(nested));QFile file(output);QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(QJsonDocument::fromJson(file.readAll()).object()["look"].toObject(),look);
+            if(closeOnly){QVERIFY(owner&&closed&&owner->m_closing);QVERIFY(!nestedAccepted);delete owner.data();}else QVERIFY(owner.isNull());QCOMPARE(fileHash(path),original);
+        }
+    }
     void referenceCalibrationCommandsShareAdaptersAndTraceBeforeNestedCancel() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("fit-command.png");const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(path));const auto original=fileHash(path);
         const QJsonObject fit{{"command","camera-reference.fit"}},cancel{{"command","camera-reference.fit.cancel"}};

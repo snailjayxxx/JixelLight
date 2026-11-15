@@ -1,0 +1,9 @@
+# F0 look-profile owner guards — M179
+
+The isolated baseline linked against immutable 8555c9a Core accepts a profile save after beginClose and creates the file. Its runtime3/passed:false, source, link inputs and generated files remain retained before this fresh repair. This witness uses a tiny PNG and an explicit manual ST look; it is no RAW calibration, full App or ASAN claim.
+
+Profile saving now refuses foreign-thread and accepted-close entry before reading mutable controller state or opening a file. Native profile dialogs refuse ineligible entry and freeze owner/photo/catalog identity across their nested event loops. Import cannot resume on a different photo/catalog or deleted/closed owner. Export also requires the same materialized look after the dialog. Existing profile bytes, file size/engine-version checks, source/reference protection, QSaveFile publication and fitter/image math remain unchanged.
+
+Two explicitly selected controller methods require scheduling108, retaining Core280/session26/Python311/capture7/GPU85/native19 and full107/all101/all33/nineteen runtimes/five graphs. They prove normal export bytes, refused foreign/closed save without side effects, and safe close/deletion from save notification. They do not automate a native file picker. A new identical-body positive against this head must reject the retained baseline post-close save without creating a file. Current capture header/test/caption remain byte-identical to 8555c9a and can inherit only that exact scoped proof; no broader ASAN claim is made.
+
+Parent 8555c9a must close its own independent local/private/three-platform/package acceptance before final acceptance here. Fresh source/build and own full/platform/private/package gates remain required. Full F0–F6 remains incomplete; canonical look-profile I/O commands, true float RAW, sensor calibration, internal GPU stages and physical devices remain unfinished. Main and protected PR15 stay unchanged.
