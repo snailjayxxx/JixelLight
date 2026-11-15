@@ -4,6 +4,7 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QMutex>
+#include <QSemaphore>
 #include <QPointer>
 #include <QQuickWindow>
 #include <QRunnable>
@@ -68,7 +69,7 @@ public:
         result.frame.error=QStringLiteral("capture-initial-window-not-stable");return result;
     }
 
-    Result grab(QQuickWindow *window,int remainingMs,qint64 budget=BufferBudget) {
+    Result grab(QQuickWindow *window,int remainingMs,qint64 budget=BufferBudget,QSemaphore *registrationGate=nullptr) {
         const auto refused=[](const char *reason){Result r;r.error=QString::fromLatin1(reason);return r;};
         if(!window || QThread::currentThread()!=window->thread())return refused("capture-GUI-owner-required");
         if(busy_)return refused("capture-reentrant");
@@ -104,7 +105,12 @@ public:
         }),QQuickWindow::AfterSynchronizingStage);
         QTimer deadline;deadline.setSingleShot(true);deadline.setTimerType(Qt::PreciseTimer);
         QObject::connect(&deadline,&QTimer::timeout,&waiter,&QEventLoop::quit);
-        deadline.start(remainingMs);window->update();
+        deadline.start(remainingMs);
+        // Optional QA handshake: request jobs now exist. Release the fixture's
+        // old render before the GUI can process another window update. The
+        // semaphore is caller-owned and is never retained by this capture.
+        if(registrationGate)registrationGate->release();
+        window->update();
         waiter.exec(QEventLoop::ExcludeUserInputEvents);
         QObject::disconnect(swapped);QObject::disconnect(ended);QObject::disconnect(destroyed);
         QMutexLocker lock(&state->mutex);state->cancelled=true;
