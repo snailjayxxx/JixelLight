@@ -296,6 +296,19 @@ struct CommandRegistry {
             {"source_writes",false},{"history","one existing step per changed target; source and catalog annotations stay independent"},
             {"offline_sessions","unsupported; controller clipboard/catalog selection do not cross session boundaries"}};
     }
+    static bool decodeCameraReferenceVisibility(const QJsonObject &command,bool *output,QString *error=nullptr) {
+        if(error)error->clear();
+        if(!output||command["command"]!="camera-reference.show"||!fields(command,{"enabled"})||!command["enabled"].isBool()) {
+            if(error)*error="Invalid camera-reference visibility command";return false;
+        }
+        *output=command["enabled"].toBool();return true;
+    }
+    static QJsonObject cameraReferenceVisibilitySchema() {
+        return {{"name","camera-reference.show"},{"scope","desktop"},{"fields",QJsonArray{"enabled"}},{"type","boolean"},
+            {"presentation_only",true},{"source_writes",false},{"catalog_writes",false},{"edit_history_writes",false},{"settings_writes",false},
+            {"completion","true means visibility request accepted; a missing reference may still be loading or unavailable"},
+            {"offline_sessions","unsupported; reference visibility cannot alter Develop or export plans"}};
+    }
     enum class ScopeOperation { Domain, Mode, FullResolution };
     struct ScopePresentation {ScopeOperation operation=ScopeOperation::Domain;QString value;bool enabled=false;};
     static bool decodeScopePresentation(const QJsonObject &command,ScopePresentation *output,QString *error=nullptr) {
@@ -1089,6 +1102,7 @@ struct CommandRegistry {
                 relinkSchema("photo.relink.request"),relinkSchema("photo.relink.confirm"),relinkSchema("photo.relink.cancel"),
                 proofSchema("proof.enable"),proofSchema("proof.target"),proofSchema("proof.profile"),proofSchema("proof.intent"),
                 proofSchema("proof.paper"),proofSchema("proof.gamut-warning"),proofSchema("proof.black-point"),proofSchema("proof.refresh"),
+                cameraReferenceVisibilitySchema(),
                 scopePresentationSchema("scopes.domain"),scopePresentationSchema("scopes.mode"),scopePresentationSchema("scopes.full-resolution"),
                 operationCancelSchema(false),operationCancelSchema(true),operationCancelSchema(false,true)}},
             {"unknown_fields","reject"},{"range_policy","clamp"},

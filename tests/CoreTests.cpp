@@ -277,6 +277,26 @@ private slots:
         AnalysisFrameCache shared(10*cost);auto older=shared.beginLinear("same",frame.size(),AnalysisDomain::Source);auto newer=shared.beginLinear("same",frame.size(),AnalysisDomain::Working);QVERIFY(older);QVERIFY(newer);QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(2));QVERIFY(older.append(frame,0));QVERIFY(!older.publish());QVERIFY(newer.append(frame,0));QVERIFY(newer.publish());QCOMPARE(shared.snapshot()["stale_publications"].toInteger(),qint64(1));QVERIFY(!shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Source));QVERIFY(shared.findLinear("same",AnalysisDomain::Working));
         auto wrong=shared.begin("same",frame.size());QVERIFY(wrong);QVERIFY(!wrong.append(frame,0));QImage rgba64(frame.size(),QImage::Format_RGBA64);rgba64.fill(QColor(40,90,170));auto legacy=shared.begin("same",frame.size());QVERIFY(legacy);QVERIFY(legacy.append(rgba64,0));QVERIFY(legacy.publish());QVERIFY(shared.find("same"));QVERIFY(!shared.findLinear("same",AnalysisDomain::Working));QCOMPARE(shared.snapshot()["inflight_entries"].toInteger(),qint64(0));
     }
+    void cameraReferenceVisibilityRequiresAnExactBooleanAndNeverPartiallyDecodes() {
+        for(bool enabled:{false,true}) {
+            const QJsonObject command{{"command","camera-reference.show"},{"enabled",enabled}};bool result=!enabled;QString error="old";
+            QVERIFY(CommandRegistry::decodeCameraReferenceVisibility(command,&result,&error));QCOMPARE(result,enabled);QVERIFY(error.isEmpty());
+            QVERIFY(!CommandRegistry::decodeCameraReferenceVisibility(command,nullptr,&error));QVERIFY(!error.isEmpty());
+        }
+        const QList<QJsonObject> invalid{
+            {{"command","camera-reference.show"}},{{"command","camera-reference.show"},{"enabled",1}},
+            {{"command","camera-reference.show"},{"enabled","true"}},{{"command","camera-reference.show"},{"enabled",QJsonValue::Null}},
+            {{"command","camera-reference.show"},{"enabled",QJsonArray{true}}},{{"command","camera-reference.show"},{"enabled",QJsonObject{}}},
+            {{"command","camera-reference.show"},{"enabled",false},{"source","injected.jpg"}},
+            {{"command","camera-reference.Show"},{"enabled",false}},{{"command","camera-reference.hide"},{"enabled",false}},
+            {{"command",true},{"enabled",false}}};
+        for(const auto &command:invalid) {
+            bool result=true;QString error;QVERIFY(!CommandRegistry::decodeCameraReferenceVisibility(command,&result,&error));QVERIFY(result);QVERIFY(!error.isEmpty());
+        }
+        const auto schema=CommandRegistry::cameraReferenceVisibilitySchema();QCOMPARE(schema["scope"].toString(),QString("desktop"));
+        QCOMPARE(schema["fields"].toArray(),QJsonArray{"enabled"});QCOMPARE(schema["type"].toString(),QString("boolean"));QVERIFY(schema["presentation_only"].toBool());
+        for(const auto *key:{"source_writes","catalog_writes","edit_history_writes","settings_writes"})QVERIFY(schema[key].isBool()&&!schema[key].toBool());
+    }
     void scopeCommandsRequireExactDomainsModesAndBooleansWithoutPartialDecode() {
         QList<QJsonObject> commands;for(const auto &domain:QStringList{"source","working","display"})commands.append({{"command","scopes.domain"},{"domain",domain}});
         for(const auto &mode:QStringList{"histogram","waveform","parade","vectorscope"})commands.append({{"command","scopes.mode"},{"mode",mode}});

@@ -83,6 +83,19 @@ void PhotoController::requestReference() {
     m_referenceJob->submit({currentFile(),m_manualReferencePath,m_currentMetadata,m_photoEpoch});
 }
 void PhotoController::setShowCameraReference(bool show) {
+    executeCameraReferenceVisibility({{"command","camera-reference.show"},{"enabled",show}});
+}
+bool PhotoController::executeCameraReferenceVisibility(const QJsonObject &command) {
+    if(QThread::currentThread()!=thread()||m_closing)return false;
+    bool show=false;if(!CommandRegistry::decodeCameraReferenceVisibility(command,&show))return false;
+    // Freeze and record acceptance before callbacks can switch photos, submit a
+    // nested visibility request, close the window or destroy this controller.
+    const QVariantMap details{{"command",command},{"presentation_only",true},{"completion","visibility-request-accepted"},
+        {"revision",QString::number(m_requestedRevision)},{"photo_epoch",QString::number(m_photoEpoch)}};
+    ActionTrace::instance().record("camera_reference_command",details);
+    setShowCameraReferenceImpl(show);return true;
+}
+void PhotoController::setShowCameraReferenceImpl(bool show) {
     if(QThread::currentThread()!=thread()||m_closing||m_showReference==show)return;
     const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch;m_showReference=show;emit referenceChanged();if(!guard||m_closing||photo!=m_photoEpoch||m_showReference!=show)return;
     if(show&&m_referenceImage.isNull()&&!m_referenceBusy)requestReference();

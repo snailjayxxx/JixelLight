@@ -852,6 +852,8 @@ private:
     void enqueueEdits();
     void requestFullScopes();
     void requestPreviewScopes();
+    bool executeCameraReferenceVisibility(const QJsonObject &command);
+    void setShowCameraReferenceImpl(bool show);
     bool executeScopePresentation(const QJsonObject &command);
     void setScopeDomainImpl(const QString &domain);
     void setScopeModeImpl(const QString &mode);
