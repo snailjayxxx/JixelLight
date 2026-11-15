@@ -3,6 +3,7 @@
 #include "core/look/SonyLookMetadata.h"
 #include "core/pipeline/ProcessingPlan.h"
 #include "core/commands/CommandRegistry.h"
+#include "core/cache/SourceCache.h"
 #include "core/image/ProcessedImageProvider.h"
 #include "diagnostics/ActionTrace.h"
 #include <QFileDialog>
@@ -78,7 +79,12 @@ void PhotoController::resetReference() {
 void PhotoController::requestReference() {
     if(m_closing||!hasImage()||!m_referenceJob)return;
     const QPointer<PhotoController> guard(this);const auto photo=m_photoEpoch,selection=m_referenceSelectionRevision;
-    const CameraReferenceRequest request{currentFile(),m_manualReferencePath,m_currentMetadata,photo};
+    // A photo switch publishes its reference reset before clearing the old
+    // loaded metadata. Only reuse facts bound to this exact source identity;
+    // otherwise the worker reads metadata from its frozen actual source path.
+    const auto path=currentFile(),key=SourceCache::fileKey(path);
+    const QVariantMap metadata=!key.isEmpty()&&key==m_loadedKey?m_currentMetadata:QVariantMap{};
+    const CameraReferenceRequest request{path,m_manualReferencePath,metadata,photo};
     const auto current=[this,guard,photo,selection]{return guard&&!m_closing&&photo==m_photoEpoch&&selection==m_referenceSelectionRevision;};
     cancelCalibration();if(!current())return;
     m_referenceBusy=true;emit referenceChanged();if(!current())return;

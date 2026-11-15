@@ -565,6 +565,28 @@ private slots:
         QCOMPARE(StageGraph::outputFingerprint(c.m_processedPreview),preview);QCOMPARE(StageGraph::outputFingerprint(c.m_fullSource),source);QVERIFY(sameHistogram(c.m_scopes,scopes));
         QCOMPARE(fileHash(path),sourceBytes);QCOMPARE(fileHash(jpeg),jpegBytes);QVERIFY(c.isProtectedPhoto(jpeg));
     }
+    void cameraReferenceResetNotificationUsesOnlyItsActualSourceMetadata() {
+        QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
+        const auto first=dir.filePath("metadata-first.png"),second=dir.filePath("metadata-second.png");
+        const auto image=sourceImage().scaled(96,80);QVERIFY(image.save(first));QVERIFY(image.mirrored().save(second));
+        const auto firstBytes=fileHash(first),secondBytes=fileHash(second);QMutex requestMutex;QList<CameraReferenceRequest> requests;std::atomic_int captured{0};
+        ProcessedImageProvider provider;PhotoController c(&provider);c.setGpuEnabled(false);QVERIFY(c.importFile(QUrl::fromLocalFile(first)));QTRY_VERIFY_WITH_TIMEOUT(c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);
+        QVERIFY(c.importFile(QUrl::fromLocalFile(second)));c.selectPhoto(0);QTRY_VERIFY_WITH_TIMEOUT(c.currentIndex()==0&&c.brushReady()&&c.m_sourceIsFull&&!c.rendering(),15000);QVERIFY(c.flushEdits());c.m_saveTimer.stop();c.m_saveMaxTimer.stop();c.m_refineTimer.stop();
+        QVERIFY(!c.m_loadedKey.isEmpty());QCOMPARE(c.m_loadedKey,SourceCache::fileKey(first));QVERIFY(c.m_loadedKey!=SourceCache::fileKey(second));
+        const QVariantMap previousMetadata{{"model","previous-photo-sentinel"},{"probe_owner","first-photo"},{"captureTime","2025-01-01T00:00:01"}};c.m_currentMetadata=previousMetadata;
+        c.m_referenceJob=std::make_unique<LatestJob<CameraReferenceRequest,CameraReferenceResult>>([&](const CameraReferenceRequest &request,const CancelToken &){{QMutexLocker lock(&requestMutex);requests.append(request);}++captured;return CameraReferenceResult{};},[&](const CameraReferenceRequest &,CameraReferenceResult){c.m_referenceBusy=false;});
+        // Synthetic RAW flags only admit isolated automatic commands for the
+        // actual tiny PNG sources. This does not qualify RAW decoding.
+        c.m_photos[0].raw=true;QVERIFY(c.useAutomaticCameraReference());c.m_photos[0].raw=false;
+        QTRY_COMPARE_WITH_TIMEOUT(captured.load(),1,5000);QTRY_VERIFY_WITH_TIMEOUT(!c.m_referenceJob->busy(),5000);
+        CameraReferenceRequest firstRequest;{QMutexLocker lock(&requestMutex);firstRequest=requests.first();}QCOMPARE(firstRequest.rawPath,first);QCOMPARE(firstRequest.metadata,previousMetadata);
+        bool invoked=false,accepted=false;QVariantMap notificationMetadata;
+        QObject::connect(&c,&PhotoController::referenceChanged,&c,[&]{if(!invoked&&c.currentIndex()==1){invoked=true;notificationMetadata=c.m_currentMetadata;accepted=c.useAutomaticCameraReference();}});
+        const auto priorPhoto=c.m_photoEpoch;const auto before=captured.load();c.m_photos[1].raw=true;c.selectPhoto(1);c.m_photos[1].raw=false;QVERIFY(invoked&&accepted);QCOMPARE(notificationMetadata,previousMetadata);
+        QTRY_VERIFY_WITH_TIMEOUT(captured.load()>before,5000);CameraReferenceRequest currentRequest;{QMutexLocker lock(&requestMutex);currentRequest=requests[before];}
+        QCOMPARE(currentRequest.rawPath,second);QCOMPARE(currentRequest.photo,c.m_photoEpoch);QVERIFY(currentRequest.photo!=priorPhoto);QVERIFY(currentRequest.manualPath.isEmpty());QVERIFY(currentRequest.metadata.isEmpty());
+        QCOMPARE(fileHash(first),firstBytes);QCOMPARE(fileHash(second),secondBytes);
+    }
     void cameraReferenceSelectionPhotoSwitchCannotSubmitTheOldManualRequest() {
         QStandardPaths::setTestModeEnabled(true);QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto first=dir.filePath("reference-switch-first.png"),second=dir.filePath("reference-switch-second.png"),jpeg=dir.filePath("reference-switch.jpg");
